@@ -1,0 +1,24 @@
+# 换行符统一策略：仓库内一律存 LF，工作区也一律用 LF
+# （.gitattributes 优先于 core.autocrlf，对所有协作者和 CI 生效）
+* text=auto eol=lf
+
+# Windows 批处理文件必须使用 CRLF，否则无法执行
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 明确标记二进制文件，防止被当作文本处理
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.pdf binary
+*.zip binary
+
+# Maven 包装器（沿用原有规则）
+/mvnw text eol=lf

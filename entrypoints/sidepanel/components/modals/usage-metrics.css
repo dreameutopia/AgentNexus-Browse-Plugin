@@ -1,0 +1,318 @@
+/**
+ * 使用监控分区样式（UsageSection）
+ *
+ * 类名体系 usage-*：独立于 config-form-*，避免与表单控件样式耦合；
+ * 配色对齐 settings-modal（白底 / #e5e7eb 分隔 / #64748b 次要文字）。
+ */
+
+/* ==================== 头部 ==================== */
+
+.usage-section-header {
+  margin-bottom: 14px;
+}
+
+.usage-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.usage-section-title h4 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.usage-status-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 500;
+}
+
+.usage-status-badge.ok {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.usage-status-badge.loading {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.usage-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.usage-since {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.usage-reset-btn {
+  appearance: none;
+  border: 1px solid #e5e7eb;
+  background: white;
+  color: #64748b;
+  border-radius: 8px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.usage-reset-btn:hover:not(:disabled) {
+  border-color: #fca5a5;
+  color: #dc2626;
+}
+
+.usage-reset-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 两步确认的武装态 */
+.usage-reset-btn.armed {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: white;
+}
+
+/* ==================== 空态 ==================== */
+
+.usage-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 36px 12px;
+  color: #94a3b8;
+}
+
+.usage-empty p {
+  margin: 0;
+  font-size: 13px;
+  text-align: center;
+}
+
+/* ==================== 分组标题 ==================== */
+
+.usage-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 16px 0 8px;
+}
+
+.usage-group-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.usage-group-hint {
+  font-size: 11px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  color: #94a3b8;
+  text-align: right;
+}
+
+/* ==================== 指标卡片 ==================== */
+
+.usage-cards {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.usage-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f8fafc;
+  min-width: 0;
+}
+
+.usage-card-wide {
+  grid-column: span 2;
+}
+
+.usage-card-accent {
+  background: linear-gradient(135deg, #eff6ff 0%, #f8fafc 100%);
+  border-color: #bfdbfe;
+}
+
+.usage-card-label {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.usage-card-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: #1e293b;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+}
+
+.usage-card-value.good {
+  color: #15803d;
+}
+
+.usage-card-value.warn {
+  color: #b45309;
+}
+
+.usage-card-value.bad {
+  color: #b91c1c;
+}
+
+.usage-card-sub {
+  font-size: 11px;
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ==================== 模型占比列表 ==================== */
+
+.usage-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.usage-model-row {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: white;
+}
+
+.usage-model-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.usage-model-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.usage-model-provider {
+  font-size: 10px;
+  color: #64748b;
+  background: #f1f5f9;
+  border-radius: 6px;
+  padding: 1px 6px;
+  flex-shrink: 0;
+}
+
+.usage-model-share {
+  font-size: 12px;
+  font-weight: 700;
+  color: #2563eb;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.usage-model-tokens {
+  font-size: 12px;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.usage-model-bar {
+  height: 5px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  margin: 6px 0;
+  overflow: hidden;
+}
+
+.usage-model-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #3b82f6, #2563eb);
+  transition: width 0.3s ease;
+}
+
+.usage-model-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 11px;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==================== 最近错误 ==================== */
+
+.usage-error-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.usage-error-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #7f1d1d;
+}
+
+.usage-error-time {
+  color: #b91c1c;
+  opacity: 0.7;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-error-model {
+  font-weight: 600;
+  flex-shrink: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-error-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}

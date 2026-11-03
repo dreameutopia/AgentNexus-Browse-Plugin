@@ -1,0 +1,1708 @@
+/* ChatMessageList 组件样式 - 从 app.css 提取 */
+
+.messages-container {
+  /* max-width: 600px; */
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.message {
+  display: flex;
+  /* flex 子项默认 min-width:auto：内容最小内在宽度不受 overflow-wrap 约束，
+     超长链接会把整行撑破容器——显式归零让换行策略真正生效 */
+  min-width: 0;
+  max-width: 90%;
+}
+
+.message.user {
+  align-self: flex-end;
+  max-width: 80%;
+}
+
+.message.assistant {
+  align-self: flex-start;
+  width: 92%;
+  max-width: 92%;
+}
+
+.message-wrapper {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  /* 同 .message：解除 flex 子项的内在最小宽度约束（长 URL 换行的关键） */
+  min-width: 0;
+}
+
+.message-content {
+  padding: 12px 16px;
+  border-radius: 18px;
+  font-size: 14px;
+  line-height: 1.4;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  /* anywhere（区别于 break-word）：换行机会计入最小内容宽度计算，
+     超长无空行链接（autolink URL / 粘贴的连续字符）可正常折行不溢出 */
+  overflow-wrap: anywhere;
+  width: 100%;
+  box-sizing: border-box;
+  overflow-x: clip;
+}
+
+.message.user .message-content {
+  /* 中性灰气泡（对齐主流聊天客户端）：浅灰底 + 深色文字，
+     代码块/链接等浅色系内嵌元素无需反色适配 */
+  background: #ececf1;
+  color: #1f2937;
+  border-bottom-right-radius: 4px;
+}
+
+.message.assistant .message-content {
+  background: transparent;
+  color: #1f2937;
+  border: none;
+  border-bottom-left-radius: 4px;
+  box-shadow: none;
+  padding: 0;
+}
+
+/* LaTeX渲染样式 */
+.latex-inline {
+  font-family: 'Times New Roman', serif;
+  font-style: italic;
+  color: #2E8B57;
+  background: rgba(46, 139, 87, 0.1);
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+.latex-block {
+  font-family: 'Times New Roman', serif;
+  font-style: italic;
+  color: #2E8B57;
+  background: rgba(46, 139, 87, 0.1);
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin: 8px 0;
+  text-align: center;
+  border-left: 3px solid #2E8B57;
+}
+
+/* 代码渲染样式 */
+.inline-code {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  background: #f0f2f5;
+  color: #d63384;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.88em;
+  border: 1px solid #e8eaed;
+}
+
+/* 代码块容器 - 包含语言标签和复制按钮 */
+.code-block-wrapper {
+  position: relative;
+  margin: 12px 0;
+  border-radius: 8px;
+  border: 1px solid #e1e4e8;
+  overflow: hidden;
+  background: #f6f8fa;
+}
+
+.code-block-wrapper .code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: #e8eaed;
+  border-bottom: 1px solid #d0d7de;
+  font-size: 12px;
+  color: #57606a;
+}
+
+.code-block-wrapper .code-lang-label {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 11px;
+}
+
+.code-block-wrapper .code-copy-btn,
+.diagram-block .diagram-copy-btn,
+.chart-block .chart-copy-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 11px;
+  color: #57606a;
+  transition: all 0.15s ease;
+  line-height: 1.4;
+}
+
+.code-block-wrapper .code-copy-btn:hover,
+.diagram-block .diagram-copy-btn:hover,
+.chart-block .chart-copy-btn:hover {
+  background: #d0d7de;
+  color: #24292f;
+}
+
+.code-block-wrapper .code-copy-btn.copied,
+.diagram-block .diagram-copy-btn.copied,
+.chart-block .chart-copy-btn.copied {
+  color: #1a7f37;
+  border-color: #1a7f37;
+}
+
+.code-block {
+  background: #f6f8fa;
+  border-radius: 0;
+  margin: 0;
+  overflow-x: auto;
+  border: none;
+}
+
+.code-block code {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  padding: 14px 16px;
+  display: block;
+  white-space: pre;
+  color: #24292f;
+  tab-size: 4;
+}
+
+/* 旧版兼容：独立 code-block 带语言标签时（非 wrapper 包裹） */
+
+.code-block[data-language]::before {
+  content: attr(data-language);
+  display: block;
+  background: #e8eaed;
+  color: #57606a;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-bottom: 1px solid #d0d7de;
+}
+
+/* Markdown渲染样式 */
+.message-content h1,
+.message-content h2,
+.message-content h3,
+.message-content h4,
+.message-content h5,
+.message-content h6 {
+  margin: 16px 0 8px 0;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.message-content h1 {
+  font-size: 1.5em;
+  border-bottom: 1px solid #d0d7de;
+  padding-bottom: 6px;
+  margin-top: 20px;
+}
+
+.message-content h2 {
+  font-size: 1.3em;
+  border-bottom: 1px solid #e1e4e8;
+  padding-bottom: 4px;
+  margin-top: 18px;
+}
+
+.message-content h3 {
+  font-size: 1.1em;
+  margin-top: 16px;
+}
+
+.message-content h4 {
+  font-size: 1em;
+  margin-top: 14px;
+}
+
+/* 第一个标题不需要顶部间距 */
+.message-content > h1:first-child,
+.message-content > h2:first-child,
+.message-content > h3:first-child,
+.message-content > h4:first-child {
+  margin-top: 0;
+}
+
+.message-content ul,
+.message-content ol {
+  margin: 10px 0;
+  padding-left: 1.6em;
+  list-style-position: outside;
+}
+
+.message-content li {
+  margin: 4px 0;
+  padding-left: 0.3em;
+  line-height: 1.6;
+}
+
+.message-content ul ul,
+.message-content ul ol,
+.message-content ol ul,
+.message-content ol ol {
+  margin: 4px 0;
+  padding-left: 1.4em;
+}
+
+.reasoning-content ul,
+.reasoning-content ol {
+  margin: 8px 0;
+  padding-left: 1.5em;
+  list-style-position: outside;
+}
+
+.reasoning-content li {
+  margin: 6px 0;
+  padding-left: 0.2em;
+}
+
+.message-content a {
+  color: #007AFF;
+  text-decoration: none;
+}
+
+.message-content a:hover {
+  text-decoration: underline;
+}
+
+.message-content strong {
+  font-weight: 600;
+}
+
+.message-content em {
+  font-style: italic;
+}
+
+/* Markdown 表格样式 - 外层滚动容器 */
+.message-content .table-scroll-wrapper {
+  display: block;
+  overflow-x: auto;
+  margin: 14px 0;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.message-content table {
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin: 0;
+}
+
+.message-content thead {
+  background: #f1f5f9;
+}
+
+.message-content th,
+.message-content td {
+  border: 1px solid #d1d5db;
+  padding: 8px 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.message-content th {
+  font-weight: 600;
+  color: #1f2937;
+  background: #f1f5f9;
+}
+
+.message-content tbody tr:nth-child(even) {
+  background: #f9fafb;
+}
+
+.message-content tbody tr:hover {
+  background: #f1f5f9;
+}
+
+/* 连续段落间距 - 让连续换行正确显示 */
+.message-content p {
+  margin: 0 0 10px 0;
+  line-height: 1.7;
+}
+
+.message-content p:last-child {
+  margin-bottom: 0;
+}
+
+/* 连续换行产生的空段落 <p><br></p>：br 是 p 的唯一子节点时强制渲染为空行 */
+.message-content p > br:only-child {
+  display: block;
+  height: 1em;
+}
+
+/* 引用块样式 */
+.message-content blockquote {
+  margin: 12px 0;
+  padding: 10px 16px;
+  border-left: 4px solid #667eea;
+  background: #f0f4ff;
+  border-radius: 0 6px 6px 0;
+  color: #4a5568;
+}
+
+.message-content blockquote p {
+  margin-bottom: 4px;
+}
+
+.message-content blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+/* 分割线样式 */
+.message-content hr {
+  border: none;
+  height: 1px;
+  background: linear-gradient(to right, transparent, #d0d7de, transparent);
+  margin: 20px 0;
+}
+
+/* 旧版 Mermaid 容器（仅历史会话渲染后、被 diagram-renderer 升级前的短暂兜底） */
+.mermaid {
+  background: white;
+  border: 1px solid #E1E4E8;
+  border-radius: 8px;
+  padding: 14px;
+  margin: 12px 0;
+  text-align: center;
+  overflow-x: auto;
+}
+
+/* ==================== 图表块（Mermaid / PlantUML） ====================
+   结构契约见 markdown-renderer.buildDiagramBlock：
+   .diagram-block[data-diagram-kind][data-diagram-state]
+     ├─ .diagram-header（.diagram-lang-label + .diagram-copy-btn + .diagram-toggle-btn）
+     ├─ .diagram-body（占位文本 → 异步注入 SVG / <img>）
+     └─ .diagram-source（隐藏源码 pre；.show-source 时显示）
+   状态机：pending → rendering → done | error（error 时错误条与源码同时展示） */
+
+.diagram-block {
+  position: relative;
+  margin: 12px 0;
+  border-radius: 8px;
+  border: 1px solid #e1e4e8;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.diagram-block .diagram-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: #e8eaed;
+  border-bottom: 1px solid #d0d7de;
+  font-size: 12px;
+  color: #57606a;
+}
+
+.diagram-block .diagram-lang-label {
+  margin-right: auto;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 11px;
+}
+
+.diagram-block .diagram-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 11px;
+  color: #57606a;
+  transition: all 0.15s ease;
+  line-height: 1.4;
+}
+
+.diagram-block .diagram-toggle-btn:hover {
+  background: #d0d7de;
+  color: #24292f;
+}
+
+/* 图表主体：占位态给出呼吸感与最小高度，避免渲染完成前后块高度跳变 */
+.diagram-block .diagram-body {
+  padding: 14px;
+  text-align: center;
+  overflow-x: auto;
+  color: #57606a;
+  font-size: 13px;
+}
+
+.diagram-block[data-diagram-state='pending'] .diagram-body,
+.diagram-block[data-diagram-state='rendering'] .diagram-body {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: diagram-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes diagram-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+.diagram-block[data-diagram-state='done'] .diagram-body {
+  color: inherit;
+  font-size: inherit;
+}
+
+.diagram-block .diagram-body svg,
+.diagram-block .diagram-body img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0 auto;
+}
+
+.diagram-block .diagram-error {
+  color: #cf222e;
+  background: #ffebe9;
+  border: 1px solid #ffcecb;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  text-align: center;
+}
+
+/* 错误技术细节：截断展示的可分析线索（如 mermaid 行号级解析错误） */
+.diagram-block .diagram-error-detail {
+  color: #6e7781;
+  font-size: 11px;
+  line-height: 1.5;
+  margin-top: 6px;
+  text-align: center;
+  word-break: break-all;
+  max-height: 4.6em;
+  overflow: hidden;
+}
+
+/* 隐藏源码 pre（图表/源码切换的事实源，也供复制按钮取文本） */
+.diagram-block .diagram-source {
+  display: none;
+  margin: 0;
+  background: #f6f8fa;
+  border-top: 1px solid #e1e4e8;
+  overflow-x: auto;
+}
+
+.diagram-block .diagram-source code {
+  display: block;
+  padding: 14px 16px;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre;
+  color: #24292f;
+  tab-size: 4;
+}
+
+/* 源码视图（用户点击切换 / 渲染失败自动降级）：隐藏图表区、显示源码 */
+.diagram-block.show-source .diagram-body {
+  display: none;
+}
+
+.diagram-block.show-source .diagram-source {
+  display: block;
+}
+
+/* 渲染失败：错误提示必须始终可见（置于 show-source 规则之后以覆盖其隐藏），
+   与自动展开的源码上下排布，错误信息与原始代码互为印证 */
+.diagram-block[data-diagram-state='error'] .diagram-body {
+  display: block;
+  animation: none;
+}
+
+/* 图片防止溢出 */
+.message-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+
+/* 消息部分样式 */
+.message-part {
+  margin: 0;
+  padding: 0;
+}
+
+.message-part + .message-part {
+  margin-top: 2px;
+}
+
+/* 工具调用样式（无边框紧凑行，参考 Codex / Claude Code 桌面端） */
+.tool-calls-container {
+  margin-top: 2px;
+  padding-top: 0;
+  width: 100%;
+  display: block;
+  clear: both;
+}
+
+/* 单个工具行：无卡片、无分割线、无底色，仅保留信息密度 */
+.tool-row {
+  display: block;
+  width: 100%;
+}
+
+.tool-row + .tool-row {
+  margin-top: 0;
+}
+
+.tool-row-main {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 26px;
+  padding: 3px 6px 3px 4px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  font: inherit;
+  text-align: left;
+  color: #6b7280;
+  cursor: default;
+  box-sizing: border-box;
+}
+
+.tool-row-main:not(:disabled) {
+  cursor: pointer;
+}
+
+.tool-row-main:not(:disabled):hover {
+  background: rgba(15, 23, 42, 0.045);
+}
+
+.tool-row-main:focus-visible {
+  outline: 2px solid rgba(102, 126, 234, 0.45);
+  outline-offset: -1px;
+}
+
+/* 左侧状态图标：pending 旋转 / success 对勾 / error 叉 */
+.tool-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: #9ca3af;
+}
+
+.tool-row.success .tool-icon {
+  color: #10b981;
+}
+
+.tool-row.error .tool-icon {
+  color: #ef4444;
+}
+
+.tool-icon svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+/* ==================== 系统信息条（notice 片段） ====================
+   守卫停止说明、截断注记、压缩进度等系统级提示：与工具行同风格的
+   轻量容器（细边框浅底 + 信息图标），区别于正文气泡样式 */
+.system-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 4px 0;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(107, 114, 128, 0.22);
+  background: rgba(107, 114, 128, 0.06);
+  min-width: 0;
+}
+
+.system-notice-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  margin-top: 1px;
+  color: #6b7280;
+}
+
+.system-notice-text {
+  font-size: 12px;
+  line-height: 1.55;
+  color: #6b7280;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.tool-icon .spin {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.tool-name {
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #4b5563;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* 错误行内摘要：弱红单行，溢出省略；完整内容在展开区 */
+.tool-error-inline {
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #dc2626;
+  opacity: 0.85;
+}
+
+.tool-right {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.tool-time {
+  font-size: 11px;
+  color: #9ca3af;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-chevron {
+  color: #b0b7c3;
+  transition: transform 0.18s ease;
+}
+
+.tool-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+/* 推理内容样式 */
+.reasoning-container {
+  margin: 6px 0 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.04);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  transition: all 0.2s ease;
+}
+
+.reasoning-container.collapsed {
+  padding: 8px 12px;
+  background: rgba(15, 23, 42, 0.02);
+}
+
+.reasoning-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: #64748b;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.reasoning-container.collapsed .reasoning-header {
+  margin-bottom: 0;
+}
+
+.reasoning-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: #64748b;
+}
+
+.reasoning-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  flex: 1;
+}
+
+.reasoning-expand-icon {
+  color: #94a3b8;
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+.reasoning-expand-icon.collapsed {
+  transform: rotate(-90deg);
+}
+
+.reasoning-content {
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.65;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.reasoning-content p {
+  margin: 0 0 6px;
+}
+
+.reasoning-content p:last-child {
+  margin-bottom: 0;
+}
+
+.reasoning-content code {
+  background: rgba(148, 163, 184, 0.16);
+  color: #334155;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+}
+
+.reasoning-content pre {
+  background: rgba(15, 23, 42, 0.04);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+  color: #334155;
+}
+
+/* 工具详情展开区：无边框浅底，与工具名左对齐（图标宽 15 + 间距 7 ≈ 22px + 主行左内边距 4） */
+.tool-detail {
+  padding: 1px 6px 6px 26px;
+}
+
+.tool-detail pre {
+  background: rgba(15, 23, 42, 0.035);
+  border: none;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 0;
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: #374151;
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.tool-detail pre.is-error {
+  color: #b91c1c;
+}
+
+/* ==================== API 错误卡片（<api-error>，对话流内嵌） ====================
+   发射侧：utils/stream/errors.ts 的 toApiErrorBlock；渲染侧：markdown-renderer。
+   覆盖超时 / 429 限流 / 401·403 鉴权失效 / 5xx / 网络断链 / 流内错误等全部分类 */
+
+.api-error-card {
+  margin: 10px 0;
+  border-radius: 10px;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.045);
+  overflow: hidden;
+}
+
+.api-error-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 12px;
+  background: rgba(239, 68, 68, 0.07);
+}
+
+.api-error-icon {
+  display: flex;
+  align-items: center;
+  color: #ef4444;
+  flex-shrink: 0;
+}
+
+.api-error-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #b91c1c;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.api-error-badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+
+.api-error-provider {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: #fca5a5;
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, Consolas, monospace;
+}
+
+/* 一键复制结构化错误报告（issue 友好）；与代码块复制按钮同一套委托与反馈样式 */
+.api-error-copy-btn {
+  flex-shrink: 0;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 6px;
+  background: rgba(239, 68, 68, 0.1);
+  color: #b91c1c;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.api-error-copy-btn:hover {
+  background: rgba(239, 68, 68, 0.18);
+}
+
+.api-error-copy-btn.copied {
+  background: rgba(22, 163, 74, 0.14);
+  border-color: rgba(22, 163, 74, 0.4);
+  color: #15803d;
+}
+
+.api-error-summary {
+  padding: 8px 12px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #7f1d1d;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.api-error-raw {
+  margin: 0;
+  padding: 8px 12px 10px;
+  border-top: 1px dashed rgba(239, 68, 68, 0.2);
+  background: rgba(255, 255, 255, 0.55);
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #6b7280;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ==================== 结束态「前奏折叠」容器 ====================
+   回答结束后，末段正文之前的内容（推理 / 工具调用 / 中间文本）收入此容器，
+   默认收起只留一行摘要；展开收起用 grid-template-rows 过渡实现平滑高度动画 */
+.answer-prelude {
+  margin: 2px 0 10px;
+}
+
+.prelude-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 26px;
+  padding: 3px 6px 3px 2px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: #9ca3af;
+  cursor: pointer;
+  user-select: none;
+  box-sizing: border-box;
+}
+
+.prelude-header:hover {
+  color: #6b7280;
+  background: rgba(15, 23, 42, 0.035);
+}
+
+.prelude-header:focus-visible {
+  outline: 2px solid rgba(102, 126, 234, 0.45);
+  outline-offset: -1px;
+}
+
+/* 星形微光图标：呼应推理主题，比工具行图标略亮 */
+.prelude-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: #a78bfa;
+}
+
+.prelude-summary {
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* flex 子项默认 min-width:auto 不会收缩：长摘要会把右侧耗时/箭头挤出收起条，
+     归零后 ellipsis 才真正生效（与 .message 同一手法） */
+  min-width: 0;
+}
+
+/* 右侧组合：耗时 + 展开箭头。margin-left:auto 只落在这里（见模板内注释） */
+.prelude-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* 本轮执行时长：贴收起条右侧（箭头之前），与左侧摘要形成「过程 · 耗时」一行 */
+.prelude-duration {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: #9ca3af;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.prelude-chevron {
+  flex-shrink: 0;
+  color: #b0b7c3;
+  transform: rotate(90deg);
+  transition: transform 0.2s ease;
+}
+
+.prelude-chevron.collapsed {
+  transform: rotate(0deg);
+}
+
+/* 折叠动画：0fr ↔ 1fr 的高度过渡（Chrome 107+ 支持 grid-template-rows 过渡） */
+.prelude-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.answer-prelude.collapsed .prelude-body {
+  grid-template-rows: 0fr;
+}
+
+.prelude-inner {
+  min-height: 0;
+  overflow: hidden;
+  /* 展开时的内容弱化 + 左侧细引导线，衬托末段正文主体 */
+  border-left: 2px solid rgba(148, 163, 184, 0.25);
+  margin: 2px 0 2px 5px;
+  padding-left: 10px;
+}
+
+.answer-prelude.collapsed .prelude-inner {
+  border-left-color: transparent;
+}
+
+/* 前奏内的中间文本弱化展示（正文主体保持默认样式） */
+.answer-prelude .message-content {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.prelude-legacy-reasoning {
+  margin: 2px 0 6px;
+}
+
+/* ==================== 模型消息操作栏（复制 / 赞 / 踩） ====================
+   挂在消息内容底部；无前奏收起条时右侧兼作耗时展示位（.message-duration）。
+   图标统一 15px 填充风格，与前奏星形图标同一视觉语言 */
+.message-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  margin-top: 6px;
+  padding-left: 1px;
+  box-sizing: border-box;
+}
+
+.message-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: #9ca3af;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.message-action-btn:hover {
+  background: rgba(15, 23, 42, 0.06);
+  color: #6b7280;
+}
+
+.message-action-btn:focus-visible {
+  outline: 2px solid rgba(102, 126, 234, 0.45);
+  outline-offset: -1px;
+}
+
+/* 复制成功：绿色对勾（与代码块复制按钮同一反馈语言，2 秒后复原） */
+.message-action-btn.copied {
+  color: #16a34a;
+}
+
+/* 赞：绿色常亮；踩：红色常亮——已选态用颜色而非背景块区分，保持行内轻量 */
+.message-action-btn.is-up {
+  color: #16a34a;
+}
+
+.message-action-btn.is-up:hover {
+  color: #15803d;
+  background: rgba(22, 163, 74, 0.1);
+}
+
+.message-action-btn.is-down {
+  color: #dc2626;
+}
+
+.message-action-btn.is-down:hover {
+  color: #b91c1c;
+  background: rgba(220, 38, 38, 0.1);
+}
+
+/* 无可复制正文（空消息等）：禁用而非留死按钮——点击无响应的控件是交互歧义 */
+.message-action-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.message-action-btn:disabled:hover {
+  background: transparent;
+  color: #9ca3af;
+}
+
+/* 操作栏右侧的兜底耗时（有前奏收起条时不出现，避免同条消息上下重复） */
+.message-duration {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: #9ca3af;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  padding-right: 2px;
+}
+
+/* 思考中状态样式 */
+.thinking-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+  border-radius: 8px;
+  margin: 8px 0;
+  border: 1px solid #e2e8f0;
+}
+
+.thinking-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #667eea;
+}
+
+.thinking-spinner {
+  animation: spin 1s linear infinite;
+}
+
+.thinking-text {
+  color: #6b7280;
+  font-size: 14px;
+  font-style: italic;
+  font-weight: 500;
+}
+
+/* AI回答时的加载动画
+   宽度与助手消息容器（.message.assistant 的 92%）对齐：指示条与消息流
+   左右边缘齐平，视觉上属于同一条对话列，而非横贯整个面板的独立横条 */
+.ai-responding-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 92%;
+  padding: 8px 12px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 8px;
+  margin-top: 8px;
+  margin-bottom: 8px;
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+.typing-dots {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  background: #3b82f6;
+  border-radius: 50%;
+  animation: typingDot 1.4s infinite ease-in-out;
+}
+
+.dot:nth-child(1) {
+  animation-delay: 0s;
+}
+
+.dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+.responding-text {
+  font-size: 12px;
+  color: #3b82f6;
+  font-weight: 500;
+}
+
+@keyframes typingDot {
+  0%, 60%, 100% {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  30% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ==================== 文件卡片（[file:ID|文件名] 标记渲染产物） ====================
+   AI 回复中的文件标记被替换为内联可点击卡片；点击经 document 级委托触发下载。
+   状态类：is-downloading（进行中）/ is-done（已触发下载，短暂显示）/ is-missing（文件不可用） */
+.message-content .file-card,
+.message-part .file-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(340px, 100%);
+  margin: 4px 2px;
+  padding: 8px 14px 8px 10px;
+  background: #f6f9f6;
+  border: 1px solid #d5e6d7;
+  border-radius: 10px;
+  cursor: pointer;
+  user-select: none;
+  vertical-align: middle;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.message-content .file-card:hover,
+.message-part .file-card:hover {
+  background: #eef5ef;
+  border-color: #a5cfa9;
+  box-shadow: 0 1px 4px rgba(46, 125, 50, 0.12);
+}
+
+.message-content .file-card:focus-visible,
+.message-part .file-card:focus-visible {
+  outline: 2px solid rgba(102, 126, 234, 0.45);
+  outline-offset: 1px;
+}
+
+.file-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+}
+
+.file-card-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.file-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f3d24;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-card-hint {
+  font-size: 11px;
+  color: #6b8a70;
+  line-height: 1.4;
+}
+
+.file-card.is-downloading {
+  opacity: 0.75;
+  cursor: wait;
+}
+
+.file-card.is-done {
+  border-color: #66bb6a;
+}
+
+.file-card.is-done .file-card-hint {
+  color: #2e7d32;
+}
+
+.file-card.is-missing {
+  border-color: #f0c4c0;
+  background: #fdf4f3;
+  cursor: not-allowed;
+}
+
+.file-card.is-missing .file-card-hint {
+  color: #b3564e;
+}
+
+/* ==================== 数据图表块（ECharts，沙箱 iframe 渲染） ====================
+   结构契约见 markdown-renderer.buildChartBlock / chart-renderer.ts：
+   .chart-block[data-chart-kind][data-chart-state]
+     ├─ .chart-header（.chart-lang-label + .chart-copy-btn + .chart-toggle-btn）
+     ├─ .chart-body（占位文本 → 沙箱 iframe 注入）
+     └─ .chart-source（隐藏源码 pre；.show-source 时显示）
+   状态机：pending → queued → rendering → done | error（error 时错误条与源码同时展示）。
+   样式与 .diagram-block 同构但类名独立（避免 diagram-renderer 误拾取）。 */
+
+.chart-block {
+  position: relative;
+  margin: 12px 0;
+  border-radius: 8px;
+  border: 1px solid #e1e4e8;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.chart-block .chart-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: #e8eaed;
+  border-bottom: 1px solid #d0d7de;
+  font-size: 12px;
+  color: #57606a;
+}
+
+.chart-block .chart-lang-label {
+  margin-right: auto;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 11px;
+}
+
+.chart-block .chart-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 11px;
+  color: #57606a;
+  transition: all 0.15s ease;
+  line-height: 1.4;
+}
+
+.chart-block .chart-toggle-btn:hover {
+  background: #d0d7de;
+  color: #24292f;
+}
+
+/* 图表主体：占位/渲染中给呼吸感；done 态由沙箱 iframe 填充 */
+.chart-block .chart-body {
+  padding: 0;
+  overflow: hidden;
+  color: #57606a;
+  font-size: 13px;
+}
+
+.chart-block[data-chart-state='pending'] .chart-body,
+.chart-block[data-chart-state='queued'] .chart-body,
+.chart-block[data-chart-state='rendering'] .chart-body {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: chart-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes chart-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+.chart-block[data-chart-state='done'] .chart-body {
+  color: inherit;
+  font-size: inherit;
+  animation: none;
+}
+
+.chart-block .chart-body iframe {
+  width: 100%;
+  height: 340px;
+  border: 0;
+  display: block;
+  background: transparent;
+}
+
+.chart-block .chart-error {
+  color: #cf222e;
+  background: #ffebe9;
+  border: 1px solid #ffcecb;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  text-align: center;
+  margin: 14px;
+}
+
+/* 错误技术细节：截断展示的可分析线索（净化失败原因 / 沙箱错误信息） */
+.chart-block .chart-error-detail {
+  color: #6e7781;
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0 14px 14px;
+  text-align: center;
+  word-break: break-all;
+  max-height: 4.6em;
+  overflow: hidden;
+}
+
+/* 隐藏源码 pre（图表/源码切换的事实源，也供复制按钮取文本） */
+.chart-block .chart-source {
+  display: none;
+  margin: 0;
+  background: #f6f8fa;
+  border-top: 1px solid #e1e4e8;
+  overflow-x: auto;
+}
+
+.chart-block .chart-source code {
+  display: block;
+  padding: 14px 16px;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre;
+  color: #24292f;
+  tab-size: 4;
+}
+
+/* 源码视图（用户点击切换 / 渲染失败自动降级）：隐藏图表区、显示源码 */
+.chart-block.show-source .chart-body {
+  display: none;
+}
+
+.chart-block.show-source .chart-source {
+  display: block;
+}
+
+/* 渲染失败：错误提示必须始终可见（置于 show-source 规则之后以覆盖其隐藏），
+   与自动展开的源码上下排布，错误信息与原始代码互为印证 */
+.chart-block[data-chart-state='error'] .chart-body {
+  display: block;
+  animation: none;
+}
+
+/* ==================== 统计卡片（KPI 卡片组） ====================
+   结构契约见 stat-card.ts（zod 校验 + 全量转义的可信 HTML）：
+   .stat-card-block
+     ├─ .stat-card-block-title（可选）
+     └─ .stat-cards > .stat-card（label / value+unit / trend / note） */
+
+.stat-card-block {
+  margin: 12px 0;
+}
+
+.stat-card-block-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #57606a;
+  letter-spacing: 0.02em;
+  margin-bottom: 6px;
+}
+
+.stat-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.stat-card {
+  border: 1px solid #e1e4e8;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #ffffff;
+  min-width: 0;
+}
+
+.stat-card-label {
+  font-size: 11px;
+  color: #6e7781;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stat-card-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: #24292f;
+  line-height: 1.35;
+  margin-top: 2px;
+  word-break: break-all;
+}
+
+.stat-card-unit {
+  font-size: 12px;
+  font-weight: 600;
+  color: #57606a;
+  margin-left: 3px;
+}
+
+.stat-card-trend {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* trend 箭头 svg 随方向旋转（SVG 绘制为向上三角） */
+.stat-card-trend.down svg {
+  transform: rotate(180deg);
+}
+
+.stat-card-trend.up {
+  color: #1a7f37;
+}
+
+.stat-card-trend.down {
+  color: #cf222e;
+}
+
+.stat-card-note {
+  font-size: 11px;
+  color: #6e7781;
+  line-height: 1.45;
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ==================== 关联笔记卡片（消息底部） ====================
+   本条消息执行中创建/追加/更新过的笔记：按 noteId 聚合为可点击卡片，
+   点击经 hash 深链打开内置笔记页；悬停时 grid-rows 过渡平滑展开
+   操作摘要与「打开笔记」入口 */
+.note-cards {
+  margin-top: 8px;
+  min-width: 0;
+}
+
+.note-cards-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #059669;
+  margin-bottom: 5px;
+}
+
+.note-cards-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.note-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(5, 150, 105, 0.28);
+  background: rgba(5, 150, 105, 0.05);
+  border-radius: 10px;
+  padding: 8px 12px 6px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.12s ease;
+}
+
+.note-card:hover {
+  border-color: rgba(5, 150, 105, 0.55);
+  background: rgba(5, 150, 105, 0.09);
+}
+
+.note-card:active {
+  transform: scale(0.995);
+}
+
+.note-card-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.note-card-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #065f46;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-card-action {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  line-height: 1.5;
+}
+
+.note-card-action.is-create {
+  color: #047857;
+  background: rgba(4, 120, 87, 0.12);
+}
+
+.note-card-action.is-append {
+  color: #1d4ed8;
+  background: rgba(29, 78, 216, 0.1);
+}
+
+.note-card-action.is-update {
+  color: #b45309;
+  background: rgba(180, 83, 9, 0.12);
+}
+
+/* 悬停展开区：grid-template-rows 0fr → 1fr 的高度过渡（丝滑展开/收起） */
+.note-card-expand {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.28s cubic-bezier(0.25, 0.8, 0.35, 1);
+}
+
+.note-card:hover .note-card-expand,
+.note-card:focus-visible .note-card-expand {
+  grid-template-rows: 1fr;
+}
+
+.note-card-expand-inner {
+  overflow: hidden;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 0.24s ease 0.04s, transform 0.24s ease 0.04s;
+}
+
+.note-card:hover .note-card-expand-inner,
+.note-card:focus-visible .note-card-expand-inner {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.note-card-ops {
+  font-size: 11px;
+  color: #6b7280;
+  padding-top: 4px;
+}
+
+.note-card-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-top: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #059669;
+  white-space: nowrap;
+}

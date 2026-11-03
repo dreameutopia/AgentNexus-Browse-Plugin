@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Screen Share Offscreen</title>
+</head>
+<body>
+  <!--
+    此页面作为 Offscreen Document 运行，职责：
+      1. 调用 getDisplayMedia() 捕获屏幕
+      2. 管理每个 LAN viewer 对应的 RTCPeerConnection
+      3. 通过 chrome.runtime.sendMessage 将信令转发给 background service worker
+
+    注意：此页面不可见，无 UI，仅用于突破 Service Worker 无法调用
+         getDisplayMedia() 的限制（Chrome Offscreen DISPLAY_MEDIA reason）。
+
+    配合 Chromium 启动参数
+      --auto-select-desktop-capture-source="Entire screen"
+      --use-fake-ui-for-media-stream
+    可在无头/自动化环境下跳过系统弹窗，实现完全自动化。
+  -->
+  <script src="./main.js" type="module"></script>
+</body>
+</html>

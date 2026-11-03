@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AgentNexus WebRTC Viewer</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>AgentNexus Viewer</h1>
+
+    <section class="panel">
+      <label>
+        WebSocket 地址
+        <input id="wsUrl" type="text" value="ws://127.0.0.1:52725/api/automation?role=viewer" />
+      </label>
+
+      <label>
+        Room ID
+        <input id="roomId" type="text" placeholder="例如 room-1730000000000" />
+      </label>
+
+      <div class="actions">
+        <button id="connectBtn">连接并观看</button>
+        <button id="disconnectBtn" disabled>断开</button>
+      </div>
+
+      <p id="status" class="status">未连接</p>
+    </section>
+
+    <section class="video-wrap">
+      <video id="video" autoplay playsinline controls></video>
+    </section>
+  </main>
+
+  <script src="./main.js" type="module"></script>
+</body>
+</html>

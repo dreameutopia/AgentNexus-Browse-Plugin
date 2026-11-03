@@ -1,0 +1,899 @@
+/**
+ * 管理中心（Hub）样式
+ * 壳（头部/侧导航/内容容器）复用设置弹窗的 settings-modal.css（api-config-* 类）；
+ * 本文件只保留页面容器覆写与各管理器（智能体/技能）自身的卡片、编辑器样式。
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  background: #f4f6fb;
+  color: #1f2937;
+  font-size: 14px;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+.hub {
+  /* 固定视口高（子元素 height:100% 需要确定高度的父级，min-height 会让百分比失效） */
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 四周留隙压至约 1%：中心卡片占满视口总宽高的 95% 以上 */
+  padding: 8px 10px;
+}
+
+/* ──── 壳卡片覆写 ──── */
+
+/* 复用 .api-config-modal 卡片样式；覆写为页面级尺寸（双类特异性，不受加载顺序影响）。
+ * 基类为 width:95% / height:85vh，此处进一步拉满为 100% 页面级尺寸。 */
+.api-config-modal.hub-shell {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+}
+
+/* ──── 列表 ──── */
+
+.hub-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.hub-list-count {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.hub-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.hub-card {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+
+.hub-card:hover {
+  box-shadow: 0 4px 16px rgba(102, 126, 234, 0.1);
+}
+
+.hub-card.is-disabled {
+  opacity: 0.6;
+}
+
+.hub-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hub-card-name {
+  font-weight: 600;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hub-card-desc {
+  margin: 0;
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 36px;
+}
+
+.hub-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+
+.hub-card-tools {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.hub-card-readonly {
+  font-size: 11px;
+  color: #9ca3af;
+  margin-left: auto;
+}
+
+.hub-card-ops {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.hub-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  border-radius: 6px;
+  padding: 1px 6px;
+  border: 1px solid transparent;
+}
+
+.hub-badge-preset {
+  color: #667eea;
+  background: rgba(102, 126, 234, 0.1);
+  border-color: #667eea;
+}
+
+.hub-badge-custom {
+  color: #0d9488;
+  background: rgba(16, 185, 129, 0.1);
+  border-color: #10b981;
+}
+
+.hub-badge-vision {
+  color: #d97706;
+  background: rgba(245, 158, 11, 0.12);
+  border-color: #f59e0b;
+}
+
+/* 分类与标签徽章 */
+.hub-card-taxonomy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.hub-badge-category {
+  color: #0369a1;
+  background: rgba(14, 165, 233, 0.1);
+  border-color: #0ea5e9;
+}
+
+.hub-badge-tag {
+  color: #6b7280;
+  background: #f3f4f6;
+  border-color: #e5e7eb;
+}
+
+/* 列表筛选（关键词 + 分类） */
+.hub-list-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hub-list-search {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-size: 13px;
+  outline: none;
+  width: 220px;
+  transition: border-color 0.15s;
+}
+
+.hub-list-category {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  outline: none;
+  background: #ffffff;
+  max-width: 180px;
+}
+
+.hub-list-search:focus,
+.hub-list-category:focus {
+  border-color: #667eea;
+}
+
+.hub-list-error {
+  margin: 0 0 10px;
+}
+
+.hub-empty {
+  color: #9ca3af;
+  font-size: 13px;
+  padding: 28px 0;
+  text-align: center;
+}
+
+/* 标签编辑区 */
+.hub-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hub-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #374151;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 2px 4px 2px 8px;
+}
+
+.hub-tag-remove {
+  border: none;
+  background: none;
+  color: #9ca3af;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
+.hub-tag-remove:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.hub-op {
+  border: none;
+  background: none;
+  color: #667eea;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.hub-op:hover {
+  background: rgba(102, 126, 234, 0.1);
+}
+
+.hub-op-danger {
+  color: #ef4444;
+}
+
+.hub-op-danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* ──── 编辑器 ──── */
+
+.hub-editor {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.hub-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.hub-editor-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+/* ──── 编辑器左右布局：左列基础信息，右列工具组与视觉声明 ──── */
+
+.hub-editor-split {
+  display: grid;
+  grid-template-columns: minmax(0, 11fr) minmax(0, 9fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.hub-editor-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* 窄窗口（或浏览器侧栏拖窄）时回退为单列堆叠 */
+@media (max-width: 860px) {
+  .hub-editor-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 工具组列表滚动容器（右列空间有限，超限滚动而非撑高编辑器） */
+.hub-groups-scroll {
+  max-height: 300px;
+  overflow-y: auto;
+  margin-top: 8px;
+  padding-right: 4px;
+}
+
+.hub-groups-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hub-groups-count {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.hub-field {
+  border: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hub-field-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+}
+
+/* ──── 必填标注与保存前校验高亮 ──── */
+
+/* 必填项星号：紧随字段名，轻量不抢焦点 */
+.hub-required {
+  margin-left: 4px;
+  color: #ef4444;
+  font-weight: 700;
+}
+
+/* 保存尝试后仍未填的必填项：红框 + 浅红底提示，填写后随校验自动消除 */
+.hub-field.is-invalid input,
+.hub-field.is-invalid textarea {
+  border-color: #ef4444;
+  background: #fef2f2;
+}
+
+.hub-field.is-invalid input:focus,
+.hub-field.is-invalid textarea:focus {
+  border-color: #dc2626;
+}
+
+/* 工具组必选校验：滚动区整体以虚线红框高亮（内部是复选框组，不适配单输入框样式） */
+.hub-groups-scroll.is-invalid {
+  border: 1px dashed #ef4444;
+  border-radius: 10px;
+  background: #fef2f2;
+}
+
+.hub-field input[type='text'],
+.hub-field input[type='number'],
+.hub-field select,
+.hub-field textarea {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+  width: 100%;
+}
+
+.hub-field input:focus,
+.hub-field select:focus,
+.hub-field textarea:focus {
+  border-color: #667eea;
+}
+
+.hub-field textarea {
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.hub-body-editor {
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+}
+
+.hub-hint {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.hub-error {
+  color: #ef4444;
+  font-size: 12px;
+}
+
+/* 网站学习成果待导入提示（编辑中收到交付信号时挂起，编辑结束自动接手） */
+.hub-draft-pending {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  font-size: 12px;
+  line-height: 1.6;
+  color: #92400e;
+}
+
+/* 工具组 */
+
+.hub-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.hub-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.hub-group:hover {
+  border-color: #c7d2fe;
+}
+
+.hub-group.checked {
+  border-color: #667eea;
+  background: rgba(102, 126, 234, 0.05);
+}
+
+/* Python 计算组锁定态：环境未就绪，仅展示与引导 */
+.hub-group.locked {
+  cursor: not-allowed;
+  opacity: 0.75;
+  background: repeating-linear-gradient(-45deg, #fafafa, #fafafa 6px, #f3f4f6 6px, #f3f4f6 12px);
+}
+
+.hub-group.locked:hover {
+  border-color: #e5e7eb;
+}
+
+.hub-group-lock {
+  display: block;
+  width: 100%;
+  margin-top: 2px;
+  font-size: 11px;
+  color: #b45309;
+}
+
+.hub-group input {
+  margin-top: 2px;
+  accent-color: #667eea;
+}
+
+.hub-group-name {
+  font-size: 13px;
+  font-weight: 600;
+  display: block;
+}
+
+.hub-group-desc {
+  font-size: 11px;
+  color: #9ca3af;
+  display: block;
+  margin-top: 2px;
+}
+
+/* 行内字段与开关 */
+
+.hub-inline-fields {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.hub-inline-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.hub-inline-field input,
+.hub-inline-field select {
+  width: 130px;
+}
+
+.hub-vision-tool select {
+  width: 220px;
+}
+
+.hub-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.hub-switch-row input {
+  accent-color: #667eea;
+}
+
+.hub-switch-inline {
+  margin: 0;
+}
+
+/* ──── 按钮 ──── */
+
+.hub-btn {
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  color: #374151;
+  border-radius: 8px;
+  padding: 7px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.hub-btn:hover {
+  border-color: #667eea;
+  color: #667eea;
+}
+
+.hub-btn-primary {
+  background: #667eea;
+  border-color: #667eea;
+  color: #ffffff;
+}
+
+.hub-btn-primary:hover {
+  background: #5a6fd8;
+  color: #ffffff;
+}
+
+.hub-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.hub-editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid #f3f4f6;
+  padding-top: 14px;
+}
+
+.hub-editor-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* ==================== 技能管理：双模式编辑器 / 导入导出 / 模型标识 ==================== */
+
+/* 列表工具栏右侧动作组（导入 + 新建） */
+.hub-list-actions {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* 隐藏的导入文件选择器（仅作为触发载体，不占据布局） */
+.hub-file-hidden {
+  display: none;
+}
+
+/* 导入结果反馈块（成功=中性蓝灰，失败=红色调；15 秒后由脚本清除） */
+.hub-import-feedback {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.hub-import-feedback.error {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.hub-import-feedback p {
+  margin: 0;
+}
+
+/* 模型标识 chip（name-id，点击复制） */
+.hub-model-id {
+  display: inline-block;
+  margin: 4px 0 2px;
+  padding: 2px 8px;
+  border: 1px dashed #d1d5db;
+  border-radius: 999px;
+  background: #f9fafb;
+  color: #6b7280;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  cursor: copy;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.hub-model-id:hover {
+  border-color: #667eea;
+  color: #667eea;
+}
+
+/* 编辑模式切换（分段控件形态） */
+.hub-mode-switch {
+  display: inline-flex;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.hub-mode-btn {
+  padding: 6px 16px;
+  font-size: 12.5px;
+  font-weight: 600;
+  border: none;
+  background: #ffffff;
+  color: #6b7280;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.hub-mode-btn + .hub-mode-btn {
+  border-left: 1px solid #e5e7eb;
+}
+
+.hub-mode-btn.active {
+  background: #667eea;
+  color: #ffffff;
+}
+
+/* 高级模式原文编辑器（更高行距 + 等宽，区别于简单模式正文） */
+.hub-raw-editor {
+  line-height: 1.65;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* 高级模式实时校验问题列表 */
+.hub-raw-issues {
+  margin: 6px 0 0;
+  padding: 8px 12px 8px 26px;
+  border-radius: 8px;
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+/* 关联技能列表中的停用技能（可勾选但视觉弱化 + 说明性底色） */
+.hub-group.is-disabled-skill {
+  background: #fafafa;
+  border-style: dashed;
+}
+
+.hub-group.is-disabled-skill .hub-group-name {
+  color: #9ca3af;
+}
+
+/* ==================== 自定义分类选择器（智能体 / 技能编辑器共用） ==================== */
+
+.cat-select {
+  position: relative;
+  width: 100%;
+}
+
+/* 选择器与「新建分类」名称输入框同一行：名称框占据更多空间 */
+.cat-select-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cat-select-trigger {
+  flex: 1 1 auto;
+  min-width: 140px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #374151;
+  background: #ffffff;
+  outline: none;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.cat-select-trigger:hover {
+  border-color: #c7d2fe;
+}
+
+.cat-select.is-open .cat-select-trigger,
+.cat-select-trigger:focus-visible {
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.14);
+}
+
+/* 新分类名称输入框：视觉与 .hub-field 内输入框一致，仅负责行内伸缩 */
+.cat-select-custom {
+  flex: 2 1 200px;
+  min-width: 0;
+  width: auto;
+}
+
+.cat-select-value {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cat-select-value.is-placeholder {
+  color: #9ca3af;
+}
+
+.cat-select-chevron {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: #9ca3af;
+  transition: transform 0.15s;
+}
+
+.cat-select.is-open .cat-select-chevron {
+  transform: rotate(180deg);
+}
+
+/* 分类圆点：内置分类各配一色（脚本内联着色），自定义青色，未分类灰色 */
+.cat-select-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #d1d5db;
+}
+
+/* 下拉面板 */
+.cat-select-pop {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
+  padding: 6px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.cat-select-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #9ca3af;
+  padding: 6px 10px 2px;
+}
+
+.cat-select-divider {
+  height: 1px;
+  background: #f3f4f6;
+  margin: 4px 6px;
+}
+
+.cat-select-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #374151;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+}
+
+.cat-select-option:hover {
+  background: #f3f6ff;
+}
+
+.cat-select-option.is-selected {
+  background: rgba(102, 126, 234, 0.1);
+  color: #4f46e5;
+  font-weight: 600;
+}
+
+.cat-select-option-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cat-select-check {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: #667eea;
+}
+
+.cat-select-plus {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: #667eea;
+}
+
+/* 「新建自定义分类」项：以主色与加号图标与既有分类区分 */
+.cat-select-create {
+  color: #667eea;
+}
+
+.cat-select-create:hover {
+  background: rgba(102, 126, 234, 0.08);
+}
+
+/* 校验失败：触发器与名称输入框同步红框（与 .hub-field.is-invalid 同视觉） */
+.cat-select.is-invalid .cat-select-trigger,
+.cat-select.is-invalid .cat-select-custom {
+  border-color: #ef4444;
+  background: #fef2f2;
+}
+
+/* ==================== 标签输入（chips + 草稿框，智能体 / 技能共用） ==================== */
+
+.tag-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}

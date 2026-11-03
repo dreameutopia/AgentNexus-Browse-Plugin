@@ -1,0 +1,300 @@
+/**
+ * 设置弹窗壳样式（SettingsModal：overlay / 头部 / 侧边导航 / 底部按钮 / 弹窗级动画）
+ *
+ * 类名沿用原 api-config-* 体系（拆分自 api-config-modal.css，规则值未改动），
+ * 保证重构前后视觉完全一致；分区表单控件样式见 settings-forms.css。
+ */
+
+/* ==================== 弹窗容器 ==================== */
+
+.api-config-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  animation: apiConfigFadeIn 0.3s ease;
+}
+
+.api-config-modal {
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  animation: apiConfigSlideIn 0.3s ease;
+  /* 宽度 = 侧边栏窗口的 95%，不设上限（拉宽侧边栏时弹窗随之占满可用宽度） */
+  width: 95%;
+  /* 高度固定为窗口总高度的 85%：头部与底部按钮常驻，
+     中部 .api-config-body（overflow-y: auto）内容超出时自动出现滚动条 */
+  height: 85vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- 左右布局：左侧导航 + 右侧内容 ---- */
+
+.api-config-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+.api-config-nav {
+  width: 104px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 8px;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  border-right: 1px solid #e5e7eb;
+  overflow-y: auto;
+}
+
+.api-nav-item {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 8px;
+  padding: 8px 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: #6b7280;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.api-nav-item:hover {
+  background: rgba(255, 255, 255, 0.85);
+  color: #374151;
+}
+
+.api-nav-item.active {
+  background: white;
+  border-color: #e0e7ff;
+  color: #4f46e5;
+  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.12);
+}
+
+.api-nav-label {
+  text-align: center;
+}
+
+/* 外部链接入口（管理中心独立页）：与分区导航同风格，带外链角标与分隔 */
+.api-nav-external {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px dashed #e5e7eb;
+  gap: 4px;
+  color: #667eea;
+}
+
+.api-nav-external:hover {
+  color: #4f46e5;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+/* ---- 头部（单行：关闭 + 标题 + 语言切换） ---- */
+
+.api-config-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #f3f4f6;
+  position: relative;
+}
+
+/* 头部左侧关闭按钮 */
+.api-config-close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  border-radius: 8px;
+  padding: 6px;
+  margin-left: 2px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.18s ease;
+}
+
+.api-config-close:hover {
+  background: #f3f4f6;
+  color: #374151;
+}
+
+/* 头部右侧语言切换 */
+.api-config-locale {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  flex-shrink: 0;
+  margin-right: 2px;
+  z-index: 1;
+}
+
+.api-config-locale-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  margin: 0;
+  padding: 3px 9px;
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 500;
+  color: #6b7280;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease;
+  white-space: nowrap;
+}
+
+.api-config-locale-btn:hover {
+  color: #374151;
+}
+
+.api-config-locale-btn:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 1px;
+}
+
+.api-config-locale-btn.active {
+  background: #ffffff;
+  color: #111827;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.api-config-title {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: 16px;
+  font-weight: 600;
+  color: #111827;
+  margin: 0;
+}
+
+/* ---- 分区容器 ---- */
+
+.api-section {
+  animation: apiSectionFadeIn 0.22s ease;
+}
+
+@keyframes apiSectionFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ---- 底部按钮 ---- */
+
+.api-config-footer {
+  display: flex;
+  gap: 10px;
+  padding: 12px 18px 16px;
+  border-top: 1px solid #f3f4f6;
+}
+
+.api-config-footer .api-config-btn {
+  flex: 1;
+}
+
+/* 按钮基础样式（独立定义，不依赖全局） */
+.api-config-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  outline: none;
+}
+
+.api-config-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.api-config-btn-secondary {
+  background: #f3f4f6;
+  color: #374151;
+  border: 1.5px solid #e5e7eb;
+}
+
+.api-config-btn-secondary:hover {
+  background: #e5e7eb;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.08);
+}
+
+.api-config-btn-secondary:active {
+  transform: translateY(0);
+}
+
+.api-config-btn-primary {
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  color: white;
+  border: none;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.35);
+}
+
+.api-config-btn-primary:hover {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(59, 130, 246, 0.45);
+}
+
+.api-config-btn-primary:active {
+  transform: translateY(0);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.35);
+}
+
+/* 旋转动画 */
+.api-config-spin-icon {
+  animation: apiConfigSpin 1s linear infinite;
+}
+
+/* ---- 弹窗级动画 ---- */
+
+@keyframes apiConfigFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes apiConfigSlideIn {
+  from { opacity: 0; transform: scale(0.9) translateY(-20px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes apiConfigSpin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}

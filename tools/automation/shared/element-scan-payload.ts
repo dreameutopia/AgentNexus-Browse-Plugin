@@ -1,0 +1,958 @@
+/**
+ * 可交互元素扫描荷载（interactive_button_getter / interactive_input_getter 共用）
+ *
+ * ⚠️ 注入约束：`chrome.scripting.executeScript({ func })` 会把函数源码序列化后
+ * 注入页面执行，闭包与模块作用域不会随之带入。因此 `elementScanPayload` 必须
+ * **完全自包含**：函数体内只能引用自身参数、自身声明的嵌套声明与页面全局对象，
+ * 绝不能引用任何模块级常量/辅助函数（注入后将抛 ReferenceError）。
+ * 同理，调用方只能直接传本函数引用 + 显式 args，不能用 .bind / 箭头包装代理
+ * （包装函数序列化后会引用外部函数名）。
+ *
+ * 两个工具共享本荷载，通过 `mode` 参数分流：
+ * - 'buttons'：按钮/链接/勾选框等可点击元素（含下载特征识别）；
+ * - 'inputs'：文本框/textarea/下拉框/富文本区等可输入元素（含光标探测补充）。
+ *
+ * 共享部分（选择器生成、可见性与遮挡判定、xpath 祖先链命中、过滤标记、排序）
+ * 只存在一份；模式差异（采集范围、描述提取链、类型映射、评分权重、截断规则）
+ * 严格保留各自原语义，任何一侧的行为都不因合并而改变。
+ */
+
+/** 扫描模式：按钮/链接 或 输入元素 */
+export type ScanMode = 'buttons' | 'inputs';
+
+/** 注入脚本返回的元素记录（frameId 由宿主侧补写） */
+export interface PayloadElement {
+  type: string;
+  description: string;
+  selector: string;
+  score: number;
+  /** 是否命中 regex 过滤（未启用 regex 时为 null） */
+  matchedRegex: boolean | null;
+  /** 是否命中 xpath 过滤（未启用 xpath 时为 null） */
+  matchedXpath: boolean | null;
+  /** 是否命中全部已启用的过滤条件（命中者在结果中置顶并标记 ✓） */
+  isHit: boolean;
+  /** 仅 buttons 模式：标记是否为下载/导出按钮 */
+  isDownload?: boolean;
+}
+
+/** 注入脚本返回结果 */
+export interface PayloadResult {
+  elements: PayloadElement[];
+  /** 本 frame 的页面指纹（采集于分析之前，与元素同一时刻快照，供缓存校验比对） */
+  fingerprint?: string;
+  error?: string;
+}
+
+/**
+ * 荷载函数入口（被注入到每个 frame 中独立执行）
+ * 先按模式收集可交互元素，再按 regex（描述文本正则）与 xpath（元素/祖先命中）
+ * 做过滤标记，命中全部已启用条件的元素排在最前。
+ */
+export function elementScanPayload(
+  mode: ScanMode,
+  regexSource: string,
+  xpathExpr: string,
+): PayloadResult {
+  // —— 页面指纹：与元素分析同一时刻采集（分析前），保证缓存校验与元素快照一致 ——
+  const frameFingerprint = `${document.readyState}|${document.getElementsByTagName('*').length}|${document.body ? document.body.scrollHeight : 0}`;
+
+  // —— 过滤条件编译（非法条件立即返回错误，避免整页误判）——
+  let regex: RegExp | null = null;
+  if (regexSource) {
+    try {
+      regex = new RegExp(regexSource, 'i');
+    } catch (e) {
+      return { elements: [], fingerprint: frameFingerprint, error: `regex 参数不是合法的 JavaScript 正则表达式：${(e as Error).message}` };
+    }
+  }
+
+  let xpathNodes: Set<Element> | null = null;
+  if (xpathExpr) {
+    try {
+      const snapshot = document.evaluate(xpathExpr, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+      xpathNodes = new Set<Element>();
+      for (let i = 0; i < snapshot.snapshotLength; i++) {
+        const node = snapshot.snapshotItem(i);
+        if (node && node.nodeType === Node.ELEMENT_NODE) {
+          xpathNodes.add(node as Element);
+        }
+      }
+    } catch (e) {
+      const example = mode === 'buttons'
+        ? "//button[contains(.,'提交')]"
+        : "//input[@name='keyword']";
+      return { elements: [], fingerprint: frameFingerprint, error: `xpath 参数不是合法的 XPath 1.0 表达式：${(e as Error).message}。请使用相对路径写法，如 ${example}` };
+    }
+  }
+
+  /**
+   * 页面分析器类（内联定义，保证注入后自包含）
+   */
+  class PageAnalyzer {
+    // ══════════════════ 共享：CSS 选择器生成 ══════════════════
+    getUniqueSelector(el: Element): string {
+      if (!el || !(el instanceof Element)) return '';
+      const doc = el.ownerDocument;
+
+      if (el.id) {
+        const simpleIdRegex = /^[A-Za-z_-][A-Za-z0-9_-]*$/;
+        if (simpleIdRegex.test(el.id)) {
+          const selector = `#${el.id}`;
+          try {
+            if (doc.querySelectorAll(selector).length === 1) {
+              return selector;
+            }
+          } catch (e) {
+            // 选择器在当前文档非法时忽略，继续走路径回退策略
+            void e;
+          }
+        }
+      }
+
+      const path: string[] = [];
+      let currentEl: Element | null = el;
+      while (currentEl && currentEl.nodeType === Node.ELEMENT_NODE && currentEl.tagName.toLowerCase() !== 'html') {
+        let selector = currentEl.tagName.toLowerCase();
+        const parent = currentEl.parentElement;
+        if (parent) {
+          const siblings = Array.from(parent.children);
+          const sameTagSiblings = siblings.filter(sibling => sibling.tagName === currentEl!.tagName);
+          if (sameTagSiblings.length > 1) {
+            const index = sameTagSiblings.indexOf(currentEl) + 1;
+            selector += `:nth-of-type(${index})`;
+          }
+        }
+        path.unshift(selector);
+        try {
+          if (doc.querySelectorAll(path.join(' > ')).length === 1) return path.join(' > ');
+        } catch (e) {
+          // 部分构建中的选择器可能非法，忽略后继续向上扩展路径
+          void e;
+        }
+        currentEl = currentEl.parentElement;
+      }
+      return path.join(' > ');
+    }
+
+    // ══════════════════ 共享：可见性与遮挡判定 ══════════════════
+    isInViewport(el: Element): boolean {
+      const rect = el.getBoundingClientRect();
+      return (rect.top < window.innerHeight && rect.bottom > 0 && rect.left < window.innerWidth && rect.right > 0);
+    }
+
+    isObscured(el: Element): boolean {
+      if (!el.ownerDocument) return true;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return true;
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const elementAtCenter = el.ownerDocument.elementFromPoint(centerX, centerY);
+      if (!elementAtCenter) return true;
+
+      // 如果点击测试返回的是元素本身或其子元素，则未被遮挡
+      if (el.contains(elementAtCenter) || el === elementAtCenter) {
+        return false;
+      }
+
+      // 检查遮挡元素是否是“全局覆盖层”（侧边栏、模态框、抽屉等）
+      // 如果是全局覆盖层，不应该认为主界面元素被遮挡
+      const isGlobalOverlay = (obscuringEl: Element): boolean => {
+        const style = getComputedStyle(obscuringEl);
+        const position = style.position;
+        const zIndex = parseInt(style.zIndex) || 0;
+
+        // fixed 或 absolute 定位且 z-index 较高的元素可能是覆盖层
+        if ((position === 'fixed' || position === 'absolute') && zIndex > 100) {
+          // 检查常见的覆盖层特征
+          const className = (obscuringEl.className || '').toLowerCase();
+          const id = (obscuringEl.id || '').toLowerCase();
+          const role = obscuringEl.getAttribute('role') || '';
+
+          const overlayPatterns = /sidebar|sidepanel|drawer|modal|overlay|popup|dialog|panel|sheet|menu|dropdown|tooltip|popover/i;
+          if (overlayPatterns.test(className) || overlayPatterns.test(id) ||
+              ['dialog', 'menu', 'tooltip', 'alertdialog'].includes(role)) {
+            return true;
+          }
+
+          // 检查是否是覆盖大部分屏幕的元素
+          const obscRect = obscuringEl.getBoundingClientRect();
+          const screenArea = window.innerWidth * window.innerHeight;
+          const obscArea = obscRect.width * obscRect.height;
+          // 如果覆盖超过屏幕 30% 且是 fixed/absolute，可能是覆盖层
+          if (obscArea > screenArea * 0.3) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      // 向上查找遮挡元素的祖先，检查是否有全局覆盖层
+      let checkEl: Element | null = elementAtCenter;
+      for (let i = 0; i < 10 && checkEl; i++) {
+        if (isGlobalOverlay(checkEl)) {
+          // 被全局覆盖层遮挡，不算真正遮挡
+          return false;
+        }
+        checkEl = checkEl.parentElement;
+      }
+
+      // 检查遮挡元素是否与目标元素在同一个逻辑容器内
+      // 如果不在同一容器，可能是不同区域的元素，不应互相影响
+      const getLogicalContainer = (element: Element): Element | null => {
+        let parent = element.parentElement;
+        for (let i = 0; i < 5 && parent; i++) {
+          const style = getComputedStyle(parent);
+          // main, section, article, aside, nav, header, footer 等语义容器
+          if (['main', 'section', 'article', 'aside', 'nav', 'header', 'footer'].includes(parent.tagName.toLowerCase())) {
+            return parent;
+          }
+          // 或者 overflow 不是 visible 的容器
+          if (style.overflow !== 'visible' && style.overflow !== '') {
+            return parent;
+          }
+          parent = parent.parentElement;
+        }
+        return null;
+      };
+
+      const targetContainer = getLogicalContainer(el);
+      const obscuringContainer = getLogicalContainer(elementAtCenter);
+
+      // 如果两个元素不在同一个逻辑容器内，且目标元素本身可见，则不认为遮挡
+      if (targetContainer && obscuringContainer && targetContainer !== obscuringContainer) {
+        return false;
+      }
+
+      return true;
+    }
+
+    /**
+     * 检查元素是否被渲染且具有可交互的基本条件 (不检查是否在视口内)
+     */
+    isPotentiallyInteractable(el: Element): boolean {
+      if (!el || !(el instanceof Element) || !document.body || !document.body.contains(el)) return false;
+      const style = getComputedStyle(el);
+      // 必须是渲染出来的元素
+      if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) < 0.1) return false;
+      // 必须有实际大小
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) return false;
+
+      return true;
+    }
+
+    // ══════════════════ 共享：xpath 祖先链命中 ══════════════════
+    /**
+     * xpath 命中判定：元素本身或任一祖先被 xpath 选中即算命中
+     * （容器级 xpath 写法 //div[@class='toolbar']//button 因此可用）
+     */
+    isInXpathChain(el: Element, xpathNodes: Set<Element>): boolean {
+      let current: Element | null = el;
+      for (let depth = 0; current && depth < 50; depth++) {
+        if (xpathNodes.has(current)) return true;
+        current = current.parentElement;
+      }
+      return false;
+    }
+
+    // ══════════════════ 共享：单元素构建守卫 ══════════════════
+    /** 渲染检查 + 视口内遮挡检查；返回 false 表示该元素不应出现在结果中 */
+    private passesVisibilityGuard(el: Element): boolean {
+      if (!this.isPotentiallyInteractable(el)) return false;
+      // 只对当前在屏幕上的元素做遮挡检查；屏幕外的元素保留（翻页仍可见）
+      if (this.isInViewport(el) && this.isObscured(el)) return false;
+      return true;
+    }
+
+    /** 过滤标记 + 命中判定（两种模式完全一致的语义） */
+    private applyFilterFlags(
+      record: PayloadElement,
+      el: Element,
+      attrHaystack: string,
+      regex: RegExp | null,
+      xpathNodes: Set<Element> | null,
+    ): void {
+      // 过滤标记：regex 对「描述 + 类名 + 常用属性值」不区分大小写匹配（在截断前的全文上进行）
+      record.matchedRegex = regex ? regex.test(attrHaystack) : null;
+      record.matchedXpath = xpathNodes ? this.isInXpathChain(el, xpathNodes) : null;
+      record.isHit = false;
+    }
+
+    // ══════════════════ buttons 模式专属：描述提取 ══════════════════
+    // =================================================================
+    // ▶️ 获取元素的直接文本内容（不包括子元素的文本）
+    // =================================================================
+    getDirectTextContent(el: Element): string {
+      let text = '';
+      // 遍历所有子节点
+      for (const node of Array.from(el.childNodes)) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          // 只收集文本节点
+          text += node.textContent || '';
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+          // 对于元素节点，只递归查找文本相关的容器元素（span, strong, em, b, i 等）
+          const tagName = (node as Element).tagName.toLowerCase();
+          if (['span', 'strong', 'em', 'b', 'i', 'small', 'mark', 'label'].includes(tagName)) {
+            text += this.getDirectTextContent(node as Element);
+          }
+        }
+      }
+      return text.trim().replace(/\s+/g, ' ');
+    }
+
+    // =================================================================
+    // ▶️ 增强的 description 提取方法（buttons）- 按优先级尝试多种来源
+    // =================================================================
+    getButtonDescription(el: Element): string {
+      // 第一优先级：aria-label 属性（通常是最准确的可访问性描述）
+      let description = el.getAttribute('aria-label') || '';
+      if (description) return description;
+
+      // 第二优先级：title 属性
+      description = el.getAttribute('title') || '';
+      if (description) return description;
+
+      // 第三优先级：aria-labelledby 引用
+      const labelledBy = el.getAttribute('aria-labelledby');
+      if (labelledBy) {
+        const labelIds = labelledBy.split(/\s+/);
+        const labelTexts = labelIds
+          .map(id => document.getElementById(id)?.textContent?.trim())
+          .filter(Boolean);
+        if (labelTexts.length > 0) {
+          return labelTexts.join(' ');
+        }
+      }
+
+      // 第四优先级：获取元素的直接文本内容（排除子元素文本）
+      // 这样可以避免获取到不相关的子元素内容（如更多选项按钮 ⋮）
+      const directText = this.getDirectTextContent(el);
+      if (directText && directText.length >= 2 && directText.length <= 50) {
+        return directText;
+      }
+
+      // 第五优先级：元素全部文本内容（作为 fallback）
+      description = (el.textContent || (el as HTMLElement).innerText || '').trim().replace(/\s+/g, ' ');
+      // 过滤掉单个特殊字符（如 ⋮、×、+ 等菜单按钮）
+      if (description && !/^[⋮×+\-·•…⋯⁝⁞︙]+$/.test(description) && description.length <= 50) {
+        return description;
+      }
+
+      // 第六优先级：SVG 的 name 或 aria-label
+      const svg = el.querySelector('svg');
+      if (svg) {
+        description = svg.getAttribute('name') || svg.getAttribute('aria-label') || '';
+        if (description) return description;
+      }
+
+      // 第七优先级：子 img 元素的 alt 属性
+      const img = el.querySelector('img');
+      if (img) {
+        description = img.getAttribute('alt') || '';
+        if (description) return description;
+      }
+
+      // 第八优先级：data-* 属性扫描（tooltip、label、action 等）
+      const tooltipAttrs = ['data-tooltip', 'data-tip', 'data-original-title', 'data-title', 'data-content'];
+      for (const attr of tooltipAttrs) {
+        const value = el.getAttribute(attr);
+        if (value) return value;
+      }
+
+      // 第九优先级：父元素上下文 - 从最近的带描述的祖先元素获取语义
+      let ancestor = el.parentElement;
+      for (let i = 0; i < 2 && ancestor; i++) { // 最多向上查找 2 层
+        const ancestorLabel = ancestor.getAttribute('aria-label') || ancestor.getAttribute('title');
+        if (ancestorLabel) {
+          return ancestorLabel;
+        }
+        ancestor = ancestor.parentElement;
+      }
+
+      // 第十优先级：图标类名语义解析 - 从 class="icon-delete" 提取语义词
+      const className = el.className || '';
+      if (typeof className === 'string') {
+        // 匹配常见的图标类名模式
+        const iconPatterns = [
+          /icon[-_]?(\w+)/i,
+          /fa[-_]?(\w+)/i,
+          /glyphicon[-_]?(\w+)/i,
+          /mdi[-_]?(\w+)/i,
+          /material[-_]icons?[-_]?(\w+)/i
+        ];
+        for (const pattern of iconPatterns) {
+          const match = className.match(pattern);
+          if (match && match[1]) {
+            // 转换为可读格式："trash" -> "trash", "arrow-left" -> "arrow left"
+            return match[1].replace(/[-_]/g, ' ').toLowerCase();
+          }
+        }
+      }
+
+      return '';
+    }
+
+    // =================================================================
+    // ▶️ 检测按钮是否可能触发下载事件（buttons 模式）
+    // =================================================================
+    isDownloadTrigger(el: Element): boolean {
+      // 1. 检查 download 属性（HTML5 标准下载属性）
+      if (el.hasAttribute('download')) {
+        return true;
+      }
+
+      // 2. 检查 href 特征
+      const href = el.getAttribute('href') || '';
+      if (href) {
+        // blob: 或 data: URL 通常用于动态生成的下载
+        if (href.startsWith('blob:') || href.startsWith('data:')) {
+          return true;
+        }
+
+        // 常见下载文件扩展名
+        const downloadExtensions = /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|zip|rar|7z|tar|gz|exe|dmg|pkg|apk|ipa|mp3|mp4|avi|mov|mkv|wav|flac|csv|json|xml|txt|rtf|epub|mobi|iso)(\?.*)?$/i;
+        if (downloadExtensions.test(href)) {
+          return true;
+        }
+
+        // URL 路径包含下载相关关键词
+        const downloadUrlPatterns = /\/(download|export|attachment|file|get-file|fetch-file|save|output)\b/i;
+        if (downloadUrlPatterns.test(href)) {
+          return true;
+        }
+      }
+
+      // 3. 检查文本内容
+      const text = (el.textContent || (el as HTMLElement).innerText || '').toLowerCase();
+      const downloadTextPatterns = [
+        // 中文
+        /下载/, /导出/, /保存/, /另存/, /获取文件/, /导出报表/, /下载附件/, /导出数据/,
+        // 英文
+        /\bdownload\b/, /\bexport\b/, /\bsave\s*(as|file)?\b/, /\bget\s*file\b/, /\battachment\b/
+      ];
+      for (const pattern of downloadTextPatterns) {
+        if (pattern.test(text)) {
+          return true;
+        }
+      }
+
+      // 4. 检查 class 和 id 属性
+      const classAndId = ((el.className || '') + ' ' + (el.id || '')).toLowerCase();
+      const downloadClassPatterns = /\b(download|export|save|attachment|file-download|export-btn|save-btn|dl-btn)\b/;
+      if (downloadClassPatterns.test(classAndId)) {
+        return true;
+      }
+
+      // 5. 检查 data-* 属性
+      const dataAttrs = ['data-download', 'data-export', 'data-action', 'data-command', 'data-type'];
+      for (const attr of dataAttrs) {
+        const value = (el.getAttribute(attr) || '').toLowerCase();
+        if (value && /download|export|save/.test(value)) {
+          return true;
+        }
+      }
+
+      // 6. 检查 onclick 属性
+      const onclick = (el.getAttribute('onclick') || '').toLowerCase();
+      if (/download|export|save|fileSaver|createObjectURL|writeFile/.test(onclick)) {
+        return true;
+      }
+
+      // 7. 检查图标类名（FontAwesome, Material, 通用图标库）
+      const iconClassPatterns = [
+        /fa-download/, /fa-file-download/, /fa-save/, /fa-export/,
+        /mdi-download/, /mdi-file-download/, /mdi-export/, /mdi-content-save/,
+        /icon[-_]?download/, /icon[-_]?export/, /icon[-_]?save/,
+        /glyphicon[-_]?download/, /glyphicon[-_]?save/,
+        /download[-_]?icon/, /export[-_]?icon/, /save[-_]?icon/
+      ];
+      // 元素自身 class 先测（SVG 元素的 className 是对象，取 class 属性拿到真实类名）
+      const ownClass = (el.getAttribute && el.getAttribute('class')) || `${el.className || ''}`;
+      for (const pattern of iconClassPatterns) {
+        if (pattern.test(ownClass)) return true;
+      }
+      // 后代逐个匹配、首中即停：图标类模式均不含空白，逐元素判定与「拼接后整体正则」
+      // 语义等价，但避免为大容器物化整棵子树的类名字符串（性能防护）
+      const descendants = el.querySelectorAll('*');
+      for (let i = 0; i < descendants.length; i++) {
+        const descClass = (descendants[i].getAttribute && descendants[i].getAttribute('class')) || `${descendants[i].className || ''}`;
+        for (const pattern of iconClassPatterns) {
+          if (pattern.test(descClass)) return true;
+        }
+      }
+
+      // 8. 检查 SVG 图标的 name 或 aria-label
+      const svg = el.querySelector('svg');
+      if (svg) {
+        const svgName = (svg.getAttribute('name') || svg.getAttribute('aria-label') || '').toLowerCase();
+        if (/download|export|save/.test(svgName)) {
+          return true;
+        }
+      }
+
+      // 9. 检查 aria-label 和 title 属性
+      const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+      const title = (el.getAttribute('title') || '').toLowerCase();
+      if (/download|export|save|下载|导出|保存/.test(ariaLabel + ' ' + title)) {
+        return true;
+      }
+
+      return false;
+    }
+
+    // ══════════════════ buttons 模式专属：评分与记录构建 ══════════════════
+    /**
+     * 计算按钮的优先级评分（下载按钮 > 视口内可见 > 文本质量 > 语义标签 > 位置靠上）
+     */
+    private calculateButtonScore(element: {
+      isDownload: boolean;
+      isInViewport: boolean;
+      textLength: number;
+      tagName: string;
+      computedCursor: string;
+      rectTop: number;
+    }): number {
+      let score = 0;
+
+      // 0. 下载按钮优先加分 (50分) - 最高优先级
+      if (element.isDownload) score += 50;
+
+      // 1. 可见性评分 (40分)
+      if (element.isInViewport) score += 30;
+      else score += 10;
+
+      // 2. 内容质量评分 (30分)
+      if (element.textLength > 0) {
+        if (element.textLength >= 2 && element.textLength <= 30) score += 30; // 合理长度
+        else if (element.textLength > 30) score += 20; // 较长
+        else score += 10; // 很短
+      }
+
+      // 3. 语义标签评分 (20分)
+      if (['button', 'a'].includes(element.tagName)) score += 20;
+      else if (element.computedCursor === 'pointer') score += 10;
+
+      // 4. 位置评分 (10分) - 越靠上越重要
+      if (element.rectTop >= 0 && element.rectTop < 300) score += 10;
+      else if (element.rectTop >= 300 && element.rectTop < 800) score += 5;
+
+      return score;
+    }
+
+    /**
+     * 为单个按钮类元素构建结果记录（描述、类型、评分、过滤标记）
+     * 返回 null 表示元素不可交互（未渲染 / 视口内被遮挡）
+     */
+    buildButtonRecord(el: Element, regex: RegExp | null, xpathNodes: Set<Element> | null): PayloadElement | null {
+      if (!this.passesVisibilityGuard(el)) return null;
+
+      const tagName = el.tagName.toLowerCase();
+      const rawClassName = (el.className || '').toString();
+      const href = el.getAttribute('href') || '';
+      const rect = el.getBoundingClientRect();
+      const style = getComputedStyle(el as HTMLElement);
+
+      // 使用增强的 description 提取方法
+      let description = this.getButtonDescription(el);
+
+      // 简化的 class 名作为辅助信息（同时参与 regex 匹配）
+      const simplifiedClass = rawClassName
+        .split(/\s+/)
+        .filter(c => c && c.length < 30) // 过滤过长的 class
+        .slice(0, 3) // 最多取3个
+        .join(' ');
+
+      // 如果没有提取到 description，使用 class 名作为兜底
+      if (!description && simplifiedClass) {
+        description = `[class: ${simplifiedClass}]`;
+      }
+
+      // 如果还是没有 description，使用标签名 + 位置作为兜底
+      if (!description) {
+        description = `[${tagName} @ (${Math.round(rect.left)}, ${Math.round(rect.top)})]`;
+      }
+
+      // 检测是否为下载/导出按钮
+      const isDownload = this.isDownloadTrigger(el);
+
+      // 构建最终的 description：如果有内容描述且有 class，则附加 class 信息
+      let finalDescription = description;
+      if (!description.startsWith('[class:') && !description.startsWith('[' + tagName) && simplifiedClass) {
+        finalDescription = `${description} [${simplifiedClass}]`;
+      }
+
+      // 如果是下载按钮，在 description 前添加标记
+      if (isDownload) {
+        finalDescription = `[📥下载] ${finalDescription}`;
+      }
+
+      const fullDescription = finalDescription;
+      if (finalDescription.length > 70) finalDescription = finalDescription.substring(0, 67) + '...';
+
+      // 元素类型判定：a[href] 或 role=link 为链接；表单控件按类型标注；其余为普通元素
+      const inputType = tagName === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : '';
+      let type = 'button';
+      if ((tagName === 'a' && (href.startsWith('http') || href.startsWith('/'))) || el.getAttribute('role') === 'link') {
+        type = 'link';
+      } else if (tagName === 'input' && ['checkbox', 'radio'].includes(inputType)) {
+        type = inputType;
+      } else if (tagName === 'input' && ['submit', 'button', 'reset', 'image'].includes(inputType)) {
+        type = 'button';
+      } else if (tagName === 'select') {
+        type = 'select';
+      } else if (
+        !['button', 'a'].includes(tagName) &&
+        !el.hasAttribute('onclick') &&
+        el.getAttribute('role') !== 'button' &&
+        style.cursor !== 'pointer'
+      ) {
+        type = 'element';
+      }
+
+      // 属性参与匹配使 regex 可覆盖 href/id/name/value/data-* 等场景，无需为此单独写 xpath
+      const attrHaystack = [
+        fullDescription,
+        rawClassName,
+        el.id,
+        href,
+        el.getAttribute('name') || '',
+        el.getAttribute('value') || '',
+        el.getAttribute('data-testid') || '',
+        el.getAttribute('data-action') || '',
+        el.getAttribute('data-url') || ''
+      ].filter(Boolean).join(' ');
+
+      const record: PayloadElement = {
+        type,
+        description: finalDescription,
+        selector: this.getUniqueSelector(el),
+        score: 0,
+        isDownload,
+        matchedRegex: null,
+        matchedXpath: null,
+        isHit: false
+      };
+      this.applyFilterFlags(record, el, attrHaystack, regex, xpathNodes);
+
+      record.score = this.calculateButtonScore({
+        isDownload,
+        isInViewport: this.isInViewport(el),
+        textLength: fullDescription.length,
+        tagName,
+        computedCursor: style.cursor,
+        rectTop: rect.top
+      });
+
+      return record;
+    }
+
+    // ══════════════════ inputs 模式专属：描述提取 ══════════════════
+    findAssociatedDescription(el: Element): string {
+      // 1. 通过 label[for] 查找关联的 label
+      if (el.id) {
+        const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+        if (label && label.textContent) { return label.textContent.trim(); }
+      }
+
+      // 2. 通过 aria-labelledby 查找关联的元素
+      const labelledBy = el.getAttribute('aria-labelledby');
+      if (labelledBy) {
+        const labelIds = labelledBy.split(/\s+/);
+        const labelTexts = labelIds
+          .map(id => document.getElementById(id)?.textContent?.trim())
+          .filter(Boolean);
+        if (labelTexts.length > 0) {
+          return labelTexts.join(' ');
+        }
+      }
+
+      // 3. 查找父容器中的 placeholder 元素
+      const parent = el.parentElement;
+      if (parent) {
+        const placeholderSibling = parent.querySelector('[class*="placeholder"]');
+        if (placeholderSibling && placeholderSibling.parentElement === parent && placeholderSibling.textContent) {
+          return placeholderSibling.textContent.trim();
+        }
+      }
+
+      // 4. 查找前一个兄弟元素的文本
+      const precedingSibling = el.previousElementSibling;
+      if (precedingSibling && precedingSibling.textContent) {
+        if (!['script', 'style'].includes(precedingSibling.tagName.toLowerCase())) {
+          return precedingSibling.textContent.trim();
+        }
+      }
+
+      // 5. 父容器 label 查找 - 支持 <div class="form-group"><label>名字</label><input></div> 这种结构
+      let ancestor = el.parentElement;
+      for (let i = 0; i < 3 && ancestor; i++) { // 最多向上查找 3 层
+        const label = ancestor.querySelector('label');
+        if (label && label.textContent && !ancestor.querySelector('input + input, textarea + textarea')) {
+          // 确保这个容器只有一个输入元素，避免 label 关联错误
+          return label.textContent.trim();
+        }
+        ancestor = ancestor.parentElement;
+      }
+
+      return '';
+    }
+
+    /**
+     * 增强的 description 提取方法（inputs）- 按优先级尝试多种来源
+     */
+    getInputDescription(el: Element): string {
+      // 第一优先级：标准属性
+      let description = el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
+      if (description) return description;
+
+      // 第二优先级：关联描述（label, aria-labelledby 等）
+      description = this.findAssociatedDescription(el);
+      if (description) return description;
+
+      // 第三优先级：name 属性
+      description = el.getAttribute('name') || '';
+      if (description) return description;
+
+      // 第四优先级：title 属性
+      description = el.getAttribute('title') || '';
+      if (description) return description;
+
+      // 第五优先级：data-* 属性扫描
+      const dataAttrs = ['data-placeholder', 'data-label', 'data-name', 'data-field', 'data-testid', 'data-qa'];
+      for (const attr of dataAttrs) {
+        const value = el.getAttribute(attr);
+        if (value) {
+          // 将 data-testid 等转为可读格式（如 "user-email-input" -> "user email input"）
+          return value.replace(/[-_]/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+        }
+      }
+
+      // 第六优先级：输入框内已有值作为辅助描述
+      const inputValue = (el as HTMLInputElement).value;
+      if (inputValue && inputValue.length <= 30) {
+        return `(contains: ${inputValue})`;
+      }
+
+      return '';
+    }
+
+    // ══════════════════ inputs 模式专属：评分与记录构建 ══════════════════
+    /**
+     * 计算输入元素的优先级评分（视口内可见 > 文本质量 > 语义标签 > 位置靠上）
+     */
+    private calculateInputScore(element: {
+      isInViewport: boolean;
+      textLength: number;
+      type: string;
+      rectTop: number;
+    }): number {
+      let score = 0;
+
+      // 1. 可见性评分 (40分)
+      if (element.isInViewport) score += 30;
+      else score += 10; // 屏幕外但仍可交互
+
+      // 2. 内容质量评分 (30分)
+      if (element.textLength > 0) {
+        if (element.textLength >= 2 && element.textLength <= 30) score += 30;
+        else if (element.textLength > 30) score += 20;
+        else score += 10;
+      }
+
+      // 3. 语义标签评分 (20分)
+      if (element.type === 'element') score += 5; // xpath 显式选中的非标准输入元素
+      else score += 20; // 标准 input/textarea/富文本区
+
+      // 4. 位置评分 (10分) - 越靠上越重要
+      if (element.rectTop >= 0 && element.rectTop < 300) score += 10;
+      else if (element.rectTop >= 300 && element.rectTop < 800) score += 5;
+
+      return score;
+    }
+
+    // =================================================================
+    // ▶️ 为单个输入类元素构建结果记录（类型、描述、评分、过滤标记）
+    //    allowAnyElement=true 时用于 xpath 显式选中的非标准输入元素
+    // =================================================================
+    buildInputRecord(el: Element, regex: RegExp | null, xpathNodes: Set<Element> | null, allowAnyElement: boolean): PayloadElement | null {
+      if (!this.passesVisibilityGuard(el)) return null;
+
+      const tagName = el.tagName.toLowerCase();
+      const rawClassName = (el.className || '').toString();
+      const rect = el.getBoundingClientRect();
+
+      let description = this.getInputDescription(el);
+      let type: string | null = null;
+
+      if (tagName === 'textarea') {
+        type = 'textarea';
+        if (!description) description = 'Rich text area';
+      } else if (tagName === 'select') {
+        // 下拉选择框：enhance_fill 按 option 文本/值匹配填充
+        type = 'select';
+        if (!description) description = 'Select dropdown';
+      } else if (tagName === 'input') {
+        const inputType = el.getAttribute('type') || 'text';
+        if (['text', 'search', 'email', 'password', 'url', 'tel', 'number', 'date', 'time', 'datetime-local', 'month', 'week', 'color', 'range'].includes(inputType)) {
+          type = `input_${inputType}`;
+          if (!description) description = `Text input (${inputType})`;
+        } else if (allowAnyElement) {
+          // xpath 显式选中的非文本类 input（checkbox/radio 等），标注为 element
+          type = 'element';
+          if (!description) description = `Input (${inputType})`;
+        } else {
+          return null; // checkbox/radio/file 等不在本工具范围（属按钮或文件上传工具）
+        }
+      } else if ((el as HTMLElement).isContentEditable) {
+        type = tagName === 'body' ? 'body_editor' : 'div_editable';
+        if (!description) description = 'Rich text editor area';
+      } else if (allowAnyElement) {
+        // xpath 显式选中的非标准输入元素（自定义编辑器等），标注为 element
+        type = 'element';
+        const text = (el.textContent || (el as HTMLElement).innerText || '').trim().replace(/\s+/g, ' ');
+        if (!description) description = text && text.length <= 50 ? text : `[${tagName}]`;
+      } else {
+        return null;
+      }
+
+      // 走到这里 type 必已被赋值（各分支未赋值时已 return），?? 仅为收窄类型
+      const finalType: string = type ?? 'element';
+      const rawDescription = description;
+      const inViewport = this.isInViewport(el);
+
+      // 屏幕外元素追加可见性提示，帮助调用方决定是否滚动
+      let finalDescription = inViewport ? description : `${description} (currently not visible)`;
+      if (finalDescription.length > 50) {
+        finalDescription = finalDescription.substring(0, 47) + '...';
+      }
+
+      // 属性参与匹配使 regex 可覆盖 placeholder/name/id/value/data-* 等场景，无需为此单独写 xpath
+      const attrHaystack = [
+        rawDescription,
+        rawClassName,
+        el.id,
+        el.getAttribute('name') || '',
+        el.getAttribute('placeholder') || '',
+        el.getAttribute('value') || '',
+        el.getAttribute('data-testid') || '',
+        el.getAttribute('data-name') || ''
+      ].filter(Boolean).join(' ');
+
+      const record: PayloadElement = {
+        type: finalType,
+        description: finalDescription,
+        selector: this.getUniqueSelector(el),
+        score: 0,
+        matchedRegex: null,
+        matchedXpath: null,
+        isHit: false
+      };
+      this.applyFilterFlags(record, el, attrHaystack, regex, xpathNodes);
+
+      record.score = this.calculateInputScore({
+        isInViewport: inViewport,
+        textLength: rawDescription.length,
+        type: finalType,
+        rectTop: rect.top
+      });
+
+      return record;
+    }
+
+    // ══════════════════ 主流程：采集 → 过滤标记 → 命中置顶排序 ══════════════════
+    analyze(): PayloadElement[] {
+      const results = new Map<Element, PayloadElement>();
+      if (!document.body) return [];
+
+      const register = (el: Element, allowAnyElement: boolean) => {
+        if (!el || results.has(el)) return;
+        const record = mode === 'buttons'
+          ? this.buildButtonRecord(el, regex, xpathNodes)
+          : this.buildInputRecord(el, regex, xpathNodes, allowAnyElement);
+        if (record) results.set(el, record);
+      };
+
+      if (mode === 'buttons') {
+        // 步骤 1: 扩大搜查范围——语义标签 + class 模糊 + 表单按钮控件 + ARIA 角色
+        // （select 下拉归 interactive_input_getter，由 enhance_fill 按 option 文本填充）
+        const selectors = [
+          'a', 'button', 'summary',
+          'input[type="submit"]', 'input[type="button"]', 'input[type="reset"]', 'input[type="image"]',
+          'input[type="checkbox"]', 'input[type="radio"]',
+          '[role="button"]', '[role="link"]', '[onclick]',
+          '[role="checkbox"]', '[role="radio"]', '[role="switch"]', '[role="tab"]', '[role="menuitem"]',
+          '[class*="button"]', '[class*="btn"]', '[class*="icon"]', '[class*="action"]'
+        ];
+        document.body.querySelectorAll(selectors.join(', ')).forEach(el => register(el, false));
+
+        // 步骤 2: xpath 显式选中的元素——即使启发式未识别为可交互也纳入（提升定位上限）
+        if (xpathNodes) {
+          xpathNodes.forEach(el => register(el, false));
+        }
+      } else {
+        // 步骤 1: 标准排查 (input, textarea, select, 非body的contenteditable)
+        document.body.querySelectorAll('input, textarea, select, [contenteditable="true"]:not(body)').forEach(el => register(el, false));
+
+        // 步骤 2: 特殊案件 - 检查 <body> 本身是否是编辑器
+        if ((document.body as HTMLElement).isContentEditable) {
+          register(document.body, false);
+        }
+
+        // 步骤 3: “光标”侦探 - 查找所有光标为 'text' 的元素
+        // 为了性能，我们只检查一些常见的容器标签
+        document.querySelectorAll('div, section, main, p, span').forEach(el => {
+          if (results.has(el)) return;
+          if (getComputedStyle(el as HTMLElement).cursor === 'text') {
+            const target = el as HTMLElement;
+            // 临时标记以供 buildRecord 识别；无论构建是否抛错都必须还原现场，
+            // 否则页面会残留被注入的 contenteditable 属性、改变原有可编辑语义
+            const previousValue = target.getAttribute('contenteditable');
+            target.setAttribute('contenteditable', 'true');
+            try {
+              register(target, false);
+            } finally {
+              if (previousValue === null) {
+                target.removeAttribute('contenteditable');
+              } else {
+                target.setAttribute('contenteditable', previousValue);
+              }
+            }
+          }
+        });
+
+        // 步骤 4: xpath 显式选中的元素——即使不是标准输入控件也纳入（提升定位上限）
+        if (xpathNodes) {
+          xpathNodes.forEach(el => register(el, true));
+        }
+      }
+
+      const list = Array.from(results.values());
+      const hasFilter = regex !== null || xpathNodes !== null;
+
+      list.forEach(record => {
+        // 同时设置 regex 与 xpath 时必须同时满足
+        record.isHit = hasFilter
+          ? ((regex ? record.matchedRegex === true : true) && (xpathNodes ? record.matchedXpath === true : true))
+          : false;
+      });
+
+      // 排序：命中过滤条件者置顶，其余按评分降序
+      list.sort((a, b) => {
+        if (hasFilter && a.isHit !== b.isHit) return a.isHit ? -1 : 1;
+        return (b.score || 0) - (a.score || 0);
+      });
+
+      return list;
+    }
+  }
+
+  // 荷载函数的入口点
+  try {
+    const analyzer = new PageAnalyzer();
+    return { elements: analyzer.analyze(), fingerprint: frameFingerprint };
+  } catch (error) {
+    console.error(`Error during in-frame ${mode} analysis:`, error);
+    return { elements: [], fingerprint: frameFingerprint, error: `页面内分析失败：${(error as Error).message}` };
+  }
+}

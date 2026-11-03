@@ -1,0 +1,128 @@
+/* ==================== AI 理解中提示框样式（AiProcessingOverlay 专用） ====================
+ *
+ * 独立成文件的原因：app.css 经 App.vue <style scoped> 引入，作用域属性无法穿透
+ * 到子组件内部元素（仅根元素命中），弹窗内部样式会失效。本文件由
+ * AiProcessingOverlay.vue 直接 import，全局生效、无作用域问题。
+ * 动画 keyframes 统一加 aio 前缀，避免与全局/scoped 样式冲突。
+ */
+
+.ai-processing-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  animation: aioOverlayFadeIn 0.3s ease;
+}
+
+.ai-processing-modal {
+  background: white;
+  border-radius: 16px;
+  padding: 32px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  animation: aioModalSlideIn 0.3s ease;
+  max-width: 320px;
+  width: 90%;
+}
+
+.processing-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.processing-icon {
+  margin-bottom: 20px;
+}
+
+.spinner {
+  position: relative;
+  width: 60px;
+  height: 60px;
+}
+
+.spinner-ring {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border: 3px solid transparent;
+  border-top: 3px solid #3b82f6;
+  border-radius: 50%;
+  animation: aioSpin 1.2s linear infinite;
+}
+
+.spinner-ring:nth-child(1) {
+  animation-delay: 0s;
+}
+
+.spinner-ring:nth-child(2) {
+  animation-delay: -0.4s;
+  border-top-color: #8b5cf6;
+  width: 80%;
+  height: 80%;
+  top: 10%;
+  left: 10%;
+}
+
+.spinner-ring:nth-child(3) {
+  animation-delay: -0.8s;
+  border-top-color: #06b6d4;
+  width: 60%;
+  height: 60%;
+  top: 20%;
+  left: 20%;
+}
+
+@keyframes aioSpin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.processing-text {
+  color: #1f2937;
+}
+
+.processing-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+  color: #111827;
+}
+
+.processing-subtitle {
+  font-size: 14px;
+  color: #6b7280;
+  margin: 0;
+  line-height: 1.5;
+}
+
+@keyframes aioOverlayFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes aioModalSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-16px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}

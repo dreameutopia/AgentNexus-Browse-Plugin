@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentNexus</title>
+  <script>
+    // 在页面渲染前应用主题，避免闪烁（未手动设置时跟随系统偏好）。
+    // localStorage 在受限环境可能抛异常，try/catch 保证首屏渲染不被阻断
+    (function() {
+      try {
+        var theme = null;
+        try { theme = localStorage.getItem('notes-theme'); } catch (e) { /* 存储受限：按未设置处理 */ }
+        if (!theme) {
+          theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        if (theme === 'dark') {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      } catch (e) { /* 主题预置失败不影响页面功能 */ }
+    })();
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

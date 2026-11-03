@@ -1,0 +1,255 @@
+/* 历史会话抽屉样式 - 随组件加载（scoped）
+   说明：本组件渲染在 App.vue 之外层（弹窗级），父级 app.css 经 <style scoped> 导入后
+   作用域属性只匹配 App.vue 自身模板元素，子组件内部元素全部失配（曾导致样式整体失效），
+   因此抽屉样式必须由本组件自己持有。 */
+
+.history-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 1200;
+}
+
+.history-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 85%;
+  max-width: 360px;
+  background: #ffffff;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px 0 0 12px;
+  overflow: hidden;
+}
+
+.history-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.history-drawer-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.history-drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-new-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(102, 126, 234, 0.1);
+  color: #667eea;
+  border: 1px solid #667eea;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.history-new-btn:hover {
+  background: rgba(102, 126, 234, 0.18);
+}
+
+.history-close-btn {
+  background: none;
+  border: none;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+}
+
+.history-close-btn:hover {
+  color: #1f2937;
+}
+
+.history-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.history-empty {
+  padding: 40px 16px;
+  text-align: center;
+  color: #9ca3af;
+  font-size: 13px;
+}
+
+.history-item {
+  border: 1px solid #f3f4f6;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.history-item:hover {
+  background: #f8fafc;
+  border-color: #e5e7eb;
+}
+
+.history-item.active {
+  background: rgba(102, 126, 234, 0.06);
+  border-color: #667eea;
+}
+
+.history-item-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.history-item-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2937;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-item-time {
+  font-size: 11px;
+  color: #9ca3af;
+  flex-shrink: 0;
+}
+
+.history-item-preview {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-item-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.history-badge {
+  font-size: 10px;
+  border-radius: 6px;
+  padding: 1px 6px;
+  border: 1px solid transparent;
+}
+
+.history-badge.agent {
+  color: #667eea;
+  background: rgba(102, 126, 234, 0.1);
+  border-color: #667eea;
+}
+
+.history-badge.skill {
+  color: #0d9488;
+  background: rgba(16, 185, 129, 0.1);
+  border-color: #10b981;
+}
+
+/* 网站学习会话（kind='site-learn'）：琥珀色与智能体/技能徽章三色区分 */
+.history-badge.learn {
+  color: #d97706;
+  background: rgba(245, 158, 11, 0.1);
+  border-color: #f59e0b;
+}
+
+.history-item-count {
+  font-size: 10px;
+  color: #9ca3af;
+}
+
+.history-item-ops {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.history-item:hover .history-item-ops {
+  opacity: 1;
+}
+
+.item-op {
+  background: none;
+  border: none;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 3px;
+  display: inline-flex;
+  border-radius: 4px;
+}
+
+.item-op:hover {
+  background: #f3f4f6;
+  color: #1f2937;
+}
+
+.item-op.danger:hover {
+  color: #ef4444;
+}
+
+.history-rename {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.history-rename input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #667eea;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  outline: none;
+}
+
+.rename-confirm {
+  color: #10b981;
+}
+
+.rename-cancel {
+  color: #ef4444;
+}
+
+/* 抽屉过渡 */
+.drawer-fade-enter-active,
+.drawer-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.drawer-fade-enter-from,
+.drawer-fade-leave-to {
+  opacity: 0;
+}
+
+.drawer-slide-enter-active,
+.drawer-slide-leave-active {
+  transition: transform 0.25s ease;
+}
+
+.drawer-slide-enter-from,
+.drawer-slide-leave-to {
+  transform: translateX(100%);
+}

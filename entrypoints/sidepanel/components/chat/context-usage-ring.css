@@ -1,0 +1,165 @@
+/* 上下文用量圆环（输入栏内嵌小组件）+ 悬浮详情卡片 */
+
+.ctx-ring-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  cursor: default;
+}
+
+.ctx-ring {
+  display: block;
+}
+
+.ctx-ring-track {
+  stroke: rgba(15, 23, 42, 0.08);
+}
+
+.ctx-ring-bar {
+  transition: stroke-dasharray 0.35s ease, stroke 0.35s ease;
+}
+
+/* 压缩进行中：圆环呼吸提示 */
+.ctx-ring-wrap.compacting .ctx-ring-bar {
+  animation: ctxRingPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes ctxRingPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.ctx-ring-text {
+  font-size: 10.5px;
+  font-weight: 600;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ── 悬浮卡片 ── */
+.ctx-card {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: -8px;
+  width: 236px;
+  padding: 12px 14px;
+  background: #ffffff;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
+  z-index: 1300;
+  box-sizing: border-box;
+}
+
+.ctx-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.ctx-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.ctx-card-percent {
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx-card-total {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.ctx-card-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: #111827;
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx-card-divider {
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.ctx-card-threshold {
+  font-size: 12px;
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx-card-components {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.ctx-component-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ctx-component-label {
+  width: 58px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #6b7280;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ctx-component-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(15, 23, 42, 0.06);
+  overflow: hidden;
+}
+
+.ctx-component-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.ctx-component-value {
+  width: 44px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 11px;
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx-card-hint {
+  margin: 10px 0 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #9ca3af;
+}
+
+/* ── 卡片进出场 ── */
+.ctx-card-enter-active,
+.ctx-card-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.ctx-card-enter-from,
+.ctx-card-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
+}

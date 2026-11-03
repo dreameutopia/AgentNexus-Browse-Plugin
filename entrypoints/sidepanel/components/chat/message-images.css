@@ -1,0 +1,117 @@
+/* ==================== 消息关联图片区（MessageImages） ====================
+   折叠头 + 缩略图网格。全屏看图层已抽取为共享组件 ImageViewer
+   （样式见 image-viewer.css），与消息内联「查看屏幕」片段共用。 */
+
+.message-images {
+  margin-top: 8px;
+}
+
+/* ── 折叠头 ── */
+.message-images-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.12);
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.message-images-header:hover {
+  background: rgba(148, 163, 184, 0.22);
+  border-color: rgba(148, 163, 184, 0.55);
+}
+
+.message-images-header:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 1px;
+}
+
+.message-images-icon {
+  display: inline-flex;
+  color: #6366f1;
+}
+
+.message-images-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.message-images-chevron {
+  transition: transform 0.18s ease;
+}
+
+.message-images-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+/* ── 缩略图网格 ── */
+.message-images-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.message-images-thumb {
+  position: relative;
+  width: 76px;
+  height: 76px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.1);
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.message-images-thumb:hover {
+  border-color: #6366f1;
+  transform: translateY(-1px);
+}
+
+.message-images-thumb:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 1px;
+}
+
+.message-images-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.message-images-thumb-missing,
+.message-images-thumb-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: #94a3b8;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.message-images-thumb-loading::after {
+  content: '';
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(148, 163, 184, 0.4);
+  border-top-color: #6366f1;
+  border-radius: 50%;
+  animation: message-images-spin 0.8s linear infinite;
+}
+
+@keyframes message-images-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+

@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>隐私政策 - AgentNexus Browse Helper</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      line-height: 1.6;
+      color: #333;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      background: white;
+      padding: 40px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #2c3e50;
+      border-bottom: 3px solid #3498db;
+      padding-bottom: 10px;
+    }
+    h2 {
+      color: #34495e;
+      margin-top: 30px;
+    }
+    h3 {
+      color: #555;
+      margin-top: 20px;
+    }
+    .update-date {
+      color: #7f8c8d;
+      font-style: italic;
+      margin-bottom: 20px;
+    }
+    .permission-box {
+      background: #ecf0f1;
+      padding: 15px;
+      border-radius: 5px;
+      margin: 15px 0;
+    }
+    .permission-box h4 {
+      margin-top: 0;
+      color: #2980b9;
+    }
+    ul {
+      padding-left: 25px;
+    }
+    li {
+      margin: 8px 0;
+    }
+    .contact-info {
+      background: #e8f4f8;
+      padding: 15px;
+      border-radius: 5px;
+      margin-top: 30px;
+    }
+    .important {
+      background: #fff3cd;
+      border-left: 4px solid #ffc107;
+      padding: 15px;
+      margin: 15px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>隐私政策</h1>
+    <p class="update-date">最后更新日期: 2025年12月8日</p>
+
+    <div class="important">
+      <strong>重要提示:</strong> AgentNexus Browse Helper 致力于保护您的隐私。我们不会收集、存储或传输您的个人敏感信息到我们的服务器。所有数据处理均在本地完成。
+    </div>
+
+    <h2>1. 信息收集与使用</h2>
+    
+    <h3>1.1 我们收集的信息</h3>
+    <p>本扩展程序在您使用过程中可能访问以下信息（仅在本地处理，不上传到服务器）：</p>
+    <ul>
+      <li><strong>浏览数据</strong>: 当前标签页的 URL、标题和内容（仅在您明确使用相关功能时）</li>
+      <li><strong>浏览历史</strong>: 用于提供历史搜索和导航功能</li>
+      <li><strong>书签数据</strong>: 用于书签搜索和管理功能</li>
+      <li><strong>本地存储</strong>: 保存您的设置和偏好</li>
+      <li><strong>截图数据</strong>: 仅在您使用截图功能时临时生成，不会上传</li>
+    </ul>
+
+    <h3>1.2 我们不收集的信息</h3>
+    <ul>
+      <li>❌ 密码或其他身份凭证</li>
+      <li>❌ 支付信息或信用卡数据</li>
+      <li>❌ 个人身份信息（姓名、地址、电话等）</li>
+      <li>❌ Cookie 数据</li>
+      <li>❌ 用户行为追踪数据</li>
+    </ul>
+
+    <h2>2. 权限说明</h2>
+    <p>本扩展需要以下权限以提供完整功能。每个权限的具体用途说明如下：</p>
+
+    <div class="permission-box">
+      <h4>📋 tabs（标签页）</h4>
+      <p><strong>用途</strong>: 访问标签页信息（URL、标题），执行页面自动化操作</p>
+      <p><strong>数据处理</strong>: 仅在本地处理，不上传</p>
+    </div>
+
+    <div class="permission-box">
+      <h4>📝 activeTab（活动标签页）</h4>
+      <p><strong>用途</strong>: 在您主动点击扩展图标时访问当前页面</p>
+      <p><strong>数据处理</strong>: 仅在您明确操作时访问</p>
+    </div>
+
+    <div class="permission-box">
+      <h4>💉 scripting（脚本注入）</h4>
+      <p><strong>用途</strong>: 在网页中执行自动化脚本（如自动填表、点击等）</p>
+      <p><strong>数据处理</strong>: 脚本仅在本地执行，不传输数据</p>
+    </div>
+
+    <div class="permission-box">
+      <h4>🔍 debugger（调试器）</h4>
+      <p><strong>用途</strong>: 
+        <ul>
+          <li>捕获网络请求数据（用于网络分析工具）</li>
+          <li>监控页面性能指标</li>
+          <li>实现高级自动化功能（如等待特定网络请求完成）</li>
+        </ul>
+      </p>
+      <p><strong>重要说明</strong>: 此权限仅用于提供高级浏览器自动化功能，不会用于监控或窃取用户数据。所有调试数据仅在本地处理。</p>
+    </div>
+
+    <div class="permission-box">
+      <h4>🌐 &lt;all_urls&gt;（访问所有网站）</h4>
+      <p><strong>用途</strong>: 在任意网站上提供自动化和辅助功能</p>
+      <p><strong>数据处理</strong>: 仅在您主动使用功能时访问页面内容，不会后台监控</p>
+    </div>
+
+    <div class="permission-box">
+      <h4>📚 history（浏览历史）</h4>
+      <p><strong>用途</strong>: 提供历史记录搜索功能</p>
+      <p><strong>数据处理</strong>: 仅读取，不修改或上传</p>
+    </div>
+
+    <div class="permission-box">
+      <h4>⭐ bookmarks（书签）</h4>
+      <p><strong>用途</strong>: 提供书签搜索和管理功能</p>
+      <p><strong>数据处理</strong>: 仅读取，不修改或上传</p>
+    </div>
+
+    <div class="permission-box">
+      <h4>⬇️ downloads（下载）</h4>
+      <p><strong>用途</strong>: 保存截图、导出数据等</p>
+      <p><strong>数据处理</strong>: 所有下载文件保存在您的本地计算机</p>
+    </div>
+
+    <div class="permission-box">
+      <h4>🌐 webRequest（网络请求）</h4>
+      <p><strong>用途</strong>: 拦截特定文件类型的下载（如拦截 PDF 以提供预览功能）</p>
+      <p><strong>数据处理</strong>: 仅用于修改响应头，不收集请求数据</p>
+    </div>
+
+    <div class="permission-box">
+      <h4>💾 storage（存储）</h4>
+      <p><strong>用途</strong>: 保存您的设置、偏好和缓存数据</p>
+      <p><strong>数据处理</strong>: 所有数据保存在本地浏览器中</p>
+    </div>
+
+    <div class="permission-box">
+      <h4>🔌 nativeMessaging（本地消息传递）</h4>
+      <p><strong>用途</strong>: 与本地安装的 AgentNexus 应用程序通信</p>
+      <p><strong>数据处理</strong>: 仅在本地设备之间传输，不经过互联网</p>
+    </div>
+
+    <h2>3. 数据存储</h2>
+    <h3>3.1 本地存储</h3>
+    <ul>
+      <li>所有用户设置和偏好保存在浏览器的本地存储中</li>
+      <li>索引数据（用于搜索功能）保存在本地 IndexedDB 中</li>
+      <li>这些数据不会同步到云端（除非您使用了浏览器的同步功能）</li>
+    </ul>
+
+    <h3>3.2 缓存数据</h3>
+    <ul>
+      <li>AI 模型缓存保存在本地以提高性能</li>
+      <li>您可以随时在扩展设置中清除缓存</li>
+    </ul>
+
+    <h2>4. 第三方服务</h2>
+    <p>本扩展可能会连接到以下第三方服务（仅在您配置后）：</p>
+    <ul>
+      <li><strong>OpenAI 兼容 API</strong>: 如果您配置了 API 密钥，扩展会向您指定的 API 端点发送请求</li>
+      <li><strong>ModelScope / 阿里云</strong>: 用于 AI 模型推理（仅在您选择使用时）</li>
+    </ul>
+    <p><strong>重要</strong>: 这些服务的隐私政策由各自的提供商制定。请查阅相应服务的隐私政策。</p>
+
+    <h2>5. 数据安全</h2>
+    <ul>
+      <li>所有敏感操作都在本地完成，无需上传到我们的服务器</li>
+      <li>您的 API 密钥使用浏览器的安全存储机制保存</li>
+      <li>我们不会记录或存储您的浏览历史到远程服务器</li>
+    </ul>
+
+    <h2>6. 您的权利</h2>
+    <p>您随时可以：</p>
+    <ul>
+      <li><strong>查看数据</strong>: 所有数据都保存在本地，可通过浏览器开发工具查看</li>
+      <li><strong>删除数据</strong>: 在扩展设置中清除所有数据，或直接卸载扩展</li>
+      <li><strong>停止使用</strong>: 随时禁用或卸载扩展</li>
+    </ul>
+
+    <h2>7. 儿童隐私</h2>
+    <p>本扩展不专门针对 13 岁以下的儿童。我们不会故意收集儿童的个人信息。</p>
+
+    <h2>8. 政策更新</h2>
+    <p>我们可能会不时更新本隐私政策。重大变更会在扩展更新时通知您。请定期查看本政策以了解最新信息。</p>
+
+    <h2>9. 开源与透明</h2>
+    <p>本扩展的源代码是开源的，您可以在 GitHub 上查看完整代码以验证我们的隐私承诺：</p>
+    <p><a href="https://github.com/dreameutopia/AgentNexus-Plugin" target="_blank">https://github.com/dreameutopia/AgentNexus-Plugin</a></p>
+
+    <div class="contact-info">
+      <h2>10. 联系我们</h2>
+      <p>如果您对本隐私政策有任何疑问或顾虑，请通过以下方式联系我们：</p>
+      <ul>
+        <li><strong>GitHub Issues</strong>: <a href="https://github.com/dreameutopia/AgentNexus-Plugin/issues" target="_blank">提交问题</a></li>
+        <li><strong>开发者</strong>: hangye</li>
+      </ul>
+    </div>
+
+    <hr style="margin-top: 40px; border: none; border-top: 1px solid #ddd;">
+    <p style="text-align: center; color: #7f8c8d; font-size: 0.9em;">
+      AgentNexus Browse Helper - 您的隐私，我们的责任
+    </p>
+  </div>
+</body>
+</html>

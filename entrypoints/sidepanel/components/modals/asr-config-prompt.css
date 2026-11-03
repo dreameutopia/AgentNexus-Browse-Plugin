@@ -1,0 +1,197 @@
+/* ==================== 语音识别未配置提示弹窗样式（AsrConfigPrompt 专用） ====================
+ *
+ * 独立成文件的原因：app.css 经 App.vue <style scoped> 引入，作用域属性无法穿透
+ * 到子组件，弹窗样式会完全失效。本文件由 AsrConfigPrompt.vue 直接 import，
+ * 全局生效、无作用域问题。动画 keyframes 统一加 asrp 前缀，避免与全局样式冲突。
+ */
+
+.asr-prompt-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.45) 0%, rgba(30, 41, 59, 0.6) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10001;
+  backdrop-filter: blur(10px) saturate(1.15);
+  animation: asrpOverlayFadeIn 0.28s ease-out;
+}
+
+.asr-prompt-modal {
+  background: linear-gradient(160deg, #ffffff 0%, #f8fafc 100%);
+  border-radius: 20px;
+  box-shadow:
+    0 28px 56px rgba(0, 0, 0, 0.18),
+    0 12px 24px rgba(0, 0, 0, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  width: 88%;
+  max-width: 360px;
+  padding: 28px 26px 24px;
+  text-align: center;
+  animation: asrpModalSlideIn 0.36s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+/* ---- 顶部图标 ---- */
+
+.asr-prompt-icon {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 20px;
+  color: #ffffff;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 55%, #a855f7 100%);
+  box-shadow: 0 10px 26px -8px rgba(124, 58, 237, 0.55);
+}
+
+.asr-prompt-icon::after {
+  content: '';
+  position: absolute;
+  inset: -7px;
+  border: 2px solid rgba(139, 92, 246, 0.35);
+  border-radius: 26px;
+  animation: asrpIconPulse 2.2s ease-out infinite;
+}
+
+@keyframes asrpIconPulse {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.18);
+    opacity: 0;
+  }
+}
+
+.asr-prompt-icon-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #f59e0b 0%, #f97316 100%);
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 22px;
+  box-shadow: 0 3px 8px rgba(249, 115, 22, 0.45);
+  border: 2px solid #ffffff;
+}
+
+/* ---- 文案 ---- */
+
+.asr-prompt-title {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 700;
+  color: #111827;
+  letter-spacing: 0.2px;
+}
+
+.asr-prompt-message {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: #6b7280;
+}
+
+/* ---- 供应商提示条 ---- */
+
+.asr-prompt-providers {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: #eef2ff;
+  border: 1px solid #e0e7ff;
+  color: #4f46e5;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  margin-bottom: 20px;
+}
+
+/* ---- 操作按钮 ---- */
+
+.asr-prompt-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.asr-prompt-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 11px 14px;
+  border: none;
+  border-radius: 12px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.asr-prompt-btn-secondary {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+.asr-prompt-btn-secondary:hover {
+  background: #e2e8f0;
+  transform: translateY(-1px);
+}
+
+.asr-prompt-btn-secondary:active {
+  transform: translateY(0);
+}
+
+.asr-prompt-btn-primary {
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  color: #ffffff;
+  box-shadow: 0 6px 16px -4px rgba(99, 102, 241, 0.5);
+}
+
+.asr-prompt-btn-primary:hover {
+  background: linear-gradient(135deg, #5457e5 0%, #7c4ded 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px -4px rgba(99, 102, 241, 0.6);
+}
+
+.asr-prompt-btn-primary:active {
+  transform: translateY(0) scale(0.98);
+}
+
+/* ---- 入场动画 ---- */
+
+@keyframes asrpOverlayFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes asrpModalSlideIn {
+  from {
+    opacity: 0;
+    transform: scale(0.86) translateY(-18px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}

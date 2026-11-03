@@ -1,0 +1,137 @@
+/* ==================== 共享全屏看图层（ImageViewer） ====================
+   Teleport 到 body 的模态层样式；根命名空间 .image-viewer，
+   与消息流样式互相隔离（消息内联部件 / 底部图片区共用本层）。 */
+
+.image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 23, 0.88);
+}
+
+.viewer-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: calc(100vw - 120px);
+  max-height: calc(100vh - 96px);
+  margin: 0;
+  overflow: auto;
+  cursor: zoom-in;
+}
+
+.viewer-img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 96px);
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+}
+
+.viewer-img.zoomed {
+  max-width: none;
+  max-height: none;
+  width: auto;
+  height: auto;
+  cursor: zoom-out;
+}
+
+.viewer-unavailable {
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+/* 关闭按钮（右上角） */
+.viewer-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.2);
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.viewer-close:hover {
+  background: rgba(148, 163, 184, 0.4);
+}
+
+/* 前后翻页 */
+.viewer-nav {
+  position: absolute;
+  top: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.2);
+  color: #e2e8f0;
+  cursor: pointer;
+  transform: translateY(-50%);
+  transition: background 0.15s ease;
+}
+
+.viewer-nav:hover {
+  background: rgba(148, 163, 184, 0.4);
+}
+
+.viewer-nav.prev {
+  left: 16px;
+}
+
+.viewer-nav.next {
+  right: 16px;
+}
+
+/* 底部工具条（计数 / 缩放 / 下载） */
+.viewer-toolbar {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  color: #e2e8f0;
+  transform: translateX(-50%);
+}
+
+.viewer-counter {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: #94a3b8;
+}
+
+.viewer-btn {
+  padding: 4px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.15);
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.viewer-btn:hover {
+  background: rgba(148, 163, 184, 0.32);
+}

@@ -1,0 +1,5 @@
+: ping
+
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Hello"}]},"index":0}]}
+
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":" from Gemini"}]},"index":0,"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":20,"candidatesTokenCount":8,"thoughtsTokenCount":4,"totalTokenCount":32,"cachedContentTokenCount":12}}
