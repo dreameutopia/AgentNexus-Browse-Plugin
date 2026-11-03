@@ -8,6 +8,7 @@ import { ToolMetadata } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult, createErrorResponse } from '@/common/tool-handler';
 import { TOOL_NAMES } from '@/common/constants';
+import { existingNavigationWindowId } from './navigation-window';
 
 /**
  * 导航互斥锁管理器
@@ -51,16 +52,16 @@ class NavigationLockManager {
 const navigationLock = new NavigationLockManager();
 
 /**
- * 导航工具 - 在浏览器标签页或窗口中导航到指定 URL
+ * 导航工具 - 只在现有窗口内导航，默认使用新标签页
  */
 export class NavigateTool extends BaseBrowserTool {
   name = TOOL_NAMES.BROWSER.NAVIGATE;
 
   metadata: ToolMetadata = {
     name: TOOL_NAMES.BROWSER.NAVIGATE,
-    description: '在浏览器标签页或窗口中导航到指定的 URL',
+    description: '在现有浏览器窗口的标签页中导航；默认新标签页，不创建浏览器窗口',
     category: 'browser',
-    version: '1.0.0',
+    version: '2.0.0',
     author: 'AgentNexus',
     tags: ['browser', 'navigation', 'chrome']
   };
@@ -69,17 +70,19 @@ export class NavigateTool extends BaseBrowserTool {
     type: 'function',
     function: {
       name: TOOL_NAMES.BROWSER.NAVIGATE,
-      description: '在浏览器标签页或窗口中导航到指定的 URL',
+      description: '仅在现有浏览器窗口内打开 URL。默认 newTab=true 新建标签页；同 URL 标签可复用。newTab=false 使用当前标签页。绝不新建窗口，无可用窗口时返回错误。',
       parameters: {
         type: 'object',
+        additionalProperties: false,
         properties: {
           url: {
             type: 'string',
             description: '要导航到的完整 URL'
           },
-          newWindow: {
+          newTab: {
             type: 'boolean',
-            description: '是否在新窗口中打开'
+            default: true,
+            description: '是否在现有窗口新建标签页，默认 true；false 使用当前标签页'
           },
           refresh: {
             type: 'boolean',
@@ -251,14 +254,22 @@ export class NavigateTool extends BaseBrowserTool {
 
   async execute(args: {
     url?: string;
-    newWindow?: boolean;
+    newTab?: boolean;
     refresh?: boolean;
     waitForLoad?: boolean;
     timeout?: number;
   }): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
-    const { newWindow = false, url, refresh = false, waitForLoad = true, timeout = 30000 } = args;
+    if (!args || typeof args !== 'object' || Array.isArray(args) ||
+        Object.keys(args).some(key => !['url','newTab','refresh','waitForLoad','timeout'].includes(key)))
+      return createErrorResponse('仅接受 url/newTab/refresh/waitForLoad/timeout；newWindow 已删除，本工具禁止创建浏览器窗口。');
+    for (const key of ['newTab','refresh','waitForLoad'] as const)
+      if (args[key] !== undefined && typeof args[key] !== 'boolean') return createErrorResponse(`${key} 必须是布尔值`);
+    if (args.url !== undefined && (typeof args.url !== 'string' || !args.url.trim())) return createErrorResponse('url 必须是非空字符串');
+    if (args.timeout !== undefined && (typeof args.timeout !== 'number' || !Number.isFinite(args.timeout) || args.timeout <= 0)) return createErrorResponse('timeout 必须是大于 0 的有限数字');
+    const parameters = structuredClone(args);
+    const { url, refresh = false } = parameters;
     
     // 获取锁状态用于日志
     const queueLength = navigationLock.getQueueLength();
@@ -273,7 +284,7 @@ export class NavigateTool extends BaseBrowserTool {
 
     try {
       // 执行实际的导航逻辑
-      const result = await this.executeNavigationLocked(args);
+      const result = await this.executeNavigationLocked(parameters);
       return result;
     } finally {
       // 确保始终释放锁
@@ -288,12 +299,12 @@ export class NavigateTool extends BaseBrowserTool {
    */
   private async executeNavigationLocked(args: {
     url?: string;
-    newWindow?: boolean;
+    newTab?: boolean;
     refresh?: boolean;
     waitForLoad?: boolean;
     timeout?: number;
   }): Promise<ToolResult> {
-    const { newWindow = false, url, refresh = false, waitForLoad = true, timeout = 30000 } = args;
+    const { newTab = true, url, refresh = false, waitForLoad = true, timeout = 30000 } = args;
     const startTime = Date.now();
 
     this.log(`Executing navigation: ${refresh ? 'refresh' : `open URL: ${url}`}`);
@@ -314,12 +325,8 @@ export class NavigateTool extends BaseBrowserTool {
         return await this.activateExistingTab(existingTab, waitForLoad, timeout);
       }
 
-      // 在新窗口或当前标签页中打开
-      if (newWindow) {
-        return await this.openInNewWindow(url, waitForLoad, timeout);
-      } else {
-        return await this.navigateInCurrentOrNewTab(url, waitForLoad, timeout, startTime);
-      }
+      if (newTab) return await this.createNewTabWithUrl(url, waitForLoad, timeout);
+      return await this.navigateInCurrentOrNewTab(url, waitForLoad, timeout, startTime);
     } catch (error) {
       this.log(`Navigation failed: ${error}`, 'error');
       return this.createErrorResponse('Failed to navigate', error);
@@ -360,7 +367,7 @@ export class NavigateTool extends BaseBrowserTool {
    * 查找已打开的相同 URL 的标签页
    */
   private async findExistingTabWithUrl(url: string): Promise<chrome.tabs.Tab | null> {
-    const allTabs = await chrome.tabs.query({});
+    const allTabs = await chrome.tabs.query({ currentWindow: true });
     const normalizedTargetUrl = this.normalizeUrlForComparison(url);
 
     for (const tab of allTabs) {
@@ -407,51 +414,6 @@ export class NavigateTool extends BaseBrowserTool {
       windowId: updatedTab.windowId,
       url: updatedTab.url,
     }, 'Activated existing tab with target URL');
-  }
-
-  /**
-   * 在新窗口中打开 URL
-   */
-  private async openInNewWindow(
-    url: string, 
-    waitForLoad: boolean, 
-    timeout: number
-  ): Promise<ToolResult> {
-    this.log(`Opening URL in new window: ${url}`);
-
-    const newWin = await chrome.windows.create({
-      url: url,
-      focused: true,
-    });
-
-    if (!newWin || !newWin.id || !newWin.tabs || !newWin.tabs[0]) {
-      return createErrorResponse('Failed to create new window');
-    }
-
-    const newTab = newWin.tabs[0];
-    const tabId = newTab.id;
-
-    if (!tabId) {
-      return createErrorResponse('Failed to get new tab ID');
-    }
-
-    if (waitForLoad) {
-      try {
-        // 新窗口：直接等待页面加载（URL 肯定会变化）
-        await this.waitForPageLoad(tabId, timeout);
-      } catch (waitError) {
-        this.log(`Wait for load failed in new window: ${waitError}`, 'warn');
-        // 即使等待失败，仍然返回成功（窗口已创建）
-      }
-    }
-
-    const finalTab = await chrome.tabs.get(tabId);
-
-    return this.createSuccessResponse({
-      windowId: newWin.id,
-      tabId: tabId,
-      url: finalTab.url,
-    }, 'Opened URL in new window and load complete');
   }
 
   /**
@@ -580,42 +542,7 @@ export class NavigateTool extends BaseBrowserTool {
   ): Promise<ToolResult> {
     this.log(`Creating new tab with URL: ${url}`);
 
-    // 获取最后聚焦的窗口
-    const lastFocusedWindow = await chrome.windows.getLastFocused({ populate: false });
-
-    let windowId: number | undefined;
-    
-    if (lastFocusedWindow && lastFocusedWindow.id !== undefined) {
-      windowId = lastFocusedWindow.id;
-    } else {
-      // 创建新窗口
-      const newWin = await chrome.windows.create({
-        url: url,
-        focused: true,
-      });
-      
-      if (newWin && newWin.tabs && newWin.tabs[0]) {
-        const newTab = newWin.tabs[0];
-        
-        if (waitForLoad && newTab.id) {
-          try {
-            await this.waitForPageLoad(newTab.id, timeout);
-          } catch (waitError) {
-            this.log(`Wait for load failed: ${waitError}`, 'warn');
-          }
-        }
-
-        const finalTab = await chrome.tabs.get(newTab.id!);
-        
-        return this.createSuccessResponse({
-          windowId: newWin.id,
-          tabId: finalTab.id,
-          url: finalTab.url,
-        }, 'Opened URL in new window (fallback)');
-      }
-      
-      return createErrorResponse('Failed to create window or tab');
-    }
+    const windowId = await existingNavigationWindowId();
 
     // 在已存在的窗口中创建新标签页
     const newTab = await chrome.tabs.create({

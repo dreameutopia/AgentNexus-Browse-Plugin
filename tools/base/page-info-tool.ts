@@ -1,3 +1,4 @@
+import { textContentPayload } from '../browser/text-content-payload';
 /**
  * 页面信息工具
  * 提供获取当前页面文本、HTML、基本信息等功能
@@ -41,34 +42,28 @@ export class GetPageTextTool extends BaseBrowserTool {
     }
   };
 
-  async execute(args: { tabId?: number }): Promise<ToolResult> {
+  async execute(args: { tabId?: number } = {}): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     try {
-      const tab = args.tabId 
+      const tab = typeof args?.tabId === 'number'
         ? await chrome.tabs.get(args.tabId)
         : await this.getActiveTab();
 
-      if (!tab || !tab.id) {
+      if (!tab || typeof tab.id !== 'number') {
         return this.createErrorResponse('No active tab found');
       }
 
-      // 执行脚本获取页面文本
       const results = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: () => {
-          return document.body.innerText || document.body.textContent || '';
-        }
+        target:{tabId:tab.id,allFrames:true},world:'ISOLATED',func:textContentPayload,args:[12000],
       });
-
-      const textContent = results?.[0]?.result || '';
-
+      const frames=results.filter(r=>r.result).map(r=>({frameId:r.frameId,...r.result}));
+      const joined=frames.map(frame=>'[FrameId='+frame.frameId+']\n'+frame.text).join('\n');
+      const textContent=joined.slice(0,24000);
       return this.createSuccessResponse({
-        textContent,
-        url: tab.url,
-        title: tab.title,
-        tabId: tab.id,
-        length: textContent.length
+        textContent,url:tab.url,title:tab.title,tabId:tab.id,length:textContent.length,
+        coverage:{complete:false,frames:frames.map(({text,...frame})=>frame),truncated:joined.length>24000||frames.some(f=>f.truncated),missingResults:results.length-frames.length},
+        hint:'仅 DOM 可见文本，含可注入 frame 和可访问 shadow roots；画布/未加载数据不保证覆盖。不足时用 browser_observe 的 structure/accessibility 或指定 frame 的脚本。',
       }, 'Page text retrieved successfully');
     } catch (error) {
       return this.createErrorResponse('Failed to get page text', error);
@@ -109,15 +104,15 @@ export class GetPageHTMLTool extends BaseBrowserTool {
     }
   };
 
-  async execute(args: { tabId?: number }): Promise<ToolResult> {
+  async execute(args: { tabId?: number } = {}): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     try {
-      const tab = args.tabId 
+      const tab = typeof args?.tabId === 'number'
         ? await chrome.tabs.get(args.tabId)
         : await this.getActiveTab();
 
-      if (!tab || !tab.id) {
+      if (!tab || typeof tab.id !== 'number') {
         return this.createErrorResponse('No active tab found');
       }
 
@@ -177,15 +172,15 @@ export class GetCurrentPageInfoTool extends BaseBrowserTool {
     }
   };
 
-  async execute(args: { tabId?: number }): Promise<ToolResult> {
+  async execute(args: { tabId?: number } = {}): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     try {
-      const tab = args.tabId 
+      const tab = typeof args?.tabId === 'number'
         ? await chrome.tabs.get(args.tabId)
         : await this.getActiveTab();
 
-      if (!tab || !tab.id) {
+      if (!tab || typeof tab.id !== 'number') {
         return this.createErrorResponse('No active tab found');
       }
 

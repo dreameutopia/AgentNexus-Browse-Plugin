@@ -16,9 +16,9 @@
  *
  * 引擎选择策略（strategy 参数）：
  *   - auto（默认）：先 MAIN 注入；仅当遇到 CSP 拒绝 eval 时升级到 CDP；
- *     CDP 不可用（被 DevTools 占用/页面不可调试）再退到 ISOLATED；
+ *     CDP 执行失败时明确报错，不自动重放脚本；
  *   - cdp：强制走 CDP，适用于明确需要访问页面 JS 状态（如 window.__NUXT__、
- *     React Fiber、页面闭包变量）或要求无视一切 CSP 的场景；
+ *     React Fiber 等已暴露状态）或要求无视一切 CSP 的场景；
  *   - scripting：只用 chrome.scripting，不碰调试器（不出现「正在被调试」提示条）。
  *
  * 安全性说明：动态执行用户/AI 提供的代码是本工具的核心功能（等价 F12 控制台），
@@ -40,7 +40,12 @@ import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
 import { TOOL_NAMES, isRestrictedUrl } from '@/common/constants';
 import { cdpSession } from './cdp-session';
-import { saveDataRefJson, getDataRef, listDataRefs, type DataRefMeta } from '@/utils/data-ref-store';
+import {
+  saveDataRefJson,
+  getDataRef,
+  listDataRefs,
+  type DataRefMeta,
+} from '@/utils/data-ref-store';
 
 /** 页面内求值默认超时 */
 const DEFAULT_EVAL_TIMEOUT_MS = 15_000;
@@ -63,7 +68,7 @@ type ExecWorld = 'MAIN' | 'ISOLATED' | 'auto';
 
 interface PageExecParams {
   /**
-   * 要执行的 JavaScript 代码（默认按控制台语义求值；提供 args 时按函数体执行）。
+   * 要执行的 async 函数体；用 return 返回结果，args 数组通过 $args 提供。
    * 与 readRef 互斥：分页读取暂存批次时不提供 code。
    */
   code?: string;
@@ -79,6 +84,7 @@ interface PageExecParams {
   timeout?: number;
   /** 目标标签页 ID（默认当前激活标签页） */
   tabId?: number;
+  frameId?: number;
   /**
    * 抓取大批量数据时置 true：全量结果强制存入数据暂存区（即使 ≤2000 字符）。
    * 不设也并非「不暂存」——全量 JSON 超过 DATA_CHARS_LIMIT 时会自动暂存；
@@ -114,6 +120,7 @@ interface EngineAttempt {
 /** 页面内求值函数的返回形态 */
 interface InPageEvalResult {
   success: boolean;
+  safeFallback?: boolean;
   value?: unknown;
   type?: string;
   error?: string;
@@ -123,24 +130,6 @@ interface InPageEvalResult {
   /** 全量捕获失败的原因（序列化失败/超上限），不阻断正常返回 */
   rawJsonError?: string;
 }
-
-/** 判断错误信息是否为「页面 CSP 拒绝 eval」类错误 */
-function isCspEvalBlocked(message: string): boolean {
-  return /refused to evaluate|unsafe-eval|content security policy/i.test(message);
-}
-
-/**
- * 判断错误是否为「注入无结果」类瞬态失败。
- * 典型场景：目标页仍在加载/跳转中、执行上下文刚被销毁重建——注入本身
- * 未报错但 InjectionResult.result 为空。此类失败重试或换引擎通常即可恢复，
- * 直接回传错误只会诱导模型反复原样重试（实测连续 3 次全败浪费轮次）。
- */
-function isNoResultFailure(message: string | undefined): boolean {
-  return !!message && /no result returned/i.test(message);
-}
-
-/** 可等待的短延迟（瞬态失败重试前的页面就绪缓冲） */
-const delay = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
 /** 判断 URL 是否为扩展无法注入脚本的受限页面（统一委托 common/constants 的单一口径） */
 export function isRestrictedPageUrl(url: string | undefined): boolean {
@@ -173,9 +162,15 @@ function stringifyArgPreview(value: unknown): string {
 }
 
 /** 批次元数据 → 一行可读摘要（引用失效时的「现有批次」提示用；最多列 10 条防错误膨胀） */
-function describeRefMeta(meta: { id: string; label?: string; rowCount?: number; bytes: number }): string {
+function describeRefMeta(meta: {
+  id: string;
+  label?: string;
+  rowCount?: number;
+  bytes: number;
+}): string {
   const label = meta.label ? `「${meta.label}」` : '';
-  const rows = meta.rowCount !== undefined ? `${meta.rowCount} 行` : `${meta.bytes} 字节`;
+  const rows =
+    meta.rowCount !== undefined ? `${meta.rowCount} 行` : `${meta.bytes} 字节`;
   return `${meta.id}${label}（${rows}）`;
 }
 
@@ -183,7 +178,10 @@ function describeRefMeta(meta: { id: string; label?: string; rowCount?: number; 
  * 暂存成功后的引导文案：把「预览 → 分页核对 → 合并 → 导出」的后续通道
  * 一次说清，模型无需再猜字段该怎么用。
  */
-function buildDataRefGuide(meta: { id: string; rowCount?: number }, totalChars: number): string {
+function buildDataRefGuide(
+  meta: { id: string; rowCount?: number },
+  totalChars: number
+): string {
   const rows = meta.rowCount !== undefined ? `${meta.rowCount} 行、` : '';
   const shown = Math.min(totalChars, DATA_CHARS_LIMIT);
   return (
@@ -198,7 +196,7 @@ function buildDataRefGuide(meta: { id: string; rowCount?: number }, totalChars: 
 /**
  * 页面主世界内的求值函数（必须完全自包含：会作为参数被序列化进页面执行）
  *
- * 语义对齐 F12 控制台：
+ * 执行已构建的 async 函数表达式：
  * 1. 间接 eval 在页面全局作用域执行，保留表达式完成值；
  * 2. 返回 Promise 时等待 settle（带超时保护）；
  * 3. 返回值递归净化为可结构化克隆的安全形态（DOM 节点、函数、循环引用、
@@ -209,6 +207,7 @@ async function pageConsoleEvaluate(
   timeoutMs: number,
   awaitPromise: boolean,
   captureJson: boolean,
+  captureLimit: number
 ): Promise<InPageEvalResult> {
   /** 单个字符串的最大回传长度 */
   const MAX_STRING_LEN = 10_000;
@@ -220,16 +219,23 @@ async function pageConsoleEvaluate(
   const MAX_DEPTH = 6;
 
   /** 递归净化任意返回值为可结构化克隆的安全形态 */
-  const sanitize = (input: unknown, depth: number, seen: Set<unknown>): unknown => {
+  const sanitize = (
+    input: unknown,
+    depth: number,
+    seen: Set<unknown>
+  ): unknown => {
     if (input === null) return null;
     const t = typeof input;
     if (t === 'number' || t === 'boolean') return input;
     if (t === 'undefined') return 'undefined';
     if (t === 'string') {
       const str = input as string;
-      return str.length > MAX_STRING_LEN ? `${str.slice(0, MAX_STRING_LEN)}…[truncated ${str.length - MAX_STRING_LEN} chars]` : str;
+      return str.length > MAX_STRING_LEN
+        ? `${str.slice(0, MAX_STRING_LEN)}…[truncated ${str.length - MAX_STRING_LEN} chars]`
+        : str;
     }
-    if (t === 'bigint' || t === 'symbol' || t === 'function') return String(input);
+    if (t === 'bigint' || t === 'symbol' || t === 'function')
+      return String(input);
     if (t !== 'object') return String(input);
     if (depth >= MAX_DEPTH) return '[MaxDepth]';
 
@@ -240,12 +246,17 @@ async function pageConsoleEvaluate(
     try {
       if (typeof Element !== 'undefined' && obj instanceof Element) {
         const id = obj.id ? ` id="${obj.id}"` : '';
-        const cls = typeof obj.className === 'string' && obj.className ? ` class="${obj.className}"` : '';
+        const cls =
+          typeof obj.className === 'string' && obj.className
+            ? ` class="${obj.className}"`
+            : '';
         return `<${obj.tagName.toLowerCase()}${id}${cls}>`;
       }
       if (
         typeof NodeList !== 'undefined' &&
-        (obj instanceof NodeList || (typeof HTMLCollection !== 'undefined' && obj instanceof HTMLCollection))
+        (obj instanceof NodeList ||
+          (typeof HTMLCollection !== 'undefined' &&
+            obj instanceof HTMLCollection))
       ) {
         return `[${(obj as NodeList).length} element(s)]`;
       }
@@ -253,7 +264,9 @@ async function pageConsoleEvaluate(
         return `${obj.name}: ${obj.message}`;
       }
       if (Array.isArray(obj)) {
-        const items = obj.slice(0, MAX_ARRAY_LEN).map((item) => sanitize(item, depth + 1, seen));
+        const items = obj
+          .slice(0, MAX_ARRAY_LEN)
+          .map((item) => sanitize(item, depth + 1, seen));
         if (obj.length > MAX_ARRAY_LEN) {
           items.push(`…[${obj.length - MAX_ARRAY_LEN} more items]`);
         }
@@ -268,7 +281,11 @@ async function pageConsoleEvaluate(
           break;
         }
         try {
-          out[key] = sanitize((obj as Record<string, unknown>)[key], depth + 1, seen);
+          out[key] = sanitize(
+            (obj as Record<string, unknown>)[key],
+            depth + 1,
+            seen
+          );
         } catch {
           out[key] = '[unreadable]';
         }
@@ -282,18 +299,42 @@ async function pageConsoleEvaluate(
     }
   };
 
+  // Probe compilation permission before any user code runs. A CSP error thrown
+  // by the user's code itself must never trigger replay in another engine.
   try {
-    // 间接 eval：全局作用域执行 + 完成语义（与控制台一致）
+    (0, eval)('void 0');
+  } catch (error) {
+    return {
+      success: false,
+      safeFallback: true,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  try {
+    // 间接 eval：在指定执行上下文运行已构建的函数表达式
     const raw: unknown = (0, eval)(codeStr);
 
     let value = raw;
     if (awaitPromise) {
-      value = await Promise.race([
-        Promise.resolve(raw),
-        new Promise<unknown>(resolve => {
-          setTimeout(() => resolve(`[Promise: 未在 ${timeoutMs}ms 内完成]`), timeoutMs);
-        }),
-      ]);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        value = await Promise.race([
+          Promise.resolve(raw),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    '执行超时；代码可能仍在运行，先检查现状，不自动重试'
+                  )
+                ),
+              timeoutMs
+            );
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     }
 
     // 全量 JSON 捕获（captureJson 恒为 true）：在页面侧对「未净化的原始值」做
@@ -307,8 +348,8 @@ async function pageConsoleEvaluate(
         const text = JSON.stringify(value === undefined ? null : value);
         if (typeof text !== 'string') {
           rawJsonError = '返回值没有可用的 JSON 形态';
-        } else if (text.length > MAX_CAPTURE_CHARS) {
-          rawJsonError = `数据量 ${text.length} 字符超过单次暂存上限 ${MAX_CAPTURE_CHARS}——请在脚本内先筛选字段或限制条数后分批保存`;
+        } else if (text.length > captureLimit) {
+          rawJsonError = `数据量 ${text.length} 字符超过单次暂存上限 ${captureLimit}——请在脚本内先筛选字段或限制条数后分批保存`;
         } else {
           rawJson = text;
         }
@@ -320,7 +361,7 @@ async function pageConsoleEvaluate(
     return {
       success: true,
       value: sanitize(value, 0, new Set()),
-      type: typeof raw,
+      type: typeof value,
       ...(rawJson !== undefined ? { rawJson } : {}),
       ...(rawJsonError !== undefined ? { rawJsonError } : {}),
     };
@@ -362,9 +403,9 @@ export class PageExecTool extends BaseBrowserTool {
     function: {
       name: TOOL_NAMES.BROWSER.PAGE_EXEC,
       description:
-        '在当前页面高权限执行 JavaScript（比 browser_inject_script 更强）。' +
+        '在指定页面/frame 执行 async JavaScript 函数体，用 return 返回结果。' +
         '自动分层执行：普通代码走页面主世界注入；遇到严格 CSP 拒绝 eval 时自动升级 CDP 通道（无视页面 CSP）；' +
-        'CDP 被占用时退化为隔离世界（仍可完整操作 DOM）。' +
+        '只有用户代码尚未执行的权限探测失败才切换引擎；代码开始后不自动重放。CDP 失败明确报错。' +
         '适用：RPA 抓取结构化数据、去广告去弹窗、填写表单、读取页面 JS 状态、自动化操作等。' +
         '需要访问页面全局变量（如 window.xxx）或在严格 CSP 站点执行 eval 时，建议 strategy 设为 "cdp"。' +
         '数据输出契约：单次响应的数据正文最多 2000 字符——总长 ≤2000 字符的结果全量返回；' +
@@ -377,25 +418,27 @@ export class PageExecTool extends BaseBrowserTool {
           code: {
             type: 'string',
             description:
-              '要执行的 JavaScript 代码（与 readRef 互斥）。默认按 F12 控制台语义求值并返回表达式完成值；' +
-              '顶层 return 语句兼容（自动按函数体包装执行）；' +
-              '若提供 args，则 code 作为函数体执行（可用 $args 取参、可直接 return）',
+              '要执行的 JavaScript 代码（与 readRef 互斥）。代码统一为 async 函数体，必须用 return 返回结果，允许 await；' +
+              '不会因运行时错误或无结果自动重放；可用 $args 读取 args 参数数组。',
           },
           args: {
             type: 'array',
-            description: '可选参数数组：提供后 code 以 (function($args){ code })($args) 形式执行',
+            description:
+              '可选参数数组，通过 async 函数体内的 $args 读取；默认空数组。',
             items: {},
           },
           world: {
             type: 'string',
             enum: ['auto', 'MAIN', 'ISOLATED'],
-            description: '执行世界。MAIN=页面主世界（可访问 window 全局对象）；ISOLATED=隔离世界（DOM 可用、页面 JS 不可见）；auto=默认优先 MAIN',
+            description:
+              '执行世界。MAIN=页面主世界（可访问 window 全局对象）；ISOLATED=隔离世界（DOM 可用、页面 JS 不可见）；auto=默认优先 MAIN',
             default: 'auto',
           },
           strategy: {
             type: 'string',
             enum: ['auto', 'cdp', 'scripting'],
-            description: '执行策略。auto=默认逐级升级；cdp=强制最高权限（无视 CSP，可访问页面 JS 状态，会短暂附加调试器）；scripting=只用注入通道不碰调试器',
+            description:
+              '执行策略。auto=默认逐级升级；cdp=强制最高权限（无视 CSP，可访问页面 JS 状态，会短暂附加调试器）；scripting=只用注入通道不碰调试器',
             default: 'auto',
           },
           awaitPromise: {
@@ -407,6 +450,11 @@ export class PageExecTool extends BaseBrowserTool {
             type: 'number',
             description: '超时时间（毫秒），默认 15000，上限 120000',
             default: DEFAULT_EVAL_TIMEOUT_MS,
+          },
+          frameId: {
+            type: 'number',
+            description:
+              'Chrome FrameId，默认0；指定子 frame 只在该 frame 执行，不会静默回退主页面。严格 CSP 子 frame 请使用 ISOLATED 读 DOM。',
           },
           tabId: {
             type: 'number',
@@ -423,7 +471,8 @@ export class PageExecTool extends BaseBrowserTool {
           },
           label: {
             type: 'string',
-            description: '暂存数据的语义标签（如「第1页-商品列表」），便于 data_ref_tool(action="list") 时辨识批次（自动暂存时同样生效）',
+            description:
+              '暂存数据的语义标签（如「第1页-商品列表」），便于 data_ref_tool(action="list") 时辨识批次（自动暂存时同样生效）',
           },
           readRef: {
             type: 'string',
@@ -435,7 +484,8 @@ export class PageExecTool extends BaseBrowserTool {
           },
           offset: {
             type: 'number',
-            description: 'readRef 模式的起始字符偏移（默认 0，≥0 整数；越界自动收敛到末尾并返回空页，不报错）',
+            description:
+              'readRef 模式的起始字符偏移（默认 0，≥0 整数；越界自动收敛到末尾并返回空页，不报错）',
             default: 0,
           },
           limit: {
@@ -472,6 +522,7 @@ export class PageExecTool extends BaseBrowserTool {
       awaitPromise = true,
       timeout = DEFAULT_EVAL_TIMEOUT_MS,
       tabId: requestedTabId,
+      frameId = 0,
       saveResult = false,
       label,
       readRef,
@@ -481,9 +532,13 @@ export class PageExecTool extends BaseBrowserTool {
 
     // ── 模式分诊：readRef 分页读取（不执行脚本、不依赖标签页） vs code 脚本执行 ──
     // 先做 readRef 类型防御：非字符串若落到「缺 code」分支会给出误导性错误
-    if (readRef !== undefined && readRef !== null && typeof readRef !== 'string') {
+    if (
+      readRef !== undefined &&
+      readRef !== null &&
+      typeof readRef !== 'string'
+    ) {
       return this.createErrorResponse(
-        `readRef 必须是字符串（暂存批次 ID），实际收到 ${Array.isArray(readRef) ? 'array' : typeof readRef}`,
+        `readRef 必须是字符串（暂存批次 ID），实际收到 ${Array.isArray(readRef) ? 'array' : typeof readRef}`
       );
     }
     const refId = typeof readRef === 'string' ? readRef.trim() : '';
@@ -492,7 +547,7 @@ export class PageExecTool extends BaseBrowserTool {
     if (refId) {
       if (typeof code === 'string' && code.trim()) {
         return this.createErrorResponse(
-          'readRef 与 code 互斥：分页读取暂存批次时不要同时提供 code（readRef 模式不会执行脚本）',
+          'readRef 与 code 互斥：分页读取暂存批次时不要同时提供 code（readRef 模式不会执行脚本）'
         );
       }
       return this.handleRead(refId, offset, limit);
@@ -501,26 +556,47 @@ export class PageExecTool extends BaseBrowserTool {
     // schema 默认值）：静默忽略而非报错——执行语义下这两个参数没有对应物，
     // 阻断正常执行得不偿失；仅留日志便于排查参数误用
     if (hasOffset || hasLimit) {
-      this.log('offset/limit provided without readRef in exec mode, ignored', 'warn');
+      this.log(
+        'offset/limit provided without readRef in exec mode, ignored',
+        'warn'
+      );
     }
     if (!code || typeof code !== 'string' || !code.trim()) {
       return this.createErrorResponse(
-        'Parameter [code] is required and must be a non-empty string（或提供 readRef 分页读取暂存批次）',
+        'Parameter [code] is required and must be a non-empty string（或提供 readRef 分页读取暂存批次）'
       );
     }
 
-    const timeoutMs = Math.min(Math.max(Number(timeout) || DEFAULT_EVAL_TIMEOUT_MS, 1_000), MAX_EVAL_TIMEOUT_MS);
+    if (
+      !['auto', 'MAIN', 'ISOLATED'].includes(world) ||
+      !['auto', 'cdp', 'scripting'].includes(strategy) ||
+      typeof awaitPromise !== 'boolean'
+    )
+      return this.createErrorResponse('world/strategy/awaitPromise 参数无效');
+    if (
+      !Number.isFinite(timeout) ||
+      timeout < 1000 ||
+      timeout > MAX_EVAL_TIMEOUT_MS
+    )
+      return this.createErrorResponse('timeout 必须是1000..120000毫秒');
+    const timeoutMs = timeout;
 
     try {
       // 解析目标标签页：优先显式 tabId，否则当前激活标签页
       // （tabId 允许为 0——用真值判断会把合法的 0 当成「未提供」，故显式判空）
-      if (requestedTabId !== undefined && requestedTabId !== null &&
-          (!Number.isInteger(requestedTabId) || requestedTabId < 0)) {
-        return this.createErrorResponse(`Parameter [tabId] must be a non-negative integer, received: ${String(requestedTabId)}`);
+      if (
+        requestedTabId !== undefined &&
+        requestedTabId !== null &&
+        (!Number.isInteger(requestedTabId) || requestedTabId < 0)
+      ) {
+        return this.createErrorResponse(
+          `Parameter [tabId] must be a non-negative integer, received: ${String(requestedTabId)}`
+        );
       }
-      const tab = requestedTabId !== undefined && requestedTabId !== null
-        ? await chrome.tabs.get(requestedTabId)
-        : (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+      const tab =
+        requestedTabId !== undefined && requestedTabId !== null
+          ? await chrome.tabs.get(requestedTabId)
+          : (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
       if (!tab || typeof tab.id !== 'number') {
         return this.createErrorResponse('No active tab found');
       }
@@ -530,10 +606,12 @@ export class PageExecTool extends BaseBrowserTool {
       if (isRestrictedPageUrl(tab.url)) {
         return this.createErrorResponse(
           `Current page is a restricted URL (${tab.url}) where script execution is not permitted. ` +
-            `Navigate to a normal web page first (e.g. call check_restricted_url).`,
+            `Navigate to a normal web page first (e.g. call check_restricted_url).`
         );
       }
 
+      if (!Number.isSafeInteger(frameId) || frameId < 0)
+        return this.createErrorResponse('frameId 必须为非负整数');
       const expression = this.buildExpression(code, codeArgs);
       const startedAt = Date.now();
       const attempts: EngineAttempt[] = [];
@@ -541,24 +619,17 @@ export class PageExecTool extends BaseBrowserTool {
       // （净化值有 200 元素/10k 字符截断，无法据此判断是否超阈值）
       const captureJson = true;
 
-      let run = await this.runWithStrategy(tabId, expression, world, strategy, awaitPromise, timeoutMs, attempts, captureJson);
-
-      // ── 「Illegal return statement」自愈重试 ──
-      // 模型常按函数体习惯书写 return，但未提供 args 时代码按控制台语义原样
-      // 求值，顶层 return 即语法错误。此处自动包装为函数体再执行一次，
-      // 免去模型一轮无效试错（包装后 return 语义成立，行为与提供 args 等价）。
-      // 自愈条件与 buildExpression 的「不包装」条件严格一致：空数组 args 同样
-      // 不会走包装路径，也必须纳入自愈，否则 args=[] + 顶层 return 永远无法恢复
-      const noArgsProvided = !codeArgs || (Array.isArray(codeArgs) && codeArgs.length === 0);
-      if (
-        !run.ok &&
-        noArgsProvided &&
-        /illegal return/i.test(run.error ?? '')
-      ) {
-        this.log('Top-level return detected without args, retrying as function body', 'warn');
-        const wrapped = `(function(){ ${code} })()`;
-        run = await this.runWithStrategy(tabId, wrapped, world, strategy, awaitPromise, timeoutMs, attempts, captureJson);
-      }
+      const run = await this.runWithStrategy(
+        tabId,
+        expression,
+        world,
+        strategy,
+        awaitPromise,
+        timeoutMs,
+        attempts,
+        captureJson,
+        frameId
+      );
 
       const durationMs = Date.now() - startedAt;
 
@@ -581,8 +652,7 @@ export class PageExecTool extends BaseBrowserTool {
           if (text === undefined) {
             captureNote = '返回值没有可用的 JSON 形态';
           } else if (text.length > MAX_CAPTURE_CHARS) {
-            captureNote =
-              `数据量 ${text.length} 字符超过单次暂存上限 ${MAX_CAPTURE_CHARS}——请在脚本内先筛选字段或限制条数后分批保存`;
+            captureNote = `数据量 ${text.length} 字符超过单次暂存上限 ${MAX_CAPTURE_CHARS}——请在脚本内先筛选字段或限制条数后分批保存`;
           } else {
             fullJson = text;
           }
@@ -590,7 +660,8 @@ export class PageExecTool extends BaseBrowserTool {
 
         // ── 2. 暂存判定：显式 saveResult，或全量超过自动阈值 ──
         const shouldStore =
-          saveResult === true || (fullJson !== undefined && fullJson.length > DATA_CHARS_LIMIT);
+          saveResult === true ||
+          (fullJson !== undefined && fullJson.length > DATA_CHARS_LIMIT);
         let storedMeta: DataRefMeta | undefined;
         let storeNote: string | undefined;
         if (shouldStore && fullJson !== undefined) {
@@ -602,12 +673,14 @@ export class PageExecTool extends BaseBrowserTool {
         // ── 3. 结果封装：数据正文恒不超过 DATA_CHARS_LIMIT 字符 ──
         const payload: Record<string, unknown> = {
           tabId,
+          frameId,
           url: tab.url,
           engine: run.engine,
           world: run.world,
           result: run.value,
           resultType: run.type ?? typeof run.value,
           durationMs,
+          outcome: awaitPromise ? 'completed' : 'dispatched',
           attempts,
         };
 
@@ -635,15 +708,22 @@ export class PageExecTool extends BaseBrowserTool {
             payload.result = source.slice(0, DATA_CHARS_LIMIT);
             payload.resultType = 'json-preview';
             payload.totalChars = source.length;
-            if (source.length > DATA_CHARS_LIMIT) payload.resultTruncated = true;
+            if (source.length > DATA_CHARS_LIMIT)
+              payload.resultTruncated = true;
           }
         }
 
         // ── 4. 暂存失败必须让模型感知 ──
         if (!storedMeta && shouldStore) {
           // 显式要求暂存、或已判定超长却没存上（容量/序列化/捕获失败）
-          warnings.push(`数据暂存失败：${storeNote ?? captureNote ?? '未知原因'}`);
-        } else if (!storedMeta && captureNote && payload.resultTruncated === true) {
+          warnings.push(
+            `数据暂存失败：${storeNote ?? captureNote ?? '未知原因'}`
+          );
+        } else if (
+          !storedMeta &&
+          captureNote &&
+          payload.resultTruncated === true
+        ) {
           // 未显式要求暂存，但捕获失败且可见输出已触顶：数据大概率超限且无法自动暂存
           warnings.push(`无法自动暂存数据：${captureNote}`);
         }
@@ -656,7 +736,9 @@ export class PageExecTool extends BaseBrowserTool {
         return this.createSuccessResponse(payload, message);
       }
 
-      return this.createErrorResponse(`Script execution failed on all engines: ${run.error}`);
+      return this.createErrorResponse(
+        `Script execution failed on all engines: ${run.error}`
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // debugger 附加失败等同步错误直接透出原因，便于模型切换策略重试
@@ -674,7 +756,11 @@ export class PageExecTool extends BaseBrowserTool {
    *   - limit 超上限收敛而非拒绝：越界值是良性误用，收敛 + 说明比报错少一轮往返；
    *   - 引用失效（过期/淘汰/清空）给出当前可用批次清单，模型可自助恢复。
    */
-  private async handleRead(refId: string, rawOffset: unknown, rawLimit: unknown): Promise<ToolResult> {
+  private async handleRead(
+    refId: string,
+    rawOffset: unknown,
+    rawLimit: unknown
+  ): Promise<ToolResult> {
     const notes: string[] = [];
 
     // offset：缺省 0；须为 ≥0 的有限数（数字字符串宽容接受，布尔/对象拒绝），非整数向下取整
@@ -688,7 +774,7 @@ export class PageExecTool extends BaseBrowserTool {
             : NaN;
       if (!Number.isFinite(parsed) || parsed < 0) {
         return this.createErrorResponse(
-          `offset 必须是 ≥0 的数字（字符偏移），实际收到 ${stringifyArgPreview(rawOffset)}`,
+          `offset 必须是 ≥0 的数字（字符偏移），实际收到 ${stringifyArgPreview(rawOffset)}`
         );
       }
       offset = Math.floor(parsed);
@@ -705,13 +791,15 @@ export class PageExecTool extends BaseBrowserTool {
             : NaN;
       if (!Number.isFinite(parsed) || parsed <= 0) {
         return this.createErrorResponse(
-          `limit 必须是 1..${DATA_CHARS_LIMIT} 的数字（本页字符数），实际收到 ${stringifyArgPreview(rawLimit)}`,
+          `limit 必须是 1..${DATA_CHARS_LIMIT} 的数字（本页字符数），实际收到 ${stringifyArgPreview(rawLimit)}`
         );
       }
       limit = Math.floor(parsed);
       if (limit < 1) limit = 1; // 0<x<1 向下取整为 0 后兜底为 1（parsed>0 已保证存在小数可能）
       if (limit > DATA_CHARS_LIMIT) {
-        notes.push(`limit=${limit} 超出单页上限，已按 ${DATA_CHARS_LIMIT} 处理`);
+        notes.push(
+          `limit=${limit} 超出单页上限，已按 ${DATA_CHARS_LIMIT} 处理`
+        );
         limit = DATA_CHARS_LIMIT;
       }
     }
@@ -723,13 +811,17 @@ export class PageExecTool extends BaseBrowserTool {
         existing.length > 0
           ? `当前可用批次（最多列出 10 个）：\n${existing.slice(0, 10).map(describeRefMeta).join('\n')}`
           : '暂存区为空（数据可能已随浏览器会话过期，请重新抓取）。';
-      return this.createErrorResponse(`readRef "${refId}" 不存在或已过期。${hint}`);
+      return this.createErrorResponse(
+        `readRef "${refId}" 不存在或已过期。${hint}`
+      );
     }
 
     const totalChars = entry.json.length;
     const start = Math.min(offset, totalChars);
     if (offset > totalChars) {
-      notes.push(`offset=${offset} 超出数据末尾（共 ${totalChars} 字符），已收敛到末尾返回空页`);
+      notes.push(
+        `offset=${offset} 超出数据末尾（共 ${totalChars} 字符），已收敛到末尾返回空页`
+      );
     }
     const content = entry.json.slice(start, start + limit);
     const end = start + content.length;
@@ -759,18 +851,14 @@ export class PageExecTool extends BaseBrowserTool {
     return this.createSuccessResponse(payload, message);
   }
 
-  /**
-   * 构造求值表达式
-   * - 无 args：按控制台语义原样求值；
-   * - 有 args：包装为 (function($args){ code })(args)，支持 return 与 $args 取参。
-   */
+  /** One execution contract: async function body, explicit return, optional $args array. */
   private buildExpression(code: string, codeArgs?: unknown[]): string {
-    if (!codeArgs || !Array.isArray(codeArgs) || codeArgs.length === 0) {
-      return code;
-    }
-    // JSON 文本安全内联：转义 U+2028/U+2029（旧引擎中非法字符串字面量字符）
-    const argsJson = JSON.stringify(codeArgs).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
-    return `;(function($args){ ${code} })(${argsJson})`;
+    if (codeArgs !== undefined && !Array.isArray(codeArgs))
+      throw new Error('args 必须为数组');
+    const argsJson = JSON.stringify(codeArgs ?? [])
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029');
+    return '(async function($args){\n' + code + '\n})(' + argsJson + ')';
   }
 
   /** 按策略逐级执行，收集每次尝试记录 */
@@ -783,61 +871,96 @@ export class PageExecTool extends BaseBrowserTool {
     timeoutMs: number,
     attempts: EngineAttempt[],
     captureJson: boolean,
-  ): Promise<{ ok: boolean; engine?: 'scripting' | 'cdp'; world?: 'MAIN' | 'ISOLATED'; value?: unknown; type?: string; error?: string; rawJson?: string; rawJsonError?: string }> {
+    frameId = 0
+  ): Promise<{
+    ok: boolean;
+    engine?: 'scripting' | 'cdp';
+    world?: 'MAIN' | 'ISOLATED';
+    value?: unknown;
+    type?: string;
+    error?: string;
+    rawJson?: string;
+    rawJsonError?: string;
+  }> {
     // —— 策略：强制 CDP ——
     if (strategy === 'cdp') {
-      return this.runCdp(tabId, expression, awaitPromise, timeoutMs, attempts);
+      return this.runCdp(
+        tabId,
+        expression,
+        awaitPromise,
+        timeoutMs,
+        attempts,
+        frameId
+      );
     }
 
     // —— 策略：scripting（或 auto 的注入阶段）——
-    const primaryWorld: 'MAIN' | 'ISOLATED' = world === 'ISOLATED' ? 'ISOLATED' : 'MAIN';
-    const scriptingResult = await this.runScripting(tabId, expression, primaryWorld, awaitPromise, timeoutMs, attempts, captureJson);
+    const primaryWorld: 'MAIN' | 'ISOLATED' =
+      world === 'ISOLATED' ? 'ISOLATED' : 'MAIN';
+    const scriptingResult = await this.runScripting(
+      tabId,
+      expression,
+      primaryWorld,
+      awaitPromise,
+      timeoutMs,
+      attempts,
+      captureJson,
+      frameId
+    );
 
     if (scriptingResult.ok) {
       return scriptingResult;
     }
 
-    // —— 瞬态失败（注入无结果：页面加载中/上下文刚销毁重建）——
-    // 同引擎短延迟重试一次；auto 策略下重试仍失败则升级 CDP、再退隔离世界
-    // （不同引擎的注入时机不同，多引擎覆盖远比让模型原样重试有效）
-    if (isNoResultFailure(scriptingResult.error)) {
-      this.log('Injection returned no result (page likely loading), retrying after delay', 'warn');
-      await delay(400);
-      const retry = await this.runScripting(tabId, expression, primaryWorld, awaitPromise, timeoutMs, attempts, captureJson);
-      if (retry.ok) {
-        return retry;
-      }
-      if (strategy === 'auto') {
-        this.log('Retry still empty, escalating to CDP channel', 'warn');
-        const cdpResult = await this.runCdp(tabId, expression, awaitPromise, timeoutMs, attempts);
-        if (cdpResult.ok) {
-          return cdpResult;
-        }
-        if (primaryWorld === 'MAIN') {
-          this.log('CDP unavailable, falling back to ISOLATED world', 'warn');
-          return this.runScripting(tabId, expression, 'ISOLATED', awaitPromise, timeoutMs, attempts, captureJson);
-        }
-      }
-      return retry;
-    }
-
+    // No-result/transport failures may follow side effects. Never replay automatically.
     // 注入世界为 MAIN 且因 CSP 拒绝 eval 失败：
     // - auto 策略升级到 CDP 重试（最高权限，无视页面 CSP）；
     // - scripting 策略不碰调试器，直接回退到隔离世界（DOM 操作仍可用）。
     const cspBlocked = scriptingResult.cspBlocked === true;
     if (primaryWorld === 'MAIN' && cspBlocked) {
+      if (frameId !== 0)
+        return this.runScripting(
+          tabId,
+          expression,
+          'ISOLATED',
+          awaitPromise,
+          timeoutMs,
+          attempts,
+          captureJson,
+          frameId
+        );
       if (strategy === 'auto') {
-        this.log('MAIN world eval blocked by page CSP, escalating to CDP channel', 'warn');
-        const cdpResult = await this.runCdp(tabId, expression, awaitPromise, timeoutMs, attempts);
+        this.log(
+          'MAIN world eval blocked by page CSP, escalating to CDP channel',
+          'warn'
+        );
+        const cdpResult = await this.runCdp(
+          tabId,
+          expression,
+          awaitPromise,
+          timeoutMs,
+          attempts,
+          frameId
+        );
         if (cdpResult.ok) {
           return cdpResult;
         }
-        // CDP 也不可用：最后退到隔离世界（DOM 操作仍可用，页面 JS 全局不可见）
-        this.log('CDP channel unavailable, falling back to ISOLATED world', 'warn');
-        return this.runScripting(tabId, expression, 'ISOLATED', awaitPromise, timeoutMs, attempts, captureJson);
+        return cdpResult; // Execution may have started; do not replay in another world.
       }
-      this.log('MAIN world eval blocked by page CSP, falling back to ISOLATED world (scripting strategy)', 'warn');
-      return this.runScripting(tabId, expression, 'ISOLATED', awaitPromise, timeoutMs, attempts, captureJson);
+      this.log(
+        'MAIN world eval blocked by page CSP, falling back to ISOLATED world (scripting strategy)',
+        'warn'
+      );
+      return this.runScripting(
+        tabId,
+        expression,
+        'ISOLATED',
+        awaitPromise,
+        timeoutMs,
+        attempts,
+        captureJson,
+        frameId
+      );
     }
 
     return scriptingResult;
@@ -852,12 +975,29 @@ export class PageExecTool extends BaseBrowserTool {
     timeoutMs: number,
     attempts: EngineAttempt[],
     captureJson: boolean,
-  ): Promise<{ ok: boolean; engine: 'scripting'; world: 'MAIN' | 'ISOLATED'; value?: unknown; type?: string; error?: string; cspBlocked?: boolean; rawJson?: string; rawJsonError?: string }> {
+    frameId = 0
+  ): Promise<{
+    ok: boolean;
+    engine: 'scripting';
+    world: 'MAIN' | 'ISOLATED';
+    value?: unknown;
+    type?: string;
+    error?: string;
+    cspBlocked?: boolean;
+    rawJson?: string;
+    rawJsonError?: string;
+  }> {
     try {
       const results = await chrome.scripting.executeScript({
-        target: { tabId },
+        target: { tabId, frameIds: [frameId] },
         func: pageConsoleEvaluate,
-        args: [expression, timeoutMs, awaitPromise, captureJson],
+        args: [
+          expression,
+          timeoutMs,
+          awaitPromise,
+          captureJson,
+          MAX_CAPTURE_CHARS,
+        ],
         world,
       });
 
@@ -870,24 +1010,35 @@ export class PageExecTool extends BaseBrowserTool {
           world,
           value: payload.value,
           type: payload.type,
-          ...(payload.rawJson !== undefined ? { rawJson: payload.rawJson } : {}),
-          ...(payload.rawJsonError !== undefined ? { rawJsonError: payload.rawJsonError } : {}),
+          ...(payload.rawJson !== undefined
+            ? { rawJson: payload.rawJson }
+            : {}),
+          ...(payload.rawJsonError !== undefined
+            ? { rawJsonError: payload.rawJsonError }
+            : {}),
         };
       }
 
-      const errorMsg = payload?.error ?? 'No result returned from injected script';
+      const errorMsg =
+        payload?.error ?? 'No result returned from injected script';
       attempts.push({ engine: 'scripting', world, ok: false, note: errorMsg });
       return {
         ok: false,
         engine: 'scripting',
         world,
         error: errorMsg,
-        cspBlocked: isCspEvalBlocked(errorMsg),
+        cspBlocked: payload?.safeFallback === true,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       attempts.push({ engine: 'scripting', world, ok: false, note: message });
-      return { ok: false, engine: 'scripting', world, error: message, cspBlocked: isCspEvalBlocked(message) };
+      return {
+        ok: false,
+        engine: 'scripting',
+        world,
+        error: message,
+        cspBlocked: false,
+      };
     }
   }
 
@@ -898,14 +1049,33 @@ export class PageExecTool extends BaseBrowserTool {
     awaitPromise: boolean,
     timeoutMs: number,
     attempts: EngineAttempt[],
-  ): Promise<{ ok: boolean; engine: 'cdp'; world: 'MAIN'; value?: unknown; type?: string; error?: string }> {
+    frameId = 0
+  ): Promise<{
+    ok: boolean;
+    engine: 'cdp';
+    world: 'MAIN';
+    value?: unknown;
+    type?: string;
+    error?: string;
+  }> {
+    if (frameId !== 0)
+      return {
+        ok: false,
+        engine: 'cdp',
+        world: 'MAIN',
+        error:
+          '指定子 frame 不支持顶层 CDP 求值；请用 world=ISOLATED、strategy=scripting，或使用纯文本辅助功能工具。',
+      };
     if (!cdpSession.isSupported()) {
       const note = 'chrome.debugger 不可用（当前环境不支持）';
       attempts.push({ engine: 'cdp', world: 'MAIN', ok: false, note });
       return { ok: false, engine: 'cdp', world: 'MAIN', error: note };
     }
 
-    const result = await cdpSession.evaluate(tabId, expression, { awaitPromise, timeoutMs });
+    const result = await cdpSession.evaluate(tabId, expression, {
+      awaitPromise,
+      timeoutMs,
+    });
 
     if (result.ok) {
       attempts.push({ engine: 'cdp', world: 'MAIN', ok: true });

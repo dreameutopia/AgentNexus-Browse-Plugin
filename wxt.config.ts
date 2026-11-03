@@ -137,9 +137,24 @@ export default defineConfig({
       sourcemap: env.mode !== 'production',
       // 禁用gzip 压缩大小报告，因为压缩大型文件可能会很慢
       reportCompressedSize: false,
-      // chunk大小超过1500kb是触发警告
-      chunkSizeWarningLimit: 1500,
-      minify: false,
+      // chunk大小超过1500kb是触发警告。
+      // sidepanel 主 chunk（含 Vue 应用 + 全量工具实现 + AI 传输层）压缩后约 2.1MB，
+      // 属于单页入口的固有体量，阈值随之上调到 3000KB 继续跟踪其膨胀趋势
+      chunkSizeWarningLimit: 3000,
+      // 产物只供浏览器执行、无需人工阅读调试 → 启用 esbuild 压缩（显著缩小包体积）
+      minify: true,
+      rollupOptions: {
+        // 仅静音两类已确认无害的构建警告，其余（含我们自己的）照常透传：
+        //   1. pyodide 的 npm 包为兼容 Node 引用了 node:* 内置模块，
+        //      Vite 在浏览器构建中已将其替换为空 stub（仅生产构建打印此提示）；
+        //   2. pyodide.asm.mjs 为 Emscripten 生成物，内部 eval 受扩展 CSP 约束。
+        onwarn(warning, warn) {
+          const message = typeof warning === 'string' ? warning : String(warning?.message ?? '');
+          if (message.includes('has been externalized for browser compatibility')) return;
+          if (message.includes('Use of eval') && message.includes('pyodide')) return;
+          warn(warning);
+        },
+      },
     },
   }),
 });

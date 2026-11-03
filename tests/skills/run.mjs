@@ -14,13 +14,14 @@
  * 必须放在仓库内：产物若落在系统临时目录将找不到 node_modules。
  *
  * import.meta.glob 是 Vite 构建期 API，原生 esbuild 不认识——打包时统一改写为
- * 返回合成数据的本地函数：应用代码里只有 skill-store 用到它（枚举预置技能），
- * 因此这里注入一个合成的预置技能条目，让「预置 id 落在保留区间 / 与自定义同名
- * 共存」这条真实装配链路可被断言（见 skills.test.ts 第 6 节）。
+ * 返回数据的本地函数：应用代码里只有 skill-store 用到它（枚举预置技能），
+ * 因此这里把仓库内 skills/ 目录的真实文件按同一键格式（/skills/<目录>/<相对路径>）
+ * 读出来注入，让「预置装配 / 保留区间 id / 与自定义同名共存 / 硬编码引用命中」
+ * 这些真实链路可被断言（见 skills.test.ts 第 6、7 节）。
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
@@ -33,13 +34,38 @@ const workDir = path.join(root, 'node_modules', '.cache', 'agentnexus-skills');
 mkdirSync(workDir, { recursive: true });
 const outfile = path.join(workDir, 'skills.test.mjs');
 
-/** 合成预置技能（仅 skill-store 的 import.meta.glob 会命中它） */
-const syntheticPresetGlob = {
-  '/skills/test-preset-skill/SKILL.md':
-    '---\nname: test-preset-skill\ndescription: 预置技能测试替身\n---\n\n预置技能正文（由测试注入）。',
-};
+/**
+ * 按 Vite glob 的键格式读取仓库内 skills/ 的全部 .md 文件。
+ * 目录不存在时返回空表——此时依赖内置技能的断言会带着明确信息失败，
+ * 而不是被一个「合成替身」悄悄掩盖真实装配问题。
+ */
+function readPresetGlobFromDisk() {
+  const skillsRoot = path.join(root, 'skills');
+  const glob = {};
+  const walk = (dir, relDir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const abs = path.join(dir, entry);
+      const rel = relDir ? `${relDir}/${entry}` : entry;
+      if (statSync(abs).isDirectory()) {
+        walk(abs, rel);
+      } else if (entry.endsWith('.md')) {
+        glob[`/skills/${rel}`] = readFileSync(abs, 'utf8');
+      }
+    }
+  };
+  walk(skillsRoot, '');
+  return glob;
+}
 
-/** 把 Vite 专属的 import.meta.glob(...) 改写为返回合成数据的本地函数（仅当文件中出现时才改写） */
+const presetGlob = readPresetGlobFromDisk();
+
+/** 把 Vite 专属的 import.meta.glob(...) 改写为返回真实预置数据的本地函数（仅当文件中出现时才改写） */
 const importMetaGlobShim = {
   name: 'import-meta-glob-shim',
   setup(buildApi) {
@@ -48,7 +74,7 @@ const importMetaGlobShim = {
       const source = await readFileSync(args.path, 'utf8');
       if (!source.includes('import.meta.glob')) return undefined;
       const shimmed =
-        `const __importMetaGlobShim = () => (${JSON.stringify(syntheticPresetGlob)});\n` +
+        `const __importMetaGlobShim = () => (${JSON.stringify(presetGlob)});\n` +
         source.replace(/import\.meta\.glob/g, '__importMetaGlobShim');
       return { contents: shimmed, loader: 'ts' };
     });

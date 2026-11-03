@@ -34,6 +34,17 @@ type NormalizedMessage = ChatMessage & {
  */
 const TOOL_CONTENT_LIMIT = 8 * 1024;
 
+/**
+ * 不做传输层截断的工具（按 tool 消息的 name 识别）。
+ *
+ * 技能指令与资源文件不是「工具产出的数据」，而是**按需注入的上下文**：体量在
+ * 装配侧已受各自设计上限约束（技能正文 ≤ SKILL_BODY_MAX_CHARS、单文件 ≤
+ * SKILL_FILE_MAX_CHARS），且文档承诺的可读上限（15,000 / 100,000 字符）高于
+ * 传输层的 8KB——一刀切会静默砍半，模型读到残缺指令却以为读全了。
+ * 其余工具（页面抽取等）可能返回数十万字符，仍按 TOOL_CONTENT_LIMIT 截断。
+ */
+const SKILL_CONTEXT_TOOL_NAMES: ReadonlySet<string> = new Set(['load_skill', 'read_skill_file']);
+
 /** NUL 控制字符（OpenAI 等对话 API 会拒绝包含它的文本） */
 const NUL_CHAR = String.fromCharCode(0);
 
@@ -45,7 +56,8 @@ const NUL_CHAR = String.fromCharCode(0);
  * 环上显示的 85%/95% 判定与实际裁剪行为不会漂移。
  *
  * 裁剪策略保持不变：system 优先保留（超限时按 token 预算截断其正文）、
- * tool 内容传输层截断、非 system 消息按「原子组」从新到旧保留。
+ * tool 内容传输层截断（技能类工具除外，见 SKILL_CONTEXT_TOOL_NAMES）、
+ * 非 system 消息按「原子组」从新到旧保留。
  */
 export class ContextWindowGuard {
   static readonly TOOL_CONTENT_LIMIT = TOOL_CONTENT_LIMIT;
@@ -55,7 +67,8 @@ export class ContextWindowGuard {
     const normalizedMessages = messages.map((message, index) => this.normalizeMessage(message, index));
     const originalTokens = this.totalTokens(normalizedMessages);
     const toolContentsTrimmed = messages.reduce((count, message) => {
-      if (message.role !== 'tool') {
+      // 技能类工具不做传输层截断（见 SKILL_CONTEXT_TOOL_NAMES），不应计入「已截断」
+      if (message.role !== 'tool' || SKILL_CONTEXT_TOOL_NAMES.has(message.name ?? '')) {
         return count;
       }
 
@@ -129,7 +142,7 @@ export class ContextWindowGuard {
     return {
       ...message,
       __normalizedIndex: index,
-      content: this.normalizeContent(message.role, message.content),
+      content: this.normalizeContent(message),
       tool_calls: message.tool_calls?.map(toolCall => ({
         ...toolCall,
         function: {
@@ -142,10 +155,13 @@ export class ContextWindowGuard {
     };
   }
 
-  private static normalizeContent(role: ChatMessage['role'], content: ChatMessage['content']): ChatMessage['content'] {
+  private static normalizeContent(message: ChatMessage): ChatMessage['content'] {
+    const { role, content } = message;
+    // 技能类工具的结果按需注入且体量已受设计上限约束，不做传输层截断
+    const trimmable = role === 'tool' && !SKILL_CONTEXT_TOOL_NAMES.has(message.name ?? '');
     if (typeof content === 'string') {
       const sanitized = this.sanitizeText(content);
-      return role === 'tool' ? this.trimToolContent(sanitized) : sanitized;
+      return trimmable ? this.trimToolContent(sanitized) : sanitized;
     }
 
     return content.map(part => {
@@ -160,7 +176,7 @@ export class ContextWindowGuard {
           : part.image_url,
       };
 
-      if (role === 'tool' && normalizedPart.text) {
+      if (trimmable && normalizedPart.text) {
         normalizedPart.text = this.trimToolContent(normalizedPart.text);
       }
 

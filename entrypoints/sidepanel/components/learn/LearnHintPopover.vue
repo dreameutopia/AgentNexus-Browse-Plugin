@@ -50,14 +50,14 @@ defineProps<{
 }
 
 .learn-hint__icon {
-  color: var(--text-tertiary, #94a3b8);
+  color: var(--learn-text-faint, #9ca3af);
   cursor: help;
   transition: color 0.15s ease;
 }
 
 .learn-hint:hover .learn-hint__icon,
 .learn-hint:focus-visible .learn-hint__icon {
-  color: var(--accent, #3b82f6);
+  color: var(--learn-accent, #667eea);
 }
 
 .learn-hint__card {
@@ -69,11 +69,11 @@ defineProps<{
   width: 300px;
   padding: 12px 14px;
   border-radius: 10px;
-  background: var(--bg-elevated, #1e293b);
-  color: var(--text-primary, #e2e8f0);
+  background: var(--learn-bg, #ffffff);
+  color: var(--learn-text, #1f2937);
   box-shadow:
-    0 8px 28px rgba(0, 0, 0, 0.28),
-    0 0 0 1px var(--border, rgba(148, 163, 184, 0.24));
+    0 8px 28px rgba(15, 23, 42, 0.16),
+    0 0 0 1px var(--learn-border, #e5e7eb);
   font-size: 12px;
   line-height: 1.7;
   text-align: left;
@@ -99,12 +99,12 @@ defineProps<{
   margin-bottom: 6px;
   font-size: 12.5px;
   font-weight: 600;
-  color: var(--text-primary, #f1f5f9);
+  color: var(--learn-text-strong, #111827);
 }
 
 .learn-hint__line {
   display: block;
-  color: var(--text-secondary, #cbd5e1);
+  color: var(--learn-text-muted, #6b7280);
 }
 
 .learn-hint__line + .learn-hint__line {
@@ -112,6 +112,6 @@ defineProps<{
 }
 
 .learn-hint__line:last-child {
-  color: var(--text-tertiary, #94a3b8);
+  color: var(--learn-text-faint, #9ca3af);
 }
 </style>

@@ -4,7 +4,7 @@
  * 四引擎分工（详见各模块头注释）：
  *   registry/     智能体引擎、技能引擎（管理 + 解析，相互独立）
  *   context/      转录引擎（用户面，IndexedDB 无长度限制）、AI 上下文引擎（窗口化派生）
- *   runtime/      运行时装配（systemPrompt XML 分区 + 工具去重 + 模型配置 + 初始上下文）
+ *   runtime/      运行时装配（systemPrompt XML 分区 + 工具去重 + 模型配置 + 初始上下文 + 合成激活轮）
  *   conversation/ 会话引擎（驱动循环，事件输出，写转录；对 agent/skill 零感知）
  *
  * 使用流程：
@@ -19,9 +19,17 @@ export {
   DEFAULT_SESSION_AGENT_ID,
 } from './registry/agent-engine';
 export { skillEngine, SKILL_TOOL_IDS } from './registry/skill-engine';
+export type { ActivationRound } from './registry/skill-engine';
 // 智能体领域类型（供 UI 构建选择器/分组视图；具体读写一律经 agentEngine 门面）
 export type { AgentConfig, AgentCategoryGroup } from '@/utils/agents/agent-types';
-export { DEFAULT_AGENT_ICON_PATH } from '@/utils/agents/agent-types';
+// 头像解析（图片地址 → 可渲染 src；缺省 → 默认 emoji）
+export {
+  DEFAULT_AGENT_AVATAR,
+  resolveAgentAvatar,
+  resolveAvatarImageSrc,
+  isImageAvatar,
+  type AgentAvatar,
+} from '@/utils/agents/agent-avatar';
 export { chatDatabase, mergeMessagePatch } from './context/chat-database';
 export type { SessionListOptions, MessagesPage } from './context/chat-database';
 export { transcriptEngine } from './context/transcript-engine';

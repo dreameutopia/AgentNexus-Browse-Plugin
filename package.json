@@ -18,6 +18,7 @@
     "test:engine": "node tests/config-engine/run.mjs",
     "test:channels": "node tests/channels/run.mjs",
     "test:tools": "node tests/tools/run.mjs",
+    "test:text-browser": "node tests/tools/text-browser-probe.mjs",
     "test:image-context": "node tests/image-context/run.mjs",
     "test:message-meta": "node tests/message-meta/run.mjs",
     "test:skills": "node tests/skills/run.mjs",
@@ -26,7 +27,8 @@
     "lint:fix": "npx eslint . --fix",
     "format": "npx prettier --write .",
     "format:check": "npx prettier --check .",
-    "test:vision": "node tests/vision/run.mjs"
+    "test:vision": "node tests/vision/run.mjs",
+    "test:chat-ui": "node tests/chat-ui/run.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.11.0",
@@ -37,6 +39,7 @@
     "@types/markdown-it": "^14.1.2",
     "axios": "^1.20.0",
     "date-fns": "^4.1.0",
+    "docx": "^9.15.1",
     "echarts": "^6.1.0",
     "exceljs": "^4.4.0",
     "fflate": "^0.8.3",

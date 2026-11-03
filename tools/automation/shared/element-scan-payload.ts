@@ -1,5 +1,5 @@
 /**
- * 可交互元素扫描荷载（interactive_button_getter / interactive_input_getter 共用）
+ * 可交互元素扫描荷载（browser_observe 共用）
  *
  * ⚠️ 注入约束：`chrome.scripting.executeScript({ func })` 会把函数源码序列化后
  * 注入页面执行，闭包与模块作用域不会随之带入。因此 `elementScanPayload` 必须
@@ -8,24 +8,31 @@
  * 同理，调用方只能直接传本函数引用 + 显式 args，不能用 .bind / 箭头包装代理
  * （包装函数序列化后会引用外部函数名）。
  *
- * 两个工具共享本荷载，通过 `mode` 参数分流：
+ * browser_observe 通过 `mode` 参数选择观察范围：
+ * - 'controls'：合并按钮与输入；'structure'：结构、状态与滚动容器；
  * - 'buttons'：按钮/链接/勾选框等可点击元素（含下载特征识别）；
- * - 'inputs'：文本框/textarea/下拉框/富文本区等可输入元素（含光标探测补充）。
+ * - 'inputs'：文本框/textarea/下拉框/富文本区等可输入元素（含富文本识别）。
  *
- * 共享部分（选择器生成、可见性与遮挡判定、xpath 祖先链命中、过滤标记、排序）
+ * 共享部分（节点引用生成、可见性与遮挡判定、xpath 祖先链命中、过滤标记、排序）
  * 只存在一份；模式差异（采集范围、描述提取链、类型映射、评分权重、截断规则）
- * 严格保留各自原语义，任何一侧的行为都不因合并而改变。
+ * 由统一节点注册与交付前校验保证定位链路一致。
  */
 
 /** 扫描模式：按钮/链接 或 输入元素 */
-export type ScanMode = 'buttons' | 'inputs';
+import type {
+  ReferenceDocument,
+  ElementReferenceRegistry,
+} from './element-reference';
+export type ScanMode = 'controls' | 'buttons' | 'inputs' | 'structure';
 
 /** 注入脚本返回的元素记录（frameId 由宿主侧补写） */
 export interface PayloadElement {
   type: string;
   description: string;
-  selector: string;
+  context: string;
+  elementId: string;
   score: number;
+  details?: Record<string, unknown>;
   /** 是否命中 regex 过滤（未启用 regex 时为 null） */
   matchedRegex: boolean | null;
   /** 是否命中 xpath 过滤（未启用 xpath 时为 null） */
@@ -39,7 +46,7 @@ export interface PayloadElement {
 /** 注入脚本返回结果 */
 export interface PayloadResult {
   elements: PayloadElement[];
-  /** 本 frame 的页面指纹（采集于分析之前，与元素同一时刻快照，供缓存校验比对） */
+  /** Document nonce + action revision + URL; pagination freezes membership rather than re-sorting live DOM. */
   fingerprint?: string;
   error?: string;
 }
@@ -53,9 +60,168 @@ export function elementScanPayload(
   mode: ScanMode,
   regexSource: string,
   xpathExpr: string,
+  tabId = 0
 ): PayloadResult {
-  // —— 页面指纹：与元素分析同一时刻采集（分析前），保证缓存校验与元素快照一致 ——
-  const frameFingerprint = `${document.readyState}|${document.getElementsByTagName('*').length}|${document.body ? document.body.scrollHeight : 0}`;
+  // Persist only in the extension isolated world; never add attributes to page DOM.
+  const shadowOf = (el: Element): ShadowRoot | null => {
+    try {
+      return (
+        el.shadowRoot ||
+        (globalThis as any).chrome?.dom?.openOrClosedShadowRoot?.(el) ||
+        null
+      );
+    } catch {
+      return el.shadowRoot;
+    }
+  };
+  const contextOf = (el: Element): string => {
+    const semantic = el.closest(
+      'tr, li, [role="row"], fieldset, [role="dialog"], form'
+    );
+    const container =
+      semantic ||
+      (el.parentElement === document.body ? null : el.parentElement);
+    const text = (container?.textContent || '').trim().replace(/\s+/g, ' ');
+    return !semantic && text.length > 180 ? '' : text.slice(0, 180);
+  };
+  const refDocument = document as ReferenceDocument;
+  let registry = refDocument.__agentNexusReferences;
+  if (!registry) {
+    // randomUUID is restricted to secure contexts; getRandomValues also works on
+    // HTTP/local-device pages, which are valid automation targets.
+    const nonce = Array.from(
+      window.crypto.getRandomValues(new Uint8Array(16)),
+      (byte) => byte.toString(16).padStart(2, '0')
+    ).join('');
+    let counter = 0;
+    let revision = 0;
+    const entries = new Map<
+      string,
+      {
+        node: WeakRef<Element>;
+        signature: string;
+        expires: number;
+        url: string;
+      }
+    >();
+    const nodes = new WeakMap<Element, string>();
+    const attributes = (el: Element): string =>
+      JSON.stringify(
+        Array.from(el.attributes)
+          .filter((a) =>
+            /^(id|name|type|role|href|title|placeholder|contenteditable|aria-.*|data-.*)$/.test(
+              a.name
+            )
+          )
+          .map((a) => [a.name, a.value])
+          .sort((a, b) => a[0].localeCompare(b[0]))
+      );
+    const signature = (el: Element): string => {
+      const input =
+        ['input', 'textarea', 'select'].includes(el.localName) ||
+        (el as HTMLElement).isContentEditable;
+      const ancestors: string[] = [];
+      const parentOf = (node: Element): Element | null =>
+        node.parentElement || (node.getRootNode() as ShadowRoot).host || null;
+      let parent = parentOf(el);
+      for (
+        let depth = 0;
+        parent && depth < 8;
+        depth++, parent = parentOf(parent)
+      ) {
+        ancestors.push(parent.localName + attributes(parent));
+        if (parent.matches('tr, li, [role="row"], [data-id], [data-key]')) {
+          ancestors.push(parent.textContent || '');
+          break;
+        }
+      }
+      const labels = Array.from((el as HTMLInputElement).labels || []).map(
+        (label) => label.textContent
+      );
+      const root = el.getRootNode() as Document | ShadowRoot;
+      const namedBy = (el.getAttribute('aria-labelledby') || '')
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((id) => root.getElementById?.(id)?.textContent || '');
+      return JSON.stringify([
+        el.namespaceURI,
+        el.localName,
+        attributes(el),
+        input ? '' : el.textContent,
+        labels,
+        namedBy,
+        contextOf(el),
+        ancestors,
+      ]);
+    };
+    const resolve = (id: string): Element | null => {
+      const entry = entries.get(id);
+      const el = entry?.node.deref();
+      if (
+        !entry ||
+        !el ||
+        entry.expires <= Date.now() ||
+        entry.url !== document.URL ||
+        !el.isConnected ||
+        el.ownerDocument !== document ||
+        entry.signature !== signature(el)
+      ) {
+        entries.delete(id);
+        return null;
+      }
+      return el;
+    };
+    registry = {
+      register(el) {
+        const previous = nodes.get(el);
+        if (previous && resolve(previous) === el) {
+          entries.get(previous)!.expires = Date.now() + 120_000;
+          return previous;
+        }
+        if (counter % 256 === 0)
+          for (const [id, entry] of entries) {
+            if (entry.expires <= Date.now() || !entry.node.deref()?.isConnected)
+              entries.delete(id);
+          }
+        const id = `anx:${tabId}:${nonce}:${++counter}`;
+        entries.set(id, {
+          node: new WeakRef(el),
+          signature: signature(el),
+          expires: Date.now() + 120_000,
+          url: document.URL,
+        });
+        nodes.set(el, id);
+        while (entries.size > 20_000)
+          entries.delete(entries.keys().next().value!);
+        return id;
+      },
+      resolve,
+      invalidate() {
+        revision++;
+      },
+      fingerprint() {
+        return `${nonce}|${revision}|${document.URL}`;
+      },
+    } satisfies ElementReferenceRegistry;
+    refDocument.__agentNexusReferences = registry;
+    const reset = () => {
+      entries.clear();
+      revision++;
+    };
+    window.addEventListener('pagehide', reset);
+    window.addEventListener('popstate', reset);
+    window.addEventListener('hashchange', reset);
+  }
+  const roots: (Document | ShadowRoot)[] = [document];
+  for (let i = 0; i < roots.length; i++) {
+    roots[i].querySelectorAll('*').forEach((el) => {
+      const shadow = shadowOf(el);
+      if (shadow) roots.push(shadow);
+    });
+  }
+  const queryAll = (selector: string): Element[] =>
+    roots.flatMap((root) => Array.from(root.querySelectorAll(selector)));
+  const frameFingerprint = registry.fingerprint();
 
   // —— 过滤条件编译（非法条件立即返回错误，避免整页误判）——
   let regex: RegExp | null = null;
@@ -63,14 +229,24 @@ export function elementScanPayload(
     try {
       regex = new RegExp(regexSource, 'i');
     } catch (e) {
-      return { elements: [], fingerprint: frameFingerprint, error: `regex 参数不是合法的 JavaScript 正则表达式：${(e as Error).message}` };
+      return {
+        elements: [],
+        fingerprint: frameFingerprint,
+        error: `regex 参数不是合法的 JavaScript 正则表达式：${(e as Error).message}`,
+      };
     }
   }
 
   let xpathNodes: Set<Element> | null = null;
   if (xpathExpr) {
     try {
-      const snapshot = document.evaluate(xpathExpr, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+      const snapshot = document.evaluate(
+        xpathExpr,
+        document,
+        null,
+        XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+        null
+      );
       xpathNodes = new Set<Element>();
       for (let i = 0; i < snapshot.snapshotLength; i++) {
         const node = snapshot.snapshotItem(i);
@@ -79,10 +255,15 @@ export function elementScanPayload(
         }
       }
     } catch (e) {
-      const example = mode === 'buttons'
-        ? "//button[contains(.,'提交')]"
-        : "//input[@name='keyword']";
-      return { elements: [], fingerprint: frameFingerprint, error: `xpath 参数不是合法的 XPath 1.0 表达式：${(e as Error).message}。请使用相对路径写法，如 ${example}` };
+      const example =
+        mode === 'buttons'
+          ? "//button[contains(.,'提交')]"
+          : "//input[@name='keyword']";
+      return {
+        elements: [],
+        fingerprint: frameFingerprint,
+        error: `xpath 参数不是合法的 XPath 1.0 表达式：${(e as Error).message}。请使用相对路径写法，如 ${example}`,
+      };
     }
   }
 
@@ -90,151 +271,57 @@ export function elementScanPayload(
    * 页面分析器类（内联定义，保证注入后自包含）
    */
   class PageAnalyzer {
-    // ══════════════════ 共享：CSS 选择器生成 ══════════════════
-    getUniqueSelector(el: Element): string {
-      if (!el || !(el instanceof Element)) return '';
-      const doc = el.ownerDocument;
-
-      if (el.id) {
-        const simpleIdRegex = /^[A-Za-z_-][A-Za-z0-9_-]*$/;
-        if (simpleIdRegex.test(el.id)) {
-          const selector = `#${el.id}`;
-          try {
-            if (doc.querySelectorAll(selector).length === 1) {
-              return selector;
-            }
-          } catch (e) {
-            // 选择器在当前文档非法时忽略，继续走路径回退策略
-            void e;
-          }
-        }
-      }
-
-      const path: string[] = [];
-      let currentEl: Element | null = el;
-      while (currentEl && currentEl.nodeType === Node.ELEMENT_NODE && currentEl.tagName.toLowerCase() !== 'html') {
-        let selector = currentEl.tagName.toLowerCase();
-        const parent = currentEl.parentElement;
-        if (parent) {
-          const siblings = Array.from(parent.children);
-          const sameTagSiblings = siblings.filter(sibling => sibling.tagName === currentEl!.tagName);
-          if (sameTagSiblings.length > 1) {
-            const index = sameTagSiblings.indexOf(currentEl) + 1;
-            selector += `:nth-of-type(${index})`;
-          }
-        }
-        path.unshift(selector);
-        try {
-          if (doc.querySelectorAll(path.join(' > ')).length === 1) return path.join(' > ');
-        } catch (e) {
-          // 部分构建中的选择器可能非法，忽略后继续向上扩展路径
-          void e;
-        }
-        currentEl = currentEl.parentElement;
-      }
-      return path.join(' > ');
+    // ══════════════════ 共享：节点引用与上下文 ══════════════════
+    getElementId(el: Element): string {
+      return registry!.register(el);
+    }
+    getContext(el: Element): string {
+      return contextOf(el);
     }
 
     // ══════════════════ 共享：可见性与遮挡判定 ══════════════════
     isInViewport(el: Element): boolean {
       const rect = el.getBoundingClientRect();
-      return (rect.top < window.innerHeight && rect.bottom > 0 && rect.left < window.innerWidth && rect.right > 0);
+      return (
+        rect.top < window.innerHeight &&
+        rect.bottom > 0 &&
+        rect.left < window.innerWidth &&
+        rect.right > 0
+      );
     }
 
     isObscured(el: Element): boolean {
-      if (!el.ownerDocument) return true;
       const rect = el.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return true;
-      const centerX = rect.left + rect.width / 2;
-      const centerY = rect.top + rect.height / 2;
-      const elementAtCenter = el.ownerDocument.elementFromPoint(centerX, centerY);
-      if (!elementAtCenter) return true;
-
-      // 如果点击测试返回的是元素本身或其子元素，则未被遮挡
-      if (el.contains(elementAtCenter) || el === elementAtCenter) {
-        return false;
+      const x =
+        (Math.max(0, rect.left) + Math.min(window.innerWidth, rect.right)) / 2;
+      const y =
+        (Math.max(0, rect.top) + Math.min(window.innerHeight, rect.bottom)) / 2;
+      let hit = document.elementFromPoint(x, y);
+      while (hit && shadowOf(hit)?.elementFromPoint) {
+        const inner = shadowOf(hit)!.elementFromPoint(x, y);
+        if (!inner || inner === hit) break;
+        hit = inner;
       }
-
-      // 检查遮挡元素是否是“全局覆盖层”（侧边栏、模态框、抽屉等）
-      // 如果是全局覆盖层，不应该认为主界面元素被遮挡
-      const isGlobalOverlay = (obscuringEl: Element): boolean => {
-        const style = getComputedStyle(obscuringEl);
-        const position = style.position;
-        const zIndex = parseInt(style.zIndex) || 0;
-
-        // fixed 或 absolute 定位且 z-index 较高的元素可能是覆盖层
-        if ((position === 'fixed' || position === 'absolute') && zIndex > 100) {
-          // 检查常见的覆盖层特征
-          const className = (obscuringEl.className || '').toLowerCase();
-          const id = (obscuringEl.id || '').toLowerCase();
-          const role = obscuringEl.getAttribute('role') || '';
-
-          const overlayPatterns = /sidebar|sidepanel|drawer|modal|overlay|popup|dialog|panel|sheet|menu|dropdown|tooltip|popover/i;
-          if (overlayPatterns.test(className) || overlayPatterns.test(id) ||
-              ['dialog', 'menu', 'tooltip', 'alertdialog'].includes(role)) {
-            return true;
-          }
-
-          // 检查是否是覆盖大部分屏幕的元素
-          const obscRect = obscuringEl.getBoundingClientRect();
-          const screenArea = window.innerWidth * window.innerHeight;
-          const obscArea = obscRect.width * obscRect.height;
-          // 如果覆盖超过屏幕 30% 且是 fixed/absolute，可能是覆盖层
-          if (obscArea > screenArea * 0.3) {
-            return true;
-          }
-        }
+      const root = el.getRootNode() as ShadowRoot;
+      if (root.host && hit === root.host && !root.elementFromPoint)
         return false;
-      };
-
-      // 向上查找遮挡元素的祖先，检查是否有全局覆盖层
-      let checkEl: Element | null = elementAtCenter;
-      for (let i = 0; i < 10 && checkEl; i++) {
-        if (isGlobalOverlay(checkEl)) {
-          // 被全局覆盖层遮挡，不算真正遮挡
-          return false;
-        }
-        checkEl = checkEl.parentElement;
-      }
-
-      // 检查遮挡元素是否与目标元素在同一个逻辑容器内
-      // 如果不在同一容器，可能是不同区域的元素，不应互相影响
-      const getLogicalContainer = (element: Element): Element | null => {
-        let parent = element.parentElement;
-        for (let i = 0; i < 5 && parent; i++) {
-          const style = getComputedStyle(parent);
-          // main, section, article, aside, nav, header, footer 等语义容器
-          if (['main', 'section', 'article', 'aside', 'nav', 'header', 'footer'].includes(parent.tagName.toLowerCase())) {
-            return parent;
-          }
-          // 或者 overflow 不是 visible 的容器
-          if (style.overflow !== 'visible' && style.overflow !== '') {
-            return parent;
-          }
-          parent = parent.parentElement;
-        }
-        return null;
-      };
-
-      const targetContainer = getLogicalContainer(el);
-      const obscuringContainer = getLogicalContainer(elementAtCenter);
-
-      // 如果两个元素不在同一个逻辑容器内，且目标元素本身可见，则不认为遮挡
-      if (targetContainer && obscuringContainer && targetContainer !== obscuringContainer) {
-        return false;
-      }
-
-      return true;
+      return !!hit && hit !== el && !el.contains(hit);
     }
 
     /**
      * 检查元素是否被渲染且具有可交互的基本条件 (不检查是否在视口内)
      */
     isPotentiallyInteractable(el: Element): boolean {
-      if (!el || !(el instanceof Element) || !document.body || !document.body.contains(el)) return false;
+      if (!el || !(el instanceof Element) || !document.body || !el.isConnected)
+        return false;
       const style = getComputedStyle(el);
       // 必须是渲染出来的元素
-      if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) < 0.1) return false;
+      if (
+        style.display === 'none' ||
+        style.visibility === 'hidden' ||
+        parseFloat(style.opacity) < 0.1
+      )
+        return false;
       // 必须有实际大小
       const rect = el.getBoundingClientRect();
       if (rect.width < 1 || rect.height < 1) return false;
@@ -271,11 +358,13 @@ export function elementScanPayload(
       el: Element,
       attrHaystack: string,
       regex: RegExp | null,
-      xpathNodes: Set<Element> | null,
+      xpathNodes: Set<Element> | null
     ): void {
       // 过滤标记：regex 对「描述 + 类名 + 常用属性值」不区分大小写匹配（在截断前的全文上进行）
       record.matchedRegex = regex ? regex.test(attrHaystack) : null;
-      record.matchedXpath = xpathNodes ? this.isInXpathChain(el, xpathNodes) : null;
+      record.matchedXpath = xpathNodes
+        ? this.isInXpathChain(el, xpathNodes)
+        : null;
       record.isHit = false;
     }
 
@@ -293,7 +382,18 @@ export function elementScanPayload(
         } else if (node.nodeType === Node.ELEMENT_NODE) {
           // 对于元素节点，只递归查找文本相关的容器元素（span, strong, em, b, i 等）
           const tagName = (node as Element).tagName.toLowerCase();
-          if (['span', 'strong', 'em', 'b', 'i', 'small', 'mark', 'label'].includes(tagName)) {
+          if (
+            [
+              'span',
+              'strong',
+              'em',
+              'b',
+              'i',
+              'small',
+              'mark',
+              'label',
+            ].includes(tagName)
+          ) {
             text += this.getDirectTextContent(node as Element);
           }
         }
@@ -318,7 +418,7 @@ export function elementScanPayload(
       if (labelledBy) {
         const labelIds = labelledBy.split(/\s+/);
         const labelTexts = labelIds
-          .map(id => document.getElementById(id)?.textContent?.trim())
+          .map((id) => document.getElementById(id)?.textContent?.trim())
           .filter(Boolean);
         if (labelTexts.length > 0) {
           return labelTexts.join(' ');
@@ -333,16 +433,23 @@ export function elementScanPayload(
       }
 
       // 第五优先级：元素全部文本内容（作为 fallback）
-      description = (el.textContent || (el as HTMLElement).innerText || '').trim().replace(/\s+/g, ' ');
+      description = (el.textContent || (el as HTMLElement).innerText || '')
+        .trim()
+        .replace(/\s+/g, ' ');
       // 过滤掉单个特殊字符（如 ⋮、×、+ 等菜单按钮）
-      if (description && !/^[⋮×+\-·•…⋯⁝⁞︙]+$/.test(description) && description.length <= 50) {
+      if (
+        description &&
+        !/^[⋮×+\-·•…⋯⁝⁞︙]+$/.test(description) &&
+        description.length <= 50
+      ) {
         return description;
       }
 
       // 第六优先级：SVG 的 name 或 aria-label
       const svg = el.querySelector('svg');
       if (svg) {
-        description = svg.getAttribute('name') || svg.getAttribute('aria-label') || '';
+        description =
+          svg.getAttribute('name') || svg.getAttribute('aria-label') || '';
         if (description) return description;
       }
 
@@ -354,7 +461,13 @@ export function elementScanPayload(
       }
 
       // 第八优先级：data-* 属性扫描（tooltip、label、action 等）
-      const tooltipAttrs = ['data-tooltip', 'data-tip', 'data-original-title', 'data-title', 'data-content'];
+      const tooltipAttrs = [
+        'data-tooltip',
+        'data-tip',
+        'data-original-title',
+        'data-title',
+        'data-content',
+      ];
       for (const attr of tooltipAttrs) {
         const value = el.getAttribute(attr);
         if (value) return value;
@@ -362,8 +475,10 @@ export function elementScanPayload(
 
       // 第九优先级：父元素上下文 - 从最近的带描述的祖先元素获取语义
       let ancestor = el.parentElement;
-      for (let i = 0; i < 2 && ancestor; i++) { // 最多向上查找 2 层
-        const ancestorLabel = ancestor.getAttribute('aria-label') || ancestor.getAttribute('title');
+      for (let i = 0; i < 2 && ancestor; i++) {
+        // 最多向上查找 2 层
+        const ancestorLabel =
+          ancestor.getAttribute('aria-label') || ancestor.getAttribute('title');
         if (ancestorLabel) {
           return ancestorLabel;
         }
@@ -371,7 +486,7 @@ export function elementScanPayload(
       }
 
       // 第十优先级：图标类名语义解析 - 从 class="icon-delete" 提取语义词
-      const className = el.className || '';
+      const className = el.getAttribute('class') || '';
       if (typeof className === 'string') {
         // 匹配常见的图标类名模式
         const iconPatterns = [
@@ -379,7 +494,7 @@ export function elementScanPayload(
           /fa[-_]?(\w+)/i,
           /glyphicon[-_]?(\w+)/i,
           /mdi[-_]?(\w+)/i,
-          /material[-_]icons?[-_]?(\w+)/i
+          /material[-_]icons?[-_]?(\w+)/i,
         ];
         for (const pattern of iconPatterns) {
           const match = className.match(pattern);
@@ -411,25 +526,42 @@ export function elementScanPayload(
         }
 
         // 常见下载文件扩展名
-        const downloadExtensions = /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|zip|rar|7z|tar|gz|exe|dmg|pkg|apk|ipa|mp3|mp4|avi|mov|mkv|wav|flac|csv|json|xml|txt|rtf|epub|mobi|iso)(\?.*)?$/i;
+        const downloadExtensions =
+          /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|zip|rar|7z|tar|gz|exe|dmg|pkg|apk|ipa|mp3|mp4|avi|mov|mkv|wav|flac|csv|json|xml|txt|rtf|epub|mobi|iso)(\?.*)?$/i;
         if (downloadExtensions.test(href)) {
           return true;
         }
 
         // URL 路径包含下载相关关键词
-        const downloadUrlPatterns = /\/(download|export|attachment|file|get-file|fetch-file|save|output)\b/i;
+        const downloadUrlPatterns =
+          /\/(download|export|attachment|file|get-file|fetch-file|save|output)\b/i;
         if (downloadUrlPatterns.test(href)) {
           return true;
         }
       }
 
       // 3. 检查文本内容
-      const text = (el.textContent || (el as HTMLElement).innerText || '').toLowerCase();
+      const text = (
+        el.textContent ||
+        (el as HTMLElement).innerText ||
+        ''
+      ).toLowerCase();
       const downloadTextPatterns = [
         // 中文
-        /下载/, /导出/, /保存/, /另存/, /获取文件/, /导出报表/, /下载附件/, /导出数据/,
+        /下载/,
+        /导出/,
+        /保存/,
+        /另存/,
+        /获取文件/,
+        /导出报表/,
+        /下载附件/,
+        /导出数据/,
         // 英文
-        /\bdownload\b/, /\bexport\b/, /\bsave\s*(as|file)?\b/, /\bget\s*file\b/, /\battachment\b/
+        /\bdownload\b/,
+        /\bexport\b/,
+        /\bsave\s*(as|file)?\b/,
+        /\bget\s*file\b/,
+        /\battachment\b/,
       ];
       for (const pattern of downloadTextPatterns) {
         if (pattern.test(text)) {
@@ -438,14 +570,25 @@ export function elementScanPayload(
       }
 
       // 4. 检查 class 和 id 属性
-      const classAndId = ((el.className || '') + ' ' + (el.id || '')).toLowerCase();
-      const downloadClassPatterns = /\b(download|export|save|attachment|file-download|export-btn|save-btn|dl-btn)\b/;
+      const classAndId = (
+        (el.className || '') +
+        ' ' +
+        (el.id || '')
+      ).toLowerCase();
+      const downloadClassPatterns =
+        /\b(download|export|save|attachment|file-download|export-btn|save-btn|dl-btn)\b/;
       if (downloadClassPatterns.test(classAndId)) {
         return true;
       }
 
       // 5. 检查 data-* 属性
-      const dataAttrs = ['data-download', 'data-export', 'data-action', 'data-command', 'data-type'];
+      const dataAttrs = [
+        'data-download',
+        'data-export',
+        'data-action',
+        'data-command',
+        'data-type',
+      ];
       for (const attr of dataAttrs) {
         const value = (el.getAttribute(attr) || '').toLowerCase();
         if (value && /download|export|save/.test(value)) {
@@ -455,20 +598,35 @@ export function elementScanPayload(
 
       // 6. 检查 onclick 属性
       const onclick = (el.getAttribute('onclick') || '').toLowerCase();
-      if (/download|export|save|fileSaver|createObjectURL|writeFile/.test(onclick)) {
+      if (
+        /download|export|save|fileSaver|createObjectURL|writeFile/.test(onclick)
+      ) {
         return true;
       }
 
       // 7. 检查图标类名（FontAwesome, Material, 通用图标库）
       const iconClassPatterns = [
-        /fa-download/, /fa-file-download/, /fa-save/, /fa-export/,
-        /mdi-download/, /mdi-file-download/, /mdi-export/, /mdi-content-save/,
-        /icon[-_]?download/, /icon[-_]?export/, /icon[-_]?save/,
-        /glyphicon[-_]?download/, /glyphicon[-_]?save/,
-        /download[-_]?icon/, /export[-_]?icon/, /save[-_]?icon/
+        /fa-download/,
+        /fa-file-download/,
+        /fa-save/,
+        /fa-export/,
+        /mdi-download/,
+        /mdi-file-download/,
+        /mdi-export/,
+        /mdi-content-save/,
+        /icon[-_]?download/,
+        /icon[-_]?export/,
+        /icon[-_]?save/,
+        /glyphicon[-_]?download/,
+        /glyphicon[-_]?save/,
+        /download[-_]?icon/,
+        /export[-_]?icon/,
+        /save[-_]?icon/,
       ];
       // 元素自身 class 先测（SVG 元素的 className 是对象，取 class 属性拿到真实类名）
-      const ownClass = (el.getAttribute && el.getAttribute('class')) || `${el.className || ''}`;
+      const ownClass =
+        (el.getAttribute && el.getAttribute('class')) ||
+        `${el.className || ''}`;
       for (const pattern of iconClassPatterns) {
         if (pattern.test(ownClass)) return true;
       }
@@ -476,7 +634,10 @@ export function elementScanPayload(
       // 语义等价，但避免为大容器物化整棵子树的类名字符串（性能防护）
       const descendants = el.querySelectorAll('*');
       for (let i = 0; i < descendants.length; i++) {
-        const descClass = (descendants[i].getAttribute && descendants[i].getAttribute('class')) || `${descendants[i].className || ''}`;
+        const descClass =
+          (descendants[i].getAttribute &&
+            descendants[i].getAttribute('class')) ||
+          `${descendants[i].className || ''}`;
         for (const pattern of iconClassPatterns) {
           if (pattern.test(descClass)) return true;
         }
@@ -485,7 +646,11 @@ export function elementScanPayload(
       // 8. 检查 SVG 图标的 name 或 aria-label
       const svg = el.querySelector('svg');
       if (svg) {
-        const svgName = (svg.getAttribute('name') || svg.getAttribute('aria-label') || '').toLowerCase();
+        const svgName = (
+          svg.getAttribute('name') ||
+          svg.getAttribute('aria-label') ||
+          ''
+        ).toLowerCase();
         if (/download|export|save/.test(svgName)) {
           return true;
         }
@@ -524,8 +689,10 @@ export function elementScanPayload(
 
       // 2. 内容质量评分 (30分)
       if (element.textLength > 0) {
-        if (element.textLength >= 2 && element.textLength <= 30) score += 30; // 合理长度
-        else if (element.textLength > 30) score += 20; // 较长
+        if (element.textLength >= 2 && element.textLength <= 30)
+          score += 30; // 合理长度
+        else if (element.textLength > 30)
+          score += 20; // 较长
         else score += 10; // 很短
       }
 
@@ -544,11 +711,15 @@ export function elementScanPayload(
      * 为单个按钮类元素构建结果记录（描述、类型、评分、过滤标记）
      * 返回 null 表示元素不可交互（未渲染 / 视口内被遮挡）
      */
-    buildButtonRecord(el: Element, regex: RegExp | null, xpathNodes: Set<Element> | null): PayloadElement | null {
+    buildButtonRecord(
+      el: Element,
+      regex: RegExp | null,
+      xpathNodes: Set<Element> | null
+    ): PayloadElement | null {
       if (!this.passesVisibilityGuard(el)) return null;
 
       const tagName = el.tagName.toLowerCase();
-      const rawClassName = (el.className || '').toString();
+      const rawClassName = el.getAttribute('class') || '';
       const href = el.getAttribute('href') || '';
       const rect = el.getBoundingClientRect();
       const style = getComputedStyle(el as HTMLElement);
@@ -559,7 +730,7 @@ export function elementScanPayload(
       // 简化的 class 名作为辅助信息（同时参与 regex 匹配）
       const simplifiedClass = rawClassName
         .split(/\s+/)
-        .filter(c => c && c.length < 30) // 过滤过长的 class
+        .filter((c) => c && c.length < 30) // 过滤过长的 class
         .slice(0, 3) // 最多取3个
         .join(' ');
 
@@ -578,7 +749,11 @@ export function elementScanPayload(
 
       // 构建最终的 description：如果有内容描述且有 class，则附加 class 信息
       let finalDescription = description;
-      if (!description.startsWith('[class:') && !description.startsWith('[' + tagName) && simplifiedClass) {
+      if (
+        !description.startsWith('[class:') &&
+        !description.startsWith('[' + tagName) &&
+        simplifiedClass
+      ) {
         finalDescription = `${description} [${simplifiedClass}]`;
       }
 
@@ -588,16 +763,30 @@ export function elementScanPayload(
       }
 
       const fullDescription = finalDescription;
-      if (finalDescription.length > 70) finalDescription = finalDescription.substring(0, 67) + '...';
+      if (finalDescription.length > 70)
+        finalDescription = finalDescription.substring(0, 67) + '...';
 
       // 元素类型判定：a[href] 或 role=link 为链接；表单控件按类型标注；其余为普通元素
-      const inputType = tagName === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : '';
+      const inputType =
+        tagName === 'input'
+          ? (el.getAttribute('type') || 'text').toLowerCase()
+          : '';
       let type = 'button';
-      if ((tagName === 'a' && (href.startsWith('http') || href.startsWith('/'))) || el.getAttribute('role') === 'link') {
+      if (
+        (tagName === 'a' &&
+          (href.startsWith('http') || href.startsWith('/'))) ||
+        el.getAttribute('role') === 'link'
+      ) {
         type = 'link';
-      } else if (tagName === 'input' && ['checkbox', 'radio'].includes(inputType)) {
+      } else if (
+        tagName === 'input' &&
+        ['checkbox', 'radio'].includes(inputType)
+      ) {
         type = inputType;
-      } else if (tagName === 'input' && ['submit', 'button', 'reset', 'image'].includes(inputType)) {
+      } else if (
+        tagName === 'input' &&
+        ['submit', 'button', 'reset', 'image'].includes(inputType)
+      ) {
         type = 'button';
       } else if (tagName === 'select') {
         type = 'select';
@@ -620,18 +809,21 @@ export function elementScanPayload(
         el.getAttribute('value') || '',
         el.getAttribute('data-testid') || '',
         el.getAttribute('data-action') || '',
-        el.getAttribute('data-url') || ''
-      ].filter(Boolean).join(' ');
+        el.getAttribute('data-url') || '',
+      ]
+        .filter(Boolean)
+        .join(' ');
 
       const record: PayloadElement = {
         type,
         description: finalDescription,
-        selector: this.getUniqueSelector(el),
+        context: this.getContext(el),
+        elementId: this.getElementId(el),
         score: 0,
         isDownload,
         matchedRegex: null,
         matchedXpath: null,
-        isHit: false
+        isHit: false,
       };
       this.applyFilterFlags(record, el, attrHaystack, regex, xpathNodes);
 
@@ -641,7 +833,7 @@ export function elementScanPayload(
         textLength: fullDescription.length,
         tagName,
         computedCursor: style.cursor,
-        rectTop: rect.top
+        rectTop: rect.top,
       });
 
       return record;
@@ -651,8 +843,12 @@ export function elementScanPayload(
     findAssociatedDescription(el: Element): string {
       // 1. 通过 label[for] 查找关联的 label
       if (el.id) {
-        const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
-        if (label && label.textContent) { return label.textContent.trim(); }
+        const label = (el.getRootNode() as Document | ShadowRoot).querySelector(
+          `label[for="${CSS.escape(el.id)}"]`
+        );
+        if (label && label.textContent) {
+          return label.textContent.trim();
+        }
       }
 
       // 2. 通过 aria-labelledby 查找关联的元素
@@ -660,7 +856,7 @@ export function elementScanPayload(
       if (labelledBy) {
         const labelIds = labelledBy.split(/\s+/);
         const labelTexts = labelIds
-          .map(id => document.getElementById(id)?.textContent?.trim())
+          .map((id) => document.getElementById(id)?.textContent?.trim())
           .filter(Boolean);
         if (labelTexts.length > 0) {
           return labelTexts.join(' ');
@@ -670,8 +866,14 @@ export function elementScanPayload(
       // 3. 查找父容器中的 placeholder 元素
       const parent = el.parentElement;
       if (parent) {
-        const placeholderSibling = parent.querySelector('[class*="placeholder"]');
-        if (placeholderSibling && placeholderSibling.parentElement === parent && placeholderSibling.textContent) {
+        const placeholderSibling = parent.querySelector(
+          '[class*="placeholder"]'
+        );
+        if (
+          placeholderSibling &&
+          placeholderSibling.parentElement === parent &&
+          placeholderSibling.textContent
+        ) {
           return placeholderSibling.textContent.trim();
         }
       }
@@ -679,16 +881,23 @@ export function elementScanPayload(
       // 4. 查找前一个兄弟元素的文本
       const precedingSibling = el.previousElementSibling;
       if (precedingSibling && precedingSibling.textContent) {
-        if (!['script', 'style'].includes(precedingSibling.tagName.toLowerCase())) {
+        if (
+          !['script', 'style'].includes(precedingSibling.tagName.toLowerCase())
+        ) {
           return precedingSibling.textContent.trim();
         }
       }
 
       // 5. 父容器 label 查找 - 支持 <div class="form-group"><label>名字</label><input></div> 这种结构
       let ancestor = el.parentElement;
-      for (let i = 0; i < 3 && ancestor; i++) { // 最多向上查找 3 层
+      for (let i = 0; i < 3 && ancestor; i++) {
+        // 最多向上查找 3 层
         const label = ancestor.querySelector('label');
-        if (label && label.textContent && !ancestor.querySelector('input + input, textarea + textarea')) {
+        if (
+          label &&
+          label.textContent &&
+          !ancestor.querySelector('input + input, textarea + textarea')
+        ) {
           // 确保这个容器只有一个输入元素，避免 label 关联错误
           return label.textContent.trim();
         }
@@ -703,7 +912,8 @@ export function elementScanPayload(
      */
     getInputDescription(el: Element): string {
       // 第一优先级：标准属性
-      let description = el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
+      let description =
+        el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
       if (description) return description;
 
       // 第二优先级：关联描述（label, aria-labelledby 等）
@@ -719,18 +929,32 @@ export function elementScanPayload(
       if (description) return description;
 
       // 第五优先级：data-* 属性扫描
-      const dataAttrs = ['data-placeholder', 'data-label', 'data-name', 'data-field', 'data-testid', 'data-qa'];
+      const dataAttrs = [
+        'data-placeholder',
+        'data-label',
+        'data-name',
+        'data-field',
+        'data-testid',
+        'data-qa',
+      ];
       for (const attr of dataAttrs) {
         const value = el.getAttribute(attr);
         if (value) {
           // 将 data-testid 等转为可读格式（如 "user-email-input" -> "user email input"）
-          return value.replace(/[-_]/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+          return value
+            .replace(/[-_]/g, ' ')
+            .replace(/([a-z])([A-Z])/g, '$1 $2')
+            .toLowerCase();
         }
       }
 
       // 第六优先级：输入框内已有值作为辅助描述
       const inputValue = (el as HTMLInputElement).value;
-      if (inputValue && inputValue.length <= 30) {
+      if (
+        (el as HTMLInputElement).type !== 'password' &&
+        inputValue &&
+        inputValue.length <= 30
+      ) {
         return `(contains: ${inputValue})`;
       }
 
@@ -761,7 +985,8 @@ export function elementScanPayload(
       }
 
       // 3. 语义标签评分 (20分)
-      if (element.type === 'element') score += 5; // xpath 显式选中的非标准输入元素
+      if (element.type === 'element')
+        score += 5; // xpath 显式选中的非标准输入元素
       else score += 20; // 标准 input/textarea/富文本区
 
       // 4. 位置评分 (10分) - 越靠上越重要
@@ -773,13 +998,17 @@ export function elementScanPayload(
 
     // =================================================================
     // ▶️ 为单个输入类元素构建结果记录（类型、描述、评分、过滤标记）
-    //    allowAnyElement=true 时用于 xpath 显式选中的非标准输入元素
     // =================================================================
-    buildInputRecord(el: Element, regex: RegExp | null, xpathNodes: Set<Element> | null, allowAnyElement: boolean): PayloadElement | null {
+    buildInputRecord(
+      el: Element,
+      regex: RegExp | null,
+      xpathNodes: Set<Element> | null
+    ): PayloadElement | null {
       if (!this.passesVisibilityGuard(el)) return null;
+      if (el.matches('[readonly], [aria-readonly="true"]')) return null;
 
       const tagName = el.tagName.toLowerCase();
-      const rawClassName = (el.className || '').toString();
+      const rawClassName = el.getAttribute('class') || '';
       const rect = el.getBoundingClientRect();
 
       let description = this.getInputDescription(el);
@@ -789,29 +1018,37 @@ export function elementScanPayload(
         type = 'textarea';
         if (!description) description = 'Rich text area';
       } else if (tagName === 'select') {
-        // 下拉选择框：enhance_fill 按 option 文本/值匹配填充
+        // 下拉选择框：browser_interact(action="fill") 按 option 文本/值匹配填充
         type = 'select';
         if (!description) description = 'Select dropdown';
       } else if (tagName === 'input') {
-        const inputType = el.getAttribute('type') || 'text';
-        if (['text', 'search', 'email', 'password', 'url', 'tel', 'number', 'date', 'time', 'datetime-local', 'month', 'week', 'color', 'range'].includes(inputType)) {
+        const inputType = (el as HTMLInputElement).type || 'text';
+        if (
+          [
+            'text',
+            'search',
+            'email',
+            'password',
+            'url',
+            'tel',
+            'number',
+            'date',
+            'time',
+            'datetime-local',
+            'month',
+            'week',
+            'color',
+            'range',
+          ].includes(inputType)
+        ) {
           type = `input_${inputType}`;
           if (!description) description = `Text input (${inputType})`;
-        } else if (allowAnyElement) {
-          // xpath 显式选中的非文本类 input（checkbox/radio 等），标注为 element
-          type = 'element';
-          if (!description) description = `Input (${inputType})`;
         } else {
           return null; // checkbox/radio/file 等不在本工具范围（属按钮或文件上传工具）
         }
       } else if ((el as HTMLElement).isContentEditable) {
         type = tagName === 'body' ? 'body_editor' : 'div_editable';
         if (!description) description = 'Rich text editor area';
-      } else if (allowAnyElement) {
-        // xpath 显式选中的非标准输入元素（自定义编辑器等），标注为 element
-        type = 'element';
-        const text = (el.textContent || (el as HTMLElement).innerText || '').trim().replace(/\s+/g, ' ');
-        if (!description) description = text && text.length <= 50 ? text : `[${tagName}]`;
       } else {
         return null;
       }
@@ -822,7 +1059,9 @@ export function elementScanPayload(
       const inViewport = this.isInViewport(el);
 
       // 屏幕外元素追加可见性提示，帮助调用方决定是否滚动
-      let finalDescription = inViewport ? description : `${description} (currently not visible)`;
+      let finalDescription = inViewport
+        ? description
+        : `${description} (currently not visible)`;
       if (finalDescription.length > 50) {
         finalDescription = finalDescription.substring(0, 47) + '...';
       }
@@ -836,17 +1075,20 @@ export function elementScanPayload(
         el.getAttribute('placeholder') || '',
         el.getAttribute('value') || '',
         el.getAttribute('data-testid') || '',
-        el.getAttribute('data-name') || ''
-      ].filter(Boolean).join(' ');
+        el.getAttribute('data-name') || '',
+      ]
+        .filter(Boolean)
+        .join(' ');
 
       const record: PayloadElement = {
         type: finalType,
         description: finalDescription,
-        selector: this.getUniqueSelector(el),
+        context: this.getContext(el),
+        elementId: this.getElementId(el),
         score: 0,
         matchedRegex: null,
         matchedXpath: null,
-        isHit: false
+        isHit: false,
       };
       this.applyFilterFlags(record, el, attrHaystack, regex, xpathNodes);
 
@@ -854,7 +1096,7 @@ export function elementScanPayload(
         isInViewport: inViewport,
         textLength: rawDescription.length,
         type: finalType,
-        rectTop: rect.top
+        rectTop: rect.top,
       });
 
       return record;
@@ -865,75 +1107,178 @@ export function elementScanPayload(
       const results = new Map<Element, PayloadElement>();
       if (!document.body) return [];
 
-      const register = (el: Element, allowAnyElement: boolean) => {
-        if (!el || results.has(el)) return;
-        const record = mode === 'buttons'
-          ? this.buildButtonRecord(el, regex, xpathNodes)
-          : this.buildInputRecord(el, regex, xpathNodes, allowAnyElement);
+      const register = (el: Element) => {
+        if (
+          !el ||
+          results.has(el) ||
+          (mode !== 'structure' &&
+            (el.matches(':disabled, [aria-disabled="true"]') ||
+              el.closest('[inert]')))
+        )
+          return;
+        let record: PayloadElement | null;
+        if (mode === 'structure') {
+          if (!this.isPotentiallyInteractable(el)) return;
+          const role = el.getAttribute('role') || el.localName;
+          const text = (
+            el.getAttribute('aria-label') ||
+            (el as HTMLInputElement).placeholder ||
+            el.textContent ||
+            ''
+          )
+            .trim()
+            .replace(/\s+/g, ' ')
+            .slice(0, 500);
+          const state: Record<string, unknown> = {};
+          for (const attr of [
+            'aria-rowindex',
+            'aria-colindex',
+            'aria-rowcount',
+            'aria-colcount',
+            'aria-selected',
+            'aria-expanded',
+            'aria-checked',
+            'aria-disabled',
+            'aria-readonly',
+            'rowspan',
+            'colspan',
+            'name',
+            'type',
+            'title',
+          ]) {
+            if (el.hasAttribute(attr)) state[attr] = el.getAttribute(attr);
+          }
+          const input = el as HTMLInputElement;
+          if ('value' in el && input.type !== 'password') {
+            state.value = String(input.value).slice(0, 500);
+            state.valueTruncated = String(input.value).length > 500;
+          }
+          if (el.localName === 'select')
+            state.optionsTruncated =
+              (el as HTMLSelectElement).options.length > 100;
+          if (el.localName === 'select')
+            state.options = Array.from((el as HTMLSelectElement).options)
+              .slice(0, 100)
+              .map((o) => ({
+                value: o.value,
+                text: o.text,
+                disabled: o.disabled,
+              }));
+          state.scroll = {
+            left: el.scrollLeft,
+            top: el.scrollTop,
+            width: el.scrollWidth,
+            height: el.scrollHeight,
+            clientWidth: el.clientWidth,
+            clientHeight: el.clientHeight,
+          };
+          record = {
+            type: role,
+            description: text || role,
+            context: this.getContext(el),
+            elementId: this.getElementId(el),
+            score: 0,
+            matchedRegex: null,
+            matchedXpath: null,
+            isHit: false,
+            details: state,
+          };
+          this.applyFilterFlags(
+            record,
+            el,
+            [role, text, el.id, el.getAttribute('class') || ''].join(' '),
+            regex,
+            xpathNodes
+          );
+        } else {
+          record =
+            mode === 'inputs'
+              ? this.buildInputRecord(el, regex, xpathNodes)
+              : mode === 'controls'
+                ? this.buildInputRecord(el, regex, xpathNodes) ||
+                  this.buildButtonRecord(el, regex, xpathNodes)
+                : this.buildButtonRecord(el, regex, xpathNodes);
+        }
         if (record) results.set(el, record);
       };
 
-      if (mode === 'buttons') {
+      if (mode === 'structure') {
+        queryAll('*')
+          .filter(
+            (el) =>
+              el.matches(
+                'table,thead,tbody,tr,th,td,canvas,iframe,frame,input,textarea,select,[role],[contenteditable]'
+              ) ||
+              el.scrollHeight > el.clientHeight + 1 ||
+              el.scrollWidth > el.clientWidth + 1
+          )
+          .forEach((el) => register(el));
+      } else if (mode === 'buttons' || mode === 'controls') {
         // 步骤 1: 扩大搜查范围——语义标签 + class 模糊 + 表单按钮控件 + ARIA 角色
-        // （select 下拉归 interactive_input_getter，由 enhance_fill 按 option 文本填充）
+        // （select 下拉归 browser_observe，由 browser_interact(action="fill") 按 option 文本填充）
         const selectors = [
-          'a', 'button', 'summary',
-          'input[type="submit"]', 'input[type="button"]', 'input[type="reset"]', 'input[type="image"]',
-          'input[type="checkbox"]', 'input[type="radio"]',
-          '[role="button"]', '[role="link"]', '[onclick]',
-          '[role="checkbox"]', '[role="radio"]', '[role="switch"]', '[role="tab"]', '[role="menuitem"]',
-          '[class*="button"]', '[class*="btn"]', '[class*="icon"]', '[class*="action"]'
+          'a',
+          'button',
+          'summary',
+          'input[type="submit"]',
+          'input[type="button"]',
+          'input[type="reset"]',
+          'input[type="image"]',
+          'input[type="checkbox"]',
+          'input[type="radio"]',
+          '[role="button"]',
+          '[role="link"]',
+          '[onclick]',
+          '[role="checkbox"]',
+          '[role="radio"]',
+          '[role="switch"]',
+          '[role="tab"]',
+          '[role="menuitem"]',
+          '[role="option"]',
+          '[role="combobox"]',
+          '[role="treeitem"]',
+          '[class*="button"]',
+          '[class*="btn"]',
+          '[class*="icon"]',
+          '[class*="action"]',
         ];
-        document.body.querySelectorAll(selectors.join(', ')).forEach(el => register(el, false));
+        queryAll(selectors.join(', ')).forEach((el) => register(el));
+        if (mode === 'controls')
+          queryAll('input,textarea,select,[contenteditable]').forEach((el) =>
+            register(el)
+          );
 
         // 步骤 2: xpath 显式选中的元素——即使启发式未识别为可交互也纳入（提升定位上限）
         if (xpathNodes) {
-          xpathNodes.forEach(el => register(el, false));
+          xpathNodes.forEach((el) => register(el));
         }
       } else {
         // 步骤 1: 标准排查 (input, textarea, select, 非body的contenteditable)
-        document.body.querySelectorAll('input, textarea, select, [contenteditable="true"]:not(body)').forEach(el => register(el, false));
+        queryAll(
+          'input, textarea, select, [contenteditable]:not([contenteditable="false"]):not(body)'
+        ).forEach((el) => register(el));
 
         // 步骤 2: 特殊案件 - 检查 <body> 本身是否是编辑器
         if ((document.body as HTMLElement).isContentEditable) {
-          register(document.body, false);
+          register(document.body);
         }
 
-        // 步骤 3: “光标”侦探 - 查找所有光标为 'text' 的元素
-        // 为了性能，我们只检查一些常见的容器标签
-        document.querySelectorAll('div, section, main, p, span').forEach(el => {
-          if (results.has(el)) return;
-          if (getComputedStyle(el as HTMLElement).cursor === 'text') {
-            const target = el as HTMLElement;
-            // 临时标记以供 buildRecord 识别；无论构建是否抛错都必须还原现场，
-            // 否则页面会残留被注入的 contenteditable 属性、改变原有可编辑语义
-            const previousValue = target.getAttribute('contenteditable');
-            target.setAttribute('contenteditable', 'true');
-            try {
-              register(target, false);
-            } finally {
-              if (previousValue === null) {
-                target.removeAttribute('contenteditable');
-              } else {
-                target.setAttribute('contenteditable', previousValue);
-              }
-            }
-          }
-        });
+        // Cursor styling alone does not make a node editable. Never mutate DOM to manufacture controls.
 
-        // 步骤 4: xpath 显式选中的元素——即使不是标准输入控件也纳入（提升定位上限）
+        // 步骤 4: xpath 显式选择的可填充元素（容器通过祖先链标记其输入后代）
         if (xpathNodes) {
-          xpathNodes.forEach(el => register(el, true));
+          xpathNodes.forEach((el) => register(el));
         }
       }
 
       const list = Array.from(results.values());
       const hasFilter = regex !== null || xpathNodes !== null;
 
-      list.forEach(record => {
+      list.forEach((record) => {
         // 同时设置 regex 与 xpath 时必须同时满足
         record.isHit = hasFilter
-          ? ((regex ? record.matchedRegex === true : true) && (xpathNodes ? record.matchedXpath === true : true))
+          ? (regex ? record.matchedRegex === true : true) &&
+            (xpathNodes ? record.matchedXpath === true : true)
           : false;
       });
 
@@ -950,9 +1295,24 @@ export function elementScanPayload(
   // 荷载函数的入口点
   try {
     const analyzer = new PageAnalyzer();
-    return { elements: analyzer.analyze(), fingerprint: frameFingerprint };
+    const elements = analyzer.analyze();
+    if (
+      elements.some((record) => registry!.resolve(record.elementId) === null)
+    ) {
+      return {
+        elements: [],
+        fingerprint: registry!.fingerprint(),
+        error:
+          'STALE_ELEMENTS：采集期间节点失效或超过引用容量，请缩小页面范围或等待稳定后重采。',
+      };
+    }
+    return { elements, fingerprint: registry!.fingerprint() };
   } catch (error) {
     console.error(`Error during in-frame ${mode} analysis:`, error);
-    return { elements: [], fingerprint: frameFingerprint, error: `页面内分析失败：${(error as Error).message}` };
+    return {
+      elements: [],
+      fingerprint: frameFingerprint,
+      error: `页面内分析失败：${(error as Error).message}`,
+    };
   }
 }

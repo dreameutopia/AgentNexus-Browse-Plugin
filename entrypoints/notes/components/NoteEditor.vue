@@ -26,6 +26,73 @@
 
         <span class="save-status" :class="saveStatusClass">{{ saveStatusText }}</span>
 
+        <!-- 导出：txt / md / docx / pdf（图标均为内联 SVG） -->
+        <div class="export-wrap" @keydown.esc="handleExportEsc">
+          <button
+            class="icon-btn"
+            :class="{ 'menu-open': exportOpen }"
+            type="button"
+            :title="t('notes.exportTitle')"
+            @click.stop="exportOpen = !exportOpen"
+          >
+            <Download :size="15" />
+          </button>
+
+          <div v-if="exportOpen" class="export-menu" role="menu">
+            <button class="export-item" type="button" role="menuitem" @click="handleExport('txt')">
+              <span class="export-item-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 3 14 8 19 8" />
+                  <line x1="8.5" y1="12.5" x2="15.5" y2="12.5" />
+                  <line x1="8.5" y1="15.5" x2="15.5" y2="15.5" />
+                  <line x1="8.5" y1="18.5" x2="12.8" y2="18.5" />
+                </svg>
+              </span>
+              <span class="export-item-name">{{ t('notes.exportTxt') }}</span>
+              <span class="export-item-ext">.txt</span>
+            </button>
+
+            <button class="export-item" type="button" role="menuitem" @click="handleExport('md')">
+              <span class="export-item-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 3 14 8 19 8" />
+                  <line x1="8.5" y1="13" x2="15.5" y2="13" />
+                  <path d="M12 14.8v4.4" />
+                  <path d="M9.9 17.3L12 19.4l2.1-2.1" />
+                </svg>
+              </span>
+              <span class="export-item-name">{{ t('notes.exportMd') }}</span>
+              <span class="export-item-ext">.md</span>
+            </button>
+
+            <button class="export-item" type="button" role="menuitem" @click="handleExport('docx')">
+              <span class="export-item-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 3 14 8 19 8" />
+                  <text x="12" y="17.4" text-anchor="middle" font-size="8.5" font-weight="700" fill="currentColor" stroke="none" font-family="Arial, Helvetica, sans-serif">W</text>
+                </svg>
+              </span>
+              <span class="export-item-name">{{ t('notes.exportDocx') }}</span>
+              <span class="export-item-ext">.docx</span>
+            </button>
+
+            <button class="export-item" type="button" role="menuitem" @click="handleExport('pdf')">
+              <span class="export-item-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 3 14 8 19 8" />
+                  <text x="12" y="17.2" text-anchor="middle" font-size="6.4" font-weight="700" fill="currentColor" stroke="none" font-family="Arial, Helvetica, sans-serif">PDF</text>
+                </svg>
+              </span>
+              <span class="export-item-name">{{ t('notes.exportPdf') }}</span>
+              <span class="export-item-ext">.pdf</span>
+            </button>
+          </div>
+        </div>
+
         <button class="icon-btn" type="button" :title="t('notes.copyId')" @click="copyId">
           <Copy :size="15" />
         </button>
@@ -68,18 +135,15 @@
 
       <span class="subbar-spacer" />
 
-      <label class="category-field">
+      <div class="category-field">
         <FolderClosed :size="13" />
-        <select
-          :value="category"
-          class="category-select"
+        <SelectMenu
+          :model-value="category"
+          :items="categorySelectOptions"
           :title="t('notes.categoryLabel')"
-          @change="handleCategoryChange"
-        >
-          <option v-for="option in categorySelectOptions" :key="option.value" :value="option.value">
-            {{ option.label }}
-          </option>
-        </select>
+          size="sm"
+          @update:model-value="handleCategoryChange"
+        />
         <button
           class="icon-btn slim"
           type="button"
@@ -88,7 +152,7 @@
         >
           <Pencil :size="12" />
         </button>
-      </label>
+      </div>
     </div>
 
     <EditorToolbar :editor="editor" @insert-image="insertImageFile" />
@@ -126,6 +190,19 @@
         {{ formatDateTime(note.updatedAt) }}
       </span>
     </footer>
+
+    <!-- 自定义文件夹名输入（替代原生 prompt，风格与全局弹窗统一） -->
+    <PromptModal
+      :open="categoryModalOpen"
+      :title="t('notes.customCategoryPrompt')"
+      :label="t('notes.renameFolderLabel')"
+      :initial-value="category"
+      :confirm-text="t('notes.confirm')"
+      :cancel-text="t('notes.cancel')"
+      :max-length="50"
+      @confirm="handleCategoryPromptConfirm"
+      @cancel="categoryModalOpen = false"
+    />
   </div>
 </template>
 
@@ -145,6 +222,7 @@ import {
   StickyNote,
   FolderClosed,
   Pencil,
+  Download,
 } from 'lucide-vue-next';
 import { t } from '@/utils/i18n';
 import type { Note } from '@/types';
@@ -153,7 +231,10 @@ import { createEditorExtensions } from '../utils/editor';
 import { imageFileToDataUrl, pickImageFiles } from '../utils/image';
 import { debounce, formatDateTime, copyText } from '../utils/helpers';
 import { categoryDisplay, type NoteCategoryOption } from '../composables/useNotes';
+import { exportNote, type NoteExportFormat } from '../utils/export';
 import EditorToolbar from './EditorToolbar.vue';
+import SelectMenu from './SelectMenu.vue';
+import PromptModal from './PromptModal.vue';
 
 const props = defineProps<{
   note: Note;
@@ -242,6 +323,14 @@ function applyContent(html: string): void {
   editor.value.commands.setContent(html ?? '', { emitUpdate: false });
 }
 
+// 防抖保存器必须声明在下方 note.id watcher 之前：
+// watcher 带 immediate:true 会在 setup 期间同步回调，若此时访问
+// 尚未初始化的 debouncedSave 会触发 TDZ ReferenceError，中断整个
+// setup（标题回填 / 保存监听 / 生命周期注册全部失效 → 标题恒为空）
+const debouncedSave = debounce(() => {
+  if (dirty.value) void doSave();
+}, 600);
+
 /**
  * 笔记切换：先把旧笔记的未保存修改落盘（用旧 ID + 当前本地内容，
  * 同步段在回填覆盖本地状态之前完成捕获），随后回填新笔记。
@@ -307,10 +396,6 @@ async function doSave(targetId?: string): Promise<void> {
   }
 }
 
-const debouncedSave = debounce(() => {
-  if (dirty.value) void doSave();
-}, 600);
-
 function markDirty(): void {
   if (hydrating) return; // 回填赋值不是用户编辑
   editVersion += 1;
@@ -369,6 +454,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown);
   window.removeEventListener('beforeunload', handleBeforeUnload);
+  document.removeEventListener('click', closeExportMenu);
   // 卸载前若有未保存修改：丢弃防抖定时器，尽力直接落盘
   // （saveFn 对已删除的笔记抛可读错误，不会复活数据）
   debouncedSave.cancel();
@@ -414,15 +500,19 @@ const categorySelectOptions = computed<NoteCategoryOption[]>(() => {
   return options;
 });
 
-function handleCategoryChange(event: Event): void {
-  const value = (event.target as HTMLSelectElement).value;
+function handleCategoryChange(value: string): void {
   if (value && value !== category.value) category.value = value;
 }
 
-/** 自定义分类：弹窗输入新分类名（可编辑当前值） */
+/** 自定义文件夹：弹窗输入新文件夹名（可编辑当前值；初始值用原始 ID 防止显示名被存回库） */
+const categoryModalOpen = ref(false);
+
 function handleCustomCategory(): void {
-  const next = window.prompt(t('notes.customCategoryPrompt'), category.value);
-  if (next === null) return;
+  categoryModalOpen.value = true;
+}
+
+function handleCategoryPromptConfirm(next: string): void {
+  categoryModalOpen.value = false;
   const cleaned = next.trim();
   if (cleaned && cleaned !== category.value) {
     category.value = cleaned.slice(0, 50);
@@ -496,4 +586,50 @@ async function copyId(): Promise<void> {
       : { message: t('notes.toastCopyFailed'), type: 'error' },
   );
 }
+
+// ---- 导出（txt / md / docx / pdf） ----
+const exportOpen = ref(false);
+
+async function handleExport(format: NoteExportFormat): Promise<void> {
+  exportOpen.value = false;
+  // 标题以本地编辑态优先（未保存的改动也要进文件名）；正文取编辑器实时内容
+  const exportTitle = title.value.trim() || hydratedTitle || t('notes.untitled');
+  try {
+    const outcome = await exportNote(format, {
+      title: exportTitle,
+      html: editor.value?.getHTML() ?? props.note.content,
+      subtitle: `${t('notes.updatedAt')} ${formatDateTime(props.note.updatedAt)}`,
+    });
+    if (format === 'pdf') {
+      // PDF 走打印管线：提示用户在打印面板选择「另存为 PDF」
+      emit('notify', { message: t('notes.exportPdfHint'), type: 'success' });
+    } else {
+      emit('notify', {
+        message: t('notes.exportDone', { file: outcome.fileName ?? '' }),
+        type: 'success',
+      });
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    emit('notify', { message: `${t('notes.exportFailed')}: ${reason}`, type: 'error' });
+  }
+}
+
+/** Esc 关闭导出菜单（菜单开着时阻断全局「返回列表」，否则放行） */
+function handleExportEsc(event: KeyboardEvent): void {
+  if (!exportOpen.value) return;
+  event.stopPropagation();
+  event.preventDefault();
+  exportOpen.value = false;
+}
+
+function closeExportMenu(): void {
+  exportOpen.value = false;
+}
+
+// 菜单展开期间监听文档级点击：点其它区域即收起（触发按钮带 .stop 不受影响）
+watch(exportOpen, (open) => {
+  if (open) document.addEventListener('click', closeExportMenu);
+  else document.removeEventListener('click', closeExportMenu);
+});
 </script>

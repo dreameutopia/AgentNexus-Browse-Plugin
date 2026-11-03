@@ -1,4 +1,10 @@
+import { PageExecTool } from '@/tools/browser/page-exec-tool';
+import { BrowserObserveTool } from '@/tools/browser/observe';
+import { BrowserInteractTool } from '@/tools/browser/interact';
+import { NetworkObserverTool } from '@/tools/browser/network-observer';
 import { createGuiTools } from '@/tools/vision/gui-tools';
+import { createVisionReadTools } from '@/tools/vision/read-tools';
+import { createVisionObservationTools } from '@/tools/vision/observation-tools';
 /**
  * 工具分类与工具定义数据
  */
@@ -10,56 +16,6 @@ export const categories: ToolCategory[] = [
     name: '自动化工具',
     icon: '🤖',
     tools: [
-      {
-        name: 'interactive_button_getter',
-        description: '获取页面中的可交互按钮/链接元素（支持 regex/xpath 过滤，命中置顶并标记），Markdown 表格分页',
-        category: 'automation',
-        version: '4.1.0',
-        parameters: {
-          regex: {
-            type: 'string',
-            description: '可选，正则过滤（对描述文本不区分大小写的宽泛匹配，如 登录|注册）',
-            placeholder: '例如：登录|注册、下一页|更多'
-          },
-          xpath: {
-            type: 'string',
-            description: '可选，XPath 1.0 过滤（元素或其祖先被选中即命中）',
-            placeholder: "例如：//button[contains(.,'提交')]"
-          },
-          page: {
-            type: 'number',
-            description: '页码（从1开始，每页最多 40 个）',
-            default: 1,
-            minimum: 1
-          }
-        },
-        required: []
-      },
-      {
-        name: 'interactive_input_getter',
-        description: '获取页面中的可交互输入元素（支持 regex/xpath 过滤，命中置顶并标记），Markdown 表格分页',
-        category: 'automation',
-        version: '3.1.0',
-        parameters: {
-          regex: {
-            type: 'string',
-            description: '可选，正则过滤（对描述文本不区分大小写的宽泛匹配，如 搜索|关键词）',
-            placeholder: '例如：搜索|关键词、user.?name'
-          },
-          xpath: {
-            type: 'string',
-            description: '可选，XPath 1.0 过滤（元素或其祖先被选中即命中）',
-            placeholder: "例如：//input[@name='keyword']"
-          },
-          page: {
-            type: 'number',
-            description: '页码（从1开始，每页最多 40 个）',
-            default: 1,
-            minimum: 1
-          }
-        },
-        required: []
-      },
       {
         name: 'file_upload_getter',
         description: '获取页面中的文件上传框元素',
@@ -461,19 +417,19 @@ export const categories: ToolCategory[] = [
     tools: [
       {
         name: 'browser_navigate',
-        description: '在浏览器标签页或窗口中导航到指定的URL',
+        description: '在现有窗口内导航，默认打开新标签页，禁止创建浏览器窗口',
         category: 'browser',
-        version: '1.0.0',
+        version: '2.0.0',
         parameters: {
           url: {
             type: 'string',
             description: '要导航到的完整URL',
             placeholder: 'https://example.com'
           },
-          newWindow: {
+          newTab: {
             type: 'boolean',
-            description: '是否在新窗口中打开',
-            default: false
+            description: '是否在现有窗口新建标签页；false 使用当前标签页',
+            default: true
           },
           waitForLoad: {
             type: 'boolean',
@@ -572,80 +528,6 @@ export const categories: ToolCategory[] = [
         required: ['selector']
       },
       {
-        name: 'browser_inject_script',
-        description: '在当前页面注入并执行 JavaScript 代码，等同于在 F12 控制台中运行代码',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {
-          code: {
-            type: 'string',
-            description: 'JavaScript代码',
-            multiline: true,
-            placeholder: 'document.title'
-          }
-        },
-        required: ['code']
-      },
-      {
-        name: 'browser_page_exec',
-        description: '高权限页面脚本执行引擎：自动分层执行（注入→CDP→隔离世界），严格 CSP 站点也能执行 eval；结果超 2000 字符自动暂存为 dataRef（回传前 2000 字符预览），支持 readRef 分页读取',
-        category: 'browser',
-        version: '1.2.0',
-        parameters: {
-          code: {
-            type: 'string',
-            description: 'JavaScript代码（提供 args 时按函数体执行，可用 $args 取参并 return；与 readRef 互斥）',
-            multiline: true,
-            placeholder: 'return Array.from(document.querySelectorAll("h2")).map(h => h.textContent)'
-          },
-          args: {
-            type: 'array',
-            description: '可选参数数组（提供后 code 以 function($args){...} 形式执行）'
-          },
-          world: {
-            type: 'string',
-            description: '执行世界：auto=优先主世界 / MAIN=页面主世界（可访问 window 全局对象）/ ISOLATED=隔离世界',
-            enum: ['auto', 'MAIN', 'ISOLATED'],
-            default: 'auto'
-          },
-          strategy: {
-            type: 'string',
-            description: '执行策略：auto=逐级升级（默认）/ cdp=强制最高权限无视 CSP / scripting=只用注入通道',
-            enum: ['auto', 'cdp', 'scripting'],
-            default: 'auto'
-          },
-          timeout: {
-            type: 'number',
-            description: '超时时间（毫秒），默认 15000',
-            default: 15000
-          },
-          saveResult: {
-            type: 'boolean',
-            description: 'true=强制暂存全量结果（即使 ≤2000 字符）；省略/false=超 2000 字符时自动暂存',
-            default: false
-          },
-          label: {
-            type: 'string',
-            description: '暂存批次的语义标签（如「第1页-商品列表」）'
-          },
-          readRef: {
-            type: 'string',
-            description: '分页读取暂存批次（与 code 互斥）：传执行响应返回的 dataRef ID，返回 JSON 文本切片'
-          },
-          offset: {
-            type: 'number',
-            description: 'readRef 模式起始字符偏移（默认 0）',
-            default: 0
-          },
-          limit: {
-            type: 'number',
-            description: 'readRef 模式本页字符数（默认/上限 2000）',
-            default: 2000
-          }
-        },
-        required: []
-      },
-      {
         name: 'browser_extract_data',
         description: '从页面 DOM 精确提取结构化数据（表格/列表/选择器），免疫 CSP，RPA 抓取首选',
         category: 'browser',
@@ -739,28 +621,6 @@ export const categories: ToolCategory[] = [
           }
         },
         required: ['url', 'method']
-      },
-      {
-        name: 'browser_network_capture',
-        description: '开始捕获网络请求',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {},
-        required: []
-      },
-      {
-        name: 'browser_network_capture_stop',
-        description: '停止捕获网络请求并返回结果',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {
-          filter: {
-            type: 'string',
-            description: 'URL过滤器（正则表达式）',
-            placeholder: '.*api.*'
-          }
-        },
-        required: []
       },
       {
         name: 'browser_go_back_or_forward',
@@ -861,7 +721,7 @@ export const categories: ToolCategory[] = [
         },
         required: ['query']
       },
-      // scriptInject / executeJavaScript 已移除：与上方 browser_inject_script 重复且无同名注册工具
+      // scriptInject / executeJavaScript 已移除：无同名注册工具；脚本统一使用 browser_page_exec
       {
         name: 'browser_search_history',
         description: '搜索浏览器历史记录',
@@ -947,29 +807,6 @@ export const categories: ToolCategory[] = [
         },
         required: []
       },
-      {
-        name: 'browser_keyboard',
-        description: '模拟键盘输入',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {
-          keys: {
-            type: 'string',
-            description: '要模拟的按键或按键组合',
-            placeholder: 'Enter 或 Ctrl+C'
-          },
-          selector: {
-            type: 'string',
-            description: '目标元素CSS选择器（可选）',
-            placeholder: 'input#search'
-          },
-          delay: {
-            type: 'number',
-            description: '按键之间的延迟（毫秒）'
-          }
-        },
-        required: ['keys']
-      },
       // rightClick / drag 已移除：当前 toolRegistry 中无对应注册工具
       {
         name: 'browser_window',
@@ -1002,22 +839,6 @@ export const categories: ToolCategory[] = [
         },
         required: []
       },
-      {
-        name: 'browser_network_debugger_start',
-        description: '启动网络调试器捕获',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {},
-        required: []
-      },
-      {
-        name: 'browser_network_debugger_stop',
-        description: '停止网络调试器捕获',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {},
-        required: []
-      }
       // goBack / goForward 是 browser_go_back_or_forward 的消息类型别名；
       // browser_refresh 无注册工具（CALL_TOOL 通道不可达）——均已移除
     ]
@@ -1225,44 +1046,6 @@ export const categories: ToolCategory[] = [
         required: []
       },
       {
-        name: 'enhance_click',
-        description: '增强点击工具，支持各种点击场景',
-        category: 'base',
-        version: '1.1.0',
-        parameters: {
-          selector: {
-            type: 'string',
-            description: 'CSS选择器',
-            placeholder: 'button.submit'
-          },
-          index: {
-            type: 'number',
-            description: '如果有多个匹配元素，选择第几个（从0开始）',
-            default: 0
-          }
-        },
-        required: ['selector']
-      },
-      {
-        name: 'enhance_fill',
-        description: '增强填充工具，支持各种输入场景',
-        category: 'base',
-        version: '1.1.0',
-        parameters: {
-          selector: {
-            type: 'string',
-            description: 'CSS选择器',
-            placeholder: 'input[name="username"]'
-          },
-          value: {
-            type: 'string',
-            description: '要填充的值',
-            placeholder: '输入内容'
-          }
-        },
-        required: ['selector', 'value']
-      },
-      {
         name: 'task-submit',
         description: '提交任务到后台处理',
         category: 'base',
@@ -1304,9 +1087,9 @@ export const categories: ToolCategory[] = [
     tools: [
       {
         name: 'generic_wait',
-        description: '等待指定秒数',
+        description: '可随时停止的等待；超过 600 秒自动按 600 秒执行',
         category: 'common',
-        version: '1.0.0',
+        version: '2.0.0',
         parameters: {
           waitSeconds: {
             type: 'number',
@@ -1392,8 +1175,10 @@ export const categories: ToolCategory[] = [
     name: '视觉工具',
     icon: '👁️',
     tools: [
-      { name: 'screenshot', description: '截取原始视口，返回 screenshotId', category: 'vision', version: '3.0.0', parameters: {}, required: [] },
+      { name: 'screenshot', description: '截图：action 保留调试会话用于操作；observe 不附加调试器，仅用于观察', category: 'vision', version: '3.1.0', parameters: { mode: { type: 'string', enum: ['action','observe'], default: 'action', description: '观察模式不可用于 GUI 输入' } }, required: [] },
       ...createGuiTools().map(tool => ({ name: tool.name, description: tool.metadata.description, category: 'vision', version: '3.0.0', parameters: tool.openaiSchema.function.parameters.properties, required: tool.openaiSchema.function.parameters.required || [] })),
+      ...createVisionReadTools().map(tool => ({ name: tool.name, description: tool.metadata.description, category: 'vision', version: '1.0.0', parameters: tool.openaiSchema.function.parameters.properties, required: tool.openaiSchema.function.parameters.required || [] })),
+      ...createVisionObservationTools().map(tool => ({name:tool.name,description:tool.metadata.description,category:'vision',version:'1.0.0',parameters:tool.openaiSchema.function.parameters.properties,required:tool.openaiSchema.function.parameters.required||[]})),
       { name: 'ocr', description: 'OCR 文字识别', category: 'vision', version: '1.0.0', parameters: { selector: { type: 'string', description: '可选图片选择器' } }, required: [] },
     ]
   },
@@ -1840,7 +1625,7 @@ export const categories: ToolCategory[] = [
             type: 'array',
             items: { type: 'string' },
             description: '执行本技能需要的工具 ID 数组（非空）',
-            placeholder: '["browser_navigate", "enhance_click"]'
+            placeholder: '["browser_navigate", "browser_interact"]'
           },
           mode: {
             type: 'string',
@@ -1904,3 +1689,8 @@ export const testUrls = [
   'https://zilliz.com.cn/blog/Performance-comparison-of-open-source-vector-databases',
   'https://aistudio.baidu.com/blog/detail/748642945369605'
 ];
+
+// Unified text tools share the exact execution schemas with this panel.
+categories.find(c=>c.id==='browser')!.tools.push(...[new BrowserObserveTool(),new BrowserInteractTool(),new NetworkObserverTool(),new PageExecTool()].map(tool=>({
+ name:tool.name,description:tool.metadata.description,category:tool.metadata.category,version:tool.metadata.version,parameters:tool.openaiSchema.function.parameters.properties as any,required:tool.openaiSchema.function.parameters.required || []
+})));

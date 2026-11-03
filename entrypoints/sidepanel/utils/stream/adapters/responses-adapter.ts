@@ -123,6 +123,7 @@ export class ResponsesAdapter extends BaseAdapter {
     };
 
     if (config.temperature !== undefined) body.temperature = config.temperature;
+    if (config.promptCacheKey) body.prompt_cache_key = config.promptCacheKey;
     if (config.top_p !== undefined) body.top_p = config.top_p;
     if (config.max_tokens !== undefined) body.max_output_tokens = config.max_tokens;
 

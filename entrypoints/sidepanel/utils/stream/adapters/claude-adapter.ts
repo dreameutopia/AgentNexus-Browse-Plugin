@@ -129,11 +129,14 @@ export class ClaudeAdapter extends BaseAdapter {
       .map(m => this.plainTextOf(m.content))
       .filter(text => text.length > 0);
     if (systemTexts.length > 0) {
-      body.system = systemTexts.join('\n\n');
+      body.system = [{ type: 'text', text: systemTexts.join('\n\n'), cache_control: { type: 'ephemeral' } }];
     }
 
     // 其余消息折叠为合法轮次（连续同角色合并 + 并行 tool_result 同轮回放）
     body.messages = this.foldClaudeTurns(config.messages.filter(m => m.role !== 'system'));
+    // Automatic moving breakpoint for growing agent histories; the explicit
+    // system checkpoint remains reusable after compaction or an image change.
+    body.cache_control = { type: 'ephemeral' };
 
     // 生成参数
     if (config.temperature !== undefined) body.temperature = config.temperature;

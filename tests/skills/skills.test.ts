@@ -13,17 +13,26 @@
  *   4. 指令装配：优先级约定置顶、环境说明、预授权工具回显、资源文件清单、
  *      超长正文截断与取原文指引、未声明工具的占位文案。
  *   5. 发现清单：已激活技能被排除、条目为「- 模型标识: 描述」、全激活时为 null。
- *   6. 预置技能装配：合成 glob 注入的预置技能经 initStore 走真实装配链路，
- *      id 落在保留区间且由名称确定性派生；与预置同名的自定义技能可写入、
- *      id 不同、按 id / 模型标识各自精确命中、按名解析回落首个注册者。
+ *   6. 预置技能装配：run.mjs 把仓库 skills/ 的真实文件按 import.meta.glob 键格式
+ *      注入，预置技能经 initStore 走真实装配链路——id 落在保留区间且由名称
+ *      确定性派生；与预置同名的自定义技能可写入、id 不同、按 id / 模型标识
+ *      各自精确命中、按名解析回落首个注册者。
+ *   7. 硬编码引用契约：扫描源码里 presetSkillIdFromName('名字') 字面量，
+ *      断言每个引用都能命中内置技能且与 frontmatter name 同源（改名漏改
+ *      硬编码会让关联静默落空，这条是唯一的守门测试）。
+ *   8. 传输层截断豁免：技能指令（≤15,000）不得被守卫的 8KB 工具内容上限
+ *      砍半，其余工具结果照常截断且计数准确。
  *
  * 运行：node tests/skills/run.mjs   （或 npm run test:skills）
  */
 
+import { readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import {
   SKILL_BODY_MAX_CHARS,
   SKILL_ID_PATTERN,
   SKILL_ID_RESERVED_PREFIX,
+  findDuplicateSkillNames,
   generateSkillId,
   generateUniqueSkillId,
   isReservedSkillId,
@@ -37,12 +46,15 @@ import {
   skillLoadToolContent,
 } from '@/utils/skills/skill-instruction';
 import {
+  getAllSkills,
   getSkillByName,
   resolveSkill,
   setCustomSkill,
 } from '@/utils/skills/skill-store';
 import { commitImportCandidates } from '@/utils/skills/skill-import-export';
 import { skillEngine } from '@/entrypoints/sidepanel/core/registry/skill-engine';
+import { ContextWindowGuard } from '@/entrypoints/sidepanel/utils/ai/context-window-guard';
+import type { ChatMessage } from '@/entrypoints/sidepanel/utils/ai/ai-chat-api';
 import { buildSuccessPayload } from '@/common/tool-handler';
 import type { SkillRecord } from '@/utils/skills/skill-types';
 
@@ -131,6 +143,16 @@ function mdFiles(name: string, body: string, extraFrontmatter: string[] = []): R
   check(suffixed.startsWith(base), 'A3 后缀基于原基名', suffixed);
   check(!isReservedSkillId(suffixed), 'A3 后缀形态仍避开保留区间', suffixed);
 
+  // 后缀用尽（基名 + 63 个后缀全部判占用）→ 时间戳兜底，且兜底同样经 isTaken 确认：
+  // 若兜底不查占用，检查次数会停在 64 并直接返回一个可能已被占用的 id
+  let takenChecks = 0;
+  const fallbackId = generateSkillId('collision-probe', () => ++takenChecks <= 65);
+  check(takenChecks > 64, 'A3 兜底取号同样经 isTaken 确认', { takenChecks, fallbackId });
+  check(fallbackId.startsWith(base), 'A3 兜底仍基于原基名', fallbackId);
+  check(fallbackId.length > base.length + 2, 'A3 后缀用尽后改走时间戳兜底', fallbackId.length);
+  check(SKILL_ID_PATTERN.test(fallbackId), 'A3 兜底结果符合 id 字符规范', fallbackId);
+  check(!isReservedSkillId(fallbackId), 'A3 兜底结果避开保留区间', fallbackId);
+
   // 随机生成（新建 / 导入路径）
   const seen = new Set<string>();
   let reservedHit = '';
@@ -163,6 +185,10 @@ function mdFiles(name: string, body: string, extraFrontmatter: string[] = []): R
   eq(resolveSkill(second.id)?.id, second.id, 'B1 按 id 解析命中次个');
   eq(resolveSkill(modelSkillIdOf(second))?.id, second.id, 'B1 按模型标识解析命中次个');
   eq(resolveSkill('twin-skill')?.id, first.id, 'B1 按名解析回落首个注册者');
+
+  // 展示层消歧：重名集合只含真正重复的名字（卡片 / 胶囊据此补显 id）
+  eq([...findDuplicateSkillNames([first, second])], ['twin-skill'], 'B1 重名集合识别出重复项');
+  eq(findDuplicateSkillNames([first]).size, 0, 'B1 单条不构成重名');
 
   // 编辑：改名到既有同名同样放行（不存在「与谁冲突」的概念）
   const edited = setCustomSkill({
@@ -350,22 +376,41 @@ function mdFiles(name: string, body: string, extraFrontmatter: string[] = []): R
   );
 }
 
-// ==================== 6. 预置技能装配（合成 glob）与同名共存 ====================
+// ==================== 6. 预置技能装配（真实 skills/ 目录）与同名共存 ====================
 
 {
-  // 预置技能由 run.mjs 的 import.meta.glob 垫片注入，走的是 initStore 真实装配链路
-  const preset = getSkillByName('test-preset-skill');
-  check(preset?.source === 'preset', 'F1 预置技能经 initStore 注册', preset?.source);
-  if (preset) {
-    check(isReservedSkillId(preset.id), 'F1 预置 id 落在保留区间', preset.id);
-    eq(preset.id, presetSkillIdFromName('test-preset-skill'), 'F1 预置 id 由名称确定性派生');
-    eq(preset.enabled, true, 'F1 预置技能默认启用');
-    eq(preset.body.includes('预置技能正文'), true, 'F1 预置正文解析正确');
+  // 预置技能由 run.mjs 从仓库 skills/ 读入 glob 垫片，走的是 initStore 真实装配链路
+  const presets = getAllSkills().filter(skill => skill.source === 'preset');
+  check(
+    presets.length > 0,
+    'F1 至少注册了一个内置技能（skills/ 目录经 initStore 装配）',
+    presets.length,
+  );
+  for (const preset of presets) {
+    check(
+      isReservedSkillId(preset.id),
+      `F1 内置 "${preset.name}" 的 id 落在保留区间`,
+      preset.id,
+    );
+    eq(
+      preset.id,
+      presetSkillIdFromName(preset.name),
+      `F1 内置 "${preset.name}" 的 id 由名称确定性派生`,
+    );
+    eq(preset.enabled, true, `F1 内置 "${preset.name}" 默认启用`);
+    check(
+      SKILL_ID_PATTERN.test(preset.id),
+      `F1 内置 "${preset.name}" 的 id 符合字符规范`,
+      preset.id,
+    );
+  }
 
+  const preset = presets[0];
+  if (preset) {
     // 与预置同名的自定义技能：写入放行、id 不同、互不覆盖（同名是常态）
     const twin = setCustomSkill({
-      name: 'test-preset-skill',
-      files: mdFiles('test-preset-skill', '同名自定义正文'),
+      name: preset.name,
+      files: mdFiles(preset.name, '同名自定义正文'),
     });
     check(twin.ok, 'F2 与预置同名的自定义技能可写入', twin);
     if (twin.ok) {
@@ -375,14 +420,18 @@ function mdFiles(name: string, body: string, extraFrontmatter: string[] = []): R
       });
       check(!isReservedSkillId(twin.skill.id), 'F2 自定义 id 不占保留区间', twin.skill.id);
       eq(resolveSkill(preset.id)?.source, 'preset', 'F2 预置按 id 精确命中');
-      eq(resolveSkill(twin.skill.id)?.body.trim(), '同名自定义正文', 'F2 自定义按 id 精确命中（不被同名预置吞掉）');
+      eq(
+        resolveSkill(twin.skill.id)?.body.trim(),
+        '同名自定义正文',
+        'F2 自定义按 id 精确命中（不被同名预置吞掉）',
+      );
       eq(
         resolveSkill(modelSkillIdOf(twin.skill))?.id,
         twin.skill.id,
         'F2 自定义按模型标识命中（标识含 id，天然无歧义）',
       );
       eq(
-        getSkillByName('test-preset-skill')?.source,
+        getSkillByName(preset.name)?.source,
         'preset',
         'F2 按名解析回落首个注册者（预置先注册，旧数据兼容语义）',
       );
@@ -390,6 +439,69 @@ function mdFiles(name: string, body: string, extraFrontmatter: string[] = []): R
       check(generateUniqueSkillId() !== preset.id, 'F2 随机取号不会撞上预置 id');
     }
   }
+}
+
+// ==================== 7. 硬编码内置技能引用契约 ====================
+// 智能体预设与工具→技能映射表以 presetSkillIdFromName('名字') 硬编码引用内置技能；
+// 一旦某技能的 frontmatter name 改了而硬编码没跟上，引用会静默落空（智能体「关联
+// 技能」少一个、工具映射失效，且不报任何错）。这里扫描源码字面量逐个断言其命中。
+
+{
+  const sourceFiles: string[] = [];
+  const collect = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) collect(abs);
+      else if (entry.name.endsWith('.ts')) sourceFiles.push(abs);
+    }
+  };
+  collect(path.resolve('utils'));
+
+  const literalPattern = /presetSkillIdFromName\(\s*'([^']+)'\s*\)/g;
+  const refs = new Set<string>();
+  for (const file of sourceFiles) {
+    for (const match of readFileSync(file, 'utf8').matchAll(literalPattern)) {
+      refs.add(match[1]);
+    }
+  }
+  check(refs.size > 0, 'G1 扫描到硬编码的内置技能引用', refs.size);
+  for (const name of refs) {
+    const resolved = resolveSkill(presetSkillIdFromName(name));
+    check(
+      resolved?.source === 'preset',
+      `G1 硬编码引用 "${name}" 命中内置技能`,
+      resolved?.source ?? 'unresolved',
+    );
+    eq(resolved?.name, name, `G1 引用 "${name}" 与内置技能 frontmatter name 同源`);
+  }
+}
+
+// ==================== 8. 传输层截断豁免（技能指令必须完整送达） ====================
+// 守卫对 tool 内容按 8KB 一刀切，而技能指令的设计上限是 SKILL_BODY_MAX_CHARS
+// （15,000）——不豁免就会静默砍半，模型读到残缺指令还以为读全了。
+
+{
+  const longText = `# 指令\n${'x'.repeat(20_000)}`; // 明显超过 8KB 传输上限
+  const skillMessage: ChatMessage = {
+    role: 'tool',
+    tool_call_id: 'call-skill',
+    name: 'load_skill',
+    content: longText,
+  };
+  const genericMessage: ChatMessage = {
+    role: 'tool',
+    tool_call_id: 'call-generic',
+    name: 'page_extract',
+    content: longText,
+  };
+  const guarded = ContextWindowGuard.protect([skillMessage, genericMessage], 1_000_000);
+  const byName = new Map(guarded.messages.map(message => [message.name, message.content]));
+
+  eq(byName.get('load_skill'), longText, 'H1 load_skill 指令不做传输层 8KB 截断');
+  const trimmed = String(byName.get('page_extract'));
+  check(trimmed.length < longText.length, 'H2 其余工具结果仍按上限截断', trimmed.length);
+  check(trimmed.includes('[tool response truncated'), 'H2 截断带可读标记');
+  eq(guarded.toolContentsTrimmed, 1, 'H3 截断计数只统计被真正截断的工具');
 }
 
 // ==================== 汇总 ====================

@@ -1,8 +1,10 @@
 /**
  * load_skill 工具（渐进式披露第 2 层：激活）
  *
- * 模型在任务与 available-skills 清单中某技能匹配时调用，
- * 返回该技能 SKILL.md 的完整正文指令。
+ * 模型在任务与 available-skills 清单中某技能匹配时调用，返回该技能的完整指令：
+ * 优先级约定 + SKILL.md 正文（软截断）+ 资源文件清单 + 环境说明。
+ * 装配逻辑与「用户用 / 预选技能时系统代发的合成激活轮」共用同一实现
+ * （utils/skills/skill-instruction），两条路径的回传逐字同源。
  * 本环境无 bash/文件系统，该工具替代 Claude Code 中 Skill 工具的角色。
  *
  * 入参为清单中的「技能标识」（name-id，全局唯一）；同时宽容解析裸 id 与
@@ -24,7 +26,7 @@ export class LoadSkillTool extends BaseTool {
     name: 'load_skill',
     description: '加载技能（skill）的完整 SKILL.md 指令。当系统提示中 <available-skills> 清单里有技能与当前任务相关时，必须先调用本工具获取完整指令再执行任务。',
     category: 'skill',
-    version: '1.1.0',
+    version: '1.2.0',
     author: 'AgentNexus',
     tags: ['skill', 'instructions', 'agent-skills'],
   };

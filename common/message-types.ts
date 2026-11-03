@@ -15,9 +15,7 @@ export const CONTENT_MESSAGE_TYPES = {
   NETWORK_CAPTURE_PING: 'network_capture_ping',
   CLICK_HELPER_PING: 'click_helper_ping',
   FILL_HELPER_PING: 'fill_helper_ping',
-  KEYBOARD_HELPER_PING: 'keyboard_helper_ping',
   SCREENSHOT_HELPER_PING: 'screenshot_helper_ping',
-  INTERACTIVE_ELEMENTS_HELPER_PING: 'interactive_elements_helper_ping',
 } as const;
 
 // Tool action message types (for chrome.runtime.sendMessage)
@@ -35,7 +33,6 @@ export const TOOL_MESSAGE_TYPES = {
 
   // User interactions
   CLICK_ELEMENT: 'clickElement',
-  SIMULATE_KEYBOARD: 'simulateKeyboard',
 
   // Network requests
   NETWORK_SEND_REQUEST: 'sendPureNetworkRequest',
@@ -65,6 +62,4 @@ export enum SendMessageType {
   // Network request capture related message types
   NetworkSendRequest = 'sendPureNetworkRequest',
 
-  // Keyboard event related message types
-  SimulateKeyboard = 'simulateKeyboard',
 }

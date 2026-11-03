@@ -3,8 +3,6 @@
  */
 
 import { toolRegistry } from '../index';
-import { InteractiveInputGetterTool } from './interactive-input-getter';
-import { InteractiveButtonGetterTool } from './interactive-button-getter';
 import { FileUploadGetterTool } from './file-upload-getter';
 import { FileUploaderTool } from './file-uploader';
 import { aiLocateTool } from './ai-locate-tool';
@@ -19,12 +17,6 @@ import { xiaozhiConfigTool } from './xiaozhi-config-tool';
  * 注册自动化工具
  */
 export function registerAutomationTools() {
-  // 注册交互式输入获取工具
-  toolRegistry.register(new InteractiveInputGetterTool());
-  
-  // 注册交互式按钮获取工具（内置 regex/xpath 过滤）
-  toolRegistry.register(new InteractiveButtonGetterTool());
-  
   // 注册文件上传框获取工具
   toolRegistry.register(new FileUploadGetterTool());
   
@@ -54,8 +46,6 @@ export function registerAutomationTools() {
 }
 
 // 导出工具类
-export { InteractiveInputGetterTool } from './interactive-input-getter';
-export { InteractiveButtonGetterTool } from './interactive-button-getter';
 export { FileUploadGetterTool } from './file-upload-getter';
 export { xiaozhiConfigTool, XiaozhiConfigTool } from './xiaozhi-config-tool';
 export { FileUploaderTool } from './file-uploader';

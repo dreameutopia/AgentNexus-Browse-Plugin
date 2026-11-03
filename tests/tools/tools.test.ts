@@ -9,9 +9,7 @@
  *   5. 命名常量对齐：TOOL_NAMES 每个规范名必须指向已注册工具或内联处理消息
  *   6. 数据暂存区：JSON 校验先于容量淘汰（非法数据不得误删旧批次）、形态分析、
  *      合并/删除、不可序列化值报错、超限拒绝
- *   7. 可交互元素获取工具宿主：分页越界回退、过滤命中统计与提示、缓存命中与
- *      失效、参数类型防御、受限页/空白页拦截、payload 错误透传、
- *      Markdown 反引号转义
+ *   7. 实际节点引用与显式快照：分页唯一性、过滤条件、跨页面/frame 生命周期与二次核验
  *   8. 注入荷载真实行为：源码在干净作用域求值（验证序列化自包含）+ jsdom DOM——
  *      buttons/inputs 两模式采集与评分、regex 命中置顶、容器级 xpath 祖先链、
  *      遮挡剔除、非法过滤条件的模式化报错、enhance 点击/填充与遮挡/未命中报错
@@ -89,26 +87,18 @@ interface TabStubState {
   payloadResults: unknown[];
   /** 注入调用抛出的异常（模拟注入失败） */
   payloadThrow: unknown;
-  /** 指纹调用返回值（getPageFingerprint 路径） */
-  fingerprintValue: string;
-  /** 记录 payload 注入调用次数（缓存命中断言用） */
-  payloadCallCount: number;
 }
 
 const tabStub: TabStubState = {
   tabs: [{ id: 1, url: 'https://example.com/', status: 'complete', windowId: 1 }],
   payloadResults: [],
   payloadThrow: null,
-  fingerprintValue: 'complete|50|800',
-  payloadCallCount: 0,
 };
 
 function resetTabStub(): void {
   tabStub.tabs = [{ id: 1, url: 'https://example.com/', status: 'complete', windowId: 1 }];
   tabStub.payloadResults = [];
   tabStub.payloadThrow = null;
-  tabStub.fingerprintValue = 'complete|50|800';
-  tabStub.payloadCallCount = 0;
 }
 
 function installGlobalStubs(): void {
@@ -142,13 +132,7 @@ function installGlobalStubs(): void {
     setZoom: async () => undefined,
   };
   stub.scripting = {
-    executeScript: async (options: { args?: unknown[] }) => {
-      const args = options?.args ?? [];
-      // 指纹调用（getPageFingerprint）：func 无参数；采集调用首参为扫描模式
-      if (args.length === 0) {
-        return [{ frameId: 0, result: tabStub.fingerprintValue }];
-      }
-      tabStub.payloadCallCount++;
+    executeScript: async () => {
       if (tabStub.payloadThrow) throw tabStub.payloadThrow;
       return tabStub.payloadResults;
     },
@@ -178,12 +162,6 @@ const { categories: catalogCategories } = await import(
   '../../entrypoints/sidepanel/components/tool/tool-definitions'
 );
 const { dataRefStore } = await import('../../utils/data-ref-store');
-const { InteractiveButtonGetterTool } = await import(
-  '../../tools/automation/interactive-button-getter'
-);
-const { InteractiveInputGetterTool } = await import(
-  '../../tools/automation/interactive-input-getter'
-);
 
 // ==================== 1. 注册契约 ====================
 
@@ -465,259 +443,25 @@ registerAllTools();
   eq((await dataRefStore.list()).length, 0, '清空后列表为空');
 }
 
-// ==================== 7. 可交互元素获取工具宿主 ====================
-
+// ==================== 7. Element reference / snapshot integration ====================
 type AnyRecord = Record<string, any>;
-
-function makeElements(count: number, overrides: Partial<AnyRecord> = {}): AnyRecord[] {
-  return Array.from({ length: count }, (_, i) => ({
-    type: 'button',
-    description: `按钮 ${i + 1}`,
-    selector: `#btn-${i + 1}`,
-    score: 100 - i,
-    matchedRegex: null,
-    matchedXpath: null,
-    isHit: false,
-    ...overrides,
-  }));
-}
-
-function dataOf(result: { data?: AnyRecord }): AnyRecord {
-  return (result.data ?? {}) as AnyRecord;
-}
-
-{
-  // —— 基础采集 + 缓存命中 ——
-  resetTabStub();
-  tabStub.payloadResults = [
-    {
-      frameId: 0,
-      result: {
-        elements: makeElements(2),
-        fingerprint: tabStub.fingerprintValue,
-      },
-    },
-  ];
-  const buttonTool = new InteractiveButtonGetterTool();
-  const first = await buttonTool.execute({});
-  check(first.success, '按钮采集成功');
-  const firstData = dataOf(first);
-  eq(firstData.totalElements, 2, '总元素数 = 2');
-  eq(firstData.page, 1, '默认第 1 页');
-  eq(firstData.cached, false, '首次采集不命中缓存');
-  eq(tabStub.payloadCallCount, 1, '首次采集发生了一次注入');
-
-  const second = await buttonTool.execute({});
-  const secondData = dataOf(second);
-  eq(secondData.cached, true, '指纹一致时命中缓存');
-  eq(tabStub.payloadCallCount, 1, '缓存命中不触发新的采集注入');
-
-  // —— 不同过滤条件互不共享缓存 ——
-  await buttonTool.execute({ regex: '提交' });
-  eq(tabStub.payloadCallCount, 2, '过滤条件变化后重新采集');
-
-  // —— 分页越界回退 + 提示 ——
-  const paged = await buttonTool.execute({ page: 99 });
-  const pData = dataOf(paged);
-  eq(pData.page, 1, '越界页码回退到最后一页');
-  eq(pData.totalPages, 1, '2 个元素只有 1 页');
-  check(typeof pData.hint === 'string' && pData.hint.includes('超出范围'), '越界给出回退提示', pData.hint);
-
-  // —— 参数类型防御 ——
-  const badRegex = await buttonTool.execute({ regex: 123 as unknown as string });
-  check(!badRegex.success, '非字符串 regex 被拒绝');
-  check(
-    typeof badRegex.error === 'string' && badRegex.error.includes('regex 必须是字符串'),
-    'regex 类型错误信息可读',
-    badRegex.error,
-  );
-  const badXpath = await buttonTool.execute({ xpath: {} as unknown as string });
-  check(!badXpath.success, '非字符串 xpath 被拒绝');
-  const badPage = await buttonTool.execute({ page: 'abc' as unknown as number });
-  check(badPage.success, '非法 page 回落默认值而不是报错');
-  eq(dataOf(badPage).page, 1, '非法 page 归一为 1');
-  check(
-    typeof dataOf(badPage).hint === 'string' && dataOf(badPage).hint.includes('无法解析'),
-    '非法 page 给出可感知提示',
-    dataOf(badPage).hint,
-  );
-
-  // 参数整体为 null（executeTool 对缺失参数透传 null）：按空参数处理而不是抛异常
-  const nullArgs = await buttonTool.execute(null as unknown as { regex?: string });
-  check(nullArgs.success, '整体 null 参数按空参数处理');
-  eq(dataOf(nullArgs).page, 1, 'null 参数归一到第 1 页');
-
-  // —— 过滤命中统计与提示 ——
-  resetTabStub();
-  tabStub.tabs = [{ id: 2, url: 'https://filtered.example/', status: 'complete', windowId: 1 }];
-  tabStub.payloadResults = [
-    {
-      frameId: 0,
-      result: {
-        elements: [
-          { ...makeElements(1)[0], isHit: true, matchedRegex: true, matchedXpath: null, description: '登录' },
-          ...makeElements(2),
-        ],
-        fingerprint: tabStub.fingerprintValue,
-      },
-    },
-  ];
-  const filteredTool = new InteractiveButtonGetterTool();
-  const filtered = await filteredTool.execute({ regex: '登录' });
-  const fData = dataOf(filtered);
-  eq(fData.filtered, true, '启用过滤后 filtered = true');
-  eq(fData.totalHits, 1, '命中数统计正确');
-  check(typeof fData.hint === 'string' && fData.hint.includes('命中 1 个'), '命中提示存在', fData.hint);
-  check(String(fData.elements).includes('✓ regex'), 'Markdown 中标记命中的 ✓ regex');
-
-  // 零命中提示
-  resetTabStub();
-  tabStub.tabs = [{ id: 3, url: 'https://nohit.example/', status: 'complete', windowId: 1 }];
-  tabStub.payloadResults = [
-    { frameId: 0, result: { elements: makeElements(3), fingerprint: tabStub.fingerprintValue } },
-  ];
-  const noHitTool = new InteractiveButtonGetterTool();
-  const noHit = await noHitTool.execute({ regex: '不存在的关键词zzz' });
-  const noHitData = dataOf(noHit);
-  eq(noHitData.totalHits, 0, '零命中统计');
-  check(
-    typeof noHitData.hint === 'string' && noHitData.hint.includes('没有任何元素命中过滤条件'),
-    '零命中给出放宽条件提示',
-    noHitData.hint,
-  );
-  check(String(noHitData.elements).includes('按钮 1'), '零命中仍返回全部元素');
-
-  // —— Markdown 反引号转义（选择器含 ` 时不得破坏 code span）——
-  resetTabStub();
-  tabStub.tabs = [{ id: 4, url: 'https://ticks.example/', status: 'complete', windowId: 1 }];
-  tabStub.payloadResults = [
-    {
-      frameId: 0,
-      result: {
-        elements: [{ ...makeElements(1)[0], selector: 'div[data-x=`y`]' }],
-        fingerprint: tabStub.fingerprintValue,
-      },
-    },
-  ];
-  const tickTool = new InteractiveButtonGetterTool();
-  const tickResult = await tickTool.execute({});
-  const tickMarkdown = String(dataOf(tickResult).elements);
-  check(
-    !tickMarkdown.includes('`y`') && tickMarkdown.includes("div[data-x='y']"),
-    '选择器中的反引号被替换，code span 不被破坏',
-    tickMarkdown,
-  );
-
-  // —— payload 错误透传（非法 regex 的页面内编译错误）——
-  resetTabStub();
-  tabStub.tabs = [{ id: 5, url: 'https://err.example/', status: 'complete', windowId: 1 }];
-  tabStub.payloadResults = [
-    {
-      frameId: 0,
-      result: {
-        elements: [],
-        fingerprint: tabStub.fingerprintValue,
-        error: 'regex 参数不是合法的 JavaScript 正则表达式：Invalid regular expression',
-      },
-    },
-  ];
-  const payloadErrTool = new InteractiveButtonGetterTool();
-  const payloadErr = await payloadErrTool.execute({ regex: '(' });
-  check(!payloadErr.success, 'payload 错误导致失败结果');
-  check(
-    typeof payloadErr.error === 'string' && payloadErr.error.includes('不是合法的 JavaScript 正则表达式'),
-    'payload 错误原文透传',
-    payloadErr.error,
-  );
-
-  // —— 注入异常 → 带工具名的可读错误 ——
-  resetTabStub();
-  tabStub.tabs = [{ id: 6, url: 'https://boom.example/', status: 'complete', windowId: 1 }];
-  tabStub.payloadThrow = new Error('boom');
-  const throwTool = new InteractiveButtonGetterTool();
-  const thrown = await throwTool.execute({});
-  check(!thrown.success, '注入异常转为失败结果而不是抛出');
-  check(
-    typeof thrown.error === 'string' && thrown.error.includes('获取可交互按钮元素失败'),
-    '按钮工具错误文案带工具指代',
-    thrown.error,
-  );
-
-  const inputThrowTool = new InteractiveInputGetterTool();
-  const inputThrown = await inputThrowTool.execute({});
-  check(
-    typeof inputThrown.error === 'string' && inputThrown.error.includes('获取可交互输入元素失败'),
-    '输入工具错误文案带工具指代',
-    inputThrown.error,
-  );
-  tabStub.payloadThrow = null;
-
-  // —— 未返回结果的 frame：不写缓存（防指纹不一致的死缓存）——
-  resetTabStub();
-  tabStub.tabs = [{ id: 7, url: 'https://partial.example/', status: 'complete', windowId: 1 }];
-  tabStub.payloadResults = [{ frameId: 0, result: undefined }];
-  const partialTool = new InteractiveButtonGetterTool();
-  const partial1 = await partialTool.execute({});
-  const partial2 = await partialTool.execute({});
-  eq(dataOf(partial1).cached, false, '残缺采集不命中缓存');
-  eq(dataOf(partial2).cached, false, '残缺采集不写入缓存（第二次仍需采集）');
-  eq(tabStub.payloadCallCount, 2, '残缺采集每次都重新注入');
-
-  // —— 空白页 / 受限页 / 无标签页拦截 ——
-  resetTabStub();
-  tabStub.tabs = [{ id: 8, url: 'about:blank', status: 'complete', windowId: 1 }];
-  const blankTool = new InteractiveButtonGetterTool();
-  const blankResult = await blankTool.execute({});
-  check(!blankResult.success && String(blankResult.error).includes('空白页'), '空白页被拦截', blankResult.error);
-
-  tabStub.tabs = [{ id: 9, url: 'chrome://settings/', status: 'complete', windowId: 1 }];
-  const restrictedTool = new InteractiveButtonGetterTool();
-  const restrictedResult = await restrictedTool.execute({});
-  check(
-    !restrictedResult.success && String(restrictedResult.error).includes('浏览器默认页'),
-    '受限协议页被拦截',
-    restrictedResult.error,
-  );
-
-  tabStub.tabs = [{ url: 'https://no-id.example/', status: 'complete', windowId: 1 }];
-  const noIdTool = new InteractiveButtonGetterTool();
-  const noIdResult = await noIdTool.execute({});
-  check(!noIdResult.success, '缺少标签页 ID 时返回失败');
-
-  // —— 输入工具基础采集（分页与元素计数共用宿主逻辑）——
-  resetTabStub();
-  tabStub.payloadResults = [
-    {
-      frameId: 0,
-      result: {
-        elements: [
-          { type: 'input_text', description: '搜索框', selector: '#q', score: 90, matchedRegex: null, matchedXpath: null, isHit: false },
-        ],
-        fingerprint: tabStub.fingerprintValue,
-      },
-    },
-  ];
-  const inputTool = new InteractiveInputGetterTool();
-  const inputResult = await inputTool.execute({});
-  check(inputResult.success, '输入元素采集成功');
-  const inputData = dataOf(inputResult);
-  eq(inputData.totalElements, 1, '输入元素计数');
-  check(String(inputData.elements).includes('input_text'), 'Markdown 包含类型列');
-
-  resetTabStub();
-}
+function dataOf(result: { data?: AnyRecord }): AnyRecord { return result.data ?? {}; }
+const { testElementInteraction } = await import('./element-interaction.test');
+await testElementInteraction(check, eq);
+const { testTextAutomation } = await import('./text-automation.test');
+await testTextAutomation(check, eq);
 
 // ==================== 8. 注入荷载：序列化自包含 + 真实 DOM 行为 ====================
 
 {
   const { JSDOM } = await import('jsdom');
   const { elementScanPayload } = await import('../../tools/automation/shared/element-scan-payload');
-  const { enhanceActionPayload } = await import('../../tools/base/enhance-action-payload');
+  const { domActionPayload } = await import('../../tools/browser/dom-action-payload');
 
   // —— 模拟 chrome.scripting 的序列化：函数源码只能在「全局作用域」求值执行 ——
   // 若函数体引用了任何模块级标识符（闭包逃逸），这里会直接 ReferenceError。
   const serializedScan = (0, eval)(`(${elementScanPayload.toString()})`) as typeof elementScanPayload;
-  const serializedEnhance = (0, eval)(`(${enhanceActionPayload.toString()})`) as typeof enhanceActionPayload;
+  const serializedEnhance = (0, eval)(`(${domActionPayload.toString()})`) as typeof domActionPayload;
   check(typeof serializedScan === 'function', '扫描荷载序列化后可求值为函数');
   check(typeof serializedEnhance === 'function', '操作荷载序列化后可求值为函数');
 
@@ -832,17 +576,25 @@ function dataOf(result: { data?: AnyRecord }): AnyRecord {
     try {
       // —— buttons 模式：采集范围、下载识别、类型判定、评分排序 ——
       const buttons = serializedScan('buttons', '', '');
+      const cssOf = (id: string) => {
+        const el = (envA.doc as any).__agentNexusReferences.resolve(id) as Element;
+        return el.id ? '#' + el.id : el.localName;
+      };
+      const ref = (css: string): string => {
+        const node = envA.doc.querySelector(css)!;
+        return (envA.doc as any).__agentNexusReferences.register(node);
+      };
       eq(buttons.error, undefined, 'buttons 模式无错误');
       // 排序依据评分：a(下载 +50) 与 saveBtn(「保存」命中下载文本启发式 +50) 并列最高，
       // 按文档序稳定排在其后的是 90 分的 loginBtn
       eq(
-        buttons.elements.map(e => e.selector),
+        buttons.elements.map(e => cssOf(e.elementId)),
         ['a', '#saveBtn', '#loginBtn'],
         'buttons 模式精确采集 3 个可点击元素并按评分排序（输入控件不混入）',
       );
       check(typeof buttons.fingerprint === 'string' && buttons.fingerprint.length > 0, 'payload 携带页面指纹');
 
-      const bySelector = new Map(buttons.elements.map(e => [e.selector, e]));
+      const bySelector = new Map(buttons.elements.map(e => [cssOf(e.elementId), e]));
       const login = bySelector.get('#loginBtn');
       check(!!login, '按钮 #loginBtn 被采集');
       eq(login?.type, 'button', '按钮类型判定为 button');
@@ -854,7 +606,7 @@ function dataOf(result: { data?: AnyRecord }): AnyRecord {
       check(!!link, 'pdf 链接被判定为 link 类型');
       eq(link?.isDownload, true, 'pdf 链接命中下载特征');
       check(String(link?.description).includes('[📥下载]'), '下载按钮带 📥 标记', link?.description);
-      eq(buttons.elements[0]?.selector, link?.selector, '下载链接按评分（+50）置顶');
+      eq(buttons.elements[0]?.elementId, link?.elementId, '下载链接按评分（+50）置顶');
 
       // —— regex 过滤：命中置顶 + 未命中排后 ——
       const filtered = serializedScan('buttons', '登录|保存', '');
@@ -872,21 +624,21 @@ function dataOf(result: { data?: AnyRecord }): AnyRecord {
       const xp = serializedScan('buttons', '', '//div[@class="toolbar"]//button');
       eq(xp.error, undefined, '合法 xpath 无错误');
       eq(
-        xp.elements.find(e => e.selector === '#saveBtn')?.isHit,
+        xp.elements.find(e => cssOf(e.elementId) === '#saveBtn')?.isHit,
         true,
         '容器级 xpath 经祖先链命中子按钮',
       );
       eq(
-        xp.elements.find(e => e.selector === '#saveBtn')?.matchedXpath,
+        xp.elements.find(e => cssOf(e.elementId) === '#saveBtn')?.matchedXpath,
         true,
         '子按钮 matchedXpath=true',
       );
       eq(
-        xp.elements.find(e => e.selector === '#loginBtn')?.matchedXpath,
+        xp.elements.find(e => cssOf(e.elementId) === '#loginBtn')?.matchedXpath,
         false,
         '链外元素 matchedXpath=false',
       );
-      eq(xp.elements[0]?.selector, '#saveBtn', 'xpath 命中者置顶');
+      eq(cssOf(xp.elements[0]!.elementId), '#saveBtn', 'xpath 命中者置顶');
 
       // —— 非法过滤条件：带模式化示例的可读错误 ——
       const badXpathButtons = serializedScan('buttons', '', 'INVALID_XPATH');
@@ -914,7 +666,7 @@ function dataOf(result: { data?: AnyRecord }): AnyRecord {
       // —— inputs 模式：采集范围、placeholder 描述、类型判定 ——
       const inputs = serializedScan('inputs', '', '');
       eq(inputs.error, undefined, 'inputs 模式无错误');
-      eq(inputs.elements.length, 3, 'inputs 模式采集 input/select/textarea', inputs.elements.map(e => `${e.type}:${e.selector}`));
+      eq(inputs.elements.length, 3, 'inputs 模式采集 input/select/textarea', inputs.elements.map(e => `${e.type}:${e.elementId}`));
       const textField = inputs.elements.find(e => e.type === 'input_text');
       check(!!textField, '文本框类型判定为 input_text');
       check(
@@ -925,30 +677,30 @@ function dataOf(result: { data?: AnyRecord }): AnyRecord {
       eq(inputs.elements.some(e => e.type === 'select'), true, '下拉框被采集（type=select）');
       eq(inputs.elements.some(e => e.type === 'textarea'), true, '多行文本被采集（type=textarea）');
       eq(
-        inputs.elements.some(e => e.selector === '#loginBtn'),
+        inputs.elements.some(e => cssOf(e.elementId) === '#loginBtn'),
         false,
         '按钮不混入输入元素采集',
       );
 
       const inputFiltered = serializedScan('inputs', '搜索', '');
       eq(inputFiltered.elements.filter(e => e.isHit).length, 1, 'inputs regex 命中 1 个');
-      eq(inputFiltered.elements[0]?.selector, textField?.selector, '命中的文本框置顶');
+      eq(inputFiltered.elements[0]?.elementId, textField?.elementId, '命中的文本框置顶');
 
       // —— enhance 荷载正常路径：点击 / 填充文本框 / 按 option 文本填充下拉 ——
-      const clickOk = await serializedEnhance('click', '#loginBtn');
+      const clickOk = await serializedEnhance('click', ref('#loginBtn'));
       eq(clickOk.success, true, '点击未被遮挡的按钮成功', clickOk);
 
-      const fillOk = await serializedEnhance('fill', 'input[name="keyword"]', 'hello world');
+      const fillOk = await serializedEnhance('fill', ref('input[name="keyword"]'), 'hello world');
       eq(fillOk.success, true, '填充文本框成功', fillOk);
       eq(fillOk.finalValue, 'hello world', '填充值回读一致');
 
-      const fillSelect = await serializedEnhance('fill', '#sel', '选项A');
+      const fillSelect = await serializedEnhance('fill', ref('#sel'), '选项A');
       eq(fillSelect.success, true, '按 option 文本填充下拉框成功', fillSelect);
       eq(fillSelect.finalValue, 'a', '下拉框选中值为 option 的 value');
 
       const fillMissing = await serializedEnhance('fill', '#does-not-exist', 'x');
       check(
-        typeof fillMissing.error === 'string' && fillMissing.error.includes('not found'),
+        typeof fillMissing.error === 'string' && fillMissing.error.includes('STALE_ELEMENT'),
         '选择器未命中报错',
         fillMissing.error,
       );
@@ -970,7 +722,8 @@ function dataOf(result: { data?: AnyRecord }): AnyRecord {
       const occluded = serializedScan('buttons', '', '');
       eq(occluded.elements.length, 0, '视口内被遮挡的按钮从采集结果剔除');
 
-      const clickOccluded = await serializedEnhance('click', '#target');
+      const targetId = (envC.doc as any).__agentNexusReferences.register(envC.doc.getElementById('target'));
+      const clickOccluded = await serializedEnhance('click', targetId);
       check(
         clickOccluded.success !== true &&
           typeof clickOccluded.error === 'string' &&
@@ -1167,6 +920,8 @@ function dataOf(result: { data?: AnyRecord }): AnyRecord {
 }
 
 // ==================== 汇总 ====================
+await import('./wait-navigation.test');
+await import('./vision-assistant.test');
 
 console.log(`\n[tools] 通过 ${passed} 项，失败 ${failures.length} 项`);
 if (failures.length > 0) {

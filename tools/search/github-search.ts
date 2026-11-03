@@ -47,17 +47,17 @@ export class GitHubSearchTool extends BaseSearchTool {
 
   async execute(args: { 
     query: string; 
-    newWindow?: boolean;
+    newTab?: boolean;
   }) {
     try {
       this.validateArgs(args, ['query']);
       
-      const { query, newWindow = false } = args;
+      const { query, newTab = true } = args;
       const searchUrl = this.getSearchUrl(query);
       
       this.log(`Searching "${query}" on GitHub (repositories mode)`);
       
-      const result = await this.navigateToUrl(searchUrl, { newWindow });
+      const result = await this.navigateToUrl(searchUrl, { newTab });
       
       if (!result.success) {
         return result;

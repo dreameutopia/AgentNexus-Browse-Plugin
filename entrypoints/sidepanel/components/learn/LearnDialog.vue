@@ -10,6 +10,7 @@
  * 由 use-learn-session 决定后续流转（组件自身不做任何业务判断）。
  */
 import { t } from '@/utils/i18n';
+import './learn-theme.css';
 import type { LearnDialogChoice, LearnDialogView } from '@/entrypoints/sidepanel/composables/use-learn-session';
 
 const props = defineProps<{
@@ -48,9 +49,9 @@ function formatElapsed(ms: number): string {
 
 <template>
   <Transition name="learn-dialog">
-    <div v-if="view" class="learn-dialog-overlay" @click.self="onOverlayClick">
+    <div v-if="view" class="learn-dialog-overlay learn-root" @click.self="onOverlayClick">
       <div
-        class="learn-dialog"
+        class="learn-dialog learn-panel"
         :class="`learn-dialog--${view.mode}`"
         role="alertdialog"
         aria-modal="true"
@@ -235,7 +236,7 @@ function formatElapsed(ms: number): string {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(15, 23, 42, 0.6);
+  background: var(--learn-scrim);
   backdrop-filter: blur(3px);
 }
 
@@ -245,11 +246,6 @@ function formatElapsed(ms: number): string {
   width: min(520px, 100%);
   max-height: min(84vh, 700px);
   border-radius: 14px;
-  background: var(--bg-elevated, #0f172a);
-  color: var(--text-primary, #e2e8f0);
-  box-shadow:
-    0 24px 60px rgba(0, 0, 0, 0.42),
-    0 0 0 1px var(--border, rgba(148, 163, 184, 0.2));
   overflow: hidden;
 }
 
@@ -268,25 +264,26 @@ function formatElapsed(ms: number): string {
   height: 30px;
   border-radius: 9px;
   font-size: 15px;
-  background: rgba(148, 163, 184, 0.16);
+  background: var(--learn-surface-hover);
 }
 
 .learn-dialog__badge--info {
-  background: rgba(59, 130, 246, 0.18);
+  background: var(--learn-accent-soft);
 }
 
 .learn-dialog__badge--warn {
-  background: rgba(245, 158, 11, 0.18);
+  background: var(--learn-warning-soft);
 }
 
 .learn-dialog__badge--error {
-  background: rgba(239, 68, 68, 0.18);
+  background: var(--learn-danger-soft);
 }
 
 .learn-dialog__title {
   margin: 0;
   font-size: 15.5px;
   font-weight: 600;
+  color: var(--learn-text-strong);
 }
 
 .learn-dialog__body {
@@ -300,14 +297,14 @@ function formatElapsed(ms: number): string {
 .learn-dialog__intro {
   margin: 0;
   font-size: 12.5px;
-  color: var(--text-secondary, #94a3b8);
+  color: var(--learn-text-muted);
 }
 
 .learn-dialog__text {
   margin: 0;
   font-size: 13px;
   line-height: 1.75;
-  color: var(--text-primary, #e2e8f0);
+  color: var(--learn-text);
 }
 
 .learn-dialog__text--break {
@@ -319,7 +316,7 @@ function formatElapsed(ms: number): string {
   margin: 0;
   font-size: 12px;
   line-height: 1.7;
-  color: var(--text-tertiary, #94a3b8);
+  color: var(--learn-text-faint);
 }
 
 /* 配置摘要 */
@@ -327,8 +324,8 @@ function formatElapsed(ms: number): string {
   margin: 0;
   padding: 10px 12px;
   border-radius: 10px;
-  background: rgba(148, 163, 184, 0.08);
-  border: 1px solid var(--border, rgba(148, 163, 184, 0.16));
+  background: var(--learn-surface);
+  border: 1px solid var(--learn-border);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -343,12 +340,12 @@ function formatElapsed(ms: number): string {
 }
 
 .learn-summary__row dt {
-  color: var(--text-tertiary, #94a3b8);
+  color: var(--learn-text-faint);
 }
 
 .learn-summary__row dd {
   margin: 0;
-  color: var(--text-primary, #e2e8f0);
+  color: var(--learn-text);
   word-break: break-word;
 }
 
@@ -362,8 +359,8 @@ function formatElapsed(ms: number): string {
   margin: 0;
   padding: 10px 12px 10px 28px;
   border-radius: 10px;
-  background: rgba(245, 158, 11, 0.1);
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  background: var(--learn-warning-soft);
+  border: 1px solid var(--learn-warning-border);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -372,7 +369,7 @@ function formatElapsed(ms: number): string {
 .learn-warnings li {
   font-size: 12.5px;
   line-height: 1.7;
-  color: var(--text-secondary, #cbd5e1);
+  color: var(--learn-text-muted);
 }
 
 /* 进度卡片 */
@@ -386,13 +383,13 @@ function formatElapsed(ms: number): string {
   flex: 1 1 140px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: rgba(148, 163, 184, 0.08);
-  border: 1px solid var(--border, rgba(148, 163, 184, 0.16));
+  background: var(--learn-surface);
+  border: 1px solid var(--learn-border);
 }
 
 .learn-progress__label {
   font-size: 12.5px;
-  color: var(--text-secondary, #cbd5e1);
+  color: var(--learn-text-muted);
 }
 
 /* 问题清单 */
@@ -400,8 +397,8 @@ function formatElapsed(ms: number): string {
   margin: 0;
   padding: 10px 12px 10px 30px;
   border-radius: 10px;
-  background: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(239, 68, 68, 0.28);
+  background: var(--learn-danger-soft);
+  border: 1px solid var(--learn-danger-border);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -412,7 +409,7 @@ function formatElapsed(ms: number): string {
 .learn-issues li {
   font-size: 12.5px;
   line-height: 1.7;
-  color: var(--text-secondary, #cbd5e1);
+  color: var(--learn-text-muted);
   word-break: break-word;
 }
 
@@ -422,47 +419,6 @@ function formatElapsed(ms: number): string {
   justify-content: flex-end;
   gap: 10px;
   padding: 16px 20px 18px;
-}
-
-.learn-btn {
-  padding: 9px 18px;
-  border-radius: 9px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    background 0.15s ease,
-    opacity 0.15s ease;
-}
-
-.learn-btn--ghost {
-  border: 1px solid var(--border, rgba(148, 163, 184, 0.28));
-  background: transparent;
-  color: var(--text-secondary, #cbd5e1);
-}
-
-.learn-btn--ghost:hover {
-  background: var(--bg-hover, rgba(148, 163, 184, 0.12));
-}
-
-.learn-btn--primary {
-  border: none;
-  background: var(--accent, #3b82f6);
-  color: #fff;
-}
-
-.learn-btn--primary:hover {
-  opacity: 0.9;
-}
-
-.learn-btn--danger {
-  border: none;
-  background: var(--danger, #ef4444);
-  color: #fff;
-}
-
-.learn-btn--danger:hover {
-  opacity: 0.9;
 }
 
 /* 进出场 */

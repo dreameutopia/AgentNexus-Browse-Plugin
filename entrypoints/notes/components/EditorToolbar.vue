@@ -21,17 +21,13 @@
 
     <span class="tb-divider" />
 
-    <select
-      class="tb-select"
-      :value="headingValue"
+    <SelectMenu
+      :model-value="headingValue"
+      :items="headingItems"
       :title="t('notes.headingParagraph')"
-      @change="handleHeadingChange"
-    >
-      <option value="0">{{ t('notes.headingParagraph') }}</option>
-      <option value="1">{{ t('notes.heading1') }}</option>
-      <option value="2">{{ t('notes.heading2') }}</option>
-      <option value="3">{{ t('notes.heading3') }}</option>
-    </select>
+      size="xs"
+      @update:model-value="handleHeadingChange"
+    />
 
     <button
       class="tb-btn"
@@ -154,6 +150,21 @@
       hidden
       @change="handleFileChange"
     />
+
+    <!-- 链接输入（替代原生 prompt，风格与全局弹窗统一；留空 = 移除链接） -->
+    <PromptModal
+      :open="linkModalOpen"
+      :title="t('notes.tbLink')"
+      :label="t('notes.linkPrompt')"
+      :initial-value="lastLinkHref"
+      placeholder="https://"
+      :allow-empty="true"
+      :max-length="2048"
+      :confirm-text="t('notes.confirm')"
+      :cancel-text="t('notes.cancel')"
+      @confirm="handleLinkConfirm"
+      @cancel="linkModalOpen = false"
+    />
   </div>
 </template>
 
@@ -177,6 +188,8 @@ import {
 } from 'lucide-vue-next';
 import type { Editor } from '@tiptap/vue-3';
 import { t } from '@/utils/i18n';
+import SelectMenu from './SelectMenu.vue';
+import PromptModal from './PromptModal.vue';
 
 const props = defineProps<{
   editor: Editor | undefined;
@@ -196,8 +209,15 @@ const headingValue = computed(() => {
   return String(Array.isArray(level) ? level[0] ?? 0 : level ?? 0);
 });
 
-function handleHeadingChange(event: Event): void {
-  const value = (event.target as HTMLSelectElement).value;
+/** 标题级别候选（computed 保持语言切换时文案响应式） */
+const headingItems = computed(() => [
+  { value: '0', label: t('notes.headingParagraph') },
+  { value: '1', label: t('notes.heading1') },
+  { value: '2', label: t('notes.heading2') },
+  { value: '3', label: t('notes.heading3') },
+]);
+
+function handleHeadingChange(value: string): void {
   const editor = props.editor;
   if (!editor) return;
   if (value === '0') {
@@ -206,6 +226,11 @@ function handleHeadingChange(event: Event): void {
     editor.chain().focus().setHeading({ level: Number(value) as 1 | 2 | 3 }).run();
   }
 }
+
+// ---- 链接（自定义输入弹窗，替代原生 prompt） ----
+const linkModalOpen = ref(false);
+/** 打开弹窗时预填的既有链接地址 */
+const lastLinkHref = ref('');
 
 /** 链接：选中状态下再次点击即移除；否则弹窗输入 URL */
 function handleLink(): void {
@@ -217,9 +242,14 @@ function handleLink(): void {
     return;
   }
 
-  const previous = String(editor.getAttributes('link').href ?? '');
-  const url = window.prompt(t('notes.linkPrompt'), previous);
-  if (url === null) return; // 用户取消
+  lastLinkHref.value = String(editor.getAttributes('link').href ?? '');
+  linkModalOpen.value = true;
+}
+
+function handleLinkConfirm(url: string): void {
+  linkModalOpen.value = false;
+  const editor = props.editor;
+  if (!editor) return;
   const href = url.trim();
   if (!href) {
     editor.chain().focus().unsetLink().run();

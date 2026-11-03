@@ -710,6 +710,62 @@ class NotesDatabase {
   }
 
   /**
+   * 重命名分类（文件夹）：单事务内游标遍历该分类下全部笔记并改写为目标名。
+   * - 不 bump updatedAt：改文件夹名不是内容变更，避免全部笔记跳到列表顶部；
+   * - 目标名与原名相同（或清洗后相同）直接返回 0，不产生写入；
+   * - 目标名已存在时允许合并（两文件夹的笔记归入同一新名），与主流笔记应用一致。
+   *
+   * @returns 实际改写的笔记数量
+   */
+  async renameCategory(oldCategory: string, newCategory: string): Promise<number> {
+    const from = normalizeCategory(oldCategory, CATEGORY_INBOX);
+    const to = normalizeCategory(newCategory, from);
+    if (from === to) return 0;
+
+    return this.runTx<number>('renameCategory', 'readwrite', (store, setResult) => {
+      const request = store.index('category').openCursor(IDBKeyRange.only(from));
+      let updated = 0;
+
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) {
+          setResult(updated);
+          return;
+        }
+        const note = cursor.value as Note;
+        cursor.update({ ...note, category: to });
+        updated += 1;
+        cursor.continue();
+      };
+    });
+  }
+
+  /**
+   * 删除分类（文件夹）及其下全部笔记（不可恢复，调用方需先二次确认）。
+   *
+   * @returns 实际删除的笔记数量
+   */
+  async deleteCategory(category: string): Promise<number> {
+    const target = normalizeCategory(category, CATEGORY_INBOX);
+
+    return this.runTx<number>('deleteCategory', 'readwrite', (store, setResult) => {
+      const request = store.index('category').openCursor(IDBKeyRange.only(target));
+      let deleted = 0;
+
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) {
+          setResult(deleted);
+          return;
+        }
+        cursor.delete();
+        deleted += 1;
+        cursor.continue();
+      };
+    });
+  }
+
+  /**
    * 列出笔记（完整对象，按更新时间倒序，支持分页；参数自动收敛为合法整数）
    */
   async listNotes(limit = 100, offset = 0): Promise<Note[]> {

@@ -1,4 +1,5 @@
 /** Background-only cancellation registry; IDs travel outside public tool parameters. */
+import { GuiError } from './gui-errors';
 const active = new Map<string, AbortController>();
 const early = new Map<string, number>();
 export function cancelGuiRequest(id: unknown): void {
@@ -12,7 +13,8 @@ export function cancelGuiRequest(id: unknown): void {
 }
 export async function withGuiCancellation<T>(id: string | undefined, work: (signal?: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!id) return work(signal);
-  if (active.has(id)) throw new Error('Duplicate GUI request ID');
+  if(typeof id!=='string' || id.length>128) throw new GuiError('INVALID_ARGUMENT','Invalid GUI request ID');
+  if (active.has(id)) throw new GuiError('INVALID_ARGUMENT','Duplicate GUI request ID');
   const controller = new AbortController(); active.set(id, controller);
   const cancel = () => controller.abort();
   signal?.addEventListener('abort', cancel, { once: true });

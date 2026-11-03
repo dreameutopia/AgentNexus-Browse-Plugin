@@ -31,18 +31,22 @@ import { BaseTool } from '../base-tool';
 import { ToolMetadata } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
+// 子路径直连（不走 @/utils/pyodide 桶文件）：桶文件同时被 PythonSection
+// 动态 import，静态 + 动态混合导入会让 Vite 告警「动态导入无法拆 chunk」
+import {
+  PYODIDE_MAX_CODE_LENGTH,
+  PYTHON_RUN_DEFAULT_TIMEOUT_MS,
+  PYTHON_RUN_MAX_TIMEOUT_MS,
+} from '@/utils/pyodide/pyodide-config';
 import {
   PY_ERR_BOOT,
   PY_ERR_CONTEXT,
   PY_ERR_NOT_READY,
   PY_ERR_PYTHON,
   PY_ERR_TIMEOUT,
-  PYODIDE_MAX_CODE_LENGTH,
-  PYTHON_RUN_DEFAULT_TIMEOUT_MS,
-  PYTHON_RUN_MAX_TIMEOUT_MS,
   runPythonCode,
   type PythonRunOutcome,
-} from '@/utils/pyodide';
+} from '@/utils/pyodide/pyodide-runtime';
 
 export class PythonRunTool extends BaseTool {
   name = 'python_run';

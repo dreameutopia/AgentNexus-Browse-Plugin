@@ -103,6 +103,9 @@ export type ChatMessageStatus = 'streaming' | 'done' | 'error' | 'aborted';
  * 同一张图片全库只存一份，消息层永远只持有引用。
  */
 export interface ChatMessageRecord {
+  /** Exact model-facing rounds, independent of aggregated UI text/tool cards.
+   * Images use storage-only content references; old records use legacy replay. */
+  modelMessages?: ChatMessage[];
   id: string;
   chatId: string;
   /** 会话内单调递增序号，用于排序与分页 */
@@ -177,11 +180,16 @@ export type { VisionRuntimeConfigImpl as VisionRuntimeConfig };
 type VisionRuntimeConfig = VisionRuntimeConfigImpl;
 
 export interface ConversationRuntime {
+  agentId?: string;
+  /** Stable advertised catalog. Execution still checks toolIds / loaded skills. */
+  advertisedToolIds?: string[];
   chatId: string;
   /** XML 分区后的系统提示词（environment / interaction-guidelines / agent-instructions / supplementary-context / available-skills） */
   systemPrompt: string;
   /** Set 去重后的有序工具 ID 列表 */
   toolIds: string[];
+  /** Built-in guide capability ceiling, enforced again at execution time. */
+  toolPolicy?: 'vision-assistant';
   model: ResolvedModelConfig;
   limits: RuntimeLimits;
   vision: VisionRuntimeConfig | null;

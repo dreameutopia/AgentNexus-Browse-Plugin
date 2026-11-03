@@ -140,9 +140,6 @@ export const TOOL_NAMES = {
     // Network tools
     NETWORK_REQUEST: 'browser_network_request',
     NETWORK_CAPTURE_START: 'browser_network_capture',
-    NETWORK_CAPTURE_STOP: 'browser_network_capture_stop',
-    NETWORK_DEBUGGER_START: 'browser_network_debugger_start',
-    NETWORK_DEBUGGER_STOP: 'browser_network_debugger_stop',
     
     // Script tools
     SEND_COMMAND_TO_INJECT_SCRIPT: 'browser_send_command_to_inject_script',
@@ -180,7 +177,6 @@ export const TOOL_NAMES = {
     GET_WINDOWS_AND_TABS: 'browser_window',
     
     // Interaction tools (extended)
-    KEYBOARD: 'browser_keyboard',
     
     // Capture tools (extended)
     CONSOLE: 'browser_console',

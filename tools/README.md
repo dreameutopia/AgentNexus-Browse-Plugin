@@ -45,6 +45,10 @@ tools/
 
 ### 使用现有工具
 
+浏览器导航只在**现有窗口**内进行：`browser_navigate({url})` 默认新标签页，`newTab:false` 使用当前标签页，同 URL 标签可复用。`newWindow` 已从导航及快捷／书签／历史导航接口删除，导航没有新建窗口兜底；没有现成窗口时返回错误，标签创建始终显式绑定现有 windowId。
+
+`generic_wait({waitSeconds})` 接受非负有限秒数，超过 600 自动按 600 秒执行，支持中止；视觉循环在工具完成后另强制间隔 3 秒再自动截图。等待仅表示时间经过，完成状态仍需重新观察。
+
 ```typescript
 import { toolRegistry } from './tools';
 
@@ -53,13 +57,13 @@ const zhihuTool = toolRegistry.getTool('zhihu_search');
 const result = await zhihuTool.execute({
   query: 'TypeScript 最佳实践',
   searchType: 'content',
-  newWindow: false
+  newTab: false
 });
 
 // 或者直接通过名称执行
 const result2 = await toolRegistry.executeTool('baidu_search', {
   query: 'Vue.js 教程',
-  newWindow: true
+  newTab: true
 });
 ```
 
@@ -128,15 +132,15 @@ export class MyCustomSearchTool extends BaseSearchTool {
   async execute(args: {
     query: string;
     category?: string;
-    newWindow?: boolean;
+    newTab?: boolean;
   }): Promise<ToolResult> {
     try {
       this.validateArgs(args, ['query']);
       
-      const { query, category = 'all', newWindow = false } = args;
+      const { query, category = 'all', newTab = true } = args;
       const searchUrl = `https://example.com/search?q=${encodeURIComponent(query)}&cat=${category}`;
       
-      return await this.navigateToUrl(searchUrl, { newWindow });
+      return await this.navigateToUrl(searchUrl, { newTab });
       
     } catch (error) {
       return this.createErrorResponse('搜索失败', error);
@@ -233,7 +237,7 @@ const results = await Promise.all(
   searchTools.map(toolName => 
     toolRegistry.executeTool(toolName, {
       query: searchQuery,
-      newWindow: true
+      newTab: true
     })
   )
 );

@@ -8,6 +8,7 @@
  * 读回草稿）并不依赖此刻的弹窗；故只做一次强提示，由用户决定何时关闭。
  */
 import { t } from '@/utils/i18n';
+import './learn-theme.css';
 
 const props = defineProps<{ visible: boolean }>();
 
@@ -16,8 +17,8 @@ const emit = defineEmits<{ close: [] }>();
 
 <template>
   <Transition name="learn-degraded">
-    <div v-if="visible" class="learn-degraded-overlay" @click.self="emit('close')">
-      <div class="learn-degraded" role="alertdialog" aria-modal="true">
+    <div v-if="visible" class="learn-degraded-overlay learn-root" @click.self="emit('close')">
+      <div class="learn-degraded learn-panel" role="alertdialog" aria-modal="true">
         <header class="learn-degraded__header">
           <span class="learn-degraded__badge" aria-hidden="true">⚠️</span>
           <h3 class="learn-degraded__title">{{ t('sidepanel.learn.draftSaveDegradedTitle') }}</h3>
@@ -44,7 +45,7 @@ const emit = defineEmits<{ close: [] }>();
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(15, 23, 42, 0.45);
+  background: var(--learn-scrim);
 }
 
 .learn-degraded {
@@ -52,11 +53,6 @@ const emit = defineEmits<{ close: [] }>();
   flex-direction: column;
   width: min(440px, 100%);
   border-radius: 14px;
-  background: var(--bg-elevated, #0f172a);
-  color: var(--text-primary, #e2e8f0);
-  box-shadow:
-    0 24px 60px rgba(0, 0, 0, 0.4),
-    0 0 0 1px var(--border, rgba(148, 163, 184, 0.2));
   overflow: hidden;
 }
 
@@ -75,13 +71,14 @@ const emit = defineEmits<{ close: [] }>();
   height: 30px;
   border-radius: 9px;
   font-size: 15px;
-  background: rgba(245, 158, 11, 0.18);
+  background: var(--learn-warning-soft);
 }
 
 .learn-degraded__title {
   margin: 0;
   font-size: 15.5px;
   font-weight: 600;
+  color: var(--learn-text-strong);
 }
 
 .learn-degraded__body {
@@ -92,7 +89,7 @@ const emit = defineEmits<{ close: [] }>();
   margin: 0;
   font-size: 13px;
   line-height: 1.75;
-  color: var(--text-secondary, #cbd5e1);
+  color: var(--learn-text-muted);
 }
 
 .learn-degraded__footer {
@@ -105,15 +102,16 @@ const emit = defineEmits<{ close: [] }>();
   padding: 9px 18px;
   border: none;
   border-radius: 9px;
-  background: var(--accent, #3b82f6);
-  color: #fff;
+  background: var(--learn-accent);
+  color: #ffffff;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+  transition: background 0.15s ease;
 }
 
 .learn-degraded__btn:hover {
-  opacity: 0.9;
+  background: var(--learn-accent-strong);
 }
 
 .learn-degraded-enter-active,

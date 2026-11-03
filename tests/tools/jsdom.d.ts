@@ -4,7 +4,7 @@
  */
 declare module 'jsdom' {
   export class JSDOM {
-    constructor(html?: string, options?: { pretendToBeVisual?: boolean; url?: string });
+    constructor(html?: string, options?: { pretendToBeVisual?: boolean; url?: string; runScripts?: 'outside-only' | 'dangerously' });
     readonly window: Window & typeof globalThis;
   }
 }

@@ -28,13 +28,17 @@ import {
 } from '../stream';
 import { openaiToolsConverter } from '../tools/openai-tools-converter';
 import { OpenAITool } from '@/common/openai-types';
-import { markdownRenderer, RenderOptions } from '../chat/markdown-renderer';
+// 注意：本模块不静态引入 ../chat/markdown-renderer —— 它是纯传输层，
+// 被 background 的工具链（tools/automation 等）引用；而 markdown-renderer
+// 连带 katex + highlight.js 整套渲染栈，一旦静态引入会被打进 Service Worker
+// （background 是 IIFE 单文件、无法拆 chunk）。渲染入口见 MarkdownText /
+// MessageItem 直接引用 markdownRenderer。
 
 // 消息类型：与 stream 层 Unified* 结构完全一致 → 直接别名复用，
 // 杜绝两份接口逐字段漂移（此前本地重定义 + 恒等映射函数是纯冗余）
 export type { UnifiedChatMessage as ChatMessage, VisionContent, UnifiedToolCall as ToolCall } from '../stream';
 
-// 重新导出渲染选项类型
+// 重新导出渲染选项类型（type-only，不会把渲染栈打进本模块的引用图）
 export type { RenderOptions } from '../chat/markdown-renderer';
 // 重新导出端点快照类型（调用方与 ChatRequestOptions 共用同一契约）
 export type { ModelEndpoint } from '../stream';
@@ -80,6 +84,7 @@ function toStreamCallbacks(callbacks: StreamEventCallback): StreamCallbacks {
 
 /** 请求级选项：端点快照必填；采样参数可按请求覆盖端点默认值 */
 export interface ChatRequestOptions {
+  metrics?: import('../stream/types').RequestMetricsContext;
   /** 按 ID 解析的工具定义列表（经 openaiToolsConverter 转协议格式） */
   tools?: string[];
   temperature?: number;
@@ -158,6 +163,14 @@ export class AiChatApi {
     try {
       const result = await streamClient.chat(
         {
+          metrics: {
+            channelId: (options.endpoint as ModelEndpoint & { ref?: { channelId: string } }).ref?.channelId,
+            modelId: (options.endpoint as ModelEndpoint & { ref?: { modelId: string } }).ref?.modelId,
+            channelLabel: (options.endpoint as ModelEndpoint & { label?: string }).label,
+            ...options.metrics,
+          },
+          promptCacheKey: /^https:\/\/api\.openai\.com(?:\/|$)/i.test(options.endpoint.baseUrl)
+            ? `agentnexus:${options.metrics?.agentId || 'chat'}:v2` : undefined,
           model: ctx.providerConfig.model,
           // ChatMessage 即 UnifiedChatMessage 别名（结构同一），直通无需映射
           messages,
@@ -216,13 +229,6 @@ export class AiChatApi {
     options: ChatRequestOptions,
   ): Promise<{ finalMessage: ChatMessage; finishReason: string | null }> {
     return this.sendCore('sendVisionMessage', messages, callbacks, options);
-  }
-
-  /**
-   * 渲染消息内容
-   */
-  renderMessage(content: string, options: RenderOptions = {}): string {
-    return markdownRenderer.renderMessage(content, options);
   }
 }
 

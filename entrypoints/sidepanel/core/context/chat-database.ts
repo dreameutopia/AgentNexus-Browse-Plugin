@@ -12,6 +12,7 @@
 
 import type { ChatMessageRecord, ChatSessionMeta } from '../types';
 import { normalizeImageRefs } from '../images/image-store';
+import { protocolImageRefs } from './protocol-history';
 
 const DB_NAME = 'AgentNexusChatDB';
 /** v2：messages 增加 byImageRef（multiEntry）索引——按图片引用统计引用方 / 回收判定 */
@@ -266,10 +267,9 @@ class ChatDatabase {
   async saveMessage(record: ChatMessageRecord): Promise<{ inserted: boolean; skipped: boolean }> {
     // 存储边界归一：图片引用去重/形态校验/上限收敛（防御外部写入与运行期
     // 直改 record.imageRefs 的脏数据）；其余字段原样落库
-    const normalized: ChatMessageRecord =
-      record.imageRefs !== undefined
-        ? { ...record, imageRefs: normalizeImageRefs(record.imageRefs) }
-        : record;
+    const normalized: ChatMessageRecord = { ...record, imageRefs: [...new Set([
+      ...normalizeImageRefs(record.imageRefs), ...protocolImageRefs(record.modelMessages),
+    ])] };
     return this.tx([MESSAGES_STORE, SESSIONS_STORE], 'readwrite', async tx => {
       const sessions = tx.objectStore(SESSIONS_STORE);
       const session = (await ChatDatabase.requestToPromise(sessions.get(normalized.chatId))) as
@@ -445,7 +445,8 @@ class ChatDatabase {
           resolve([...refs]);
           return;
         }
-        for (const ref of normalizeImageRefs((cursor.value as ChatMessageRecord).imageRefs)) {
+        const record = cursor.value as ChatMessageRecord;
+        for (const ref of [...normalizeImageRefs(record.imageRefs), ...protocolImageRefs(record.modelMessages)]) {
           refs.add(ref);
         }
         cursor.continue();

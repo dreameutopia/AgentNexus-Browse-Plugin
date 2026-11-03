@@ -57,7 +57,7 @@ export class ZhihuSearchTool extends BaseSearchTool {
       
       this.log(`Searching "${query}" on 知乎 (content mode)`);
       
-      const result = await this.navigateToUrl(searchUrl, { newWindow: false });
+      const result = await this.navigateToUrl(searchUrl, { newTab: true });
       
       if (!result.success) {
         return result;

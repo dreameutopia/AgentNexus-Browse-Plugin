@@ -22,6 +22,7 @@ import { ContextWindowGuard, type ContextGuardResult } from '../../utils/ai/cont
 import { contextCompactor } from './compactor';
 import { unescapeXmlText } from '../../utils/xml-entities';
 import { imageStore, normalizeImageRefs } from '../images/image-store';
+import { readProtocolHistory } from './protocol-history';
 import type { ChatMessageRecord } from '../types';
 import type { ToolCallUI } from '../../types/chat';
 
@@ -75,6 +76,11 @@ class ContextEngine {  /**
     }
 
     for (const record of sorted) {
+      const exact = readProtocolHistory(record);
+      if (exact !== undefined) {
+        messages.push(...exact);
+        continue;
+      }
       if (record.role === 'user') {
         const imageUrls = this.resolveUserImageUrls(record);
         if (!record.content && imageUrls.length === 0) continue;

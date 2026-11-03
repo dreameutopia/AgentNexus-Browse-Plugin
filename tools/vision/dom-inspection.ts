@@ -16,7 +16,7 @@ export function annotationPayload(action: 'collect' | 'draw' | 'clear' | 'inspec
         if (el.shadowRoot) scan(el.shadowRoot, depth + 1);
         if (!el.matches('a[href],button,input,textarea,select,[role],[tabindex],[contenteditable="true"],summary,label')) continue;
         const r = el.getBoundingClientRect(), s = getComputedStyle(el);
-        if (r.width < 2 || r.height < 2 || r.bottom <= 0 || r.right <= 0 || r.top >= innerHeight || r.left >= innerWidth || s.visibility !== 'visible' || s.display === 'none' || Number(s.opacity) === 0) continue;
+        if (r.width <= 0 || r.height <= 0 || r.bottom <= 0 || r.right <= 0 || r.top >= innerHeight || r.left >= innerWidth || s.visibility !== 'visible' || s.display === 'none' || Number(s.opacity) === 0) continue;
         const hit = root.elementFromPoint(Math.max(0, Math.min(innerWidth - 1, r.left + r.width / 2)), Math.max(0, Math.min(innerHeight - 1, r.top + r.height / 2)));
         if (hit && (el === hit || el.contains(hit))) elements.push(el);
       }
@@ -78,7 +78,7 @@ export function annotationPayload(action: 'collect' | 'draw' | 'clear' | 'inspec
     text: input.type === 'password' ? '[redacted]' : (el.textContent || '').slice(0, 4000),
     disabled: !!input.disabled, readOnly: !!input.readOnly, checked: !!input.checked,
     editable: el.matches('input,textarea,[contenteditable="true"]'),
-    rect: { x: r.x, y: r.y, width: r.width, height: r.height },
+    rect: { x: r.x, y: r.y, width: r.width, height: r.height }, rectScope:'frame-local CSS viewport',
     capturedRect, changedSinceCapture: !!capturedRect && ['x','y','width','height'].some(k => Math.abs(r[k as 'x'] - capturedRect[k]) > 0.5),
     options: el instanceof HTMLSelectElement ? Array.from(el.options).slice(0, 200).map(o => ({ text: o.text, value: o.value, selected: o.selected })) : undefined,
     ancestors: Array.from((function* () { let n = el.parentElement; for (let i = 0; n && i < 5; i++, n = n.parentElement) yield { tag: n.localName, role: n.getAttribute('role') }; })()),

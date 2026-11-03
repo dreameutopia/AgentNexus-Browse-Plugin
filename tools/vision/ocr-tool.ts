@@ -64,10 +64,7 @@ export class OCRTool extends BaseTool {
       // 如果需要自动截图
       if (parameters.autoScreenshot) {
         const screenshotTool = new ScreenshotTool();
-        const screenshotResult = await screenshotTool.execute({
-          format: 'png',
-          quality: 100
-        });
+        const screenshotResult = await screenshotTool.execute({});
         
         if (!screenshotResult.success || !screenshotResult.data) {
           return {

@@ -44,10 +44,10 @@ export class BookmarkNavigationTool extends BaseNavigationTool {
             description: '如果只有一个结果，是否自动导航到该书签',
             default: true
           },
-          newWindow: {
+          newTab: {
             type: 'boolean',
-            description: '是否在新窗口中打开书签',
-            default: false
+            description: '是否在现有窗口的新标签页中打开（默认 true）书签',
+            default: true
           }
         },
         required: ['query']
@@ -59,12 +59,12 @@ export class BookmarkNavigationTool extends BaseNavigationTool {
     query: string;
     limit?: number;
     autoNavigate?: boolean;
-    newWindow?: boolean;
+    newTab?: boolean;
   }): Promise<ToolResult> {
     try {
       this.validateArgs(args, ['query']);
       
-      const { query, limit = 10, autoNavigate = true, newWindow = false } = args;
+      const { query, limit = 10, autoNavigate = true, newTab = true } = args;
       
       this.log(`Searching bookmarks for: "${query}"`);
       
@@ -88,7 +88,7 @@ export class BookmarkNavigationTool extends BaseNavigationTool {
         if (!bookmark.url) {
           return this.createErrorResponse(`Bookmark "${bookmark.title}" has no URL`);
         }
-        const navResult = await this.navigateToUrl(bookmark.url, { newWindow });
+        const navResult = await this.navigateToUrl(bookmark.url, { newTab });
         
         if (!navResult.success) {
           return navResult;

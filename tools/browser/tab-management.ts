@@ -4,6 +4,7 @@
  */
 
 import { BaseBrowserTool } from '../base/browser-tool';
+import { existingNavigationWindowId } from './navigation-window';
 import { ToolMetadata } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
@@ -163,6 +164,7 @@ export class CreateTabTool extends BaseBrowserTool {
 
     try {
       const tab = await chrome.tabs.create({
+        windowId: await existingNavigationWindowId(),
         url: args.url,
         active: args.active !== false
       });

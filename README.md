@@ -85,14 +85,14 @@ One skill = one `SKILL.md` (YAML frontmatter + Markdown body) + optional resourc
 
 | Field | Description |
 |---|---|
-| `name` | Skill name (lowercase letters / digits / hyphens), part of the globally unique identifier |
+| `name` | Skill name (lowercase letters / digits / hyphens). Duplicates are allowed — uniqueness is carried by the identifier below |
 | `description` | What it does + when to use it — the model matches tasks against this, users enable by it |
 | `allowed-tools` | Pre-authorized tool IDs (space-separated), callable directly once the skill is activated |
 | `compatibility` | Environment requirements (optional), e.g. "requires a logged-in Bilibili session" |
 
 ### Progressive Disclosure (context-friendly)
 1. **Discover**: the system prompt carries a persistent `<available-skills>` list — skill id + one-line description per entry;
-2. **Activate**: when a task matches, the model calls `load_skill` to inject the full SKILL.md body (soft cap: 15,000 characters);
+2. **Activate**: skills pre-selected with `/` are injected automatically as one synthetic `load_skill` round when the message is sent; otherwise, when a task matches, the model calls `load_skill` itself to inject the full instruction (priority rules + SKILL.md body, soft cap: 15,000 characters);
 3. **Dig deeper**: `read_skill_file` loads additional resource files by path (100,000-character cap per file).
 
 ### Getting Started
@@ -203,5 +203,7 @@ If you wish to use this project in proprietary software or commercial products t
 
 
 ### Vision Action GUI automation
+
+Vision Assistant explains the current page and guides the user: bounded visible DOM reads, component scrolling in four directions, original-image crops, and readiness refreshes. The user performs clicks, typing, and submissions. Runtime checks prevent skills and extra tools from granting execution capabilities; arbitrary JavaScript is excluded. See [Vision Assistant design and boundaries](tools/vision/VISION_ASSISTANT.md).
 
 Vision Action 使用 0–1000 的视口相对坐标和 CDP 输入，支持点击、拖拽、滚动、输入、悬停、键盘与按需 DOM 打标分析。厂商协议、工具参数、支持范围与迁移说明见 [视觉驱动说明](tools/vision/README.md)。

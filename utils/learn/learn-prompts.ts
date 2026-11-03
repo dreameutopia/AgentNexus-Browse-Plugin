@@ -1,3 +1,5 @@
+import { ELEMENT_INTERACTION_SOP } from '@/utils/agents/element-interaction-sop';
+import { VISION_ACTION_SOP } from '@/utils/agents/vision-action-sop';
 /**
  * 网站学习 Prompt 模板（纯函数：入参 → 字符串，无副作用）
  *
@@ -89,14 +91,15 @@ export function learnExploration(strategy: LearnStrategy): string {
   if (strategy === 'text') {
     return section(
       'exploration',
-      `本阶段用元素枚举与选择器定位（工具组 siteLearnText）：
+      `${ELEMENT_INTERACTION_SOP}
+本阶段用元素枚举与节点引用定位（工具组 siteLearnText）：
 - 读页面：browser_get_page_text（当前页正文）、browser_get_page_info（诊断加载状态）。
-- 找元素：interactive_input_getter / interactive_button_getter（分页参数从 1 开始，
+- 找元素：browser_observe(view="inputs"/"buttons")（分页参数从 1 开始，
   每页 40 个；可传 regex 或 xpath 过滤直接定位目标，命中会置顶标记，
   同一目标最多连续过滤 3 次，之后翻页枚举）。
-- 操作：enhance_fill（填充）、enhance_click（点击，均需 frameId）。
+- 操作：browser_interact(action="fill"/"click")，使用同一行的 elementId 与 frameId；键盘与焦点操作遵循统一交互 SOP。
 - 复杂 / 自定义组件定位困难时：browser_page_exec 写探测脚本读取页面结构或 JS 状态。
-- 系统不会自动截图，你只能依据元素的 selector 与文字描述判断位置——
+- 系统不会自动截图，你只能依据元素的 ElementId、Context 与文字描述判断位置——
   因此每一步都要把定位信息记全（见 <recording>）。`,
     );
   }
@@ -105,9 +108,10 @@ export function learnExploration(strategy: LearnStrategy): string {
     `本阶段用相对坐标 GUI 定位（工具组 siteLearnVision）：
 - 自动截图包含 screenshotId；坐标为整张可见截图的 x/y 0..1000，不是像素。
 - vision_click(point,button,count)、vision_input(point,text)、vision_drag(from,to)、vision_scroll(direction,percent,point?)、vision_hover、vision_keyboard 均携带最新 screenshotId。
-- 一次只执行一个动作，等待新截图再继续。禁止使用数字 ID 点击。
+- 一次只执行一个交互手势，等待新截图再继续。只读检查/放大不消耗原截图。禁止使用数字 ID 点击。
 - 需要选择器时先 vision_mark，下一张截图会有数字框，再 vision_inspect(screenshotId,id) 读取 CSS/XPath/属性/frameId。
-- 坐标不固化为长期技能：记录元素语义、相对区域和重新定位策略；跨 frame/shadow 保留作用域。`,
+- 坐标不固化为长期技能：记录元素语义、相对区域和重新定位策略；跨 frame/shadow 保留作用域。
+${VISION_ACTION_SOP}`,
   );
 }
 
@@ -135,7 +139,7 @@ export function learnRecording(targetMode: LearnTargetMode, strategy: LearnStrat
       ? `- [场景] 在什么页面 / 什么状态下（URL 或页面标题）
 - [判断] 下一步该做什么、为什么选它
 - [操作] 工具名 + 关键参数
-- [定位] CSS 选择器 或 XPath + 元素文字（placeholder / label / 按钮可见文本）+ frameId（主页面为 0）
+- [定位] 可重新执行的 regex / XPath + 元素文字、所属区域与 frame 识别方式。每次执行现场调用 getter 获取 elementId/frameId；禁止把 ElementId、snapshotId 或固定 frameId 存入技能。
 - [结果] 成功 / 失败现象（失败要写清报错与已尝试的替代方案）`
       : `- [场景] 在什么页面 / 什么状态下（URL 或页面标题）
 - [判断] 下一步该做什么、为什么选它
@@ -157,7 +161,7 @@ ${translationNote}`,
 export function learnSkillOutput(targetMode: LearnTargetMode): string {
   const locatorRule =
     targetMode === 'text'
-      ? `- **定位信息以文本模型可用的形态书写**：CSS 选择器 / XPath + 元素可见文字
+      ? `- **定位信息以可重采的形态书写**：regex / XPath + 元素可见文字与上下文；CSS 仅作结构参考，不可直接传 enhance_*
   （placeholder、label、按钮文案）。优先写稳定锚点（#id、[data-*]、name 属性），
   避免把易变的 :nth-of-type 序号当唯一依据——序号一变技能就失效。
   不要写「看图第 N 个标签」「页面中部」这类只有视觉模型才用得上的描述。`
@@ -193,7 +197,7 @@ ${locatorRule}
 export const LEARN_CONSTRAINTS = section(
   'constraints',
   `- 真实操作页面，但**不可逆动作必须停下来等用户确认**：发送 / 提交 / 发布 / 投递 /
-  购买 / 下单 / 支付 / 删除等，调用 enhance_click、vision_click、vision_input、vision_drag、vision_keyboard、
+  购买 / 下单 / 支付 / 删除等，调用 browser_interact、vision_click、vision_input、vision_drag、vision_keyboard、
   browser_page_exec 时传 confirm=true（系统会弹出审批，用户拒绝后不得绕过或换名重试）。
 - 遇到登录墙、验证码、扫码、付费墙：立即停止并说明需要用户完成什么，绝不绕过、绝不反复尝试。
 - 同一方案最多重试 3 次；失败就换路径并把失败现象记进 note，不要原地打转烧轮次。
@@ -249,7 +253,7 @@ export function validateTask(config: LearnConfig): string {
     'task',
     `目标网站：${config.url}
 验收目标：${oneLine(config.goal)}
-目标操作模式：${config.targetMode === 'text' ? 'text（技能交给纯文本模型使用，按选择器与元素文字定位）' : 'vision（技能交给视觉模型使用，按界面语义和相对坐标定位）'}`,
+目标操作模式：${config.targetMode === 'text' ? 'text（技能交给纯文本模型使用，按 regex/XPath 重采元素引用并核对文字）' : 'vision（技能交给视觉模型使用，按界面语义和相对坐标定位）'}`,
   );
 }
 
@@ -257,16 +261,17 @@ export function validateTask(config: LearnConfig): string {
 export function validateMethod(targetMode: LearnTargetMode): string {
   const tooling =
     targetMode === 'text'
-      ? `- 你使用纯文本工具组（工具组 siteValidateText）：interactive_input_getter /
-  interactive_button_getter 枚举元素、enhance_fill / enhance_click 操作、
+      ? `${ELEMENT_INTERACTION_SOP}
+- 你使用纯文本工具组（工具组 siteValidateText）：browser_observe 枚举元素、browser_interact 操作、
   browser_page_exec 执行页面脚本、browser_get_page_text 读取页面。`
       : `- 你使用视觉工具组（工具组 siteValidateVision）：系统每轮自动截图，vision_mark 按需请求数字标签，
   用 vision_* 相对坐标工具操作，vision_mark + vision_inspect 反查选择器，
-  browser_get_page_text 读取页面文本作为补充。`;
+  browser_get_page_text 读取页面文本作为补充。
+${VISION_ACTION_SOP}`;
 
   const locatorFocus =
     targetMode === 'text'
-      ? `- 重点核对**定位信息**：技能给的选择器 / XPath 是否真能命中目标元素？
+      ? `- 重点核对**定位信息**：技能给的 regex / XPath 是否能通过 getter 重采到目标？是否误存了运行期 ElementId 或 snapshotId？
   文字描述是否与页面实际文案一致（按钮写「立即投递」而技能写「立即沟通」= 定位失效）？`
       : `- 重点核对**位置与标签描述**：技能给的位置区域 / 可见文字能否让你快速锁定元素？
   描述与实际界面对不上的（说在右上角实际在底部）= 定位失效。`;

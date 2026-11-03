@@ -42,7 +42,7 @@ import { LocalWriteFingerprint, subscribeStorageKey } from '@/utils/shared/stora
 export const USAGE_METRICS_STORAGE_KEY = 'ai_usage_metrics_v1';
 
 /** 当前结构版本 */
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 /** 防抖写入间隔（ms）：高频对话循环内多条记录合并为一次写盘 */
 const PERSIST_DEBOUNCE_MS = 2000;
@@ -185,6 +185,8 @@ class UsageMetricsEngine {
       startedAt: this.data.startedAt,
       updatedAt: this.data.updatedAt,
       totals: { ...this.data.totals },
+      scopes: Object.values(this.data.byScope).map(entry => ({ ...entry })).sort((a, b) => b.inputTokens - a.inputTokens),
+      recentRequests: this.data.recentRequests.map(entry => ({ ...entry, usage: entry.usage ? { ...entry.usage } : undefined })),
       models,
       recentErrors: this.data.recentErrors.map(e => ({ ...e })),
       hydrated: this.hydrated,
@@ -279,7 +281,7 @@ class UsageMetricsEngine {
   private parseStored(raw: unknown): UsageMetricsData | null {
     if (!raw || typeof raw !== 'object') return null;
     const data = raw as UsageMetricsData;
-    if (typeof data.schemaVersion !== 'number' || data.schemaVersion !== SCHEMA_VERSION) {
+    if (data.schemaVersion !== 1 && data.schemaVersion !== SCHEMA_VERSION) {
       return null;
     }
     // 深度防御：totals / byModel / recentErrors 结构异常即弃用
@@ -300,6 +302,7 @@ class UsageMetricsEngine {
       if (!entry || typeof entry !== 'object') continue;
       if (typeof entry.provider !== 'string' || typeof entry.model !== 'string') continue;
       const sanitized: ModelUsageMetrics = {
+        ...metricContext(entry),
         provider: entry.provider,
         model: entry.model,
         lastUsedAt: typeof entry.lastUsedAt === 'number' ? entry.lastUsedAt : Date.now(),
@@ -310,6 +313,23 @@ class UsageMetricsEngine {
         if (typeof v === 'number') (sanitized as any)[ck] = toSafeCount(v);
       }
       result.byModel[key] = sanitized;
+    }
+    if (data.byScope && typeof data.byScope === 'object' && !Array.isArray(data.byScope)) {
+      for (const [key, entry] of Object.entries(data.byScope).slice(0, MAX_MODELS)) {
+        if (!entry || typeof entry.provider !== 'string' || typeof entry.model !== 'string') continue;
+        const sanitized: ModelUsageMetrics = {
+          ...metricContext(entry), provider: entry.provider, model: entry.model,
+          lastUsedAt: toSafeCount(entry.lastUsedAt), ...createEmptyCounters(),
+        };
+        for (const counter of Object.keys(createEmptyCounters()) as Array<keyof UsageCounters>) sanitized[counter] = toSafeCount(entry[counter]);
+        result.byScope[key] = sanitized;
+      }
+    }
+    if (Array.isArray(data.recentRequests)) {
+      result.recentRequests = data.recentRequests.slice(0, 100).filter(e => e && typeof e.model === 'string' && typeof e.provider === 'string')
+        .map(e => ({ ...metricContext(e), at: toSafeCount(e.at), provider: e.provider.slice(0, 40), model: e.model.slice(0, 120),
+          kind: e.kind === 'compaction' ? 'compaction' : e.kind === 'asr' ? 'asr' : e.kind === 'probe' ? 'probe' : 'chat',
+          outcome: e.outcome === 'success' ? 'success' : e.outcome === 'aborted' ? 'aborted' : 'failed', usage: safeUsage(e.usage) }));
     }
     // recentErrors 逐条截断
     for (const err of data.recentErrors) {
@@ -336,6 +356,7 @@ class UsageMetricsEngine {
 
     // ---- 总账 ----
     const totals = data.totals;
+    const before = { ...totals };
     totals.requests = addSafe(totals.requests, 1);
     if (outcome === 'success') totals.success = addSafe(totals.success, 1);
     else if (outcome === 'failed') totals.failed = addSafe(totals.failed, 1);
@@ -360,9 +381,22 @@ class UsageMetricsEngine {
       totals.cacheReportedRequests = addSafe(totals.cacheReportedRequests, 1);
       totals.cacheEligibleInputTokens = addSafe(totals.cacheEligibleInputTokens, inputTokens);
     }
+    addCacheDiagnostics(totals, input);
+    const context = metricContext(input);
+    const scopeKey = JSON.stringify([input.provider, context.channelId ?? '', context.modelId ?? input.model, context.agentId ?? '', input.kind]);
+    if (data.byScope[scopeKey] || Object.keys(data.byScope).length < MAX_MODELS) {
+      const scope = data.byScope[scopeKey] ??= { ...context, provider: input.provider, model: input.model, lastUsedAt: 0, ...createEmptyCounters() };
+      for (const counter of Object.keys(before) as Array<keyof UsageCounters>) scope[counter] = addSafe(scope[counter], totals[counter] - before[counter]);
+      scope.lastUsedAt = Date.now();
+    }
+    data.recentRequests.unshift({ ...context, at: Date.now(), provider: input.provider.slice(0, 40), model: input.model.slice(0, 120),
+      kind: input.kind, outcome, usage: safeUsage(usage) });
+    data.recentRequests.length = Math.min(data.recentRequests.length, 100);
 
     // ---- 每模型拆分（容量防御：超上限后新模型只进总账） ----
-    const key = modelKeyOf(input.provider, input.model);
+    const key = context.channelId
+      ? JSON.stringify([input.provider, context.channelId, context.modelId ?? input.model])
+      : modelKeyOf(input.provider, input.model);
     let entry = data.byModel[key];
     if (!entry) {
       if (Object.keys(data.byModel).length >= MAX_MODELS) {
@@ -375,6 +409,7 @@ class UsageMetricsEngine {
         return;
       }
       entry = {
+        ...context,
         provider: (input.provider || '').toString().trim() || 'unknown',
         model: (input.model || '').toString().trim() || '(unknown)',
         lastUsedAt: 0,
@@ -398,6 +433,7 @@ class UsageMetricsEngine {
       entry.cacheEligibleInputTokens = addSafe(entry.cacheEligibleInputTokens, inputTokens);
     }
     entry.lastUsedAt = Date.now();
+    addCacheDiagnostics(entry, input);
 
     // ---- 失败摘要环形缓冲 ----
     if (outcome === 'failed' && input.errorSummary) {
@@ -528,6 +564,8 @@ function createEmptyData(): UsageMetricsData {
     updatedAt: 0,
     totals: createEmptyCounters(),
     byModel: {},
+    byScope: {},
+    recentRequests: [],
     recentErrors: [],
   };
 }

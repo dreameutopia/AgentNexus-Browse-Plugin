@@ -93,6 +93,21 @@ body {
   gap: 8px;
 }
 
+/* 卡片标题区：头像 + 名称同组，靠左排列（徽章仍靠右） */
+.hub-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 卡片头像槽位：仅占位与对齐，不加任何背景色/底板 */
+.hub-card-avatar {
+  width: 26px;
+  height: 26px;
+  flex: none;
+}
+
 .hub-card-name {
   font-weight: 600;
   font-size: 14px;
@@ -427,6 +442,59 @@ body {
 .hub-hint {
   font-size: 11px;
   color: #9ca3af;
+}
+
+/* ============ 头像选择器（内置图片 + 自填 emoji；两者互斥） ============ */
+
+.hub-avatar-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hub-avatar-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 单个头像选项：仅描边表示选中，不加背景底板 */
+.hub-avatar-option {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.hub-avatar-option:hover {
+  border-color: #667eea;
+}
+
+.hub-avatar-option.is-active {
+  border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.18);
+}
+
+.hub-avatar-emoji-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hub-avatar-emoji-field .hub-field-label {
+  white-space: nowrap;
+}
+
+.hub-avatar-emoji-field input {
+  width: 96px;
+  flex: none;
 }
 
 .hub-error {

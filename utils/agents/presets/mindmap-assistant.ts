@@ -71,5 +71,5 @@ export const mindmapAssistantConfig: AgentConfig = {
 - 连线使用起止 id 别名提供，不以文本元素作为连线目标。
 </constraints>`,
   tools: getPresetToolIds('excalidraw'),
-  iconPath: 'M9,2V8H11V11H5C3.89,11 3,11.89 3,13V16H1V18H3V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V18H23V16H21V13C21,11.89 20.1,11 19,11H13V8H15V2H9M11,4H13V6H11V4M5,13H19V19H5V13Z'
+  avatar: { type: 'image', src: '/agent/excalidraw.png' }
 };

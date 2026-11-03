@@ -103,6 +103,10 @@ export interface UnifiedToolCall {
 
 /** 统一的请求配置 */
 export interface StreamRequestConfig {
+  /** Local diagnostics only; adapters must never serialize this field. */
+  metrics?: RequestMetricsContext;
+  /** Only set for endpoints that explicitly support this parameter. */
+  promptCacheKey?: string;
   model: string;
   messages: UnifiedChatMessage[];
   tools?: UnifiedToolDefinition[];
@@ -121,6 +125,20 @@ export interface StreamRequestConfig {
   frequency_penalty?: number;
   presence_penalty?: number;
   stream?: boolean;
+}
+
+export interface RequestMetricsContext {
+  channelId?: string;
+  modelId?: string;
+  channelLabel?: string;
+  agentId?: string;
+  runId?: string;
+  iteration?: number;
+  kind?: 'chat' | 'compaction';
+  compacted?: boolean;
+  trimmed?: boolean;
+  sharedPrefixMessages?: number;
+  prefixChanged?: boolean;
 }
 
 /** 统一的工具定义格式 */

@@ -60,6 +60,9 @@ export interface ToolMetadata {
    *   - 工具结果照常进入转录与事件流，UI 与历史可完整回溯「提交了什么」。
    */
   terminal?: boolean;
+  /** Vision continuation policy. Unknown tools conservatively require a new
+   * screenshot; observation/data tools explicitly opt out. */
+  visionRefresh?: 'none' | 'after';
 }
 
 // 工具执行上下文：调用方（会话引擎）随执行注入的会话信息。

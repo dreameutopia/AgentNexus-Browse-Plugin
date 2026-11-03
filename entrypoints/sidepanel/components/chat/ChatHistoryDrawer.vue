@@ -77,7 +77,7 @@
                       v-for="skillName in session.skillNames"
                       :key="skillName"
                       class="history-badge skill"
-                    >{{ skillDisplayName(skillName) }}</span>
+                    >{{ sessionSkillBadgeLabel(session, skillName) }}</span>
                     <span class="history-item-count">{{ t('sidepanel.app.historyMessages', { count: session.messageCount }) }}</span>
                     <span class="history-item-ops" @click.stop>
                       <button class="item-op" v-tip="t('sidepanel.app.renameSession')" @click="startRename(session)">
@@ -109,6 +109,7 @@ import {
   type ChatSessionMeta,
 } from '../../core';
 import { showConfirm } from '../../composables/use-app-dialog';
+import { findDuplicateSkillNames, type SkillRecord } from '@/utils/skills/skill-types';
 
 const props = defineProps<{
   visible: boolean;
@@ -157,6 +158,20 @@ const agentDisplayName = (session: ChatSessionMeta): string => {
  */
 const skillDisplayName = (skillRef: string): string => {
   return skillEngine.get(skillRef)?.name ?? skillRef;
+};
+
+/**
+ * 会话徽章展示名：同一会话内重名的技能补显 id 消歧（与选择面同一套规则）。
+ * 悬挂引用（技能已删）无从消歧，原样回落 skillDisplayName 的结果。
+ */
+const sessionSkillBadgeLabel = (session: ChatSessionMeta, skillRef: string): string => {
+  const name = skillDisplayName(skillRef);
+  const resolved = skillEngine.get(skillRef);
+  if (!resolved) return name;
+  const records = (session.skillNames ?? [])
+    .map(ref => skillEngine.get(ref))
+    .filter((record): record is SkillRecord => !!record);
+  return findDuplicateSkillNames(records).has(name) ? `${name} · ${resolved.id}` : name;
 };
 
 const loadSessions = async () => {

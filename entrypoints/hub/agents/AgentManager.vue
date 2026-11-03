@@ -29,7 +29,11 @@
       <div v-else class="hub-cards">
         <article v-for="agent in filteredAgents" :key="agent.id" class="hub-card" :class="{ 'is-preset': isPreset(agent) }">
           <div class="hub-card-head">
-            <span class="hub-card-name" :title="agent.name">{{ agent.name }}</span>
+            <!-- 智能体头像：图片或 emoji，无背景色 -->
+            <div class="hub-card-title">
+              <AgentAvatar class="hub-card-avatar" :avatar="agent.avatar" :size="26" :label="agent.name" />
+              <span class="hub-card-name" :title="agent.name">{{ agent.name }}</span>
+            </div>
             <span class="hub-badge" :class="isPreset(agent) ? 'hub-badge-preset' : 'hub-badge-custom'">
               {{ isPreset(agent) ? t('hub.preset') : t('hub.custom') }}
             </span>
@@ -97,6 +101,37 @@
             <TagInput v-model="form.tags" />
           </div>
 
+          <!-- 头像：内置图片任选其一，或自填 emoji（预置 / 自定义 / 导入三类智能体同构） -->
+          <div class="hub-field">
+            <span class="hub-field-label">{{ t('hub.fieldAvatar') }}</span>
+            <div class="hub-avatar-picker">
+              <div class="hub-avatar-images">
+                <button
+                  v-for="option in builtinAvatars"
+                  :key="option.id"
+                  type="button"
+                  class="hub-avatar-option"
+                  :class="{ 'is-active': isBuiltinAvatarSelected(option.src) }"
+                  :title="option.id"
+                  @click="selectBuiltinAvatar(option.src)"
+                >
+                  <AgentAvatar :avatar="{ type: 'image', src: option.src }" :size="26" />
+                </button>
+              </div>
+              <label class="hub-avatar-emoji-field">
+                <span class="hub-field-label">{{ t('hub.fieldAvatarEmoji') }}</span>
+                <input
+                  v-model.trim="form.avatarEmoji"
+                  type="text"
+                  :maxlength="AGENT_AVATAR_EMOJI_MAX_CHARS"
+                  :placeholder="t('hub.fieldAvatarEmojiPlaceholder')"
+                  @input="syncAvatarFromEmoji"
+                />
+              </label>
+              <p class="hub-hint">{{ t('hub.fieldAvatarHint') }}</p>
+            </div>
+          </div>
+
           <label class="hub-field" :class="{ 'is-invalid': systemInvalid }">
             <span class="hub-field-label">{{ t('hub.fieldSystem') }}<span class="hub-required" aria-hidden="true">*</span></span>
             <textarea v-model="form.system" rows="14" :placeholder="t('hub.fieldSystemPlaceholder')"></textarea>
@@ -157,7 +192,7 @@
                     :disabled="!form.skills.includes(skill.id) && form.skills.length >= AGENT_SKILLS_MAX_COUNT"
                     @change="toggleSkill(skill.id)"
                   />
-                  <span class="hub-group-name">{{ skill.name }}</span>
+                  <span class="hub-group-name">{{ skillOptionLabel(skill) }}</span>
                   <span class="hub-group-desc">{{ skill.enabled ? skill.description : t('hub.skillDisabledMark') }}</span>
                 </label>
               </div>
@@ -208,13 +243,17 @@
  */
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { t, type MessageKey } from '@/utils/i18n';
+// 智能体头像展示（图片或 emoji，无背景色）：预置 / 自定义 / 导入三类智能体共用
+import AgentAvatar from '@/common/AgentAvatar.vue';
 import CategorySelect from '../components/CategorySelect.vue';
 import TagInput from '../components/TagInput.vue';
 import {
+  AGENT_AVATAR_EMOJI_MAX_CHARS,
   AGENT_CATEGORY_UNCATEGORIZED,
   AGENT_DESCRIPTION_MAX_CHARS,
   AGENT_NAME_MAX_CHARS,
   AGENT_SKILLS_MAX_COUNT,
+  BUILTIN_AGENT_AVATARS,
   BUILTIN_AGENT_CATEGORIES,
   CATEGORY_CUSTOM_VALUE,
   categoryLabelOf,
@@ -222,6 +261,7 @@ import {
   getAllAgents,
   isBuiltinCategory,
   isPresetAgent,
+  normalizeAvatar,
   normalizeCategory,
   onAgentsChange,
   removeAgentConfig,
@@ -231,6 +271,7 @@ import {
 } from '@/utils/agents/agent-store';
 import { getPresetToolIds, type ToolScenario } from '@/utils/tools/tool-presets';
 import { getAllSkills, onSkillsChange, resolveSkill, type SkillRecord } from '@/utils/skills/skill-store';
+import { findDuplicateSkillNames } from '@/utils/skills/skill-types';
 import {
   getPyodideEnvState,
   watchPyodideEnv,
@@ -339,6 +380,13 @@ const unsubscribeSkills = onSkillsChange(() => refreshSkills());
 onMounted(refreshSkills);
 onUnmounted(() => unsubscribeSkills());
 
+/** 列表内重名的技能名（同名是常态）：重名条目补显 id 消歧，否则两行一模一样无法分辨 */
+const duplicatedSkillNames = computed(() => findDuplicateSkillNames(skills.value));
+
+/** 技能选项展示名：重名时追加「 · <id>」 */
+const skillOptionLabel = (skill: SkillRecord): string =>
+  duplicatedSkillNames.value.has(skill.name) ? `${skill.name} · ${skill.id}` : skill.name;
+
 // ──── Python 环境可用性（python 工具组门控；状态源 chrome.storage，跨上下文实时） ────
 
 const pythonEnv = ref<PyodideEnvState | null>(null);
@@ -391,10 +439,40 @@ const form = reactive({
   extraToolIds: [] as string[],
   /** 关联技能 id 列表（可用清单的显式通道；映射兜底通道无需配置） */
   skills: [] as string[],
+  /** 头像（图片或 emoji）；未选择时为 undefined，由 UI 回退默认 emoji */
+  avatar: undefined as AgentConfig['avatar'],
+  /** emoji 头像输入框的原始文本（与 form.avatar 同步，便于编辑与清空） */
+  avatarEmoji: '',
   visionEnabled: false,
   screenshotTool: 'screenshot' as const,
   reScreenshotAfterTools: true,
 });
+
+/** 内置头像图片清单（供选择器展示；与预置智能体共用同一批资源） */
+const builtinAvatars = BUILTIN_AGENT_AVATARS;
+
+/** 选中内置头像图片：清空 emoji 输入，两种形态互斥（头像只有一种形态） */
+function selectBuiltinAvatar(src: string): void {
+  form.avatar = { type: 'image', src };
+  form.avatarEmoji = '';
+}
+
+/** 某个内置头像是否为当前选中的图片形态（供选项高亮判断） */
+function isBuiltinAvatarSelected(src: string): boolean {
+  return form.avatar?.type === 'image' && form.avatar.src === src;
+}
+
+/** emoji 输入变化时同步头像形态：图片形态被 emoji 取代 */
+function syncAvatarFromEmoji(): void {
+  const value = form.avatarEmoji.trim();
+  if (!value) {
+    // 输入被清空 → 无头像（UI 回退默认 emoji），不保留此前的图片
+    form.avatar = undefined;
+    return;
+  }
+  const normalized = normalizeAvatar({ type: 'emoji', value });
+  form.avatar = normalized ?? { type: 'emoji', value };
+}
 
 const extraTools = computed(() => form.extraToolIds);
 
@@ -463,6 +541,8 @@ function resetForm(): void {
   form.groups = [];
   form.extraToolIds = [];
   form.skills = [];
+  form.avatar = undefined;
+  form.avatarEmoji = '';
   form.visionEnabled = false;
   form.screenshotTool = 'screenshot';
   form.reScreenshotAfterTools = true;
@@ -505,6 +585,9 @@ function startEdit(agent: AgentConfig): void {
   form.visionEnabled = !!agent.vision;
   form.screenshotTool = agent.vision?.screenshotTool ?? 'screenshot';
   form.reScreenshotAfterTools = agent.vision?.reScreenshotAfterTools ?? true;
+  // 头像回填：图片形态保留原地址，emoji 形态回填输入框文本（两种形态互斥）
+  form.avatar = agent.avatar;
+  form.avatarEmoji = agent.avatar?.type === 'emoji' ? agent.avatar.value : '';
   // 非内置分类（历史自定义分类）归入「自定义创建」态并回填名称，
   // 让选择器显示原分类名而不是空白项
   const category = agent.category || '';
@@ -599,6 +682,9 @@ function save(): void {
   // ID 被会话元信息（agentId）等处引用，改名不应让既有引用失配
   const id = editingSource.value?.id ?? generateUniqueAgentId(name);
 
+  // 头像：图片或 emoji（缺省 = 无头像，由 UI 回退默认 emoji）
+  const avatar = normalizeAvatar(form.avatar);
+
   const config: AgentConfig = {
     id,
     name,
@@ -617,7 +703,7 @@ function save(): void {
           },
         }
       : {}),
-    iconPath: editingSource.value?.iconPath,
+    ...(avatar ? { avatar } : {}),
   };
 
   // 名称冲突与重命名原子性均在存储层执行（单一事实源，UI 不再自建一套冲突判定）：

@@ -52,6 +52,7 @@ export class OpenAIAdapter extends BaseAdapter {
     }
 
     if (config.temperature !== undefined) body.temperature = config.temperature;
+    if (config.promptCacheKey) body.prompt_cache_key = config.promptCacheKey;
     if (config.max_tokens !== undefined) body.max_tokens = config.max_tokens;
     if (config.top_p !== undefined) body.top_p = config.top_p;
     if (config.frequency_penalty !== undefined) body.frequency_penalty = config.frequency_penalty;

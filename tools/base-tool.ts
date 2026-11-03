@@ -83,7 +83,7 @@ export abstract class BaseTool implements ExtendedTool {
  */
 export abstract class BaseNavigationTool extends BaseTool {
   protected async navigateToUrl(url: string, options?: {
-    newWindow?: boolean;
+    newTab?: boolean;
     waitForLoad?: boolean;
     timeout?: number;
   }): Promise<ToolResult> {
@@ -96,7 +96,7 @@ export abstract class BaseNavigationTool extends BaseTool {
       }
       return await navTool.execute({
         url,
-        newWindow: false,
+        newTab: options?.newTab ?? true,
         waitForLoad: true,
         timeout: options?.timeout || 50000
       });
@@ -119,7 +119,7 @@ export abstract class BaseSearchTool extends BaseTool {
    * 导航到指定 URL（与 BaseNavigationTool 相同的实现）
    */
   protected async navigateToUrl(url: string, options?: {
-    newWindow?: boolean;
+    newTab?: boolean;
     waitForLoad?: boolean;
     timeout?: number;
   }): Promise<ToolResult> {
@@ -132,7 +132,7 @@ export abstract class BaseSearchTool extends BaseTool {
       }
       return await navTool.execute({
         url,
-        newWindow: false,
+        newTab: options?.newTab ?? true,
         waitForLoad: true,
         timeout: options?.timeout || 50000
       });
@@ -172,7 +172,7 @@ export abstract class BaseSearchTool extends BaseTool {
       }
       const result = await navTool.execute({
         url: searchUrl,
-        newWindow: false,
+        newTab: true,
         waitForLoad: true,
         timeout: 30000
       });

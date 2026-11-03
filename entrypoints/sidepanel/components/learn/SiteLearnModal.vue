@@ -16,6 +16,7 @@
 import { computed, reactive, ref, watch } from 'vue';
 import { t, type MessageKey } from '@/utils/i18n';
 import LearnHintPopover from './LearnHintPopover.vue';
+import './learn-theme.css';
 import {
   LEARN_ERROR_KEYS,
   filterLearnModels,
@@ -166,8 +167,8 @@ function submit(): void {
 
 <template>
   <Transition name="learn-modal">
-    <div v-if="visible" class="learn-modal-overlay" @click.self="emit('close')">
-      <div class="learn-modal" role="dialog" aria-modal="true" :aria-label="t('sidepanel.learn.modalTitle')">
+    <div v-if="visible" class="learn-modal-overlay learn-root" @click.self="emit('close')">
+      <div class="learn-modal learn-panel" role="dialog" aria-modal="true" :aria-label="t('sidepanel.learn.modalTitle')">
         <header class="learn-modal__header">
           <div>
             <h2 class="learn-modal__title">{{ t('sidepanel.learn.modalTitle') }}</h2>
@@ -370,7 +371,7 @@ function submit(): void {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(15, 23, 42, 0.55);
+  background: var(--learn-scrim);
   backdrop-filter: blur(2px);
 }
 
@@ -380,11 +381,6 @@ function submit(): void {
   width: min(560px, 100%);
   max-height: min(88vh, 760px);
   border-radius: 14px;
-  background: var(--bg-elevated, #0f172a);
-  color: var(--text-primary, #e2e8f0);
-  box-shadow:
-    0 24px 60px rgba(0, 0, 0, 0.4),
-    0 0 0 1px var(--border, rgba(148, 163, 184, 0.2));
   overflow: hidden;
 }
 
@@ -394,20 +390,21 @@ function submit(): void {
   justify-content: space-between;
   gap: 12px;
   padding: 18px 20px 12px;
-  border-bottom: 1px solid var(--border, rgba(148, 163, 184, 0.16));
+  border-bottom: 1px solid var(--learn-border);
 }
 
 .learn-modal__title {
   margin: 0;
   font-size: 16px;
   font-weight: 600;
+  color: var(--learn-text-strong);
 }
 
 .learn-modal__subtitle {
   margin: 4px 0 0;
   font-size: 12px;
   line-height: 1.6;
-  color: var(--text-secondary, #94a3b8);
+  color: var(--learn-text-muted);
 }
 
 .learn-modal__close {
@@ -419,13 +416,14 @@ function submit(): void {
   border: none;
   border-radius: 8px;
   background: transparent;
-  color: var(--text-secondary, #94a3b8);
+  color: var(--learn-text-faint);
   cursor: pointer;
+  transition: all 0.15s ease;
 }
 
 .learn-modal__close:hover {
-  background: var(--bg-hover, rgba(148, 163, 184, 0.14));
-  color: var(--text-primary, #e2e8f0);
+  background: var(--learn-surface-hover);
+  color: var(--learn-text);
 }
 
 .learn-modal__body {
@@ -455,20 +453,20 @@ function submit(): void {
   gap: 6px;
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-primary, #e2e8f0);
+  color: var(--learn-text);
 }
 
 .learn-field__sub {
   font-weight: 400;
   font-size: 11.5px;
-  color: var(--text-tertiary, #64748b);
+  color: var(--learn-text-faint);
 }
 
 .learn-field__hint {
   margin: 0;
   font-size: 11.5px;
   line-height: 1.6;
-  color: var(--text-tertiary, #64748b);
+  color: var(--learn-text-faint);
 }
 
 .learn-field__input,
@@ -476,14 +474,16 @@ function submit(): void {
 .learn-field__select {
   width: 100%;
   padding: 9px 11px;
-  border: 1px solid var(--border, rgba(148, 163, 184, 0.28));
+  border: 1px solid var(--learn-border-strong);
   border-radius: 9px;
-  background: var(--bg-input, rgba(148, 163, 184, 0.08));
-  color: var(--text-primary, #e2e8f0);
+  background: var(--learn-surface);
+  color: var(--learn-text);
   font-size: 13px;
   font-family: inherit;
   outline: none;
-  transition: border-color 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .learn-field__textarea {
@@ -495,7 +495,8 @@ function submit(): void {
 .learn-field__input:focus,
 .learn-field__textarea:focus,
 .learn-field__select:focus {
-  border-color: var(--accent, #3b82f6);
+  border-color: var(--learn-accent);
+  box-shadow: 0 0 0 3px var(--learn-accent-soft);
 }
 
 .learn-field__foot {
@@ -509,18 +510,18 @@ function submit(): void {
 .learn-field__counter {
   margin-left: auto;
   font-size: 11px;
-  color: var(--text-tertiary, #64748b);
+  color: var(--learn-text-faint);
 }
 
 .learn-field__error {
   font-size: 11.5px;
-  color: var(--danger, #ef4444);
+  color: var(--learn-danger);
 }
 
 .learn-field__notice {
   margin: 0;
   font-size: 11.5px;
-  color: var(--warning, #f59e0b);
+  color: var(--learn-warning);
 }
 
 .learn-field__empty {
@@ -530,10 +531,10 @@ function submit(): void {
   gap: 8px;
   padding: 10px 12px;
   border-radius: 9px;
-  background: rgba(245, 158, 11, 0.1);
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  background: var(--learn-warning-soft);
+  border: 1px solid var(--learn-warning-border);
   font-size: 12px;
-  color: var(--text-secondary, #cbd5e1);
+  color: var(--learn-text-muted);
   line-height: 1.6;
 }
 
@@ -541,7 +542,7 @@ function submit(): void {
   border: none;
   background: none;
   padding: 0;
-  color: var(--accent, #3b82f6);
+  color: var(--learn-accent-deep);
   font-size: 12px;
   cursor: pointer;
   text-decoration: underline;
@@ -559,10 +560,10 @@ function submit(): void {
   flex-direction: column;
   gap: 3px;
   padding: 10px 12px;
-  border: 1px solid var(--border, rgba(148, 163, 184, 0.28));
+  border: 1px solid var(--learn-border-strong);
   border-radius: 10px;
-  background: var(--bg-input, rgba(148, 163, 184, 0.06));
-  color: var(--text-primary, #e2e8f0);
+  background: var(--learn-surface);
+  color: var(--learn-text);
   text-align: left;
   cursor: pointer;
   transition:
@@ -571,12 +572,12 @@ function submit(): void {
 }
 
 .learn-segmented__item:hover:not(:disabled) {
-  border-color: var(--accent, #3b82f6);
+  border-color: var(--learn-accent);
 }
 
 .learn-segmented__item.active {
-  border-color: var(--accent, #3b82f6);
-  background: rgba(59, 130, 246, 0.14);
+  border-color: var(--learn-accent);
+  background: var(--learn-accent-soft);
 }
 
 .learn-segmented__item:disabled {
@@ -592,7 +593,7 @@ function submit(): void {
 .learn-segmented__desc {
   font-size: 11px;
   line-height: 1.5;
-  color: var(--text-secondary, #94a3b8);
+  color: var(--learn-text-muted);
 }
 
 /* 开关 */
@@ -603,13 +604,13 @@ function submit(): void {
   height: 22px;
   border: none;
   border-radius: 999px;
-  background: var(--bg-switch-off, rgba(148, 163, 184, 0.32));
+  background: #d1d5db;
   cursor: pointer;
   transition: background 0.18s ease;
 }
 
 .learn-toggle.on {
-  background: var(--accent, #3b82f6);
+  background: var(--learn-accent);
 }
 
 .learn-toggle__knob {
@@ -619,7 +620,8 @@ function submit(): void {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #fff;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
   transition: transform 0.18s ease;
 }
 
@@ -640,38 +642,7 @@ function submit(): void {
   justify-content: flex-end;
   gap: 10px;
   padding: 14px 20px;
-  border-top: 1px solid var(--border, rgba(148, 163, 184, 0.16));
-}
-
-.learn-btn {
-  padding: 9px 18px;
-  border-radius: 9px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    background 0.15s ease,
-    opacity 0.15s ease;
-}
-
-.learn-btn--ghost {
-  border: 1px solid var(--border, rgba(148, 163, 184, 0.28));
-  background: transparent;
-  color: var(--text-secondary, #cbd5e1);
-}
-
-.learn-btn--ghost:hover {
-  background: var(--bg-hover, rgba(148, 163, 184, 0.12));
-}
-
-.learn-btn--primary {
-  border: none;
-  background: var(--accent, #3b82f6);
-  color: #fff;
-}
-
-.learn-btn--primary:hover {
-  opacity: 0.9;
+  border-top: 1px solid var(--learn-border);
 }
 
 /* 进出场 */

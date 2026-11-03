@@ -1,3 +1,6 @@
+import { NetworkObserverTool } from './network-observer';
+import { BrowserObserveTool } from './observe';
+import { browserInteractTool } from './interact';
 /**
  * 浏览器工具集合
  * 提供 Chrome 浏览器的底层操作能力
@@ -7,22 +10,16 @@ import { toolRegistry } from '../registry';
 
 // 导入所有浏览器工具
 import { navigateTool, closeTabsTool, goBackOrForwardTool } from './navigation';
-import { keyboardTool } from './interaction';
 import { windowTool } from './window';
 import { screenshotTool, consoleTool } from './capture';
 import { 
   networkRequestTool, 
-  networkCaptureStartTool, 
-  networkCaptureStopTool,
-  networkDebuggerStartTool,
-  networkDebuggerStopTool 
 } from './network';
 import { 
   webFetcherTool, 
   vectorSearchTabsContentTool 
 } from './content';
 import { 
-  injectScriptTool, 
   sendCommandToInjectScriptTool
 } from './script';
 import { pageExecTool } from './page-exec-tool';
@@ -53,7 +50,8 @@ function createBrowserTools() {
     goBackOrForwardTool,
     
     // Interaction tools
-    keyboardTool,
+    new BrowserObserveTool(),
+    browserInteractTool,
     
     // Window tools
     windowTool,
@@ -64,17 +62,12 @@ function createBrowserTools() {
     
     // Network tools
     networkRequestTool,
-    networkCaptureStartTool,
-    networkCaptureStopTool,
-    networkDebuggerStartTool,
-    networkDebuggerStopTool,
-    
+    new NetworkObserverTool(),
     // Content tools
     webFetcherTool,
     vectorSearchTabsContentTool,
     
     // Script tools
-    injectScriptTool,
     sendCommandToInjectScriptTool,
     
     // 高权限页面执行引擎与页面级自动化工具
@@ -117,7 +110,9 @@ export function registerBrowserTools() {
 
 // 导出所有工具实例
 export * from './navigation';
-export * from './interaction';
+export * from './observe';
+export * from './interact';
+export * from './network-observer';
 export * from './window';
 export * from './capture';
 export * from './network';

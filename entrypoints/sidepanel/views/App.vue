@@ -8,10 +8,13 @@
       @toggle-debug="toggleToolPanel" 
     />
     
-    <!-- 工作笔记按钮 -->
-    <button class="settings-btn" @click="openNotesPage" style="top: 12px;left: 12px;" v-tip="t('sidepanel.app.notesButton')">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M5,3H19A2,2 0 0,1 21,5V19A2,2 0 0,1 19,21H5A2,2 0 0,1 3,19V5A2,2 0 0,1 5,3M7,7H17V9H7V7M7,11H17V13H7V11M7,15H13V17H7V15Z" fill="currentColor"/>
+    <!-- 工作笔记按钮（notes-btn：修正白底白字导致的图标不可见；悬停仅轻微放大） -->
+    <button class="settings-btn notes-btn" @click="openNotesPage" style="top: 12px;left: 12px;" v-tip="t('sidepanel.app.notesButton')">
+      <svg class="notes-btn-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M6,3H18A2,2 0 0,1 20,5V19A2,2 0 0,1 18,21H6A2,2 0 0,1 4,19V5A2,2 0 0,1 6,3Z"/>
+        <path d="M9,8H15"/>
+        <path d="M9,12H15"/>
+        <path d="M9,16H13"/>
       </svg>
     </button>
     <!-- 用户设置按钮 -->
@@ -106,6 +109,25 @@
           </Transition>
         </div>
 
+        <!-- 网站学习入口（输入框上方、已选智能体胶囊条左侧；图标 + 「学习」文字同体为一个按钮）。
+             学习流程进行中禁用——状态条上已有终止入口，避免两个入口并存引发歧义 -->
+        <button
+          class="learn-entry-btn"
+          type="button"
+          :disabled="learn.isLearnActive.value"
+          :title="t('sidepanel.learn.entryTip')"
+          :aria-label="t('sidepanel.learn.entryTip')"
+          @click="learn.openModal()"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path
+              d="M12 1.5L14.35 9.65L22.5 12L14.35 14.35L12 22.5L9.65 14.35L1.5 12L9.65 9.65L12 1.5Z"
+              fill="currentColor"
+            />
+          </svg>
+          <span class="learn-entry-btn__label">{{ t('sidepanel.learn.entryLabel') }}</span>
+        </button>
+
         <!-- 已选智能体/技能胶囊条（设置与历史会话按钮之间；超出可横向滚动：
              小滚动条 + 边缘渐隐作提示，「+N」悬浮/点击展开管理弹层） -->
         <div
@@ -127,11 +149,23 @@
                 :class="chip.kind === 'agent' ? 'strip-chip-agent' : 'strip-chip-skill'"
                 data-strip-chip
               >
-                <svg class="strip-chip-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path
-                    :d="chip.kind === 'agent' ? (chip.iconPath || DEFAULT_AGENT_ICON_PATH) : SELECTION_STRIP_SKILL_ICON_PATH"
-                    fill="currentColor"
-                  />
+                <!-- 智能体胶囊展示自身头像（图片或 emoji，无背景色）；技能胶囊沿用固定闪电图标 -->
+                <AgentAvatar
+                  v-if="chip.kind === 'agent'"
+                  class="strip-chip-avatar"
+                  :avatar="chip.avatar"
+                  :size="12"
+                />
+                <svg
+                  v-else
+                  class="strip-chip-icon"
+                  width="11"
+                  height="11"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path :d="SELECTION_STRIP_SKILL_ICON_PATH" fill="currentColor" />
                 </svg>
                 <span class="strip-chip-name">{{ chip.label }}</span>
                 <button
@@ -181,11 +215,23 @@
                   class="strip-chip strip-popover-chip"
                   :class="chip.kind === 'agent' ? 'strip-chip-agent' : 'strip-chip-skill'"
                 >
-                  <svg class="strip-chip-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path
-                      :d="chip.kind === 'agent' ? (chip.iconPath || DEFAULT_AGENT_ICON_PATH) : SELECTION_STRIP_SKILL_ICON_PATH"
-                      fill="currentColor"
-                    />
+                  <!-- 智能体胶囊展示自身头像（图片或 emoji，无背景色）；技能胶囊沿用固定闪电图标 -->
+                  <AgentAvatar
+                    v-if="chip.kind === 'agent'"
+                    class="strip-chip-avatar"
+                    :avatar="chip.avatar"
+                    :size="12"
+                  />
+                  <svg
+                    v-else
+                    class="strip-chip-icon"
+                    width="11"
+                    height="11"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path :d="SELECTION_STRIP_SKILL_ICON_PATH" fill="currentColor" />
                   </svg>
                   <span class="strip-chip-name">{{ chip.label }}</span>
                   <button
@@ -366,7 +412,7 @@
           <!-- 学习配置/确认阶段：输入区让位（面板与弹窗承载全部交互） -->
           <div v-if="learn.isLearnActive.value" class="input-disabled-notice learn-input-notice">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 8px;" aria-hidden="true">
-              <path d="M12 1.5L14.35 9.65L22.5 12L14.35 14.35L12 22.5L9.65 14.35L1.5 12L9.65 9.65L12 1.5Z" fill="#3b82f6"/>
+              <path d="M12 1.5L14.35 9.65L22.5 12L14.35 14.35L12 22.5L9.65 14.35L1.5 12L9.65 9.65L12 1.5Z" fill="#667eea"/>
             </svg>
             <span>{{ t('sidepanel.learn.statusHint') }}</span>
           </div>
@@ -379,7 +425,7 @@
             class="input-disabled-notice learn-recover-notice"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 8px; flex: 0 0 auto;" aria-hidden="true">
-              <path d="M12 1.5L14.35 9.65L22.5 12L14.35 14.35L12 22.5L9.65 14.35L1.5 12L9.65 9.65L12 1.5Z" fill="#3b82f6"/>
+              <path d="M12 1.5L14.35 9.65L22.5 12L14.35 14.35L12 22.5L9.65 14.35L1.5 12L9.65 9.65L12 1.5Z" fill="#667eea"/>
             </svg>
             <span>{{ t('sidepanel.learn.recoverHint') }}</span>
             <button type="button" class="learn-recover-btn" @click="retryCreateSkillFromLearn">
@@ -401,29 +447,11 @@
                入口按钮也随之让位（配置面板与状态条承载全部交互） -->
           <div class="bottom-bar" v-if="!learn.isLearnActive.value">
             <div class="left-actions">
-              <!-- 网站学习入口（最左侧、高亮常驻）：点击打开配置面板。
-                   运行中禁用——状态条上已有终止入口，避免两个入口并存引发歧义 -->
-              <button
-                class="input-action-btn learn-entry-btn"
-                type="button"
-                :disabled="learn.isLearnRunning.value"
-                :title="t('sidepanel.learn.entryTip')"
-                :aria-label="t('sidepanel.learn.entryTip')"
-                @click="learn.openModal()"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                  <path
-                    d="M12 1.5L14.35 9.65L22.5 12L14.35 14.35L12 22.5L9.65 14.35L1.5 12L9.65 9.65L12 1.5Z"
-                    fill="currentColor"
-                  />
-                </svg>
-              </button>
-
               <!-- 会话内模型选择器（替换原推理切换按钮）：从已配置的模型列表中切换当前生效模型 -->
               <div class="model-select-wrap">
                 <button
                   class="model-select-btn"
-                  :class="{ 'no-model': !activeChatModel }"
+                  :class="{ 'no-model': !activeChatModel, 'is-open': showModelSelectorMenu }"
                   :title="activeChatModel ? t('sidepanel.app.switchModel') : t('sidepanel.app.noModelsHint')"
                   @click.stop="toggleModelSelectorMenu"
                 >
@@ -515,11 +543,13 @@
               @click="selectAgentAtIndex(index)"
               @mouseenter="selectedAgentIndex = index"
             >
-              <div class="agent-icon">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path :d="item.agent.iconPath || DEFAULT_AGENT_ICON_PATH" fill="currentColor"/>
-                </svg>
-              </div>
+              <!-- 智能体头像：图片或 emoji，无背景色 -->
+              <AgentAvatar
+                class="agent-icon"
+                :avatar="item.agent.avatar"
+                :size="22"
+                :label="item.agent.name"
+              />
               <div class="agent-info">
                 <div class="agent-name">{{ item.agent.name }}</div>
                 <div class="agent-desc">{{ item.agent.description }}</div>
@@ -567,7 +597,7 @@
             @mouseenter="selectedSkillIndex = index"
           >
             <div class="agent-info">
-              <div class="agent-name">{{ skill.name }}</div>
+              <div class="agent-name">{{ skillCardLabel(skill) }}</div>
               <div class="agent-desc">{{ skill.description }}</div>
             </div>
           </div>
@@ -700,6 +730,8 @@
 <script setup lang="ts">
 import { ref, onMounted, watch, onUnmounted, computed, nextTick } from 'vue';
 import { t, type MessageKey } from '@/utils/i18n';
+// 智能体头像展示（图片或 emoji，无背景色）：预置 / 自定义 / 导入三类智能体共用
+import AgentAvatar from '@/common/AgentAvatar.vue';
 import ToolComponent from './Tool.vue';
 // 组件按功能域从 barrel 引入（chat / modals / voice / feedback）
 import { ChatMessageList, ChatHistoryDrawer, ContextUsageRing, GuardConfirmBar, PlanBoard } from '../components/chat';
@@ -743,7 +775,6 @@ import {
   type SkillRecord,
   type ToolApprovalRequest,
   type GuardKind,
-  DEFAULT_AGENT_ICON_PATH,
 } from '../core';
 // Deep Search 站点注册表：站点开关列表与动态工具注入的单一事实来源
 // （站点启用态与 UI 开关在 use-deep-search-sites 单例，见「已登录网站」注释）
@@ -754,6 +785,7 @@ import { LEARN_DRAFT_HASH, type SkillDraft } from '@/utils/learn/learn-types';
 // 注册表权威源对账入口（@ / 面板开启时主动与 chrome.storage 同步，兜底跨上下文 onChanged 事件漏投）
 import { restoreCustomAgentsFromStorage } from '@/utils/agents/agent-store';
 import { restoreCustomSkillsFromStorage } from '@/utils/skills/skill-store';
+import { findDuplicateSkillNames } from '@/utils/skills/skill-types';
 // 会话计划（plan_tool 产物）：活跃会话绑定 / 删除级联 / chrome.storage 对账
 import { setActivePlanChat, dropPlan, restorePlansFromStorage } from '@/utils/plan/plan-store';
 import { convertAudioToText } from '../utils/ai/voice-to-text';
@@ -2062,6 +2094,17 @@ const filteredSkills = computed(() => {
   );
 });
 
+/**
+ * 可见列表内重名的技能名（同名是常态）。
+ * 重名条目在卡片上补显 id 消歧——两条 name/description 完全相同的行会让
+ * 用户无法确定自己选中的是哪一个。
+ */
+const duplicatedVisibleSkillNames = computed(() => findDuplicateSkillNames(selectableSkills.value));
+
+/** 卡片条目展示名：重名时追加「 · <id>」，其余情况原样展示 */
+const skillCardLabel = (skill: SkillRecord): string =>
+  duplicatedVisibleSkillNames.value.has(skill.name) ? `${skill.name} · ${skill.id}` : skill.name;
+
 // 过滤列表收缩时钳制高亮索引：高亮必须始终落在某个智能体条目上（不能停在分组标题或越界）
 watch(agentSelectorItems, list => {
   const stillValid = list.some(
@@ -2070,7 +2113,10 @@ watch(agentSelectorItems, list => {
   if (!stillValid) selectedAgentIndex.value = agentOptionIndexes.value[0] ?? 0;
 });
 watch(filteredSkills, list => {
-  if (selectedSkillIndex.value >= list.length) selectedSkillIndex.value = Math.max(0, list.length - 1);
+  // 双侧钳制：空列表归 0（绝不留下负下标），越界回到末条——
+  // 任一侧失守都会让回车取到 undefined 并在 .id 上抛错
+  selectedSkillIndex.value =
+    list.length === 0 ? 0 : Math.min(Math.max(selectedSkillIndex.value, 0), list.length - 1);
 });
 // 卡片内搜索词变化 → 高亮回到首条：否则高亮停在旧下标，回车选中的可能是
 // 另一个条目（列表内容已随搜索词整体换血）
@@ -2170,18 +2216,28 @@ const goToAgentSelector = () => {
 };
 
 /**
+ * 关闭 @ 卡片并进入「本触发序列内不再弹开」状态。
+ * 空态取消按钮与 Escape（输入框 / 卡片内搜索框两条获焦路径）共用同一实现；
+ * refocusInput 供「焦点在卡片内」的场景把焦点交还输入框（焦点已在输入框时为无操作）。
+ */
+const closeAgentSelector = (options: { refocusInput?: boolean } = {}): void => {
+  dismissedTrigger = '@';
+  showAgentSelector.value = false;
+  if (options.refocusInput) messageTextarea.value?.focus();
+};
+
+const closeSkillSelector = (options: { refocusInput?: boolean } = {}): void => {
+  dismissedTrigger = '/';
+  showSkillSelector.value = false;
+  if (options.refocusInput) messageTextarea.value?.focus();
+};
+
+/**
  * 空匹配提示卡上的取消按钮：关闭面板并忽略当前触发序列
  * （与 Escape 同语义：序列中断前不再弹开，重新输入 @ 或 / 可再次唤起）
  */
-const dismissAgentSelector = (): void => {
-  dismissedTrigger = '@';
-  showAgentSelector.value = false;
-};
-
-const dismissSkillSelector = (): void => {
-  dismissedTrigger = '/';
-  showSkillSelector.value = false;
-};
+const dismissAgentSelector = (): void => closeAgentSelector();
+const dismissSkillSelector = (): void => closeSkillSelector();
 
 /**
  * 处理输入变化：@ 唤起智能体卡片，/ 唤起技能卡片。
@@ -2209,6 +2265,11 @@ const handleInputChange = () => {
   } else {
     showSkillSelector.value = dismissedTrigger !== '/' && trigger.query.length === 0;
     showAgentSelector.value = false;
+    // 与 @ 卡片对称：每次打开把高亮复位到首条，避免停在上一次的下标上
+    //（上一次的下标可能属于一个已经不存在的过滤结果）
+    if (showSkillSelector.value) {
+      selectedSkillIndex.value = 0;
+    }
   }
 
   // 自动调整textarea高度
@@ -2218,92 +2279,93 @@ const handleInputChange = () => {
   }
 };
 
-// 处理键盘事件
+/**
+ * 上下移动技能高亮：空列表时归 0（绝不产生负下标），到边界后停住。
+ * 与 moveAgentSelection 对称——两处钳制策略必须一致，否则空态下回车会取到 undefined。
+ */
+const moveSkillSelection = (delta: 1 | -1): void => {
+  const last = filteredSkills.value.length - 1;
+  if (last < 0) {
+    selectedSkillIndex.value = 0;
+    return;
+  }
+  selectedSkillIndex.value = Math.min(Math.max(selectedSkillIndex.value + delta, 0), last);
+};
+
+/** 选中当前高亮技能（列表为空或下标越界时静默忽略，绝不抛错） */
+const selectCurrentSkill = (): void => {
+  const skill = filteredSkills.value[selectedSkillIndex.value];
+  if (skill) selectSkill(skill.id);
+};
+
+/**
+ * 选择器通用导航键（↑ / ↓ / Escape）：输入框与卡片内搜索框两条获焦路径共用一份实现，
+ * 杜绝两处键盘逻辑各自演化。
+ * @returns true = 已消费该按键，调用方无需再处理
+ */
+const handleSelectorNavKey = (event: KeyboardEvent, which: '@' | '/'): boolean => {
+  const isOpen = which === '@' ? showAgentSelector.value : showSkillSelector.value;
+  if (!isOpen) return false;
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    if (which === '@') moveAgentSelection(1);
+    else moveSkillSelection(1);
+    return true;
+  }
+  if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    if (which === '@') moveAgentSelection(-1);
+    else moveSkillSelection(-1);
+    return true;
+  }
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    if (which === '@') closeAgentSelector({ refocusInput: true });
+    else closeSkillSelector({ refocusInput: true });
+    return true;
+  }
+  return false;
+};
+
+// 处理键盘事件（输入框获焦路径）
 const handleKeyDown = (event: KeyboardEvent) => {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault();
     if (showAgentSelector.value && agentOptionIndexes.value.length > 0) {
       selectAgentAtIndex(selectedAgentIndex.value);
     } else if (showSkillSelector.value && filteredSkills.value.length > 0) {
-      selectSkill(filteredSkills.value[selectedSkillIndex.value].id);
+      selectCurrentSkill();
     } else {
       sendMessage();
     }
-  } else if (showAgentSelector.value) {
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      moveAgentSelection(1);
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      moveAgentSelection(-1);
-    } else if (event.key === 'Escape') {
-      dismissedTrigger = '@';
-      showAgentSelector.value = false;
-    }
-  } else if (showSkillSelector.value) {
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      selectedSkillIndex.value = Math.min(selectedSkillIndex.value + 1, filteredSkills.value.length - 1);
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      selectedSkillIndex.value = Math.max(selectedSkillIndex.value - 1, 0);
-    } else if (event.key === 'Escape') {
-      dismissedTrigger = '/';
-      showSkillSelector.value = false;
-    }
+    return;
   }
+  if (handleSelectorNavKey(event, '@')) return;
+  handleSelectorNavKey(event, '/');
 };
 
-// 处理智能体选择器键盘事件（面板内搜索框获焦时事件冒泡到此，同一套导航）
+// 处理智能体选择器键盘事件（卡片内搜索框获焦路径；导航键与输入框共用实现）
 const handleAgentSelectorKeyDown = (event: KeyboardEvent) => {
   if (event.key === 'Enter') {
-    // 无条件拦下回车：卡片内输入框不承担提交语义（空列表时也只是关不掉而已）
+    // 无条件拦下回车：卡片内输入框不承担提交语义（空列表时也只是不选中）
     event.preventDefault();
-    if (agentOptionIndexes.value.length > 0) {
-      selectAgentAtIndex(selectedAgentIndex.value);
-    }
+    if (agentOptionIndexes.value.length > 0) selectAgentAtIndex(selectedAgentIndex.value);
     return;
   }
-  if (event.key === 'ArrowDown') {
-    event.preventDefault();
-    moveAgentSelection(1);
-  } else if (event.key === 'ArrowUp') {
-    event.preventDefault();
-    moveAgentSelection(-1);
-  } else if (event.key === 'Escape') {
-    event.preventDefault();
-    dismissedTrigger = '@';
-    showAgentSelector.value = false;
-    // 焦点交还输入框：用户关闭卡片后通常要继续打字
-    messageTextarea.value?.focus();
-  }
+  handleSelectorNavKey(event, '@');
 };
 
-// 处理技能选择器键盘事件（面板内搜索框获焦时事件冒泡到此，同一套导航）
+// 处理技能选择器键盘事件（卡片内搜索框获焦路径；导航键与输入框共用实现）
 const handleSkillSelectorKeyDown = (event: KeyboardEvent) => {
   if (event.key === 'Enter') {
-    // 无条件拦下回车：卡片内输入框不承担提交语义
     event.preventDefault();
-    if (filteredSkills.value.length > 0) {
-      selectSkill(filteredSkills.value[selectedSkillIndex.value].id);
-    }
+    selectCurrentSkill();
     return;
   }
-  if (event.key === 'ArrowDown') {
-    event.preventDefault();
-    selectedSkillIndex.value = Math.min(selectedSkillIndex.value + 1, filteredSkills.value.length - 1);
-  } else if (event.key === 'ArrowUp') {
-    event.preventDefault();
-    selectedSkillIndex.value = Math.max(selectedSkillIndex.value - 1, 0);
-  } else if (event.key === 'Escape') {
-    event.preventDefault();
-    dismissedTrigger = '/';
-    showSkillSelector.value = false;
-    messageTextarea.value?.focus();
-  }
+  handleSelectorNavKey(event, '/');
 };
 
-/** 移除输入末尾的触发符及其过滤词（保留触发符之前的全部内容），如 "你好 /bil" → "你好 "、"你好/bil" → "你好" */
+/** 移除输入末尾的触发符及其后缀（保留触发符之前的全部内容），如 "你好 /" → "你好 "、"你好/bil" → "你好" */
 const stripActiveTrigger = () => {
   userInput.value = userInput.value.replace(/[@/][^@/\s]*$/, '');
 };
@@ -2348,10 +2410,10 @@ const skillDisplayName = (skillId: string): string => {
 
 /** 胶囊条条目：智能体恒排首位，其后为按选中顺序排列的技能 */
 type SelectionStripChip =
-  | { kind: 'agent'; key: string; label: string; iconPath?: string }
+  | { kind: 'agent'; key: string; label: string; avatar?: AgentConfig['avatar'] }
   | { kind: 'skill'; key: string; label: string; id: string };
 
-/** 技能胶囊的固定图标 path（闪电；智能体用自身 iconPath） */
+/** 技能胶囊的固定图标 path（闪电；智能体用自身头像） */
 const SELECTION_STRIP_SKILL_ICON_PATH = 'M7,2H17L15,9H21L11,22L13,13H6L7,2Z';
 
 /** 胶囊条数据：已选智能体 + 已选技能（技能展示名经 skillDisplayName 解析，被删时回落 id 原文） */
@@ -2362,11 +2424,24 @@ const selectionStripChips = computed<SelectionStripChip[]>(() => {
       kind: 'agent',
       key: `agent:${selectedAgent.value}`,
       label: selectedAgent.value,
-      iconPath: agentEngine.get(selectedAgent.value)?.iconPath,
+      avatar: agentEngine.get(selectedAgent.value)?.avatar,
     });
   }
+  // 已选技能中的重名集合：重名胶囊补显 id，否则两个一模一样的胶囊
+  // 会让用户点 × 时无法确定移除的是哪一个
+  const duplicatedNames = findDuplicateSkillNames(
+    selectedSkills.value
+      .map(id => skillEngine.get(id))
+      .filter((skill): skill is SkillRecord => !!skill),
+  );
   for (const id of selectedSkills.value) {
-    chips.push({ kind: 'skill', key: `skill:${id}`, label: skillDisplayName(id), id });
+    const name = skillDisplayName(id);
+    chips.push({
+      kind: 'skill',
+      key: `skill:${id}`,
+      label: duplicatedNames.has(name) ? `${name} · ${id}` : name,
+      id,
+    });
   }
   return chips;
 });
@@ -3460,6 +3535,7 @@ const sendMessageInner = async () => {
         isCompacting.value = true;
         try {
           // 压缩对象 = 初始上下文全体（含旧摘要系统消息 + 压缩点后的全部历史派生）；
+          // 不含合成激活轮——它随每次装配重建，压进摘要只会把技能正文永久写进记忆
           // signal 接入停止通道：停止时压缩的 LLM 请求被真正取消（compact 抛 AbortError）
           const compaction = await contextCompactor.compact({
             messages: runtime.initialContext,

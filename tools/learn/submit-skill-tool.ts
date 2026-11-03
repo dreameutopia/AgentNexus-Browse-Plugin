@@ -167,7 +167,7 @@ export class SubmitSkillTool extends BaseTool {
             type: 'array',
             items: { type: 'string' },
             description:
-              '执行本技能实际需要的工具 ID（非空，如 enhance_click、interactive_input_getter）。' +
+              '执行本技能实际需要的工具 ID（非空，如 browser_interact、browser_observe）。' +
               '它决定该技能在哪些智能体的「/」引用清单中可见，务必如实填写，只写真正用到的。',
           },
           mode: {
@@ -263,7 +263,7 @@ export class SubmitSkillTool extends BaseTool {
         return skillFailure(
           '参数错误',
           'allowedTools 为空——没有声明工具的技能不会出现在任何智能体的「/」引用清单中，建完也引用不到',
-          '列出执行本技能真正用到的工具 ID（如 enhance_click、interactive_input_getter、browser_navigate）',
+          '列出执行本技能真正用到的工具 ID（如 browser_interact、browser_observe、browser_navigate）',
         );
       }
       const knownTools: string[] = [];
@@ -275,7 +275,7 @@ export class SubmitSkillTool extends BaseTool {
         return skillFailure(
           '参数错误',
           `allowedTools 中没有已注册的工具: ${declaredTools.join(', ')}`,
-          '工具 ID 必须与注册名完全一致（可参考工具测试面板中的名称），例如 enhance_click 而不是 click',
+          '工具 ID 必须与注册名完全一致（可参考工具测试面板中的名称），例如 browser_interact 而不是 click',
         );
       }
 

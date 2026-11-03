@@ -22,12 +22,14 @@ import {
   notesDB,
   broadcastNotesChanged,
   isNoteId,
+  normalizeCategory,
   CATEGORY_INBOX,
   CATEGORY_AI,
   NOTES_CHANGED_MESSAGE,
   type NoteListItem,
   type NotesChangeAction,
 } from '@/utils/notes-database';
+import { loadFolders, saveFolders } from '../utils/folder-registry';
 import type { Note } from '@/types';
 
 export type NoteFilterMode = 'all' | 'category' | 'tag';
@@ -58,6 +60,8 @@ export interface UseNotesOptions {
 export function useNotes(options: UseNotesOptions) {
   // ---- 数据状态 ----
   const previews = ref<NoteListItem[]>([]);
+  /** 文件夹登记表：所有出现过 / 手动新建的文件夹名（含空文件夹，localStorage 持久化） */
+  const folderRegistry = ref<string[]>([]);
   const currentNote = ref<Note | null>(null);
   const loading = ref(false);
   /** 初始化失败原因（非 null 时页面渲染错误面板，用户可重试） */
@@ -73,16 +77,19 @@ export function useNotes(options: UseNotesOptions) {
 
   const totalNotes = computed(() => previews.value.length);
 
-  /** 分类聚合（含计数）：「未分类」始终展示，其余按使用量倒序 */
+  /**
+   * 文件夹聚合（含计数）：「未分类」始终展示，其余按使用量倒序。
+   * 笔记中出现过的分类 ∪ 登记表 —— 空文件夹（无任何笔记）同样保留展示。
+   */
   const allCategories = computed(() => {
     const counts = new Map<string, number>();
     counts.set(CATEGORY_INBOX, 0);
     for (const note of previews.value) {
       counts.set(note.category, (counts.get(note.category) || 0) + 1);
     }
-    return Array.from(counts.entries())
-      .map(([category, count]) => ({ category, count }))
-      .filter((item) => item.count > 0 || item.category === CATEGORY_INBOX)
+    const names = new Set<string>([...counts.keys(), ...folderRegistry.value]);
+    return Array.from(names)
+      .map((category) => ({ category, count: counts.get(category) || 0 }))
       .sort((a, b) => b.count - a.count || a.category.localeCompare(b.category));
   });
 
@@ -166,6 +173,26 @@ export function useNotes(options: UseNotesOptions) {
 
   async function refreshPreviews(): Promise<void> {
     previews.value = await notesDB.listNotePreviews();
+    registerCategoriesFromNotes();
+  }
+
+  /**
+   * 笔记里出现过的分类自动登记为文件夹：
+   * 这样把某个文件夹下最后一篇笔记移走 / 删除后，空文件夹仍保留在侧边栏
+   * （数据层只有 note.category 字符串，空文件夹需登记表才能承载）。
+   */
+  function registerCategoriesFromNotes(): void {
+    const known = new Set(folderRegistry.value);
+    let changed = false;
+    for (const note of previews.value) {
+      if (!known.has(note.category)) {
+        known.add(note.category);
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    folderRegistry.value = Array.from(known);
+    saveFolders(folderRegistry.value);
   }
 
   function scheduleRefresh(): void {
@@ -296,6 +323,59 @@ export function useNotes(options: UseNotesOptions) {
   }
 
   /**
+   * 重命名文件夹（分类）：事务内改写其下全部笔记的分类，随后广播刷新。
+   * 登记表同步「注销旧名 + 登记新名」（旧文件夹不残留为空）；
+   * 当前打开的笔记若在该文件夹内，同步其 category（编辑器下拉随之更新）。
+   */
+  async function renameFolder(oldCategory: string, newCategory: string): Promise<void> {
+    await notesDB.renameCategory(oldCategory, newCategory);
+    const nextNames = new Set(folderRegistry.value);
+    nextNames.delete(oldCategory);
+    nextNames.add(newCategory);
+    folderRegistry.value = Array.from(nextNames);
+    saveFolders(folderRegistry.value);
+    broadcastNotesChanged('update');
+    scheduleRefresh();
+    if (currentNote.value?.category === oldCategory) {
+      currentNote.value = { ...currentNote.value, category: newCategory };
+    }
+  }
+
+  /**
+   * 删除文件夹及其下全部笔记（调用方已完成二次确认）。
+   * 同步注销登记（文件夹从侧边栏消失）；当前打开的笔记若在该文件夹内，一并关闭。
+   */
+  async function deleteFolder(category: string): Promise<void> {
+    await notesDB.deleteCategory(category);
+    folderRegistry.value = folderRegistry.value.filter((name) => name !== category);
+    saveFolders(folderRegistry.value);
+    broadcastNotesChanged('delete');
+    scheduleRefresh();
+    if (currentNote.value?.category === category) {
+      closeNote();
+    }
+  }
+
+  /**
+   * 新建空文件夹（写入登记表，立即出现在侧边栏；允许无任何笔记）。
+   *
+   * @returns false 表示名称为空或已存在（调用方据此提示）
+   */
+  function createFolder(name: string): boolean {
+    const normalized = normalizeCategory(name, '');
+    if (!normalized) return false;
+    if (allCategories.value.some((item) => item.category === normalized)) return false;
+    folderRegistry.value = [...folderRegistry.value, normalized];
+    saveFolders(folderRegistry.value);
+    return true;
+  }
+
+  /** 把笔记移动到另一个文件夹（走统一保存链路：校验 + 广播 + 列表刷新） */
+  async function moveNoteToFolder(id: string, category: string): Promise<void> {
+    await saveNote(id, { category });
+  }
+
+  /**
    * 强制用存储中的最新内容覆盖编辑器（外部更新挂起时由用户触发）
    */
   async function resolveExternalUpdate(): Promise<void> {
@@ -354,6 +434,7 @@ export function useNotes(options: UseNotesOptions) {
     loading.value = true;
     initError.value = null;
     try {
+      folderRegistry.value = loadFolders();
       await refreshPreviews();
       syncFromHash();
     } catch (error) {
@@ -408,6 +489,10 @@ export function useNotes(options: UseNotesOptions) {
     createNote,
     saveNote,
     removeNote,
+    createFolder,
+    renameFolder,
+    deleteFolder,
+    moveNoteToFolder,
     resolveExternalUpdate,
     refreshPreviews,
   };

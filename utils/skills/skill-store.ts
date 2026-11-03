@@ -321,10 +321,44 @@ function persistCustomSkills(): void {
 }
 
 /**
+ * 重建 / 恢复过程中的 id 冲突裁决。
+ *
+ * @param record 待入库记录（其 id 已与既有占用者相同）
+ * @returns 应采用的新 id（调用方据此改写 record.id 后照常入库）；
+ *          null = 判定为同一条记录的重复副本，跳过入库
+ *
+ * 三种情形分别处理，核心原则是「绝不静默丢数据」：
+ *   1. 占用者是**内置技能**——自定义 id 落进了保留区间。任何正常版本的生成器
+ *      都不会产出这种 id，只可能是外部写入的异常数据；改用确定性派生的新 id
+ *      保住记录（新 id 必在非保留区间）；
+ *   2. 占用者是**同名自定义技能**——同一逻辑记录的重复副本（跨上下文从同一份
+ *      数据恢复的常见形态），以后到者跳过，语义等同于「同一记录只留一份」；
+ *   3. 占用者是**异名自定义技能**——两条不同记录撞了 id，重新派生后并存。
+ *
+ * 重派生走 generateSkillId（同名 + 同初始占用状态 → 各上下文收敛到同一个新
+ * id），避免各上下文对同一条记录各起一个名字。
+ */
+function resolveIdCollision(record: SkillRecord): string | null {
+  const owner = skillMap.get(record.id);
+  if (!owner) return record.id;
+  if (owner.source !== 'preset' && owner.name === record.name) {
+    console.warn(`[SkillStore] 自定义技能 id "${record.id}" 重复（${record.name}），后者已跳过`);
+    return null;
+  }
+  const fresh = generateSkillId(record.name, candidate => skillMap.has(candidate));
+  console.warn(
+    `[SkillStore] 技能 "${record.name}" 的 id "${record.id}" 与${
+      owner.source === 'preset' ? '内置技能' : `另一技能 "${owner.name}"`
+    }冲突，已改用 "${fresh}" 保留数据（指向旧 id 的关联需重新绑定）`,
+  );
+  return fresh;
+}
+
+/**
  * 以给定自定义技能列表重建内存表（预置配置永不被移除/覆盖），刷新缓存并广播。
  * 用于启动恢复与跨上下文同步——对端的新增/修改/删除全部生效；
- * 单条损坏记录跳过并告警，不阻断同批其余记录；id 重复以后到者跳过
- * （并发创建的最后一道防线：随机 id 已把碰撞概率压到可忽略，此处兜底）。
+ * 单条损坏记录跳过并告警，不阻断同批其余记录；id 冲突经 resolveIdCollision
+ * 裁决（重复副本跳过、不同技能改 id 保留，见其注释）。
  * 与预置同名的自定义记录照常入库：同名是常态，id 与模型标识均不冲突，
  * 按 id 的引用永不混淆（纯名称引用解析到先注册者，属旧数据兼容语义）。
  */
@@ -338,8 +372,9 @@ function rebuildCustomSkills(items: unknown): number {
         const record = deserializeSkill(item);
         if (!record) continue;
         if (skillMap.has(record.id)) {
-          console.warn(`[SkillStore] 自定义技能 id "${record.id}" 重复，后者（${record.name}）被跳过`);
-          continue;
+          const resolvedId = resolveIdCollision(record);
+          if (resolvedId === null) continue;
+          record.id = resolvedId;
         }
         skillMap.set(record.id, record);
       } catch (error) {
@@ -373,7 +408,7 @@ function initStore(): void {
     const id = presetSkillIdFromName(name);
     const preset = buildSkillRecord(folderName, files, 'preset', id);
     if (!preset) continue;
-    // 理论不可达：两个内置技能同名（或 36^8 哈希碰撞）。跳过并显式告警，
+    // 理论不可达：两个内置技能同名（或确定性哈希碰撞）。跳过并显式告警，
     // 绝不覆盖先注册者——预置技能不落持久化，覆盖即静默丢失
     if (skillMap.has(preset.id)) {
       console.warn(`[SkillStore] 内置技能 id 冲突: "${preset.id}"（${name}），后者已跳过`);
@@ -396,13 +431,12 @@ function initStore(): void {
     for (const item of parsed) {
       const record = deserializeSkill(item);
       if (!record) continue;
-      // id 冲突显式告警（与 rebuildCustomSkills 对称）：静默跳过会让
-      // 「恢复后技能凭空少了一个」无从排查
+      // id 冲突经同一裁决（与 rebuildCustomSkills 共用）：重复副本跳过、
+      // 不同技能改 id 保留，绝不静默丢数据
       if (skillMap.has(record.id)) {
-        console.warn(
-          `[SkillStore] 恢复自定义技能时 id "${record.id}"（${record.name}）与既有技能冲突，已跳过`,
-        );
-        continue;
+        const resolvedId = resolveIdCollision(record);
+        if (resolvedId === null) continue;
+        record.id = resolvedId;
       }
       skillMap.set(record.id, record);
     }
@@ -472,7 +506,7 @@ export function getAllSkills(): SkillRecord[] {
   return [...presets, ...customs];
 }
 
-/** 所有启用状态的技能（参与 / 面板展示与可用清单注入） */
+/** 所有启用状态的技能（可用清单注入与 load_skill 报错回显的口径；「/」卡片用同一口径自行过滤） */
 export function getEnabledSkills(): SkillRecord[] {
   return getAllSkills().filter(s => s.enabled);
 }

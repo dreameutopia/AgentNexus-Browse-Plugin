@@ -681,7 +681,7 @@ function switchMode(target: 'simple' | 'advanced'): void {
   editorMode.value = 'simple';
 }
 
-/** 存储层失败原因 → 可读文案 */
+/** 存储层失败原因 → 可读文案（同名已合法，写入层只可能 invalid / not-found） */
 function writeErrorText(result: Extract<SkillWriteResult, { ok: false }>): string {
   switch (result.reason) {
     case 'not-found':

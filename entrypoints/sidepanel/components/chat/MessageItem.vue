@@ -267,7 +267,7 @@
 import { computed, onBeforeUnmount, ref } from 'vue';
 import { t } from '@/utils/i18n';
 import type { ExtendedChatMessage, IndexedMessagePart, MessageFeedback } from '../../types/chat';
-import { aiChatApi } from '../../utils/ai/ai-chat-api';
+import { markdownRenderer } from '../../utils/chat/markdown-renderer';
 import { formatDuration } from '../../utils/chat/duration';
 import { openNoteDetail } from '../../utils/chat/note-nav';
 import { message as toast } from '../../utils/chat/message';
@@ -289,7 +289,7 @@ const emit = defineEmits<{
   'feedback-change': [messageId: string, feedback: MessageFeedback | null];
 }>();
 
-const renderMessage = (content: string) => aiChatApi.renderMessage(content);
+const renderMessage = (content: string) => markdownRenderer.renderMessage(content);
 
 /**
  * 是否渲染底部图片区（MessageImages）：

@@ -52,10 +52,10 @@ export class HistoryNavigationTool extends BaseNavigationTool {
             description: '如果只有一个结果，是否自动导航到该页面',
             default: true
           },
-          newWindow: {
+          newTab: {
             type: 'boolean',
-            description: '是否在新窗口中打开页面',
-            default: false
+            description: '是否在现有窗口的新标签页中打开（默认 true）页面',
+            default: true
           }
         },
         required: ['query']
@@ -69,7 +69,7 @@ export class HistoryNavigationTool extends BaseNavigationTool {
     startTime?: number;
     endTime?: number;
     autoNavigate?: boolean;
-    newWindow?: boolean;
+    newTab?: boolean;
   }): Promise<ToolResult> {
     try {
       this.validateArgs(args, ['query']);
@@ -80,7 +80,7 @@ export class HistoryNavigationTool extends BaseNavigationTool {
         startTime, 
         endTime, 
         autoNavigate = true, 
-        newWindow = false 
+        newTab = true 
       } = args;
       
       this.log(`Searching history for: "${query}"`);
@@ -109,7 +109,7 @@ export class HistoryNavigationTool extends BaseNavigationTool {
         if (!historyItem.url) {
           return this.createErrorResponse(`History item "${historyItem.title}" has no URL`);
         }
-        const navResult = await this.navigateToUrl(historyItem.url, { newWindow });
+        const navResult = await this.navigateToUrl(historyItem.url, { newTab });
         
         if (!navResult.success) {
           return navResult;

@@ -43,7 +43,7 @@ export const SKILL_TOOL_IDS: readonly string[] = ['load_skill', 'read_skill_file
 
 /**
  * 防止技能内容破坏 systemPrompt 的 XML 分区结构：
- * 技能正文是用户可编辑的自由文本，若包含 </available-skill> 等闭合标签，
+ * 技能正文是用户可编辑的自由文本，若包含 </available-skills> 等闭合标签，
  * 会让模型误判分区边界。统一转义为本层保留标签的闭合形式。
  * （激活正文已迁出会话 system prompt，本函数现由 L1 发现清单的描述使用。）
  */
@@ -186,23 +186,34 @@ class SkillEngine {
       if (injectedSkillIds.has(skill.id)) continue;
       injectedSkillIds.add(skill.id);
 
-      const loaded = buildSkillInstruction(skill);
-      const callId = `${ACTIVATION_CALL_ID_PREFIX}${calls.length}`;
-      calls.push({
-        id: callId,
-        type: 'function',
-        function: {
+      // 单条记录异常（存储损坏 / 未来装配逻辑缺陷）只跳过该技能并告警，
+      // 绝不让整次装配失败——挂死或损坏的技能不应阻断用户发送
+      try {
+        const loaded = buildSkillInstruction(skill);
+        // 先把两条消息的内容都构造完再入队，保证 calls 与 results 恒等长配对
+        const content = skillLoadToolContent(loaded);
+        const callId = `${ACTIVATION_CALL_ID_PREFIX}${calls.length}`;
+        calls.push({
+          id: callId,
+          type: 'function',
+          function: {
+            name: 'load_skill',
+            arguments: JSON.stringify({ skill_name: loaded.skill }),
+          },
+        });
+        results.push({
+          role: 'tool',
+          tool_call_id: callId,
           name: 'load_skill',
-          arguments: JSON.stringify({ skill_name: loaded.skill }),
-        },
-      });
-      results.push({
-        role: 'tool',
-        tool_call_id: callId,
-        name: 'load_skill',
-        content: skillLoadToolContent(loaded),
-      });
-      for (const toolId of skill.allowedTools) toolIds.add(toolId);
+          content,
+        });
+        for (const toolId of skill.allowedTools) toolIds.add(toolId);
+      } catch (error) {
+        console.warn(
+          `[SkillEngine] 技能 "${skill.name}"（${skill.id}）的激活装配失败，本轮已跳过:`,
+          error,
+        );
+      }
     }
 
     if (calls.length === 0) {

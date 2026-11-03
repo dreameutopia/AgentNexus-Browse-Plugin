@@ -14,6 +14,7 @@ import type { MessageFeedback } from '../../types/chat';
 import { chatDatabase, chatPreviewOf, type SessionListOptions } from './chat-database';
 import { normalizeModelRef, type ModelRef } from '../../utils/channels';
 import { imageStore, normalizeImageRefs } from '../images/image-store';
+import { prepareProtocolHistory } from './protocol-history';
 
 /** 自动标题取用户消息前缀长度 */
 const AUTO_TITLE_MAX = 30;
@@ -274,6 +275,7 @@ class TranscriptEngine {
    * 保证「加载会话 → 装配上下文」链路上缓存恒可用。
    */
   private async preloadRecordImages(records: readonly ChatMessageRecord[]): Promise<void> {
+    await prepareProtocolHistory(records);
     const refs: string[] = [];
     for (const record of records) {
       refs.push(...normalizeImageRefs(record.imageRefs));

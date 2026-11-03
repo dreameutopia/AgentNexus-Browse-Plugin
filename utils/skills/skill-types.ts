@@ -65,10 +65,15 @@ export const SKILL_NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 /** name 长度上限（与 hub 表单 maxlength 一致；导入与存储层的兜底钳制） */
 export const SKILL_NAME_MAX_CHARS = 64;
 
-/** id 字段规范校验（与生成器输出一致：小写字母数字，固定长度） */
+/** id 字段规范校验（小写字母 / 数字；不设长度约束——内置 id 9 位、自定义基名 8 位、冲突后缀更长） */
 export const SKILL_ID_PATTERN = /^[a-z0-9]+$/;
 
-/** 生成的技能 id 长度（base36，36^8 ≈ 2.8 万亿，碰撞概率可忽略） */
+/**
+ * 生成的技能 id 基名长度（base36）。
+ * 随机路径（generateUniqueSkillId）取满 36^8 ≈ 2.8 万亿个取值；
+ * 确定性路径（skillIdFromName）受 32 位 FNV-1a 限制，实际约 2^32 个取值，
+ * 对技能规模（百量级）仍绰绰有余——碰撞由 isTaken 确认 + 计数后缀兜底。
+ */
 export const SKILL_ID_LENGTH = 8;
 
 /** 模型标识中 name 与 id 的连接符 */
@@ -142,8 +147,8 @@ function fnv1aHash(input: string): number {
 
 /**
  * 由名称派生确定性 id（base36，长度 SKILL_ID_LENGTH）。
- * 与智能体的 generateAgentId 不同：技能名本身已受字符规范约束且建议唯一，
- * 哈希直接落在 36^8 空间，正常规模下无需后缀；冲突时由 generateSkillId
+ * 与智能体的 generateAgentId 不同：技能名本身已受字符规范约束，哈希落在
+ * 32 位空间内（约 2^32 个取值），正常规模下无需后缀；冲突时由 generateSkillId
  * 以「哈希 + 确定性计数后缀」保证唯一（见下）。
  *
  * 注意：本函数不区分 id 区间——返回值可能落进内置技能保留区间。
@@ -177,7 +182,8 @@ export function isReservedSkillId(id: string): boolean {
  *
  * 调用方传入的 name 必须与该技能 SKILL.md frontmatter 的 name 同源
  * （skill-store.initStore 与智能体预设 / 工具映射表两侧使用同一个名字），
- * 否则硬编码引用会落空。哈希空间 36^8，内置技能的数量级下无碰撞之虞。
+ * 否则硬编码引用会落空。哈希空间受 32 位 FNV-1a 限制（约 2^32 个取值），
+ * 内置技能的数量级下无碰撞之虞。
  */
 export function presetSkillIdFromName(name: string): string {
   return `${SKILL_ID_RESERVED_PREFIX}${skillIdFromName(name)}`;
@@ -204,11 +210,30 @@ function customSkillIdBase(name: string): string {
 }
 
 /**
+ * 防御性兜底取号：有界重试，绝不死循环。
+ *
+ * 用于两条生成路径的「正常策略用尽」分支（确定性后缀用尽 / 随机抽样未命中）。
+ * 占用判定恒真（理论不可能，多见于测试桩）时返回最后一次候选——函数必须有
+ * 返回值，宁可引入非确定性也不允许卡死调用方。
+ *
+ * @param isTaken 占用判定（调用方注入，保持纯函数）
+ * @param build 生成一个候选（调用方负责避开保留区间与形态约束）
+ */
+function takeAnyId(isTaken: (candidate: string) => boolean, build: () => string): string {
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const candidate = build();
+    if (!isTaken(candidate)) return candidate;
+  }
+  return build();
+}
+
+/**
  * 生成全局唯一的技能 id（确定性形态，供旧版无 id 记录恢复使用）。
  *
  * 基名经 customSkillIdBase 派生（避开内置保留区间）；被占用时按序追加十进制
  * 后缀（确定性：同一初始状态下各上下文生成结果一致）。极端情况下（后缀用尽，
- * 理论不可能）追加时间戳+随机数，保证函数必然返回——宁可引入非确定性也不允许死循环。
+ * 理论不可能）改用「基名 + 时间戳 + 随机」并同样经 isTaken 确认，
+ * 保证函数必然返回——宁可引入非确定性也不允许死循环。
  *
  * 新建 / 导入请改用 generateUniqueSkillId（随机形态，并发创建更安全）。
  *
@@ -226,8 +251,15 @@ export function generateSkillId(name: string, isTaken?: (candidate: string) => b
     if (!taken(candidate)) return candidate;
     counter += 1;
   }
-  // 防御性兜底：非确定性但必然唯一（时间戳36进制 + 随机两位）
-  return `${base}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 4)}`.slice(0, SKILL_ID_LENGTH + 6);
+  // 防御性兜底（基名前缀保证不落保留区间）：时间戳36进制 + 随机两位
+  return takeAnyId(
+    taken,
+    () =>
+      `${base}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 4)}`.slice(
+        0,
+        SKILL_ID_LENGTH + 6,
+      ),
+  );
 }
 
 /** 随机 8 位 base36 技能 id（crypto 优先，不可用时降级 Math.random） */
@@ -266,12 +298,15 @@ export function generateUniqueSkillId(isTaken?: (candidate: string) => boolean):
     const candidate = randomSkillId();
     if (!isReservedSkillId(candidate) && !taken(candidate)) return candidate;
   }
-  // 理论不可达兜底：时间戳 + 随机（同样避开保留区间），保证函数必然返回
-  const fallback = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`.slice(
-    0,
-    SKILL_ID_LENGTH + 6,
-  );
-  return isReservedSkillId(fallback) ? `c${fallback.slice(1)}` : fallback;
+  // 理论不可达兜底（64 次随机抽样全撞）：改用「时间戳 + 随机」再做有界确认，
+  // 同样避开保留区间——既保证必然返回，也绝不交出一个已占用的 id
+  return takeAnyId(taken, () => {
+    const raw = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`.slice(
+      0,
+      SKILL_ID_LENGTH + 6,
+    );
+    return isReservedSkillId(raw) ? `c${raw.slice(1)}` : raw;
+  });
 }
 
 /**
@@ -286,4 +321,25 @@ export function composeModelSkillId(name: string, id: string): string {
 /** SkillRecord 便捷封装 */
 export function modelSkillIdOf(skill: Pick<SkillRecord, 'name' | 'id'>): string {
   return composeModelSkillId(skill.name, skill.id);
+}
+
+/**
+ * 找出列表内**重名**的技能名集合（同名是常态，展示层据此消歧）。
+ *
+ * 同名技能的 name 甚至 description 都可能完全一致（重复导入），选择面与已选
+ * 胶囊若原样展示，用户无法确定自己选中的是哪一条——重名时补显 id 即可区分。
+ * 纯函数：调用方决定传入「可见列表」还是「已选列表」。
+ */
+export function findDuplicateSkillNames(
+  skills: readonly Pick<SkillRecord, 'name'>[],
+): Set<string> {
+  const counts = new Map<string, number>();
+  for (const skill of skills) {
+    counts.set(skill.name, (counts.get(skill.name) ?? 0) + 1);
+  }
+  const duplicated = new Set<string>();
+  for (const [name, count] of counts) {
+    if (count > 1) duplicated.add(name);
+  }
+  return duplicated;
 }

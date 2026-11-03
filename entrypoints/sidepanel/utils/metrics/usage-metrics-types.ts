@@ -11,13 +11,18 @@
 import type { TokenUsage } from '../stream/types';
 
 /** 请求类别（用于区分计数来源，均为真实 AI 推理请求） */
-export type UsageRequestKind = 'chat' | 'probe' | 'asr';
+export type UsageRequestKind = 'chat' | 'probe' | 'asr' | 'compaction';
 
 /** 单次尝试结局：成功 / 失败（含建连失败与流内错误）/ 用户中止 */
 export type UsageOutcome = 'success' | 'failed' | 'aborted';
 
 /** 计数聚合（全局与每模型共用同一形状，字段语义见 UsageMetricsData） */
 export interface UsageCounters {
+  cacheHitRequests: number;
+  /** Continuation requests only, excluding cold starts and unreported usage. */
+  continuationInputTokens: number;
+  continuationCachedTokens: number;
+  continuationCacheRequests: number;
   /** 发起的总请求次数（含自动重试的每次尝试、失败与中止） */
   requests: number;
   /** 成功完成的请求次数 */
@@ -44,6 +49,10 @@ export interface UsageCounters {
 
 /** 每模型聚合（存储键：`${provider}::${model}`） */
 export interface ModelUsageMetrics extends UsageCounters {
+  channelId?: string;
+  modelId?: string;
+  channelLabel?: string;
+  agentId?: string;
   /** 协议类型标识（ProviderType 或 asr 等扩展标签） */
   provider: string;
   /** 模型名（脏数据防御：空值归一为 '(unknown)'） */
@@ -67,6 +76,8 @@ export interface UsageErrorRecord {
 
 /** 持久化结构（chrome.storage.local，schemaVersion 向前兼容迁移） */
 export interface UsageMetricsData {
+  byScope: Record<string, ModelUsageMetrics>;
+  recentRequests: UsageRequestDetail[];
   schemaVersion: number;
   /** 统计起点（首次记录时间戳） */
   startedAt: number;
@@ -79,6 +90,8 @@ export interface UsageMetricsData {
 
 /** 展示快照（引擎派生：models 排序 + 占比；不可变，UI 直接消费） */
 export interface UsageMetricsSnapshot {
+  scopes: ModelUsageMetrics[];
+  recentRequests: UsageRequestDetail[];
   schemaVersion: number;
   startedAt: number;
   updatedAt: number;
@@ -92,7 +105,7 @@ export interface UsageMetricsSnapshot {
 }
 
 /** 计数请求入参（引擎唯一的写入 API） */
-export interface UsageRecordInput {
+export interface UsageRecordInput extends importContext {
   provider: string;
   model: string;
   kind: UsageRequestKind;
@@ -103,9 +116,18 @@ export interface UsageRecordInput {
   errorSummary?: string;
 }
 
+type importContext = Omit<import('../stream/types').RequestMetricsContext, 'kind'>;
+export interface UsageRequestDetail extends UsageRecordInput {
+  at: number;
+}
+
 /** 空计数（reset / 初始化用） */
 export function createEmptyCounters(): UsageCounters {
   return {
+    cacheHitRequests: 0,
+    continuationInputTokens: 0,
+    continuationCachedTokens: 0,
+    continuationCacheRequests: 0,
     requests: 0,
     success: 0,
     failed: 0,

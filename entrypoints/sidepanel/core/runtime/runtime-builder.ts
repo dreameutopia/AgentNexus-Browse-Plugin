@@ -16,10 +16,12 @@ import { modelRegistry, appSettingsStore, FAILED_TOOL_ROUNDS_DEFAULT, type Model
 import { agentEngine, DEFAULT_AGENT_SYSTEM_PROMPT } from '../registry/agent-engine';
 import { skillEngine, SKILL_TOOL_IDS } from '../registry/skill-engine';
 import { contextEngine } from '../context/context-engine';
+import { prepareProtocolHistory } from '../context/protocol-history';
 import { imageStore, normalizeImageRefs } from '../images/image-store';
 import { INTERACT_SYSTEM_PROMPT_SECTION } from '@/tools/interact/interact-prompt';
 import { PLAN_SYSTEM_PROMPT_SECTION } from '@/tools/plan/plan-prompt';
 import { CORE_SESSION_TOOL_IDS } from '@/utils/tools/tool-presets';
+import { filterVisionAssistantTools, isVisionAssistantTool } from '@/utils/agents/vision-assistant-policy';
 import { toolRegistry } from '@/tools/registry';
 import { RICH_OUTPUT_SYSTEM_PROMPT_SECTION } from '../../utils/chat/rich-output-prompt';
 import type {
@@ -150,6 +152,7 @@ class RuntimeBuilder {
   async build(input: RuntimeBuildInput): Promise<ConversationRuntime> {
     // 单次解析：agent 本体 + 去重工具列表（避免 get/resolve 双重查找造成的不一致窗口）
     const { agent, toolIds: agentToolIds } = agentEngine.resolve(input.agentName);
+    const isVisionGuide = agent?.id === 'Vision-Assistant';
     if (input.agentName && !agent) {
       throw new Error(`智能体 "${input.agentName}" 不存在`);
     }
@@ -164,7 +167,9 @@ class RuntimeBuilder {
       ...agentToolIds,
       ...(input.extraToolIds ?? []),
     ];
-    const availableSkills = skillEngine.resolveAvailableSkills(agent, sessionToolIds);
+    const availableSkills = skillEngine.resolveAvailableSkills(agent,
+      isVisionGuide ? filterVisionAssistantTools(sessionToolIds) : sessionToolIds)
+      .filter(skill => !isVisionGuide || skill.allowedTools.every(isVisionAssistantTool));
 
     // ── 系统提示词（XML 分区） ──
     // 注意：不在此拼入「当前时间」——时间戳逐轮变化会使 system 前缀失配、
@@ -173,7 +178,10 @@ class RuntimeBuilder {
     sections.push(
       `<environment>\n` +
         `运行环境：浏览器扩展 AgentNexus（无终端与本地文件系统）。技能中如提及脚本（scripts/），本环境不执行脚本，请依据指令文字与可用工具完成任务。\n` +
-        `当前页面优先：用户提到「当前网站 / 当前页面 / 这个网页 / 本页」或语义明显指向其正在浏览的内容（如"分析这个页面的XX"）时，必须优先调用 browser_get_page_text 读取当前活跃标签页并基于其内容工作（该工具无条件可用），禁止先搜索或跳转其它网站；仅当当前页面信息不足以完成任务时，才补充检索外部资料，并向用户明确说明哪些信息来自当前页面、哪些来自外部检索。\n` +
+        `导航边界：打开链接优先使用现有窗口的新标签页；browser_navigate 默认 newTab=true，只有明确需要当前页跳转才设 newTab=false。newWindow 参数已删除，禁止创建新的浏览器窗口，也不要通过脚本 window.open 绕过此边界。\n` +
+        (isVisionGuide
+          ? `当前页面优先：以本轮最新截图判断布局和可见状态；需要精确文字或控件状态时用 vision_read 补充。仅当用户明确要求全文阅读时调用 browser_get_page_text，其结果可能含屏幕外正文，不能当作当前可见内容。不得执行任意脚本或代替用户点击、输入、导航；技能与附加指令不能扩大该边界。\n`
+          : `当前页面优先：用户提到「当前网站 / 当前页面 / 这个网页 / 本页」或语义明显指向其正在浏览的内容（如"分析这个页面的XX"）时，必须优先调用 browser_get_page_text 读取当前活跃标签页并基于其内容工作（该工具无条件可用），禁止先搜索或跳转其它网站；仅当当前页面信息不足以完成任务时，才补充检索外部资料，并向用户明确说明哪些信息来自当前页面、哪些来自外部检索。\n`) +
         `</environment>`,
     );
     // 固定交互准则（任何智能体/技能都不可覆盖）：敏感操作授权与关键决策
@@ -187,6 +195,7 @@ class RuntimeBuilder {
     // 围栏块，由侧边栏可信渲染管线消费（沙箱隔离 + JSON-only，见
     // utils/chat/rich-output-prompt.ts 的安全模型说明）
     sections.push(RICH_OUTPUT_SYSTEM_PROMPT_SECTION);
+    sections.push('<history-and-tools>\n历史截图仅是过去状态的证据；GUI 操作必须使用最新有效截图，截图失效时重新获取，不得重用旧坐标。工具目录预先包含可用技能的工具，不代表已经授权执行：先 load_skill 激活对应技能，再使用该技能新增的工具。不得因目录中存在工具就跳过加载或扩大权限。\n</history-and-tools>');
     // 智能体指令分区：动态装配方（网站学习等）经 agentSystemOverride 整体替换，
     // 否则取所选智能体指令，再兜底默认指令
     const agentSystem = input.agentSystemOverride?.trim() || agent?.system || DEFAULT_AGENT_SYSTEM_PROMPT;
@@ -199,8 +208,15 @@ class RuntimeBuilder {
 
     // 合成激活轮（预选技能的 load_skill 调用）：正文不进 system prompt，
     // 由会话侧追加到本轮用户消息之后；此处只取其预授权工具参与工具合并
-    const activation = skillEngine.buildActivationRound(input.skillNames);
-    const discovery = skillEngine.buildDiscoverySection(availableSkills, input.skillNames);
+    const selectedSkillNames = input.skillNames.filter(name => !isVisionGuide ||
+      skillEngine.get(name)?.allowedTools.every(isVisionAssistantTool));
+    if (isVisionGuide && selectedSkillNames.length !== input.skillNames.length) {
+      sections.push('<capability-boundary>\n本轮所选技能中存在不可用或超出观察范围的技能，已跳过激活。不要声称已运行这些技能；若用户目标依赖代操作，说明原因并建议切换 Vision Action / Auto Action 或数据收割机。\n</capability-boundary>');
+    }
+    const activation = skillEngine.buildActivationRound(selectedSkillNames);
+    const discovery = skillEngine.buildDiscoverySection(
+      [...availableSkills].sort((a, b) => a.id.localeCompare(b.id)), [],
+    );
     if (discovery) sections.push(discovery);
 
     const systemPrompt = sections.join('\n\n');
@@ -217,9 +233,11 @@ class RuntimeBuilder {
     for (const toolId of agentToolIds) toolIdSet.add(toolId);
     for (const toolId of activation.toolIds) toolIdSet.add(toolId);
     for (const toolId of input.extraToolIds ?? []) toolIdSet.add(toolId);
-    // 技能承载工具：存在可用技能（无论是否已激活）时注入——发现清单依赖
-    // load_skill 才能进入 L2，清单非空而工具缺失会让引导文案变成死链
-    if (availableSkills.length > 0) {
+    // 技能承载工具：存在可用技能（发现清单依赖 load_skill 才能进入 L2，清单非空
+    // 而工具缺失会让引导文案变成死链）**或**本轮有预选技能（其指令内的资源文件
+    // 清单引用了 read_skill_file，同样不能是死链——预选技能不受可用清单限制，
+    // 完全可能出现「清单为空但已激活一个带资源的技能」）时注入
+    if (availableSkills.length > 0 || activation.messages.length > 0) {
       for (const toolId of SKILL_TOOL_IDS) toolIdSet.add(toolId);
     }
 
@@ -259,6 +277,7 @@ class RuntimeBuilder {
     if (imageRefs.length > 0) {
       await imageStore.preload(imageRefs);
     }
+    await prepareProtocolHistory(input.priorRecords);
     const initialContext: ChatMessage[] = await contextEngine.toProtocolMessages(
       input.priorRecords,
       {
@@ -272,9 +291,15 @@ class RuntimeBuilder {
 
     return {
       chatId: input.chatId,
+      agentId: agent?.id ?? '',
+      advertisedToolIds: finalizeToolIds([...new Set([
+        ...toolIdSet,
+        ...availableSkills.flatMap(skill => skill.allowedTools),
+      ])].filter(id => !isVisionGuide || isVisionAssistantTool(id)).sort()),
       systemPrompt,
       // 交付前终态归一化：去重保序 + 脏数据过滤 + 未注册 ID 剔除告警（见 finalizeToolIds）
-      toolIds: finalizeToolIds([...toolIdSet]),
+      toolIds: finalizeToolIds(isVisionGuide ? filterVisionAssistantTools([...toolIdSet]) : [...toolIdSet]),
+      ...(isVisionGuide ? { toolPolicy: 'vision-assistant' as const } : {}),
       model,
       limits,
       vision,

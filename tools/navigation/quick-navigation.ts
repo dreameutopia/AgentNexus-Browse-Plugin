@@ -85,10 +85,10 @@ export class QuickNavigationTool extends BaseNavigationTool {
             type: 'string',
             description: '自定义URL地址（当site参数未提供时使用）'
           },
-          newWindow: {
+          newTab: {
             type: 'boolean',
-            description: '是否在新窗口中打开',
-            default: false
+            description: '是否在现有窗口的新标签页中打开（默认 true）',
+            default: true
           }
         },
         required: []
@@ -99,10 +99,10 @@ export class QuickNavigationTool extends BaseNavigationTool {
   async execute(args: {
     site?: keyof typeof QUICK_SITES;
     url?: string;
-    newWindow?: boolean;
+    newTab?: boolean;
   }): Promise<ToolResult> {
     try {
-      const { site, url, newWindow = false } = args;
+      const { site, url, newTab = true } = args;
       
       let targetUrl: string;
       let siteName: string;
@@ -119,7 +119,7 @@ export class QuickNavigationTool extends BaseNavigationTool {
         return this.createErrorResponse('Either site or url parameter must be provided');
       }
       
-      const result = await this.navigateToUrl(targetUrl, { newWindow });
+      const result = await this.navigateToUrl(targetUrl, { newTab });
       
       if (!result.success) {
         return result;
@@ -128,7 +128,7 @@ export class QuickNavigationTool extends BaseNavigationTool {
       return this.createSuccessResponse({
         site: siteName,
         url: targetUrl,
-        newWindow,
+        newTab,
         availableSites: Object.keys(QUICK_SITES)
       }, `Successfully navigated to ${siteName}`);
       

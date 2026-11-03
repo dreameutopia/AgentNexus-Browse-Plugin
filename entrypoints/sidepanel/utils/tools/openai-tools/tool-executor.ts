@@ -79,7 +79,7 @@ export async function executeTool(
   //    会自动路由到 toolRegistry 中对应的工具定义执行。
   //    不再需要为每个工具维护单独的 case 分支。
   try {
-    const cancellableGui = toolName === 'screenshot' || toolName.startsWith('vision_');
+    const cancellableGui = toolName === 'browser_interact' || toolName === 'screenshot' || toolName.startsWith('vision_');
     const requestId = cancellableGui && context?.signal ? crypto.randomUUID() : undefined;
     const onAbort = () => {
       if (requestId) void chrome.runtime.sendMessage({ type: 'VISION_CANCEL_REQUEST', requestId }).catch(() => undefined);

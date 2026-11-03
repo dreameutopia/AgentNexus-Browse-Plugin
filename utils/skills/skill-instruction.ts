@@ -61,29 +61,39 @@ export function buildSkillInstruction(skill: SkillRecord): SkillInstructionResul
   const truncated = body.length > SKILL_BODY_MAX_CHARS;
   const modelId = modelSkillIdOf(skill);
 
-  let instruction = truncated
-    ? body.slice(0, SKILL_BODY_MAX_CHARS) +
-      `\n\n[注：技能正文超过 ${SKILL_BODY_MAX_CHARS} 字符，已截断。可调用 read_skill_file(skill_name="${modelId}", path="SKILL.md") 读取原文。]`
-    : body;
+  const sections: string[] = [SKILL_CONFLICT_NOTICE];
+
+  // 正文（超长软截断 + 取原文指引）。空正文（存储层未强制非空）不产生空段，
+  // 分节统一用 \n\n 连接，任何输入形态下都不会出现连续空行
+  if (body) {
+    sections.push(
+      truncated
+        ? body.slice(0, SKILL_BODY_MAX_CHARS) +
+          `\n\n[注：技能正文超过 ${SKILL_BODY_MAX_CHARS} 字符，已截断。可调用 read_skill_file(skill_name="${modelId}", path="SKILL.md") 读取原文。]`
+        : body,
+    );
+  }
 
   // 附属资源文件清单（第 3 层入口提示）
   const resourceFiles = Object.keys(skill.files).filter(f => f !== 'SKILL.md');
   if (resourceFiles.length > 0) {
-    instruction += `\n\n# 技能资源文件\n该技能附带以下资源文件，需要时可调用 read_skill_file(skill_name="${modelId}", path="...") 按需读取：\n${resourceFiles.map(f => `- ${f}`).join('\n')}`;
+    sections.push(
+      `# 技能资源文件\n该技能附带以下资源文件，需要时可调用 read_skill_file(skill_name="${modelId}", path="...") 按需读取：\n${resourceFiles.map(f => `- ${f}`).join('\n')}`,
+    );
   }
 
   // 环境限制说明（每次激活都带上，避免模型尝试执行脚本）
-  instruction += `\n\n# 环境说明\n当前运行环境为浏览器扩展（无终端与本地文件系统）。技能中如提及脚本（scripts/），本环境不执行脚本，请依据指令文字与可用工具完成任务。技能预授权工具：${skill.allowedTools.length > 0 ? skill.allowedTools.join(' ') : '（未声明，沿用会话现有工具）'}`;
-
-  // 优先级约定置顶：模型读到正文前先知道「谁说了算」
-  instruction = `${SKILL_CONFLICT_NOTICE}\n\n${instruction}`;
+  sections.push(
+    `# 环境说明\n当前运行环境为浏览器扩展（无终端与本地文件系统）。技能中如提及脚本（scripts/），本环境不执行脚本，请依据指令文字与可用工具完成任务。技能预授权工具：${skill.allowedTools.length > 0 ? skill.allowedTools.join(' ') : '（未声明，沿用会话现有工具）'}`,
+  );
 
   return {
     skill: modelId,
     id: skill.id,
     name: skill.name,
     description: skill.description,
-    instruction,
+    // 优先级约定置顶：模型读到正文前先知道「谁说了算」
+    instruction: sections.join('\n\n'),
     truncated,
   };
 }

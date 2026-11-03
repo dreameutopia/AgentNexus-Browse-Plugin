@@ -42,6 +42,18 @@ const props = defineProps<{
 
 const messagesContainer = ref<HTMLElement | null>(null);
 
+// A watch source runs during registration even without immediate:true. Define
+// every source dependency before registering any watcher (production TDZ fix).
+const filteredMessages = computed(() => {
+  const uniqueMessages = new Map<string | number, ExtendedChatMessage>();
+  props.messages.forEach((message, index) => {
+    if (message.isIgnore) return;
+    const key = message.id || index;
+    if (!uniqueMessages.has(key)) uniqueMessages.set(key, message);
+  });
+  return Array.from(uniqueMessages.values());
+});
+
 // ==================== 自动滚动（stick-to-bottom + 用户接管检测） ====================
 //
 // 行为约定（对齐主流聊天客户端的通用模式）：
@@ -232,24 +244,6 @@ const forwardReasoningContentToggle = (messageId: string) => {
 const forwardFeedbackChange = (messageId: string, feedback: MessageFeedback | null) => {
   emit('feedback-change', messageId, feedback);
 };
-
-const filteredMessages = computed(() => {
-  // 先过滤掉忽略的消息，然后按ID去重
-  const uniqueMessages = new Map<string, ExtendedChatMessage>();
-  props.messages.filter(msg => !msg.isIgnore).forEach(msg => {
-    if (msg.id) {
-      // 如果已存在相同ID的消息，保留更新的那个（reasoning_content更完整的）
-      const existing = uniqueMessages.get(msg.id);
-      if (!existing) {
-        uniqueMessages.set(msg.id, msg);
-      }
-    } else {
-      // 没有ID的消息，保留
-      uniqueMessages.set(`temp-${Math.random()}`, msg);
-    }
-  });
-  return Array.from(uniqueMessages.values());
-});
 
 /** 直播态判定：AI 正在回应且本条是最后一条消息（历史消息即使在回应期间也视为已结束） */
 const isLiveMessage = (index: number): boolean =>

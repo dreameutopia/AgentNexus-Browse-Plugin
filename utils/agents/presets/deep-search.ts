@@ -66,5 +66,5 @@ export const deepSearchConfig: AgentConfig = {
   // 显式关联技能：调研报告的产出结构与引用规范由该技能约束。
   // 内置技能按 id 关联（保留区间，见 presetSkillIdFromName）——同名不再歧义
   skills: [presetSkillIdFromName('web-research-report')],
-  iconPath: 'M15.5,14H20.5L16,9.5L13.5,12L10.5,9L7.5,12L9.5,14H14.5M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4Z'
+  avatar: { type: 'image', src: '/agent/deep_search.png' }
 };

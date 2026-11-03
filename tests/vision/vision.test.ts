@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { toViewport, relativePoint, motionPath, pngDimensions, verifyScreenshotGeometry } from '../../tools/vision/coordinates';
 import { annotationPayload, focusedEditablePayload } from '../../tools/vision/dom-inspection';
+import { checkPagePayload } from '../../tools/vision/check-payload';
+import { planCrop,registerView,mapViewPoint,registerTargetGuard } from '../../tools/vision/observation-model';
+import { validateCheckArgs, VisionCheckTool } from '../../tools/vision/observation-tools';
+import { takeVisionToolImage,needsVisionRefresh } from '../../entrypoints/sidepanel/core/conversation/vision-feedback';
 
 const v = { width: 1440, height: 900, pageX: 0, pageY: 0, scale: 1 };
 assert.deepEqual(toViewport({ x: 500, y: 500 }, v), { x: 720, y: 450 });
@@ -14,6 +18,7 @@ assert.ok(Math.hypot(path[1].x - path[0].x, path[1].y - path[0].y) < Math.hypot(
 // Evaluate the payload in a separate realm, as chrome.scripting serializes it.
 const dom = new JSDOM('<button id="go" aria-label="Go" style="opacity:1">Go</button><input type="password" value="private" />', { runScripts: 'outside-only' } as any);
 const w = dom.window as any;
+w.crypto.randomUUID=()=>crypto.randomUUID();
 w.CSS = { escape: (s: string) => s };
 w.HTMLElement.prototype.getBoundingClientRect = () => ({ x: 10, y: 10, left: 10, top: 10, right: 100, bottom: 50, width: 90, height: 40 });
 w.document.elementFromPoint = () => w.document.querySelector('button');
@@ -36,6 +41,34 @@ assert.equal(focusPayload('focus1'), true);
 assert.equal(focusPayload('other'), false);
 password.disabled = true;
 assert.equal(focusPayload('focus1'), false);
+const checkDom=new JSDOM('<button id="safe" aria-label="Save">Save</button><input id="value" value="done"><input id="secret" type="password" value="private">',{runScripts:'outside-only'});
+const cw=checkDom.window as any; cw.crypto.randomUUID=()=>crypto.randomUUID();
+cw.HTMLElement.prototype.getBoundingClientRect=()=>({x:10,y:10,left:10,top:10,right:90,bottom:40,width:80,height:30});
+cw.document.elementFromPoint=()=>cw.document.querySelector('#safe');
+const checkFn=cw.eval(`(${checkPagePayload.toString()})`);
+const checkedDom=checkFn({x:40,y:20},{enabled:true,nameIncludes:'Save'});
+assert.ok(checkedDom.checks.every((c:any)=>c.status==='passed'));
+assert.equal(checkFn({x:40,y:20}).target.signature,checkedDom.target.signature);
+cw.document.querySelector('#safe').disabled=true;
+assert.notEqual(checkFn({x:40,y:20}).target.signature,checkedDom.target.signature);
+cw.document.elementFromPoint=()=>cw.document.querySelector('#value');
+assert.equal(checkFn({x:40,y:20},{valueEquals:'done'}).checks[0].status,'passed');
+cw.document.elementFromPoint=()=>cw.document.querySelector('#secret');
+assert.equal(checkFn({x:40,y:20},{valueEquals:'private'}).checks[0].status,'unknown');
+const cropPlan=planCrop({width:999,height:701},{x:100.1,y:20,width:100.2,height:80.4},3);
+assert.equal(cropPlan.x,99); assert.equal(cropPlan.width,102);
+assert.ok(cropPlan.region.x<=100.1 && cropPlan.region.x+cropPlan.region.width>=200.3);
+const view=registerView('parent',cropPlan.region);
+assert.deepEqual(mapViewPoint('parent',view,{x:0,y:0}),{x:cropPlan.region.x,y:cropPlan.region.y});
+assert.throws(()=>mapViewPoint('other',view,{x:50,y:50}),/stale/);
+assert.throws(()=>planCrop({width:100,height:100},{x:999,y:0,width:2,height:1}),/beyond/);
+assert.ok(planCrop({width:10000,height:10000},{x:0,y:0,width:1000,height:1000},4).outputWidth<=2048);
+const fakeImage={success:true,data:{screenshot:'data:image/png;base64,cG5n',text:'not a real viewport',screenshotId:'s'}};
+assert.equal(takeVisionToolImage(fakeImage,0,'browser_page_exec'),null);
+const zoomImage=takeVisionToolImage(fakeImage,0,'vision_zoom')!;
+assert.equal(zoomImage.kind,'region');
+assert.equal(needsVisionRefresh(['vision_zoom'],[zoomImage],()=> 'none'),false);
+for(const args of [null,{screenshotId:'s',expect:{enabled:'true'}},{screenshotId:'s',expect:{valueEquals:'x'}},{screenshotId:'s',point:{x:1,y:2},expect:{script:'alert(1)'}},{screenshotId:'s',timeoutMs:Infinity}]) assert.throws(()=>validateCheckArgs(args));
 
 // Host/CDP contract: real orchestration with mocked browser transport, no synthetic DOM fallback.
 const events: { method: string; p: any }[] = [];
@@ -50,13 +83,18 @@ verifyScreenshotGeometry({ width:1250, height:875 }, { ...v, width:1000, height:
 let tabId = 1, loader = 'doc1', failMove = false, scale = 1, pageY = 0, marks = 0, failCapture = false, failKey = false;
 let focusOkay = true, stealFocus = false, cancelOnPress: AbortController | undefined;
 let failMouseRelease = false, failAnnotationClear = false;
+let observedSignature='target-v1';
+let measuredHeight=900, changeHeightOnCapture=false, visibleCaptureCount=0;
 const scripts: string[] = [];
 (globalThis as any).chrome = {
   runtime: { getPlatformInfo: async () => ({ os:'win' }) },
-  tabs: { query: async () => [{ id: tabId, windowId: 1, url: 'https://example.test/' }] },
+  tabs: { query: async () => [{ id: tabId, windowId: 1, url: 'https://example.test/' }],
+    captureVisibleTab: async () => { visibleCaptureCount++; if(changeHeightOnCapture){measuredHeight=864;changeHeightOnCapture=false;} return `data:image/png;base64,${pngHeader(1440,measuredHeight)}`; } },
   scripting: { executeScript: async ({ args, func }: any) => {
     if (func.name === 'focusedEditablePayload') return [{ frameId: 9, result: focusOkay }];
-    if (!args) return [{ frameId:0, result:{ width:1440,height:900,devicePixelRatio:1,pageX:0,pageY } }];
+    if (func.name === 'observationViewportPayload') return [{frameId:0,result:{documentId:loader,width:1440,height:measuredHeight,devicePixelRatio:1,pageX:0,pageY,scale,contentWidth:1425,contentHeight:measuredHeight-15,zoom:1}}];
+    if (func.name === 'checkPagePayload') return [{frameId:0,result:{target:{signature:observedSignature,identity:'target',tag:'button',name:'Save',opaqueFrame:false,rect:{x:1,y:1,width:20,height:10}},checks:[{kind:'enabled',status:'passed'}],page:{readyState:'complete'},loading:{ariaBusyCount:0},dialogs:[]}}];
+    if (!args) return [{ frameId:0, result:{ width:1440,height:measuredHeight,devicePixelRatio:1,pageX:0,pageY } }];
     scripts.push(args[0]);
     if (args[0] === 'clear' && failAnnotationClear) throw new Error('Clear interrupted');
     if (args[0] === 'collect') return [{ frameId: 0, result: 1 }, { frameId: 9, result: 1 }];
@@ -71,9 +109,9 @@ const scripts: string[] = [];
       if (failMouseRelease && method === 'Input.dispatchMouseEvent' && p.type === 'mouseReleased') throw new Error('Release interrupted');
       if (method === 'Input.dispatchMouseEvent' && p.type === 'mousePressed' && cancelOnPress) cancelOnPress.abort();
       if (method === 'Input.insertText' && stealFocus) focusOkay = false;
-      if (method === 'Page.getLayoutMetrics') return { cssVisualViewport: { clientWidth: 1425, clientHeight: 885, pageX: 0, pageY, scale } };
+      if (method === 'Page.getLayoutMetrics') return { cssVisualViewport: { clientWidth: 1425, clientHeight: measuredHeight-15, pageX: 0, pageY, scale } };
       if (method === 'Page.getFrameTree') return { frameTree: { frame: { loaderId: loader } } };
-      if (method === 'Page.captureScreenshot') { if (failCapture) { failCapture = false; throw new Error('Capture interrupted'); } return { data: pngHeader(1440,900) }; }
+      if (method === 'Page.captureScreenshot') { if (failCapture) { failCapture = false; throw new Error('Capture interrupted'); } if(changeHeightOnCapture){measuredHeight=864;changeHeightOnCapture=false;} return { data: pngHeader(1440,measuredHeight) }; }
       if (failKey && method === 'Input.dispatchKeyEvent' && p.type === 'keyDown' && p.key === 'a') { failKey = false; throw new Error('Key interrupted'); }
       if (method === 'Runtime.evaluate') return { result: { type: 'boolean', value: true } };
       if (failMove && method === 'Input.dispatchMouseEvent' && p.type === 'mouseMoved' && p.buttons === 1) { failMove = false; throw new Error('Interrupted'); }
@@ -84,6 +122,23 @@ const scripts: string[] = [];
 const originalTimer = globalThis.setTimeout;
 (globalThis as any).setTimeout = (fn: () => void, ms: number) => ms < 3001 ? originalTimer(fn, 0) : originalTimer(fn, ms);
 const { executeGui, captureGuiScreenshot } = await import('../../tools/vision/gui-driver');
+const { resolveKeys } = await import('../../tools/vision/key-definitions');
+assert.equal(resolveKeys(['F12'])[0].windowsVirtualKeyCode,123);
+assert.equal(resolveKeys(['!'])[0].key,'Shift');
+assert.equal(resolveKeys(['Shift','1'])[1].shifted,'!');
+assert.equal(resolveKeys(['F24'])[0].windowsVirtualKeyCode,135);
+assert.deepEqual(resolveKeys(['Ctrl','Esc']).map(k=>k.key),['Control','Escape']);
+assert.equal(resolveKeys(['Command','c'])[0].key,'Meta');
+assert.equal(resolveKeys(['Option','Left'])[1].key,'ArrowLeft');
+assert.equal(resolveKeys(['ControlRight'])[0].location,2);
+assert.equal(resolveKeys(['MetaRight'])[0].windowsVirtualKeyCode,92);
+assert.equal(resolveKeys(['Numpad9'])[0].windowsVirtualKeyCode,105);
+assert.equal(resolveKeys(['NumpadEnter'])[0].isKeypad,true);
+assert.equal(resolveKeys(['NumpadAdd'])[0].key,'+');
+assert.throws(()=>resolveKeys(['Ctrl','ControlLeft']),/Duplicate physical key/);
+assert.throws(()=>resolveKeys(['Space',' ']),/Duplicate physical key/);
+assert.throws(()=>resolveKeys(['a','A']),/Duplicate physical key/);
+for (const invalid of ['F25','Numpad10','constructor','__proto__','Control+S','']) assert.throws(()=>resolveKeys([invalid]),/Unsupported key/);
 const { cdpSession } = await import('../../tools/browser/cdp-session');
 const snap = () => captureGuiScreenshot();
 let s = await snap();
@@ -143,6 +198,24 @@ await assert.rejects(executeGui('keyboard', { screenshotId:s.screenshotId, keys:
 await assert.rejects(executeGui('click', { screenshotId:s.screenshotId, point, clear:true } as any), /Unexpected parameters/);
 await assert.rejects(executeGui('unknown' as any, { screenshotId:s.screenshotId }), /Unsupported GUI action/);
 s = await snap();
+let chordStart=events.length;
+await executeGui('keyboard',{screenshotId:s.screenshotId,keys:['Ctrl','ShiftRight','a']});
+let chordEvents=events.slice(chordStart).filter(e=>e.method==='Input.dispatchKeyEvent');
+assert.equal(chordEvents.find(e=>e.p.code==='KeyA' && e.p.type==='keyDown')?.p.key,'A');
+assert.equal(chordEvents.find(e=>e.p.code==='KeyA' && e.p.type==='keyDown')?.p.text,undefined);
+assert.equal(chordEvents.find(e=>e.p.code==='ShiftRight' && e.p.type==='keyUp')?.p.location,2);
+s=await snap();chordStart=events.length;
+await executeGui('keyboard',{screenshotId:s.screenshotId,keys:['ControlLeft','ControlRight','NumpadEnter']});
+chordEvents=events.slice(chordStart).filter(e=>e.method==='Input.dispatchKeyEvent');
+assert.equal(chordEvents.find(e=>e.p.code==='NumpadEnter' && e.p.type==='keyDown')?.p.isKeypad,true);
+assert.equal(chordEvents.find(e=>e.p.code==='ControlRight' && e.p.type==='keyUp')?.p.modifiers,2);
+assert.equal(chordEvents.at(-1)?.p.modifiers,0);
+s=await snap();chordStart=events.length;
+await executeGui('keyboard',{screenshotId:s.screenshotId,keys:['Enter']});
+chordEvents=events.slice(chordStart).filter(e=>e.method==='Input.dispatchKeyEvent');
+assert.equal(chordEvents[0].p.unmodifiedText,'\r');
+assert.equal(chordEvents[0].p.text,'\r');
+s=await snap();
 const queuedPoint = { x:250,y:500 };
 const queued = executeGui('click', { screenshotId:s.screenshotId,point:queuedPoint });
 queuedPoint.x = 999;
@@ -179,10 +252,72 @@ const handler = new VisionActionHandler({ send: (message: any) => { responses.pu
 await handler.handleVisionAction({ correlationId:'bad-request',payload:{ action:'click',parameters:{ screenshotId:s.screenshotId,point:{x:-5,y:50} } } } as any);
 assert.equal(responses.at(-1).payload.success,false);
 assert.equal(responses.at(-1).payload.data.diagnostic.code,'INVALID_ARGUMENT');
+s = await snap();
+const checkResult=await new VisionCheckTool().execute({screenshotId:s.screenshotId,point:{x:250,y:500},expect:{enabled:true},stableMs:0,timeoutMs:50});
+assert.equal(checkResult.success,true); assert.equal(checkResult.data.status,'passed');
+const guardId=registerTargetGuard(s.screenshotId,{x:250,y:500},observedSignature);
+observedSignature='target-v2';
+const beforeGuardPress=events.filter(e=>e.p?.type==='mousePressed').length;
+await assert.rejects(executeGui('click',{screenshotId:s.screenshotId,point:{x:250,y:500},guardId}), (e:any)=>e.code==='TARGET_CHANGED');
+assert.equal(events.filter(e=>e.p?.type==='mousePressed').length,beforeGuardPress);
+s = await snap();
+const actionView=registerView(s.screenshotId,{x:200,y:100,width:400,height:200});
+const viewAction=await executeGui('click',{screenshotId:s.screenshotId,viewId:actionView,point:{x:500,y:500}});
+assert.equal(viewAction.coordinateDiagnostics.lastCssPoint.x,576);
+assert.equal(viewAction.coordinateDiagnostics.lastCssPoint.y,180);
+s=await snap();
+const mappedView=registerView(s.screenshotId,{x:200,y:100,width:400,height:200});
+const mappedCheck=await new VisionCheckTool().execute({screenshotId:s.screenshotId,viewId:mappedView,point:{x:500,y:500},stableMs:0});
+assert.deepEqual(mappedCheck.data.actionPoint,{x:400,y:200});
+s = await snap();
+await executeGui('click',{screenshotId:s.screenshotId,point,button:'middle',modifiers:['Shift']});
+const middlePress = events.filter(e => e.p?.type === 'mousePressed').at(-1)!;
+assert.equal(middlePress.p.buttons,4); assert.equal(middlePress.p.modifiers,8);
+assert.equal(events.at(-1)?.p.key,'Shift'); assert.equal(events.at(-1)?.p.type,'keyUp');
+s = await snap();
+const start = events.length;
+await executeGui('drag',{screenshotId:s.screenshotId,from:point,to:{x:700,y:700},waypoints:[{x:500,y:100}],button:'right',modifiers:['Alt'],durationMs:200});
+assert.ok(events.slice(start).some(e => e.p?.type === 'mouseMoved' && e.p.x === 720 && e.p.y === 90 && e.p.buttons === 2 && e.p.modifiers === 1));
+s = await snap();
+const wheelStart = events.length;
+await executeGui('scroll',{screenshotId:s.screenshotId,deltaX:1.5,deltaY:-2,point});
+const preciseWheels = events.slice(wheelStart).filter(e => e.p?.type === 'mouseWheel');
+assert.ok(Math.abs(preciseWheels.reduce((sum,e) => sum+e.p.deltaX,0)-1.5)<1e-8);
+assert.ok(Math.abs(preciseWheels.reduce((sum,e) => sum+e.p.deltaY,0)+2)<1e-8);
+await assert.rejects(executeGui('scroll',{screenshotId:s.screenshotId,deltaY:1,direction:'down',percent:5}),/not both/);
+await assert.rejects(executeGui('input',{screenshotId:s.screenshotId,point,text:'中文',inputMode:'keys'}),/ASCII/);
 assert.equal(responses.at(-1).payload.data.diagnostic.correlationId,'bad-request');
 await handler.handleVisionAction({ correlationId:'old-protocol',payload:{ action:'screenshot',screenshotMode:'simple' } } as any);
 assert.equal(responses.at(-1).payload.data.diagnostic.code,'INVALID_ARGUMENT');
 assert.equal(events.find(e => e.method === 'Page.captureScreenshot')?.p.captureBeyondViewport, false);
 await cdpSession.detachAll();
+
+// A read-only screenshot must not attach/issue ANY debugger command. Geometry
+// transitions during capture are retried once, never "corrected" by a 36px guess.
+const beforeObservation=events.length;
+changeHeightOnCapture=true;
+const observedShot=await captureGuiScreenshot(undefined,'observe');
+assert.equal(observedShot.viewport.height,864);assert.equal(observedShot.imageSize.height,864);
+assert.equal(observedShot.timings.attempts,2);assert.equal(visibleCaptureCount,2);
+assert.equal(events.length,beforeObservation);
+const {withReadSnapshot}=await import('../../tools/vision/gui-driver');
+await withReadSnapshot(observedShot.screenshotId,false,undefined,async s=>assert.equal(s.mode,'observe'));
+assert.equal(events.length,beforeObservation);
+await assert.rejects(executeGui('click',{screenshotId:observedShot.screenshotId,point}),/Observation-only/);
+assert.equal(events.length,beforeObservation);
+loader='observed-reload';
+await assert.rejects(withReadSnapshot(observedShot.screenshotId,false,undefined,async()=>{}),/reloaded/);
+measuredHeight=900;changeHeightOnCapture=true;
+const resizedAction=await captureGuiScreenshot();
+assert.equal(resizedAction.timings.attempts,2);assert.equal(resizedAction.viewport.height,864);
+assert.ok((cdpSession as any).retainedUntil.get(tabId)>=resizedAction.expiresAt,'Session survives the entire screenshot validity window');
+const bottomHit=await executeGui('click',{screenshotId:resizedAction.screenshotId,point:{x:500,y:990}});
+assert.ok(Math.abs(bottomHit.coordinateDiagnostics.lastCssPoint.y-864*0.99)<1e-8,'Bottom-edge input uses actual settled viewport height');
+const beforeDetachShot=await captureGuiScreenshot();
+await cdpSession.detachAll();
+const beforeStaleInput=events.length;
+await assert.rejects(executeGui('click',{screenshotId:beforeDetachShot.screenshotId,point}),/Debugger detached/);
+assert.equal(events.length,beforeStaleInput,'Checking a stale action ID must not reattach or resize');
+measuredHeight=900;
 globalThis.setTimeout = originalTimer;
 console.log('[vision] coordinate, payload, gesture, stale snapshot and annotation contracts passed');

@@ -216,20 +216,27 @@
 import { computed, inject, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { t } from '@/utils/i18n';
 import { settingsModalContextKey, type SettingsModalContext } from '../composables/use-settings-form';
+// 子路径直连（不走 @/utils/pyodide 桶文件）：本组件对 Python 能力的函数式
+// 依赖（下方 onMounted/按钮处理器）按需动态 import 桶文件加载，静态导入
+// 若经桶文件会与其形成「静态 + 动态混合导入」，Vite 会告警动态导入无法拆 chunk
 import {
-  DEFAULT_PYODIDE_ENV_STATE,
   PYODIDE_CORE_FILES,
   PYODIDE_FEATURED_PACKAGES,
-  downloadPyodideFile,
+} from '@/utils/pyodide/pyodide-config';
+import { downloadPyodideFile } from '@/utils/pyodide/pyodide-downloader';
+import { listFileMeta } from '@/utils/pyodide/pyodide-cache';
+import {
+  DEFAULT_PYODIDE_ENV_STATE,
+  updatePyodideEnvState,
+  type PyodideEnvState,
+} from '@/utils/pyodide/pyodide-env';
+import {
   getPackageCatalog,
   installPackages,
-  listFileMeta,
   uninstallPackages,
-  updatePyodideEnvState,
   verifyPyodideRuntime,
   type PyodideCatalogEntry,
-  type PyodideEnvState,
-} from '@/utils/pyodide';
+} from '@/utils/pyodide/pyodide-runtime';
 
 const { openEpoch } = inject(settingsModalContextKey) as SettingsModalContext;
 

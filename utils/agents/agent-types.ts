@@ -134,9 +134,31 @@ export interface AgentConfig {
   tags: string[];
   /** 视觉运行配置：缺省 = 纯文本对话 */
   vision?: VisionRuntimeConfig;
-  /** 图标 SVG path（选择器与管理页展示；缺省由 UI 回退默认图标） */
-  iconPath?: string;
+  /**
+   * 头像：图片或 emoji（预置与自定义智能体一致支持）。
+   * 缺省 = 无头像，由 UI 回退默认 emoji。
+   */
+  avatar?: AgentAvatar;
 }
+
+/**
+ * 智能体头像。
+ *
+ * 两种形态：
+ *   - image：src 指向图片（扩展内相对路径如 /agent/action.png、绝对 http(s) URL 或 data: URL）
+ *   - emoji：value 为 emoji 字符（可含变体选择符 / ZWJ 组合）
+ *
+ * 不使用 SVG path：图标路径无法表达用户自定义形象，也无法承载图片；
+ * 统一收敛为「图片地址 或 emoji」后，预置、自定义、导入三条来源共用同一套渲染逻辑。
+ */
+export type AgentAvatar =
+  | { type: 'image'; src: string }
+  | { type: 'emoji'; value: string };
+
+/** 图片形态头像（单独命名以便按形态窄化后仍保留可辨识的类型名） */
+export type AgentImageAvatar = { type: 'image'; src: string };
+/** emoji 形态头像（单独命名以便按形态窄化后仍保留可辨识的类型名） */
+export type AgentEmojiAvatar = { type: 'emoji'; value: string };
 
 // ==================== 不变量常量 ====================
 
@@ -163,9 +185,40 @@ export const AGENT_SKILL_REF_MAX_CHARS = 96;
 /** 生成的自定义智能体 id 前缀（名称无 ASCII 字符时的兜底基名） */
 export const AGENT_ID_FALLBACK_BASE = 'agent';
 
-/** 无图标智能体的兜底 SVG path（与预置智能体同一视觉基线，避免选择器出现空白图标盒） */
-export const DEFAULT_AGENT_ICON_PATH =
-  'M9,2V8H11V11H5C3.89,11 3,11.89 3,13V16H1V18H3V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V18H23V16H21V13C21,11.89 20.1,11 19,11H13V8H15V2H9M11,4H13V6H11V4M5,13H19V19H5V13Z';
+/** 图片头像地址长度上限（data URL 会远大于普通路径，故给足额度） */
+export const AGENT_AVATAR_IMAGE_MAX_CHARS = 262_144;
+/** emoji 头像长度上限（容纳 ZWJ / 变体选择符等组合序列） */
+export const AGENT_AVATAR_EMOJI_MAX_CHARS = 16;
+
+/**
+ * 无头像智能体的兜底 emoji。
+ * 用 emoji 而非 SVG 图标：与「图片或 emoji」的头像模型保持同一形态，
+ * 渲染层只有一条分支，且不会出现图标盒内的空白色块。
+ */
+export const DEFAULT_AGENT_AVATAR: AgentEmojiAvatar = { type: 'emoji', value: '🤖' };
+
+/**
+ * 内置头像图片清单（public/agent 下的静态资源）。
+ * 预置智能体从这里挑头像，用户新建智能体时也可直接选用，
+ * 保证「预置 / 自定义 / 导入」三类智能体的头像风格一致。
+ */
+export interface BuiltinAgentAvatar {
+  /** 稳定 id（存储于 AgentAvatar.src 的绝对路径片段） */
+  id: string;
+  /** 扩展内相对路径（以 / 开头，解析为 chrome-extension://<id>/agent/xxx.png） */
+  src: string;
+}
+
+/** 内置头像图片清单（展示顺序即选择器中的排列顺序） */
+export const BUILTIN_AGENT_AVATARS: readonly BuiltinAgentAvatar[] = Object.freeze([
+  { id: 'action', src: '/agent/action.png' },
+  { id: 'vision', src: '/agent/vision.png' },
+  { id: 'data', src: '/agent/data.png' },
+  { id: 'search', src: '/agent/search.png' },
+  { id: 'deep_search', src: '/agent/deep_search.png' },
+  { id: 'bilibili', src: '/agent/bilibili.png' },
+  { id: 'excalidraw', src: '/agent/excalidraw.png' },
+]);
 
 // ==================== 归一化（任意输入 → 合规值，绝不抛错） ====================
 
@@ -257,6 +310,52 @@ export function normalizeVision(value: unknown): VisionRuntimeConfig | undefined
 }
 
 /**
+ * 头像归一化：任意输入 → 合规 AgentAvatar（缺省返回 undefined = 无头像）。
+ *
+ * 兼容两种历史写法，保证旧数据不被丢弃：
+ *   - { type: 'image', src } / { type: 'emoji', value }：当前结构
+ *   - 纯字符串：按「看起来是图片地址 → 图片，否则 → emoji」判定
+ *     （旧版本曾用单字符串存过 icon 语义，避免整条头像丢失）
+ */
+export function normalizeAvatar(value: unknown): AgentAvatar | undefined {
+  if (value === null || value === undefined) return undefined;
+
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) return undefined;
+    if (text.length > AGENT_AVATAR_IMAGE_MAX_CHARS) return undefined;
+    // 以 / 开头、含协议或以常见图片扩展名结尾 → 视为图片地址
+    const looksLikeImage =
+      text.startsWith('/') ||
+      /^(data:image\/|https?:\/\/|chrome-extension:\/\/)/i.test(text) ||
+      /\.(png|jpe?g|gif|webp|svg|bmp|ico)(\?.*)?$/i.test(text);
+    return looksLikeImage
+      ? { type: 'image', src: text }
+      : { type: 'emoji', value: text.slice(0, AGENT_AVATAR_EMOJI_MAX_CHARS) };
+  }
+
+  if (typeof value !== 'object') return undefined;
+  const candidate = value as Partial<AgentAvatar> & { type?: string; src?: unknown; value?: unknown };
+
+  if (candidate.type === 'image') {
+    const src = clampText(candidate.src, AGENT_AVATAR_IMAGE_MAX_CHARS);
+    return src ? { type: 'image', src } : undefined;
+  }
+  if (candidate.type === 'emoji') {
+    const emoji = clampText(candidate.value, AGENT_AVATAR_EMOJI_MAX_CHARS);
+    return emoji ? { type: 'emoji', value: emoji } : undefined;
+  }
+  // type 缺失但带 src/value 时按内容推断，避免外部导入的结构差异导致头像丢失
+  if (typeof candidate.src === 'string' && candidate.src.trim()) {
+    return { type: 'image', src: candidate.src.trim() };
+  }
+  if (typeof candidate.value === 'string' && candidate.value.trim()) {
+    return { type: 'emoji', value: candidate.value.trim() };
+  }
+  return undefined;
+}
+
+/**
  * 持久化记录 → 合规 AgentConfig；结构性缺失（id/name/system）返回 null。
  *
  * 校验策略：身份字段（id/name）只校验不改写；其余字段一律收敛（钳制/去重/默认值）。
@@ -285,8 +384,8 @@ export function normalizeAgentConfig(value: unknown): AgentConfig | null {
   if (skills.length > 0) config.skills = skills;
   const vision = normalizeVision(candidate.vision);
   if (vision) config.vision = vision;
-  const iconPath = typeof candidate.iconPath === 'string' ? candidate.iconPath.trim() : '';
-  if (iconPath) config.iconPath = iconPath;
+  const avatar = normalizeAvatar(candidate.avatar);
+  if (avatar) config.avatar = avatar;
   return config;
 }
 

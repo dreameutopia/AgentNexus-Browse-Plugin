@@ -15,13 +15,11 @@ const TOOL_MESSAGE_TYPES = {
   // 浏览器工具
   BROWSER_NAVIGATE: 'browser_navigate',
   BROWSER_SCREENSHOT: 'browser_screenshot',
-  BROWSER_KEYBOARD: 'browser_keyboard',
   BROWSER_WINDOW: 'browser_window',
   BROWSER_SEARCH_BOOKMARKS: 'browser_search_bookmarks',
   BROWSER_SEARCH_HISTORY: 'browser_search_history',
   BROWSER_NETWORK_REQUEST: 'browser_network_request',
   BROWSER_VECTOR_SEARCH: 'browser_vector_search',
-  BROWSER_INJECT_SCRIPT: 'browser_inject_script',
   BROWSER_PAGE_EXEC: 'browser_page_exec',
   BROWSER_EXTRACT_DATA: 'browser_extract_data',
   BROWSER_CLEAN_PAGE: 'browser_clean_page',
@@ -36,7 +34,6 @@ const TOOL_MESSAGE_TYPES = {
   BROWSER_SCROLL: 'browser_scroll',
   BROWSER_GET_PAGE_TEXT: 'browser_get_page_text',
   BROWSER_GET_PAGE_HTML: 'browser_get_page_html',
-  BROWSER_EXECUTE_SCRIPT: 'browser_execute_script',
   BROWSER_SET_ZOOM: 'browser_set_zoom',
   BROWSER_REFRESH: 'browser_refresh',
   BROWSER_GO_BACK: 'browser_go_back',
@@ -49,7 +46,6 @@ const TOOL_MESSAGE_TYPES = {
  * 绝大多数工具注册名已与消息类型一致，只有少数需要映射
  */
 const TOOL_NAME_OVERRIDES: Record<string, string> = {
-  [TOOL_MESSAGE_TYPES.BROWSER_EXECUTE_SCRIPT]: 'browser_inject_script',
   [TOOL_MESSAGE_TYPES.BROWSER_GO_BACK]: 'browser_go_back_or_forward',
   [TOOL_MESSAGE_TYPES.BROWSER_GO_FORWARD]: 'browser_go_back_or_forward',
 };

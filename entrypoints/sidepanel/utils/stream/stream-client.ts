@@ -268,9 +268,10 @@ export class StreamClient {
     } finally {
       // fire-and-forget 计数：永不抛错，绝不影响请求主流程
       aiUsageMetrics.record({
+        ...config.metrics,
         provider: providerConfig.provider,
         model: config.model,
-        kind: 'chat',
+        kind: config.metrics?.kind ?? 'chat',
         outcome,
         usage,
         errorSummary,

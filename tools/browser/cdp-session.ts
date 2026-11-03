@@ -72,6 +72,14 @@ class CdpSessionManager {
   private listenersReady = false;
   private attaching = new Map<number, Promise<void>>();
   private epochs = new Map<number, number>();
+  /** A live screenshot must not lose its viewport to an idle-time detach. */
+  private retainedUntil = new Map<number, number>();
+
+  retainUntil(tabId: number, expiresAt: number): void {
+    if (!this.hasSession(tabId) || !Number.isFinite(expiresAt)) return;
+    this.retainedUntil.set(tabId, Math.max(this.retainedUntil.get(tabId) ?? 0, expiresAt));
+    this.refreshTtl(tabId);
+  }
 
   /** Changes on attach/detach so gestures can reject a session replaced mid-operation. */
   getEpoch(tabId: number): number { return this.epochs.get(tabId) ?? 0; }
@@ -79,6 +87,13 @@ class CdpSessionManager {
   /** 当前是否持有指定标签页的调试会话 */
   hasSession(tabId: number): boolean {
     return this.ttlTimers.has(tabId);
+  }
+
+  /** Renew an existing session only; never attach while checking stale evidence. */
+  touch(tabId: number): boolean {
+    if (!this.hasSession(tabId)) return false;
+    this.refreshTtl(tabId);
+    return true;
   }
 
   /** chrome.debugger 是否可用（仅 background/service worker 环境可用） */
@@ -109,7 +124,7 @@ class CdpSessionManager {
       tabId,
       setTimeout(() => {
         void this.detach(tabId);
-      }, SESSION_TTL_MS),
+      }, Math.max(SESSION_TTL_MS, (this.retainedUntil.get(tabId) ?? 0) - Date.now())),
     );
   }
 
@@ -118,6 +133,7 @@ class CdpSessionManager {
     const timer = this.ttlTimers.get(tabId);
     if (timer) clearTimeout(timer);
     this.ttlTimers.delete(tabId);
+    this.retainedUntil.delete(tabId);
     this.epochs.set(tabId, this.getEpoch(tabId) + 1);
   }
 

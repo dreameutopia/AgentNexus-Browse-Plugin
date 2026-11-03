@@ -8,6 +8,7 @@
  * 保证状态条数字与引擎真实进度同源。
  */
 import { t } from '@/utils/i18n';
+import './learn-theme.css';
 
 const props = defineProps<{
   phase: 'learning' | 'validating';
@@ -29,7 +30,7 @@ function formatElapsed(ms: number): string {
 </script>
 
 <template>
-  <div class="learn-status" role="status" aria-live="polite">
+  <div class="learn-status learn-root" role="status" aria-live="polite">
     <span class="learn-status__pulse" aria-hidden="true"></span>
 
     <span class="learn-status__phase">
@@ -64,8 +65,8 @@ function formatElapsed(ms: number): string {
   width: 100%;
   padding: 11px 14px;
   border-radius: 12px;
-  background: rgba(59, 130, 246, 0.1);
-  border: 1px solid rgba(59, 130, 246, 0.32);
+  background: var(--learn-accent-soft);
+  border: 1px solid var(--learn-accent-soft-border);
   font-size: 12.5px;
 }
 
@@ -74,7 +75,7 @@ function formatElapsed(ms: number): string {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--accent, #3b82f6);
+  background: var(--learn-accent);
   animation: learn-pulse 1.4s ease-in-out infinite;
 }
 
@@ -92,22 +93,22 @@ function formatElapsed(ms: number): string {
 
 .learn-status__phase {
   font-weight: 600;
-  color: var(--accent, #3b82f6);
+  color: var(--learn-accent-deep);
 }
 
 .learn-status__meta {
-  color: var(--text-secondary, #cbd5e1);
+  color: var(--learn-text-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .learn-status__dot {
-  color: var(--text-tertiary, #64748b);
+  color: var(--learn-text-faint);
 }
 
 .learn-status__hint {
   flex: 1 1 auto;
   min-width: 160px;
-  color: var(--text-tertiary, #94a3b8);
+  color: var(--learn-text-faint);
   font-size: 11.5px;
 }
 
@@ -119,16 +120,16 @@ function formatElapsed(ms: number): string {
   padding: 6px 14px;
   border: none;
   border-radius: 8px;
-  background: var(--danger, #ef4444);
-  color: #fff;
+  background: var(--learn-danger);
+  color: #ffffff;
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 0.15s ease;
+  transition: background 0.15s ease;
 }
 
 .learn-status__stop:hover {
-  opacity: 0.88;
+  background: #dc2626;
 }
 
 @media (max-width: 560px) {

@@ -7,6 +7,7 @@
 import { BaseTool } from '../base-tool';
 import { ToolResult, createErrorResponse } from '@/common/tool-handler';
 import { TIMEOUTS, ERROR_MESSAGES } from '@/common/constants';
+import { existingNavigationWindowId } from '../browser/navigation-window';
 
 const PING_TIMEOUT_MS = 300;
 
@@ -152,7 +153,7 @@ export abstract class BaseBrowserTool extends BaseTool {
    * 创建新标签页
    */
   protected async createTab(url: string, active: boolean = true): Promise<chrome.tabs.Tab> {
-    const tab = await chrome.tabs.create({ url, active });
+    const tab = await chrome.tabs.create({ url, active, windowId: await existingNavigationWindowId() });
     if (!tab || !tab.id) {
       throw new Error('Failed to create tab');
     }

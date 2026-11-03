@@ -13,12 +13,12 @@ export class VisionActionHandler {
     const { correlationId, payload } = message ?? {};
     try {
       if (typeof correlationId !== 'string' || !correlationId || correlationId.length > 256) throw new GuiError('INVALID_ARGUMENT', 'A nonempty correlationId of at most 256 characters is required');
-      if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !['screenshot', ...GUI_ACTIONS].includes(payload.action)) throw new GuiError('INVALID_ARGUMENT', 'Unsupported normalized GUI action');
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !['screenshot', 'zoom', 'check', ...GUI_ACTIONS].includes(payload.action)) throw new GuiError('INVALID_ARGUMENT', 'Unsupported normalized GUI action');
       const unknown = Object.keys(payload).filter(k => k !== 'action' && k !== 'parameters');
       if (unknown.length) throw new GuiError('INVALID_ARGUMENT', 'Unexpected vision payload fields', { fields: unknown });
       const data: any = await this.executor.execute(payload.action, payload.parameters);
       if (data.screenshot && this.fileHandler?.sendScreenshotFile) {
-        data.screenshotFileSent = await bounded(this.fileHandler.sendScreenshotFile(data.screenshot, correlationId, 'viewport.png'), 10000, 'Deliver screenshot file');
+        data.screenshotFileSent = await bounded(this.fileHandler.sendScreenshotFile(data.screenshot, correlationId, data.imageKind==='region'?'region.png':'viewport.png'), 10000, 'Deliver screenshot file');
         if (!data.screenshotFileSent) throw new GuiError('TRANSPORT_ERROR', 'Screenshot file delivery failed', { correlationId });
         delete data.screenshot;
       }

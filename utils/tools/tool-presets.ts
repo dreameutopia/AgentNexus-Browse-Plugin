@@ -74,6 +74,8 @@ export const CORE_SESSION_TOOL_IDS: readonly string[] = [
 
 /** 基础浏览器操作（同时作为未知场景的防御性回退；不含无条件注入的核心工具） */
 const BASIC_BROWSER_TOOLS = [
+  'browser_observe',
+  'browser_interact',
   'browser_navigate',
   'browser_get_page_info',
   'wait_page_load',
@@ -82,8 +84,7 @@ const BASIC_BROWSER_TOOLS = [
   'browser_switch_tab',
   'browser_close_tab',
   'browser_create_tab',
-  'browser_scroll',
-  'browser_inject_script',
+  'browser_page_exec',
   'bing_search',
 ] as const;
 
@@ -113,6 +114,11 @@ const NOTE_TOOLS = [
 
 /** 自动化交互（browser_get_page_text 由核心层无条件注入，此处不重复登记） */
 const AUTOMATION_TOOLS = [
+  'browser_observe',
+  'browser_interact',
+  'browser_network_capture',
+  'browser_get_all_tabs',
+  'browser_switch_tab',
   'browser_navigate',
   'browser_get_page_info',
   'wait_page_load',
@@ -120,11 +126,6 @@ const AUTOMATION_TOOLS = [
   'bing_search',
   'generic_wait',
   // 懒加载/无限滚动页面：getter 采样前先滚动触发渲染，再重新采集
-  'browser_scroll',
-  'interactive_input_getter',
-  'interactive_button_getter',
-  'enhance_click',
-  'enhance_fill',
   'browser_page_exec',
 ] as const;
 
@@ -135,6 +136,7 @@ const AUTOMATION_TOOLS = [
  */
 const VISION_AGENT_TOOLS = [
   'screenshot',
+  'browser_window',
   'browser_navigate',
   'vision_click',
   'vision_drag',
@@ -143,6 +145,9 @@ const VISION_AGENT_TOOLS = [
   'vision_keyboard',
   'vision_mark',
   'vision_inspect',
+  'vision_zoom',
+  'vision_check',
+  'generic_wait',
   'browser_go_back_or_forward',
   'wait_page_load',
   'vision_scroll',
@@ -171,7 +176,6 @@ const SITE_LEARN_TEXT_TOOLS = [
 const SITE_LEARN_VISION_TOOLS = [
   ...VISION_AGENT_TOOLS,
   'browser_get_page_info',
-  'generic_wait',
   'note_tool',
   'submit_skill',
 ] as const;
@@ -187,7 +191,6 @@ const SITE_VALIDATE_TEXT_TOOLS = [
 const SITE_VALIDATE_VISION_TOOLS = [
   ...VISION_AGENT_TOOLS,
   'browser_get_page_info',
-  'generic_wait',
   'note_tool',
   'submit_validation',
 ] as const;
@@ -197,7 +200,7 @@ const SITE_VALIDATE_VISION_TOOLS = [
  * 脚本抓取（page_exec saveResult）→ 暂存批次（data_ref_tool）→ xlsx 直接导出，
  * 大批量数据全程不经过模型上下文；DOM 结构明确时可用 browser_extract_data，
  * 已知 JSON 接口用 browser_network_request 直连。
- * 无限滚动分页靠 browser_scroll（继承自 AUTOMATION_TOOLS）触发加载后重采。
+ * 无限滚动分页靠 browser_interact(action="scroll")触发加载后重采。
  */
 const DATA_HARVEST_TOOLS = [
   ...AUTOMATION_TOOLS,
@@ -246,7 +249,7 @@ const DATA_GROUP_TOOLS = [
 
 /** 页面深度读取（HTML / 元数据 / 元素信息 / Markdown / 指定区域抓取；
  *  正文读取 browser_get_page_text 已升级为核心能力无条件注入，不再占用工具组位；
- *  browser_get_element_info 已下线（由 interactive_button_getter / interactive_input_getter 取代） */
+ *  browser_get_element_info 已下线（由 browser_observe 取代） */
 const PAGE_READ_GROUP_TOOLS = [
   'browser_get_page_html',
   'browser_get_page_info',
@@ -255,15 +258,13 @@ const PAGE_READ_GROUP_TOOLS = [
   'browser_web_fetcher',
 ] as const;
 
-/** DOM 元素交互（CSS 选择器的点击、填充、键盘与等待；
- *  点击/填充统一走 enhance_click / enhance_fill——内联 payload + frameId 精确定向 iframe，
+/** DOM 元素交互（文本观察、节点交互与等待；
+ *  点击/填充统一走 browser_interact——内联 payload + frameId 精确定向 iframe，
  *  browser_click / browser_fill（content-script 消息通道）已下线） */
 const DOM_INTERACT_GROUP_TOOLS = [
-  'browser_keyboard',
+  'browser_observe',
+  'browser_interact',
   'browser_wait_for_element',
-  'browser_scroll',
-  'enhance_click',
-  'enhance_fill',
 ] as const;
 
 /** 标签页与窗口（全局窗口/标签枚举、切换、创建、关闭） */
@@ -278,7 +279,6 @@ const TABS_WINDOWS_GROUP_TOOLS = [
 
 /** 页面脚本执行（注入 JS、向注入脚本发消息、页面级高权限执行/抽取/清理） */
 const SCRIPTING_GROUP_TOOLS = [
-  'browser_inject_script',
   'browser_send_command_to_inject_script',
   'browser_page_exec',
   'browser_extract_data',
@@ -342,6 +342,10 @@ const RESOURCE_CAPTURE_GROUP_TOOLS = [
 /** 统一相对坐标 GUI 工具；视觉循环外调用时须主动截图获取 screenshotId。 */
 const VISION_TOOLS_GROUP = [
   'screenshot',
+  'vision_read',
+  'vision_read_scroll',
+  'vision_read_zoom',
+  'vision_read_wait',
   'ocr',
   'vision_click',
   'vision_drag',
@@ -381,8 +385,8 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
   /** 默认对话（未选择智能体）：轻量页面读取（正文读取已由核心层无条件提供） */
   chat: ['getPageMarkdown'],
 
-  /** 视觉助手：只读引导 + 滚动查看（截图由会话引擎注入，不占工具位） */
-  visionAssist: ['browser_scroll', 'screenshot'],
+  /** 视觉助手：观察、阅读滚动、原图放大及等待重拍；运行时另施加能力上限。 */
+  visionAssist: ['screenshot', 'vision_read', 'vision_read_scroll', 'vision_read_zoom', 'vision_read_wait', 'generic_wait'],
 
   /** Vision Action：完整截图相对坐标操作；按需打标用于检查 */
   visionAgent: [...VISION_AGENT_TOOLS],

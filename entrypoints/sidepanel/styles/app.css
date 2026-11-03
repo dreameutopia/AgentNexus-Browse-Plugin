@@ -59,6 +59,25 @@ h1 {
   transition: transform 0.3s ease;
 }
 
+/* 工作笔记按钮（在 .settings-btn 基础上覆盖）
+   - .settings-btn 是白底（background-color: white）+ 白字（color: white），
+     笔记图标用 currentColor 填充 → 白底白字，图标完全不可见（但仍可点击）。
+     这里改成浅色卡片底 + 深色图标描边，保证图标清晰可见。
+   - 悬停只做轻微放大（scale 1.08），不做旋转。 */
+.notes-btn {
+  background-color: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  color: #4b5563;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.notes-btn:hover {
+  transform: scale(1.08);
+  color: #667eea;
+  background-color: #ffffff;
+  border-color: rgba(102, 126, 234, 0.35);
+}
+
 /* 主内容区域 */
 .main-content {
   flex: 1;
@@ -740,15 +759,15 @@ h1 {
 
 /* ──── 网站学习 ──── */
 
-/* 配置/确认阶段的提示条：学习态的浅蓝底与通用禁用提示（橙色）区分，
+/* 配置/确认阶段的提示条：学习态的浅靛紫底与通用禁用提示（橙色）区分，
    让「正在走学习流程」与「API 未配置」不共用一套配色语义 */
 .learn-input-notice {
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.12) 0%, rgba(59, 130, 246, 0.06) 100%);
-  color: #1d4ed8;
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.12) 0%, rgba(102, 126, 234, 0.06) 100%);
+  color: #4f46e5;
 }
 
 .learn-input-notice:hover {
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.18) 0%, rgba(59, 130, 246, 0.1) 100%);
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.18) 0%, rgba(102, 126, 234, 0.1) 100%);
   box-shadow: none; /* 提示态无动作可执行，不给 hover 放大反馈 */
 }
 
@@ -763,31 +782,53 @@ h1 {
   padding: 6px 14px;
   border: none;
   border-radius: 8px;
-  background: #3b82f6;
+  background: #667eea;
   color: #fff;
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 0.15s ease;
+  transition: background 0.15s ease;
   flex: 0 0 auto;
 }
 
 .learn-recover-btn:hover {
-  opacity: 0.88;
+  background: #5a67d8;
 }
 
-/* 网站学习入口按钮：最左侧、高亮常驻（与状态条同色系，形成「学习」的视觉锚点） */
-.input-action-btn.learn-entry-btn {
-  color: #3b82f6;
+/* 网站学习入口按钮（工具栏内、已选智能体胶囊条左侧；图标 + 「学习」文字同体）。
+   配色与侧边栏主色（#667eea 靛紫）同源，与胶囊条并列时视觉成组 */
+.learn-entry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 10px 0 8px;
+  border: 1px solid rgba(102, 126, 234, 0.35);
+  border-radius: 999px;
+  background: rgba(102, 126, 234, 0.1);
+  color: #5a67d8;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s ease;
 }
 
-.input-action-btn.learn-entry-btn:hover:not(:disabled) {
-  background: rgba(59, 130, 246, 0.14);
+.learn-entry-btn:hover:not(:disabled) {
+  background: rgba(102, 126, 234, 0.18);
+  border-color: rgba(102, 126, 234, 0.55);
+  color: #4f46e5;
 }
 
-.input-action-btn.learn-entry-btn:disabled {
+.learn-entry-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.learn-entry-btn__label {
+  line-height: 1;
 }
 
 /* 新增：底部操作栏容器 */
@@ -814,29 +855,34 @@ h1 {
   gap: 6px;
 }
 
+/* 模型选择按钮：中性灰底 + 近黑文字（去掉淡紫底与紫字），模型名加粗 */
 .model-select-btn {
-  background: #eef2ff;
-  border: none;
+  background: #f1f3f5;
+  border: 1px solid #e5e7eb;
   border-radius: 20px; /* 胶囊形状 */
   padding: 6px 12px;
   display: flex;
   align-items: center;
   gap: 6px;
   cursor: pointer;
-  transition: background-color 0.2s;
-  color: #6366f1;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+  color: #111827;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   max-width: 220px; /* 模型名过长时截断，避免撑爆输入栏 */
 }
 
 .model-select-btn:hover {
-  background: #e0e7ff;
+  background: #e5e7eb;
+  border-color: #d1d5db;
+  color: #000000;
 }
 
+/* 未配置模型：中性灰底 + 灰字，警示语义交由下拉空态提示承担 */
 .model-select-btn.no-model {
-  color: #f59e0b; /* 未配置模型时用警示色提示 */
-  background: #fffbeb;
+  color: #6b7280;
+  background: #f3f4f6;
+  border-color: #e5e7eb;
 }
 
 /* 按钮左侧的品牌图标（按模型名映射，未命中显示扩展默认图标） */
@@ -853,11 +899,20 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 700; /* 模型名加粗，作为按钮内主视觉 */
+  letter-spacing: 0.1px;
 }
 
+/* 下拉箭头：常态灰，悬停/展开时转近黑 */
 .model-select-btn .dropdown-arrow {
   flex-shrink: 0;
-  transition: transform 0.2s;
+  transition: transform 0.2s, color 0.2s;
+  color: #9ca3af;
+}
+
+.model-select-btn:hover .dropdown-arrow,
+.model-select-btn.is-open .dropdown-arrow {
+  color: #111827;
 }
 
 .model-select-dropdown {
@@ -892,18 +947,19 @@ h1 {
   background: #f3f4f6;
 }
 
+/* 选中项：灰底 + 近黑文字（取代淡紫底与紫字） */
 .model-select-option.active {
-  background: #eef2ff;
-  color: #4f46e5;
-  font-weight: 500;
+  background: #e5e7eb;
+  color: #111827;
+  font-weight: 600;
 }
 
 .model-select-check {
   flex-shrink: 0;
-  color: #6366f1;
+  color: #111827;
 }
 
-/* 视觉能力标签：声明了视觉能力的模型在名称右侧展示「视觉」胶囊标签，紫色渐变风格与勾选标识区分 */
+/* 视觉能力标签：中性灰底 + 深灰文字，与选中项的深色区分靠「描边 + 浅底」 */
 .model-select-vision-tag {
   flex-shrink: 0;
   padding: 1px 7px;
@@ -912,9 +968,9 @@ h1 {
   font-weight: 600;
   line-height: 1.6;
   letter-spacing: 0.5px;
-  color: #8b5cf6;
-  background: linear-gradient(135deg, rgba(139, 92, 246, 0.12), rgba(168, 85, 247, 0.18));
-  border: 1px solid rgba(139, 92, 246, 0.32);
+  color: #4b5563;
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
 }
 
 /* 下拉选项左侧的品牌图标 */
@@ -948,7 +1004,7 @@ h1 {
 .model-select-empty {
   padding: 10px 12px;
   font-size: 12px;
-  color: #f59e0b;
+  color: #6b7280;
   cursor: pointer; /* 点击跳转 API 配置 */
   white-space: nowrap;
 }
@@ -1223,6 +1279,13 @@ h1 {
   flex: none;
 }
 
+/* 智能体胶囊内的头像：与胶囊同色系，不加背景底板 */
+.strip-chip-avatar {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
 .strip-chip-name {
   min-width: 0;
   overflow: hidden;
@@ -1358,6 +1421,7 @@ h1 {
   border-left: 2px solid #667eea;
 }
 
+/* 智能体头像槽位：仅做占位与对齐，不加任何背景色/底板 */
 .agent-icon {
   margin-right: 10px;
   width: 26px;
@@ -1365,15 +1429,15 @@ h1 {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f3f4f6;
-  border-radius: 7px;
+  background: transparent;
   flex-shrink: 0;
 }
 
-.agent-icon svg {
-  width: 16px;
-  height: 16px;
-  fill: #6b7280;
+/* 头像图片铺满槽位且保持比例；emoji 由组件自身按尺寸渲染 */
+.agent-icon img,
+.agent-icon .agent-avatar {
+  max-width: 100%;
+  max-height: 100%;
 }
 
 .agent-info {

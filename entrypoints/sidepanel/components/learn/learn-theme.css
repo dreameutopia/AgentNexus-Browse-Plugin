@@ -1,0 +1,109 @@
+/**
+ * 网站学习弹窗主题（与侧边栏浅色体系一致）
+ *
+ * 侧边栏本身是浅色界面：白底面板、#667eea 主色、#e5e7eb 描边、灰阶文字。
+ * 学习相关弹窗此前各自用深色变量拼装（深底 + 深字），与侧边栏割裂。
+ * 本文件把配色与通用按钮收敛成一份，各弹窗只挂 .learn-root 取变量：
+ *   - .learn-root   颜色变量（挂各弹窗根节点，子元素继承）
+ *   - .learn-panel  通用面板外观（背景 / 圆角 / 阴影 / 文字色）
+ *   - .learn-btn    通用按钮（主 / 次 / 危险三态）
+ */
+
+.learn-root {
+  /* 面板与容器 */
+  --learn-bg: #ffffff;
+  --learn-surface: #f8fafc;
+  --learn-surface-alt: #f9fafb;
+  --learn-surface-hover: #f1f5f9;
+
+  /* 描边 */
+  --learn-border: #e5e7eb;
+  --learn-border-strong: #d1d5db;
+
+  /* 文字 */
+  --learn-text: #1f2937;
+  --learn-text-strong: #111827;
+  --learn-text-muted: #6b7280;
+  --learn-text-faint: #9ca3af;
+
+  /* 主色（与侧边栏 #667eea 同源） */
+  --learn-accent: #667eea;
+  --learn-accent-strong: #5a67d8;
+  --learn-accent-deep: #4f46e5;
+  --learn-accent-soft: rgba(102, 126, 234, 0.12);
+  --learn-accent-soft-border: rgba(102, 126, 234, 0.35);
+
+  /* 语义色 */
+  --learn-danger: #ef4444;
+  --learn-danger-soft: rgba(239, 68, 68, 0.08);
+  --learn-danger-border: rgba(239, 68, 68, 0.28);
+  --learn-warning: #d97706;
+  --learn-warning-soft: rgba(245, 158, 11, 0.1);
+  --learn-warning-border: rgba(245, 158, 11, 0.32);
+
+  /* 遮罩与阴影 */
+  --learn-scrim: rgba(15, 23, 42, 0.45);
+  --learn-shadow:
+    0 20px 45px -12px rgba(15, 23, 42, 0.28),
+    0 4px 10px -4px rgba(15, 23, 42, 0.12);
+}
+
+/* ==================== 通用面板 ==================== */
+
+.learn-panel {
+  background: var(--learn-bg);
+  color: var(--learn-text);
+  border-radius: 14px;
+  box-shadow:
+    var(--learn-shadow),
+    0 0 0 1px var(--learn-border);
+  overflow: hidden;
+}
+
+/* ==================== 通用按钮 ==================== */
+
+.learn-btn {
+  padding: 9px 18px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    opacity 0.15s ease;
+}
+
+.learn-btn--ghost {
+  border: 1px solid var(--learn-border-strong);
+  background: var(--learn-surface);
+  color: var(--learn-text-muted);
+}
+
+.learn-btn--ghost:hover {
+  background: var(--learn-surface-hover);
+  color: var(--learn-text);
+}
+
+.learn-btn--primary {
+  border: none;
+  background: var(--learn-accent);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.28);
+}
+
+.learn-btn--primary:hover {
+  background: var(--learn-accent-strong);
+}
+
+.learn-btn--danger {
+  border: none;
+  background: var(--learn-danger);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.24);
+}
+
+.learn-btn--danger:hover {
+  background: #dc2626;
+}

@@ -85,14 +85,14 @@ Markdown 渲染支持 Mermaid 图表、KaTeX 公式、PlantUML、代码高亮与
 
 | 字段 | 说明 |
 |---|---|
-| `name` | 技能名（小写字母 / 数字 / 连字符），组成全局唯一标识 |
+| `name` | 技能名（小写字母 / 数字 / 连字符）。**允许重名**——唯一性由下方标识承担 |
 | `description` | 做什么 + 何时使用——模型据此自动匹配任务，用户据此选择启用 |
 | `allowed-tools` | 预授权工具 ID 列表（空格分隔），技能激活后可直接调用 |
 | `compatibility` | 环境要求说明（可选），如「需要已登录 Bilibili」 |
 
 ### 渐进式披露（控制上下文占用）
 1. **发现**：系统提示词常驻 `<available-skills>` 清单，每项为技能标识 + 一行描述；
-2. **激活**：模型判定任务相关后调用 `load_skill`，注入 SKILL.md 完整正文（软上限 15,000 字符）；
+2. **激活**：用 `/` 预选的技能会在发送时自动封装成一轮 `load_skill` 调用注入上下文；未预选时由模型判定任务相关后自行调用 `load_skill`，注入完整指令（优先级约定 + SKILL.md 正文，软上限 15,000 字符）；
 3. **深入**：需要更多背景时调用 `read_skill_file` 按路径读取资源文件（单文件上限 100,000 字符）。
 
 ### 上手参考
@@ -203,5 +203,7 @@ ws://{host}:{port}/api/automation?browserUuid={browserUuid}&version={x.x.x}
 
 
 ### Vision Action GUI automation
+
+视觉助手负责“看懂并教我”：支持可见区域文字与控件状态读取、四向组件滚动、原图局部放大和等待重拍，由用户执行点击、填写与提交。运行时限制技能与附加工具不能越过观察边界；任意 JavaScript 执行不在其工具范围内。适用场景、工具及已知限制见 [视觉助手设计](tools/vision/VISION_ASSISTANT.md)。
 
 Vision Action 使用 0–1000 的视口相对坐标和 CDP 输入，支持点击、拖拽、滚动、输入、悬停、键盘与按需 DOM 打标分析。厂商协议、工具参数、支持范围与迁移说明见 [视觉驱动说明](tools/vision/README.md)。

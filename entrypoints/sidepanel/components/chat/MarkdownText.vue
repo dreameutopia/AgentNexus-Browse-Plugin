@@ -17,7 +17,7 @@
  *     与转录逐字一致（含图表/文件卡片等后处理标记的完整渲染）。
  */
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
-import { aiChatApi } from '../../utils/ai/ai-chat-api';
+import { markdownRenderer } from '../../utils/chat/markdown-renderer';
 
 const props = defineProps<{
   content: string;
@@ -69,5 +69,5 @@ onBeforeUnmount(() => {
   if (timer !== undefined) window.clearTimeout(timer);
 });
 
-const html = computed(() => aiChatApi.renderMessage(renderedContent.value));
+const html = computed(() => markdownRenderer.renderMessage(renderedContent.value));
 </script>

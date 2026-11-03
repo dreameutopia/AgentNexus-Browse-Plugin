@@ -4,8 +4,6 @@
 
 import { toolRegistry } from '../registry';
 import { PageSourceTool } from './page-source-tool';
-import { enhanceClickTool } from './enhance-click-tool';
-import { enhanceFillTool } from './enhance-fill-tool';
 import { TaskSubmitTool } from './task-submit-tool';
 import { TaskResultTool } from './task-result-tool';
 import { 
@@ -22,8 +20,6 @@ export { BaseBrowserTool } from './browser-tool';
 function createBaseTools() {
   return [
     new PageSourceTool(),
-    enhanceClickTool,
-    enhanceFillTool,
     new TaskSubmitTool(),
     new TaskResultTool(),
     getPageTextTool,
@@ -43,8 +39,6 @@ export function registerBaseTools() {
 
 export {
   PageSourceTool,
-  enhanceClickTool,
-  enhanceFillTool,
   TaskSubmitTool,
   TaskResultTool,
   getPageTextTool,

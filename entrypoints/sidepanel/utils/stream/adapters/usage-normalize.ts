@@ -196,7 +196,8 @@ export function normalizeOllamaUsage(finalChunk: any): Partial<TokenUsage> {
   const output = countAt(finalChunk, 'eval_count');
   if (input !== undefined) {
     result.inputTokens = input;
-    result.cachedInputTokens = countAt(finalChunk, 'prompt_eval_cached_count') ?? 0;
+    const cached = countAt(finalChunk, 'prompt_eval_cached_count');
+    if (cached !== undefined) result.cachedInputTokens = cached;
   }
   if (output !== undefined) result.outputTokens = output;
   return result;

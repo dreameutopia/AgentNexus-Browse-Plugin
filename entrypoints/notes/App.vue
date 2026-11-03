@@ -6,12 +6,18 @@
       :filter-value="filterValue"
       :categories="allCategories"
       :tags="allTags"
+      :notes="previews"
       :total-notes="totalNotes"
       :is-dark="isDark"
       @create="handleCreate"
       @update:search-query="searchQuery = $event"
       @set-filter="handleSetFilter"
       @toggle-theme="toggleTheme"
+      @open-note="openNote"
+      @rename-folder="handleRenameFolder"
+      @delete-folder="handleDeleteFolder"
+      @create-folder="handleCreateFolder"
+      @move-note="handleMoveNote"
     />
 
     <main class="main-content glass">
@@ -60,6 +66,18 @@
       />
     </main>
 
+    <!-- 笔记删除二次确认（列表卡片 / 编辑器删除按钮共用） -->
+    <ConfirmModal
+      :open="deleteTarget.open"
+      :title="t('notes.deleteNoteTitle')"
+      :message="t('notes.confirmDeleteNote')"
+      :confirm-text="t('notes.confirm')"
+      :cancel-text="t('notes.cancel')"
+      danger
+      @confirm="confirmDelete"
+      @cancel="deleteTarget.open = false"
+    />
+
     <ToastContainer :toasts="toasts" />
   </div>
 </template>
@@ -74,6 +92,7 @@ import { useNotes, categoryDisplay, type NoteFilterMode } from './composables/us
 import NoteListView from './components/NoteListView.vue';
 import NoteEditor from './components/NoteEditor.vue';
 import ToastContainer from './components/ToastContainer.vue';
+import ConfirmModal from './components/ConfirmModal.vue';
 
 // Composables
 const { isDark, toggleTheme } = useTheme();
@@ -83,11 +102,12 @@ const { toasts, showToast } = useToast();
 const editorDirty = ref(false);
 
 const {
-  currentNote, totalNotes, externalUpdatePending, initError,
+  previews, currentNote, totalNotes, externalUpdatePending, initError,
   searchQuery, filterMode, filterValue, sortMode,
   displayNotes, allCategories, allTags, listTitle, hasFilter, setFilter,
   initialize, openNote, closeNote,
-  createNote, saveNote, removeNote, resolveExternalUpdate,
+  createNote, saveNote, removeNote, createFolder, renameFolder, deleteFolder, moveNoteToFolder,
+  resolveExternalUpdate,
 } = useNotes({
   isEditorDirty: () => editorDirty.value,
   showToast,
@@ -132,8 +152,17 @@ async function handleCreate() {
   }
 }
 
-async function handleDelete(id: string) {
-  if (!confirm(t('notes.confirmDeleteNote'))) return;
+/** 删除确认弹窗状态（列表卡片与编辑器删除按钮共用同一入口） */
+const deleteTarget = ref<{ open: boolean; id: string | null }>({ open: false, id: null });
+
+function handleDelete(id: string) {
+  deleteTarget.value = { open: true, id };
+}
+
+async function confirmDelete() {
+  const id = deleteTarget.value.id;
+  deleteTarget.value = { open: false, id: null };
+  if (!id) return;
   try {
     await removeNote(id);
     showToast(t('notes.toastNoteDeleted'), 'success');
@@ -145,7 +174,52 @@ async function handleDelete(id: string) {
 
 async function handleDeleteCurrent() {
   if (!currentNote.value) return;
-  await handleDelete(currentNote.value.id);
+  handleDelete(currentNote.value.id);
+}
+
+// ---- 文件夹（分类）操作：新建 / 重命名 / 删除 / 笔记移动 ----
+function handleCreateFolder(name: string) {
+  try {
+    const created = createFolder(name);
+    if (created) {
+      showToast(t('notes.toastFolderCreated'), 'success');
+    } else {
+      showToast(t('notes.toastFolderExists'), 'error');
+    }
+  } catch (error) {
+    console.error('[Notes] 新建文件夹失败:', error);
+    showToast(t('notes.toastFolderCreateFailed'), 'error');
+  }
+}
+
+async function handleRenameFolder(category: string, nextName: string) {
+  try {
+    await renameFolder(category, nextName);
+    showToast(t('notes.toastFolderRenamed'), 'success');
+  } catch (error) {
+    console.error('[Notes] 重命名文件夹失败:', error);
+    showToast(t('notes.toastFolderRenameFailed'), 'error');
+  }
+}
+
+async function handleDeleteFolder(category: string) {
+  try {
+    await deleteFolder(category);
+    showToast(t('notes.toastFolderDeleted'), 'success');
+  } catch (error) {
+    console.error('[Notes] 删除文件夹失败:', error);
+    showToast(t('notes.toastFolderDeleteFailed'), 'error');
+  }
+}
+
+async function handleMoveNote(noteId: string, category: string) {
+  try {
+    await moveNoteToFolder(noteId, category);
+    showToast(t('notes.toastNoteMoved'), 'success');
+  } catch (error) {
+    console.error('[Notes] 移动笔记失败:', error);
+    showToast(t('notes.toastMoveFailed'), 'error');
+  }
 }
 
 /** 返回列表：先把编辑器未保存修改落盘，再关闭（关闭不丢数据） */
