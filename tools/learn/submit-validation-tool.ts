@@ -119,8 +119,10 @@ export class SubmitValidationTool extends BaseTool {
             type: 'array',
             items: { type: 'string' },
             description:
-              `不通过时的具体问题清单（每条一行，≤${ISSUE_MAX_CHARS} 字符，最多 ${ISSUE_MAX_COUNT} 条），` +
-              '写清「哪一步 + 期望什么 + 实际发生什么」，供决策与后续修订使用。通过时可省略或传空数组。',
+              `问题清单（每条一行，≤${ISSUE_MAX_CHARS} 字符，最多 ${ISSUE_MAX_COUNT} 条），` +
+              '写清「哪一步 + 期望什么 + 实际发生什么」，供决策与后续修订使用。' +
+              'passed=false 时必填且不能为空（没有清单的「不通过」无法支撑决策）；' +
+              'passed=true 时可省略或传空数组（要提改进建议时才填）。',
           },
           score: {
             type: 'number',
@@ -131,7 +133,10 @@ export class SubmitValidationTool extends BaseTool {
             description: '可选：一句话验证结论（按技能执行的总体感受、最薄弱的环节）。',
           },
         },
-        required: ['passed', 'issues'],
+        // 只把 passed 列为必填：issues 的「不通过时必填」由工具层按 passed 分支校验。
+        // 把它写进 schema 的 required 会让「通过且无遗留问题」的提交也必须带一个
+        // 空数组——纯仪式要求，却给模型多一个可以踩空的参数位。
+        required: ['passed'],
       },
     },
   };

@@ -1,0 +1,275 @@
+/**
+ * 会话计划面板（PlanBoard）样式
+ *
+ * 为什么独立成文件：app.css 经 App.vue 的 `<style scoped>` 引入，作用域属性
+ * 无法穿透到子组件内部——放在 app.css 里的 .plan-* 规则永远匹配不到本组件的
+ * 元素（面板此前就是因此完全裸奔）。与 chat-history-drawer.css、
+ * chat-message-list.css 同一约定：子组件样式自带，组件内直接 import 生效。
+ *
+ * 视觉口径：与侧边栏浅色体系一致——白底、#e5e7eb 描边、#667eea 主色、
+ * 灰阶文字；面板位于输入容器正上方，安静不抢戏，展开时才显出细节。
+ */
+
+.plan-board {
+  flex: 0 0 auto;
+  margin-bottom: 8px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px var(--surface-soft, #f3f1ed);
+  overflow: hidden;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.plan-board:hover {
+  border-color: #d8dde8;
+}
+
+.plan-board.is-expanded {
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+}
+
+/* ── 折叠态头部：图标 + 标题 + 计数 + 当前步骤 + 展开箭头 ── */
+
+.plan-board__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 11px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  color: var(--ink-primary, #292824);
+}
+
+.plan-board__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: var(--surface-hover, #eeece7);
+  color: var(--ink-secondary, #787671);
+}
+
+.plan-board__title {
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-primary, #292824);
+  letter-spacing: 0.01em;
+}
+
+/* 完成计数胶囊：等宽数字，避免进度变化时宽度跳动 */
+.plan-board__counter {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-hover, #eeece7);
+  color: var(--ink-secondary, #787671);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.plan-board__counter-sep {
+  margin: 0 1px;
+  opacity: 0.45;
+  font-weight: 400;
+}
+
+/* 进行中的步骤：单行省略，全文看展开态 */
+.plan-board__current {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--ink-secondary, #787671);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plan-board__current-label {
+  color: var(--ink-muted, #9b9790);
+}
+
+.plan-board__chevron {
+  flex: 0 0 auto;
+  color: var(--ink-muted, #9b9790);
+  transition: transform 0.18s ease;
+}
+
+.plan-board__chevron.is-open {
+  transform: rotate(180deg);
+}
+
+/* ── 进度条（头部与列表之间的细线） ── */
+
+.plan-board__track {
+  height: 2px;
+  background: var(--surface-soft, #f3f1ed);
+}
+
+.plan-board__track-fill {
+  display: block;
+  height: 100%;
+  border-radius: 0 2px 2px 0;
+  background: var(--ink-secondary, #787671);
+  transition: width 0.3s ease;
+}
+
+/* ── 展开态列表 ── */
+
+.plan-board__list {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px 8px;
+  border-top: 1px solid var(--surface-soft, #f3f1ed);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.plan-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.plan-item:hover {
+  background: var(--surface-canvas, #faf9f7);
+}
+
+/* 状态徽标：待执行=空心环，进行中=主色环+呼吸点，完成/失败=实心 */
+.plan-item__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border-radius: 50%;
+  background: var(--surface-soft, #f3f1ed);
+  color: var(--ink-muted, #9b9790);
+}
+
+.plan-item__badge.is-pending {
+  background: transparent;
+  border: 1.5px solid var(--line-soft, #e4e2de);
+}
+
+.plan-item__badge.is-in_progress {
+  background: rgba(102, 126, 234, 0.14);
+  color: var(--ink-secondary, #787671);
+}
+
+.plan-item__badge.is-done {
+  background: #10b981;
+  color: #ffffff;
+}
+
+.plan-item__badge.is-failed {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+.plan-item__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: plan-dot-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes plan-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.7);
+  }
+}
+
+.plan-item__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.plan-item__line {
+  display: flex;
+  gap: 5px;
+  min-width: 0;
+}
+
+.plan-item__id {
+  flex: 0 0 auto;
+  color: #cbd5e1;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.plan-item__step {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ink-primary, #292824);
+  word-break: break-word;
+}
+
+.plan-item.is-pending .plan-item__step {
+  color: var(--ink-secondary, #787671);
+}
+
+.plan-item.is-in_progress .plan-item__step {
+  color: var(--ink-primary, #292824);
+  font-weight: 500;
+}
+
+.plan-item.is-done .plan-item__step {
+  color: var(--ink-secondary, #787671);
+}
+
+.plan-item.is-failed .plan-item__step {
+  color: #b91c1c;
+}
+
+/* 状态标注信息（done=成果 / failed=原因）：浅底小胶囊，长文省略 + 悬浮看全文 */
+.plan-item__message {
+  align-self: flex-start;
+  max-width: 100%;
+  margin-top: 3px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--surface-canvas, #faf9f7);
+  color: var(--ink-secondary, #787671);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plan-item.is-done .plan-item__message {
+  background: rgba(16, 185, 129, 0.08);
+  color: #047857;
+}
+
+.plan-item.is-failed .plan-item__message {
+  background: rgba(239, 68, 68, 0.08);
+  color: #b91c1c;
+}

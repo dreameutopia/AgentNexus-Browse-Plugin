@@ -59,7 +59,7 @@ export class ReadSkillFileTool extends BaseTool {
     }
 
     const skill = resolveSkill(skillRef);
-    if (!skill) {
+    if (!skill || !skill.enabled) {
       const refPreview = skillRef.length > 80 ? `${skillRef.slice(0, 80)}…` : skillRef;
       return this.createErrorResponse(`技能 "${refPreview}" 不存在`);
     }

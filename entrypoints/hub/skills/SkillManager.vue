@@ -46,6 +46,7 @@
             :title="t('hub.modelIdHint')"
             @click="copyModelId(skill)"
           >{{ modelSkillIdOf(skill) }}</button>
+          <p v-if="skill.plugin" class="hub-hint">{{ skill.plugin.displayName }} · {{ skill.plugin.version }} · {{ skill.plugin.publisher }}</p>
           <p class="hub-card-desc" :title="skill.description">{{ skill.description }}</p>
           <!-- 分类与标签（与智能体卡片同一套徽章与分类规范） -->
           <div class="hub-card-taxonomy">
@@ -60,6 +61,7 @@
               <input
                 type="checkbox"
                 :checked="skill.enabled"
+                :disabled="skill.source === 'plugin'"
                 @change="toggleEnabled(skill)"
               />
               <span>{{ skill.enabled ? t('hub.enabled') : t('hub.disabled') }}</span>
@@ -430,7 +432,14 @@ function applyDraftResult(result: LearnDraftTakeResult, viaHash: boolean): void 
     startCreateWithDraft(result.draft);
     return;
   }
-  if (!viaHash) return; // 常规打开：无草稿 / 已过期 / 脏数据一律静默
+  // 'none'：存储里没有草稿——多半是**已经被消费**（用户已在另一个管理中心
+  // 标签里处理过）或被中止流程清除。此时提示「已过期」会让人误以为成果丢了，
+  // 与 learn-draft-store 对该状态的定义相悖；深链仍开空表单，但静默。
+  if (result.status === 'none') {
+    if (viaHash) startCreate();
+    return;
+  }
+  if (!viaHash) return; // 常规打开：已过期 / 脏数据一律静默
   startCreate();
   errorMessage.value = t(
     result.status === 'invalid' ? 'hub.learnDraftInvalid' : 'hub.learnDraftExpired',

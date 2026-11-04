@@ -314,15 +314,8 @@
         <p class="config-form-hint">{{ t('sidepanel.channels.selectChannelHint') }}</p>
       </div>
 
-      <!-- 校验错误（全部渠道 + 应用设置，带渠道前缀） -->
-      <div v-if="form.validationErrors.value.length > 0" class="config-validation-errors">
-        <p v-for="(error, index) in form.validationErrors.value" :key="index" class="config-error-item">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink: 0;">
-            <path d="M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z" fill="#ef4444"/>
-          </svg>
-          {{ error }}
-        </p>
-      </div>
+      <!-- 校验错误由壳（SettingsModal）在分区容器顶部统一渲染：
+           保存同时校验渠道与应用设置，只挂在渠道分区会漏掉另一侧的错误 -->
     </div>
 
     <!-- ==================== 子弹窗：自动获取模型 — 多选 ==================== -->

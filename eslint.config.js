@@ -45,7 +45,7 @@ export default defineConfig([
   },
   {
     // 测试运行器（tests/**/*.mjs）在 Node 环境执行，需要 Node 全局变量
-    files: ['tests/**/*.mjs'],
+    files: ['tests/**/*.mjs', 'scripts/**/*.mjs'],
     languageOptions: {
       globals: {
         ...globals.node,

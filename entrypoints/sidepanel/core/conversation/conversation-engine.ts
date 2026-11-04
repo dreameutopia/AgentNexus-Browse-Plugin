@@ -1,3 +1,5 @@
+import { getPluginSnapshot, onPluginsChange } from '@/utils/plugins/catalog';
+import { invariant, isPluginRef, ownerOf } from '@/utils/plugins/contracts';
 /**
  * 会话引擎
  *
@@ -160,7 +162,7 @@ interface RunHandle {
   /** 本轮用户消息在 history 中的引用（空输入续跑时为 null）；运行中压缩据此判定持久化边界 */
   runUserMessage: ChatMessage | null;
   record: ChatMessageRecord;
-  snapshotTimer: number | null;
+  snapshotTimer: ReturnType<typeof globalThis.setInterval> | null;
   toolCallCount: number;
   /** An explicit screenshot in the same tool batch cannot bypass the 3s gap. */
   captureGapPending?: boolean;
@@ -174,6 +176,8 @@ interface RunHandle {
   compactionFailed: boolean;
   /** 运行内动态扩容的工具 ID（load_skill 激活技能后，把该技能预授权工具并入后续请求） */
   dynamicToolIds: Set<string>;
+  pluginOwners?: Set<string>;
+  pluginBindings?: ConversationRuntime['pluginBindings'];
   /**
    * 终止型工具（ToolMetadata.terminal）已成功执行：本轮工具全部执行完、
    * 结果已回传模型后结束循环，不再发起下一次请求。
@@ -271,10 +275,24 @@ export class ConversationEngine {
    * 预登记保证 abort 在 run() 全生命周期内可用。
    */
   private pendingAborts = new Map<string, AbortController>();
-  constructor(private readonly deps: ConversationDeps = defaultDeps) {}
+  constructor(private readonly deps: ConversationDeps = defaultDeps) {
+    onPluginsChange(() => {
+      const state = getPluginSnapshot();
+      for (const handle of this.runs.values()) for (const key of handle.pluginOwners ?? []) {
+        const plugin = state.packages.find(p => p.key === key), binding = handle.pluginBindings?.[key];
+        if (!plugin?.enabled || plugin.blocked || !binding || plugin.epoch !== binding.epoch || plugin.digest !== binding.digest) handle.abortController.abort();
+      }
+    });
+  }
 
   isRunning(chatId: string): boolean {
     return this.runs.has(chatId) || this.pendingAborts.has(chatId);
+  }
+
+  /** Atomic in-memory snapshot for a sidepanel attaching to an existing run. */
+  getRunningRecord(chatId: string): ChatMessageRecord | null {
+    const record = this.runs.get(chatId)?.record;
+    return record ? structuredClone(record) : null;
   }
 
   /** 中止指定会话的运行（准备阶段与运行中均可中止；无运行时返回 false） */
@@ -408,12 +426,14 @@ export class ConversationEngine {
         compactionFailed: false,
         // 运行内动态扩容的工具 ID（load_skill 激活技能后注入其预授权工具）
         dynamicToolIds: new Set<string>(),
+        pluginOwners: new Set(runtime.pluginOwners ?? []),
+        pluginBindings: runtime.pluginBindings,
         consecutiveFailedRounds: 0,
         stopAfterRound: false,
       };
       this.pendingAborts.delete(runtime.chatId);
       this.runs.set(runtime.chatId, handle);
-      handle.snapshotTimer = window.setInterval(() => {
+      handle.snapshotTimer = globalThis.setInterval(() => {
         void transcriptEngine.flush(handle.record);
       }, SNAPSHOT_INTERVAL_MS);
       emit({ type: 'assistant-start', chatId: runtime.chatId, messageId: record.id });
@@ -440,6 +460,11 @@ export class ConversationEngine {
     try {
       let shouldContinue = true;
       while (shouldContinue) {
+        const pluginState = getPluginSnapshot();
+        for (const key of [...(runtime.pluginOwners ?? []), ...(handle.pluginOwners ?? [])]) {
+          const installed = pluginState.packages.find(p => p.key === key), binding = runtime.pluginBindings?.[key];
+          invariant(installed?.enabled && !installed.blocked && binding && installed.epoch === binding.epoch && installed.digest === binding.digest, 'CAPABILITY_REVOKED');
+        }
         guardIterations++;
         totalIterations++;
 
@@ -1038,10 +1063,16 @@ export class ConversationEngine {
       }
 
       try {
+        const plugins = getPluginSnapshot();
+        for (const key of [...(runtime.pluginOwners ?? []), ...(handle.pluginOwners ?? [])]) {
+          const installed = plugins.packages.find(p => p.key === key), binding = runtime.pluginBindings?.[key];
+          invariant(installed?.enabled && !installed.blocked && binding && installed.epoch === binding.epoch && installed.digest === binding.digest, 'CAPABILITY_REVOKED');
+        }
         // Never trust a provider to call only advertised tools. Capability limits
         // apply before parsing, approval, skill loading, or any side effect.
         if ((!runtime.toolIds.includes(toolName) && !handle.dynamicToolIds.has(toolName)) ||
-            (runtime.toolPolicy === 'vision-assistant' && !isVisionAssistantTool(toolName))) {
+            (runtime.toolPolicy === 'vision-assistant' && !isVisionAssistantTool(toolName)) ||
+            (runtime.pluginToolCeiling && !runtime.pluginToolCeiling.includes(toolName))) {
           throw new Error(`TOOL_NOT_ALLOWED: ${toolName} 不在本轮工具范围内。${runtime.toolPolicy === 'vision-assistant' ? '视觉助手只观察并指导；代操作请切换视觉通用助手 / 文本通用助手。' : '请使用本轮已提供的工具。'}`);
         }
         // 参数解析先于审批：无效参数直接以可控失败回传模型自纠，
@@ -1051,6 +1082,11 @@ export class ConversationEngine {
         // ── 审批门：声明 requiresApproval 的工具先经用户放行（缺省拒绝，安全侧）──
         // 拒绝（或无审批通道）不走执行，直接以「可控失败」回传模型——
         // 模型可向用户说明意图并换路径，与工具错误的两级模型完全一致
+        if (runtime.pluginToolCeiling && toolName === 'load_skill') {
+          const ref = (args as { skill_name?: string })?.skill_name;
+          const skill = typeof ref === 'string' ? skillEngine.get(ref) : undefined;
+          invariant(skill?.enabled && skill.allowedTools.every(id => runtime.pluginToolCeiling!.includes(id)), 'SKILL_NOT_ALLOWED');
+        }
         if (runtime.toolPolicy === 'vision-assistant' && toolName === 'load_skill') {
           const ref = (args as { skill_name?: unknown })?.skill_name;
           const skill = typeof ref === 'string' ? skillEngine.get(ref) : undefined;
@@ -1109,13 +1145,13 @@ export class ConversationEngine {
           const callController = new AbortController();
           const isInteractiveTool = INTERACTIVE_TOOL_NAMES.has(toolName);
           const timeoutMs = toolName === GENERIC_WAIT_TOOL_ID ? waitExecutionTimeout(args, runtime.limits.toolTimeoutMs) : runtime.limits.toolTimeoutMs;
-          let timer: number | null = null;
+          let timer: ReturnType<typeof globalThis.setTimeout> | null = null;
           const cleanup = () => {
-            if (timer !== null) window.clearTimeout(timer);
+            if (timer !== null) globalThis.clearTimeout(timer);
             signal.removeEventListener('abort', onAbort);
           };
           if (!isInteractiveTool) {
-            timer = window.setTimeout(() => {
+            timer = globalThis.setTimeout(() => {
               callController.abort();
               cleanup();
               reject(
@@ -1139,7 +1175,7 @@ export class ConversationEngine {
           //（不同会话的并发运行各自的 chatId 互不串扰）
           this.deps.executeTool(toolName,
             runtime.toolPolicy === 'vision-assistant' && toolName === 'screenshot' ? { mode: 'observe' } : args,
-            { chatId: runtime.chatId, signal: callController.signal }).then(
+            { chatId: runtime.chatId, signal: callController.signal, pluginBindings: runtime.pluginBindings, pluginApproved: true }).then(
             value => {
               cleanup();
               resolve(value);
@@ -1302,16 +1338,16 @@ export class ConversationEngine {
     approval: NonNullable<RunOptions['onToolApproval']>,
     request: ToolApprovalRequest,
   ): Promise<boolean> {
-    let timer: number | null = null;
+    let timer: ReturnType<typeof globalThis.setTimeout> | null = null;
     try {
       return await Promise.race([
         approval(request),
         new Promise<false>(resolve => {
-          timer = window.setTimeout(() => resolve(false), TOOL_APPROVAL_MAX_WAIT_MS);
+          timer = globalThis.setTimeout(() => resolve(false), TOOL_APPROVAL_MAX_WAIT_MS);
         }),
       ]);
     } finally {
-      if (timer !== null) window.clearTimeout(timer);
+      if (timer !== null) globalThis.clearTimeout(timer);
     }
   }
 
@@ -1341,6 +1377,7 @@ export class ConversationEngine {
     if (typeof loadedName !== 'string' || !loadedName) return;
     const skill = skillEngine.get(loadedName);
     if (!skill || !skill.enabled || skill.allowedTools.length === 0) return;
+    if (isPluginRef(skill.id)) (handle.pluginOwners ??= new Set()).add(ownerOf(skill.id));
     const known: string[] = [];
     const unknown: string[] = [];
     for (const raw of skill.allowedTools) {
@@ -1348,6 +1385,7 @@ export class ConversationEngine {
       const toolId = raw.trim();
       if (!toolId) continue;
       if (runtime.toolPolicy === 'vision-assistant' && !isVisionAssistantTool(toolId)) continue;
+      if (runtime.pluginToolCeiling && !runtime.pluginToolCeiling.includes(toolId)) continue;
       if (toolRegistry.getTool(toolId)) known.push(toolId);
       else unknown.push(toolId);
     }
@@ -1402,12 +1440,12 @@ export class ConversationEngine {
         return;
       }
       const finish = () => {
-        window.clearTimeout(timer);
+        globalThis.clearTimeout(timer);
         signal.removeEventListener('abort', onAbort);
         resolve();
       };
       const onAbort = () => finish();
-      const timer = window.setTimeout(finish, ms);
+      const timer = globalThis.setTimeout(finish, ms);
       signal.addEventListener('abort', onAbort);
     });
   }
@@ -1458,12 +1496,12 @@ export class ConversationEngine {
       );
       const result = await new Promise<ToolResult | null>(resolve => {
         let settled = false;
-        let timer: number | null = null;
+        let timer: ReturnType<typeof globalThis.setTimeout> | null = null;
         const onAbort = () => { captureController.abort(); finish(null); };
         const finish = (value: ToolResult | null) => {
           if (settled) return;
           settled = true;
-          if (timer !== null) window.clearTimeout(timer);
+          if (timer !== null) globalThis.clearTimeout(timer);
           signal?.removeEventListener('abort', onAbort);
           resolve(value);
         };
@@ -1472,7 +1510,7 @@ export class ConversationEngine {
           return;
         }
         signal?.addEventListener('abort', onAbort, { once: true });
-        timer = window.setTimeout(() => {
+        timer = globalThis.setTimeout(() => {
           captureController.abort();
           console.warn('[ConversationEngine] 截图超时，降级为纯文本');
           finish(null);
@@ -1573,7 +1611,7 @@ export class ConversationEngine {
       // 不重复写库；自动续拍没有引用，走常规入库
       imageRef: image.imageRef,
     }));
-    if (fresh) delivered.push({ image: fresh.image, description: fresh.description });
+    if (fresh) delivered.push({ image: fresh.image, description: fresh.description, imageRef: undefined });
     const imageRefs: string[] = [];
     for (const visual of delivered) {
       (content as Array<{ type: string; text?: string }>).push({ type: 'text', text: visual.description });
@@ -1608,7 +1646,7 @@ export class ConversationEngine {
         : `[System status: the previous run failed. Its partial output may be incomplete.] ${toModelFacingContent(error ?? '')}` }]);
     }
     if (handle.snapshotTimer !== null) {
-      window.clearInterval(handle.snapshotTimer);
+      globalThis.clearInterval(handle.snapshotTimer);
       handle.snapshotTimer = null;
     }
     handle.record.status = status;

@@ -161,12 +161,19 @@ async function encodeWithQualityLadder(canvas: OffscreenCanvas): Promise<string 
   // 记录「格式回落」产生的实际 MIME：不支持的格式 convertToBlob 会静默回落 PNG，
   // 回落结果与质量无关，只需产出一次，避免同一 PNG 按质量重复尝试 N 次
   const fellBackTypes = new Set<string>();
+  // JPEG 无 alpha 通道：透明区域会直接变黑，故编码前先铺白底（惰性构建一次）
+  let jpegSource: OffscreenCanvas | undefined;
 
   for (const quality of QUALITY_STEPS) {
     for (const format of ENCODE_FORMATS) {
+      let source = canvas;
+      if (format === 'image/jpeg') {
+        if (!jpegSource) jpegSource = flattenOntoWhite(canvas);
+        source = jpegSource;
+      }
       let blob: Blob;
       try {
-        blob = await canvas.convertToBlob({ type: format, quality });
+        blob = await source.convertToBlob({ type: format, quality });
       } catch {
         continue;
       }
@@ -182,6 +189,18 @@ async function encodeWithQualityLadder(canvas: OffscreenCanvas): Promise<string 
     }
   }
   return undefined;
+}
+
+/** 复制画布并铺不透明白底（供 JPEG 编码使用，避免透明区域渲染为黑色） */
+function flattenOntoWhite(canvas: OffscreenCanvas): OffscreenCanvas {
+  const flat = new OffscreenCanvas(canvas.width, canvas.height);
+  const ctx = flat.getContext('2d');
+  if (ctx) {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, flat.width, flat.height);
+    ctx.drawImage(canvas, 0, 0);
+  }
+  return flat;
 }
 
 /** Blob → data URL（OffscreenCanvas 环境无 FileReader 依赖的同步路径） */

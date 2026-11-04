@@ -20,14 +20,16 @@ import {
   normalizeChannelState,
   validateAppSettings,
   validateChannelState,
+  checkChannelLiveness,
+  checkModelLiveness,
   createEmptyChannel,
   createEmptyModel,
   modelRefKey,
   CONTEXT_THRESHOLD_MIN,
   ITERATIONS_MAX,
   FAILED_TOOL_ROUNDS_DEFAULT,
-  TEXT_MAX_ITERATIONS_DEFAULT,
-  VISION_MAX_ITERATIONS_DEFAULT,
+  MAX_ITERATIONS_DEFAULT,
+  DEFAULT_SESSION_AGENT_ID,
   type ChannelConfig,
 } from '../../entrypoints/sidepanel/utils/channels';
 import { driverRegistry } from '../../entrypoints/sidepanel/utils/stream/driver-registry';
@@ -36,6 +38,10 @@ import {
   setEngineForTesting,
   type StorageAreaLike,
 } from '../../entrypoints/sidepanel/utils/config';
+// 校验文案走 i18n 目录，断言前把语言钉死：
+// 默认语言由运行环境探测（Node 21+ 有 navigator.language），
+// 不钉死则同一套断言在中文系统与英文系统上结果不同。
+import { setLocale } from '../../utils/i18n/core';
 
 // ==================== 极简断言 ====================
 
@@ -145,39 +151,53 @@ async function testNormalize(): Promise<void> {
   eq(ch1.models[1].vision, false, 'vision 缺省 false');
   eq(normalized.channels[1].protocol, 'future-protocol', '未知协议原样保留（不丢数据）');
 
-  // 应用设置归一化（顶层字段；兼容历史 defaults 子对象回落）
+  // 应用设置归一化（逐字段钳制 / 脏类型回落 / 引用三态化）
   const dirty = normalizeAppSettings({
     interactTimeoutMinutes: 500,
     activeModelRef: { channelId: ' ', modelId: 'x' }, // 非法引用 → null
-    defaults: { retryCount: 'x', temperature: 99 },
+    retryCount: 'x',
+    temperature: 99,
   });
   eq(dirty.interactTimeoutMinutes, 120, 'interactTimeout 越界钳制');
   eq(dirty.activeModelRef, null, '空 channelId 引用三态化为 null');
-  eq(dirty.retryCount, 2, '非数字重试次数回落（历史 defaults 回落）');
-  eq(dirty.temperature, 2, '历史 defaults 温度钳制到上限');
+  eq(dirty.retryCount, 2, '非数字重试次数回落默认');
+  eq(dirty.temperature, 2, '温度越界钳制到上限');
   eq(normalizeAppSettings(null).interactTimeoutMinutes, 20, 'null → 默认设置');
 
-  // 顶层字段优先于历史 defaults 子对象
-  const topFirst = normalizeAppSettings({ retryCount: 5, defaults: { retryCount: 1 } });
-  eq(topFirst.retryCount, 5, '顶层 retryCount 优先于历史 defaults');
-
-  // 循环轮次与连续失败阈值（越界钳制 / 脏类型回落 / 缺省默认）
+  // 对话轮次上限与连续失败阈值（越界钳制 / 脏类型回落 / 缺省默认；文本与视觉统一）
   const dirtyRounds = normalizeAppSettings({
-    textMaxIterations: ITERATIONS_MAX + 500,
-    visionMaxIterations: -3,
+    maxIterations: ITERATIONS_MAX + 500,
     maxConsecutiveFailedToolRounds: 'x',
   });
-  eq(dirtyRounds.textMaxIterations, ITERATIONS_MAX, 'textMaxIterations 越界钳制到上限');
-  eq(dirtyRounds.visionMaxIterations, 1, 'visionMaxIterations 负值钳制到下限');
+  eq(dirtyRounds.maxIterations, ITERATIONS_MAX, 'maxIterations 越界钳制到上限');
   eq(
     dirtyRounds.maxConsecutiveFailedToolRounds,
     FAILED_TOOL_ROUNDS_DEFAULT,
     '非数字失败阈值回落默认值',
   );
+  const negativeRounds = normalizeAppSettings({ maxIterations: -3 });
+  eq(negativeRounds.maxIterations, 1, 'maxIterations 负值钳制到下限');
   const defaults = normalizeAppSettings(null);
-  eq(defaults.textMaxIterations, TEXT_MAX_ITERATIONS_DEFAULT, 'null → 默认文本轮次 20');
-  eq(defaults.visionMaxIterations, VISION_MAX_ITERATIONS_DEFAULT, 'null → 默认视觉轮次 10');
+  eq(defaults.maxIterations, MAX_ITERATIONS_DEFAULT, 'null → 默认轮次 30');
   eq(defaults.maxConsecutiveFailedToolRounds, FAILED_TOOL_ROUNDS_DEFAULT, 'null → 默认失败阈值 5');
+  eq(defaults.defaultAgentId, DEFAULT_SESSION_AGENT_ID, 'null → 默认智能体 Auto-Action');
+
+  // 默认智能体：脏类型 / 空串回落预置默认；合法 id 原样保留
+  eq(
+    normalizeAppSettings({ defaultAgentId: 123 }).defaultAgentId,
+    DEFAULT_SESSION_AGENT_ID,
+    '非字符串 defaultAgentId 回落默认',
+  );
+  eq(
+    normalizeAppSettings({ defaultAgentId: '  ' }).defaultAgentId,
+    DEFAULT_SESSION_AGENT_ID,
+    '空串 defaultAgentId 回落默认',
+  );
+  eq(
+    normalizeAppSettings({ defaultAgentId: 'deep-search' }).defaultAgentId,
+    'deep-search',
+    '合法 defaultAgentId 原样保留',
+  );
 }
 
 async function testValidate(): Promise<void> {
@@ -218,8 +238,8 @@ async function testValidate(): Promise<void> {
   // 应用设置校验（归一化后恒合法；这里直接喂未归一化的越界值验证校验器本身）
   const settingsErrors = validateAppSettings({
     interactTimeoutMinutes: 0,
-    textMaxIterations: 0,
-    visionMaxIterations: ITERATIONS_MAX + 1,
+    maxIterations: 0,
+    defaultAgentId: '',
     maxConsecutiveFailedToolRounds: 999,
     retryCount: 99,
     retryInterval: 0,
@@ -229,13 +249,13 @@ async function testValidate(): Promise<void> {
   });
   check(settingsErrors.length >= 8, '应用设置越界逐项报错', settingsErrors);
   check(
-    settingsErrors.some(e => e.includes('文本对话轮次上限')),
-    'textMaxIterations 越界被拦截',
+    settingsErrors.some(e => e.includes('对话轮次上限')),
+    'maxIterations 越界被拦截',
     settingsErrors,
   );
   check(
-    settingsErrors.some(e => e.includes('视觉对话轮次上限')),
-    'visionMaxIterations 越界被拦截',
+    settingsErrors.some(e => e.includes('默认智能体')),
+    'defaultAgentId 空值被拦截',
     settingsErrors,
   );
   check(
@@ -350,10 +370,11 @@ async function testStoresAndRegistry(): Promise<void> {
     ],
   });
   await channelStore.load();
-  const options = modelRegistry.listOptions();
+  const options = [...modelRegistry.options];
   eq(options.map(o => o.key), ['ch_ok/m_ok'], '清单只含唯一可用模型');
   eq(options[0].vision, true, '视觉声明透传');
-  check(modelRegistry.isConfigured(), 'isConfigured 为 true');
+  check(modelRegistry.configured, 'configured 为 true');
+  eq(modelRegistry.blockerIssue, null, '已配置时 blockerIssue 为 null');
 
   // ── 注册表：精确解析原因 ──
   const missingChannel = modelRegistry.resolveExact({ channelId: 'nope', modelId: 'm' });
@@ -402,11 +423,88 @@ async function testStoresAndRegistry(): Promise<void> {
   const healedEmpty = await modelRegistry.healActiveRef();
   eq(healedEmpty, true, '全部不可用时再次自愈');
   eq(appSettingsStore.getActiveModelRef(), null, '无可用模型时默认引用清空');
+
+  // 死循环回归：引用已为空且无可用模型时，自愈必须**不再写盘**。
+  // 写入会触发变更通知 → 再次自愈 → 再写入……（无限自触发，锁死事件循环）
+  const healNoop = await modelRegistry.healActiveRef();
+  eq(healNoop, false, '引用已为空且无可用模型时自愈为 no-op（不写盘）');
+  eq(appSettingsStore.getActiveModelRef(), null, '自愈 no-op 后默认引用仍为空');
+
+  // ── 注册表：blockerIssue 给出「未配置」的具体原因（结构化事实，UI 自行翻译） ──
+  // 空配置 → 明确指向「未添加渠道」
+  await channelStore.save({ channels: [] });
+  eq(modelRegistry.configured, false, '空渠道时 configured 为 false');
+  eq(modelRegistry.blockerIssue?.code, 'no-channels', '空配置时 blockerIssue 指向「未添加渠道」');
+
+  // 渠道存在但端点不完整 → blockerIssue 指向具体不合格项（缺密钥）
+  // 缺密钥的渠道**过不了保存期校验**，因此经引擎直写落盘（模拟外部写入 /
+  // 备份导入这类绕过校验的路径），再由 store 载入观察活性判定
+  await engine.writeSection('channels', {
+    channels: [validChannel({ id: 'ch_nohint', apiKey: '', models: [{ ...createEmptyModel(), id: 'm_nohint', name: 'gpt-4o' }] })],
+  });
+  await channelStore.load();
+  eq(modelRegistry.blockerIssue?.code, 'key-missing', '缺密钥时 blockerIssue 指向缺密钥');
+  eq(modelRegistry.blockerIssue?.channelLabel, '官方', 'blockerIssue 携带渠道展示名');
+
+  // 渠道被禁用 → blockerIssue 指向禁用
+  await channelStore.save({
+    channels: [validChannel({ id: 'ch_off', enabled: false, models: [{ ...createEmptyModel(), id: 'm_off2', name: 'gpt-4o' }] })],
+  });
+  eq(modelRegistry.blockerIssue?.code, 'channel-disabled', '渠道禁用时 blockerIssue 指向禁用');
+
+  // ── 判定层：checkChannelLiveness / checkModelLiveness 单元 ──
+  const liveChannel = validChannel({ id: 'ch_live', models: [{ ...createEmptyModel(), id: 'm_live', name: 'gpt-4o' }] });
+  const liveResult = checkChannelLiveness(liveChannel);
+  eq(liveResult.ok, true, '合法渠道活性通过');
+  eq(liveResult.issues.length, 0, '合法渠道无问题');
+
+  const badUrlChannel = validChannel({ id: 'ch_badurl2', baseUrl: 'not-a-url' });
+  const badUrlResult = checkChannelLiveness(badUrlChannel);
+  eq(badUrlResult.ok, false, '非法 URL 渠道不可用');
+  check(
+    badUrlResult.issues.some(issue => issue.code === 'url-invalid'),
+    '非法 URL 返回 url-invalid 代码',
+    badUrlResult.issues,
+  );
+
+  const noKeyChannel = validChannel({ id: 'ch_nokey2', apiKey: '' });
+  const noKeyResult = checkChannelLiveness(noKeyChannel);
+  check(
+    noKeyResult.issues.some(issue => issue.code === 'key-missing'),
+    '缺密钥返回 key-missing 代码',
+    noKeyResult.issues,
+  );
+
+  const disabledModel = { ...createEmptyModel(), id: 'm_dis', name: 'gpt-4o', enabled: false };
+  const modelResult = checkModelLiveness(liveChannel, disabledModel, liveResult);
+  eq(modelResult.ok, false, '禁用模型不可用');
+  check(
+    modelResult.issues.some(issue => issue.code === 'model-disabled'),
+    '禁用模型返回 model-disabled 代码',
+    modelResult.issues,
+  );
+
+  // 渠道不可用时模型判定透传渠道问题（不单独评估模型维度）
+  const passthrough = checkModelLiveness(badUrlChannel, liveChannel.models[0], badUrlResult);
+  eq(passthrough.ok, false, '渠道不可用时模型判定透传渠道问题');
+  check(
+    passthrough.issues.some(issue => issue.code === 'url-invalid'),
+    '透传的问题保留渠道侧原因',
+    passthrough.issues,
+  );
+
+  // ── 注册表：配置变更后状态自动重算（响应式） ──
+  await channelStore.save({ channels: [validChannel({ id: 'ch_auto', models: [{ ...createEmptyModel(), id: 'm_auto', name: 'gpt-4o' }] })] });
+  eq(modelRegistry.configured, true, '保存后 configured 自动为 true');
+  eq(modelRegistry.options.length, 1, '保存后 options 自动更新');
 }
 
 // ==================== 运行 ====================
 
 async function main(): Promise<void> {
+  // 语言钉死为默认语言：校验文案走 i18n 目录，断言内容依赖具体语言
+  setLocale('zh-CN');
+
   const suites: [string, () => Promise<void>][] = [
     ['存储归一化', testNormalize],
     ['语义校验', testValidate],

@@ -1,0 +1,203 @@
+{
+  "$ref": "#/definitions/plugin",
+  "definitions": {
+    "plugin": {
+      "type": "object",
+      "properties": {
+        "$schema": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "manifestVersion": {
+          "type": "number",
+          "const": 1
+        },
+        "publisher": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^ed25519:[a-z2-7]{52}$"
+            },
+            "displayName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "required": [
+            "id",
+            "displayName"
+          ],
+          "additionalProperties": false
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 48,
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "engines": {
+          "type": "object",
+          "properties": {
+            "agentnexus": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "pluginApi": {
+              "$ref": "#/definitions/plugin/properties/engines/properties/agentnexus"
+            }
+          },
+          "required": [
+            "agentnexus",
+            "pluginApi"
+          ],
+          "additionalProperties": false
+        },
+        "license": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "repository": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 512
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "network": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uri",
+                "maxLength": 512
+              },
+              "maxItems": 20,
+              "default": []
+            },
+            "hostTools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "maxItems": 100,
+              "default": []
+            },
+            "secretSlots": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/plugin/properties/id"
+              },
+              "maxItems": 10,
+              "default": []
+            }
+          },
+          "additionalProperties": false
+        },
+        "contributes": {
+          "type": "object",
+          "properties": {
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "$ref": "#/definitions/plugin/properties/id"
+                  },
+                  "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240
+                  }
+                },
+                "required": [
+                  "id",
+                  "path"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 100,
+              "default": []
+            },
+            "skills": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                  },
+                  "path": {
+                    "$ref": "#/definitions/plugin/properties/contributes/properties/tools/items/properties/path"
+                  }
+                },
+                "required": [
+                  "id",
+                  "path"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 50,
+              "default": []
+            },
+            "agents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/plugin/properties/contributes/properties/tools/items"
+              },
+              "maxItems": 50,
+              "default": []
+            }
+          },
+          "additionalProperties": false
+        },
+        "dependencies": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/plugin/properties/engines/properties/agentnexus"
+          },
+          "default": {}
+        },
+        "optionalDependencies": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/plugin/properties/engines/properties/agentnexus"
+          },
+          "default": {}
+        }
+      },
+      "required": [
+        "manifestVersion",
+        "publisher",
+        "id",
+        "displayName",
+        "version",
+        "engines",
+        "license",
+        "capabilities",
+        "contributes"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

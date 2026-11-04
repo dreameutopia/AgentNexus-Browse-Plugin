@@ -11,14 +11,13 @@
  *     hub 备份恢复等其它上下文的写入能在本上下文即时生效。
  *
  * 加载语义：单飞（并发 load 只触发一次 IO）、幂等（已加载后调用只做对账重读）。
- * 失败语义：load 失败保持空态并抛出（调用方决定降级）；save 校验失败以
- * 结果值返回（预期内失败），持久化失败上抛（ConfigWriteError 等，绝不静默）。
+ * 失败语义：load 失败保持空态并以结构化结果返回（调用方决定降级）；
+ * save 校验失败以值返回（预期内失败），持久化失败上抛（ConfigWriteError 等，绝不静默）。
  */
 
 import { getEngine } from '../config/engine';
 import {
   cloneChannel,
-  cloneChannelState,
   type ChannelConfig,
   type ChannelState,
 } from './channel-types';
@@ -28,6 +27,14 @@ import { normalizeChannelState, validateChannelState } from './channel-validatio
 export type ChannelSaveResult =
   | { ok: true }
   | { ok: false; errors: string[] };
+
+/** 加载结果：存储故障以结构化结果返回，调用方可见「发生了什么」而非只 console */
+export interface ChannelLoadResult {
+  /** 是否成功读出配置（false = 存储不可用或全副本损坏，内存态为空） */
+  ok: boolean;
+  /** 本次读取发现并已处理的问题（用于日志与诊断面板） */
+  issues: string[];
+}
 
 type Listener = () => void;
 
@@ -46,6 +53,9 @@ class ChannelStore {
    * 从持久化引擎加载（单飞 + 幂等）。
    * 每次调用都重读一次存储——保证「备份恢复 / 其它上下文写入」后
    * 本上下文拿到的是最新事实（重读本身走引擎的恢复阶梯，失败会抛）。
+   *
+   * 载入即变更：内存态被整体替换，**必须通知订阅者**——
+   * 否则注册表仍持有旧快照，UI 看到的可用模型与实际存储不一致。
    */
   async load(): Promise<void> {
     if (this.loadPromise) {
@@ -72,6 +82,22 @@ class ChannelStore {
       this.loadPromise = null;
     }
     this.attachStorageWatcher();
+    this.notify();
+  }
+
+  /**
+   * 加载并返回结构化结果（供需要区分「成功 / 存储故障」的调用方使用）。
+   * 存储故障不抛错：返回 ok=false + issues，内存态保持空。
+   */
+  async loadWithResult(): Promise<ChannelLoadResult> {
+    try {
+      await this.load();
+      return { ok: true, issues: [] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[ChannelStore] 渠道配置加载失败:', error);
+      return { ok: false, issues: [message] };
+    }
   }
 
   isLoaded(): boolean {
@@ -96,7 +122,10 @@ class ChannelStore {
   /**
    * 整体保存渠道文档（设置界面的「保存」入口）。
    * 流程：归一化 → 语义校验（失败以值返回，不写盘）→ 引擎保存（失败上抛）
-   *       → 更新内存 → 通知订阅方。
+   *       → 维护每条渠道的 updatedAt → 更新内存 → 通知订阅方。
+   *
+   * updatedAt 语义：每次成功保存都会把所有渠道的时间戳推进到当前时刻——
+   * 它表达的是「该渠道配置最近一次被写入/确认」，而不是逐字段的编辑时间。
    */
   async save(state: ChannelState): Promise<ChannelSaveResult> {
     const normalized = normalizeChannelState(state);
@@ -105,8 +134,12 @@ class ChannelStore {
       return { ok: false, errors };
     }
     // 引擎写入带读回校验，未通过会抛 ConfigWriteError——上抛给调用方呈现
-    await getEngine().domain<ChannelState>('channels').save(normalized);
-    this.channels = normalized.channels;
+    const now = Date.now();
+    const stamped: ChannelState = {
+      channels: normalized.channels.map(channel => ({ ...channel, updatedAt: now })),
+    };
+    await getEngine().domain<ChannelState>('channels').save(stamped);
+    this.channels = stamped.channels;
     this.loaded = true;
     this.notify();
     return { ok: true };
@@ -145,9 +178,8 @@ class ChannelStore {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
       if (!(STORAGE_KEY in changes)) return;
-      void this.load()
-        .then(() => this.notify())
-        .catch(error => console.warn('[ChannelStore] 跨上下文同步重载失败:', error));
+      // load() 内部已通知订阅者（载入即变更），此处无需二次通知
+      void this.load().catch(error => console.warn('[ChannelStore] 跨上下文同步重载失败:', error));
     });
   }
 }

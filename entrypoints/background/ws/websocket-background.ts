@@ -1,3 +1,4 @@
+import { onPluginsChange } from '@/utils/plugins/catalog';
 /**
  * Background WebSocket 管理器
  * 基于 Java 后端 WebSocket API 文档实现
@@ -43,6 +44,7 @@ class BackgroundWebSocket {
 
   constructor() {
     console.log('[BackgroundWebSocket] 初始化 WebSocket 管理器');
+    onPluginsChange(() => { if (this.initialized && this.isRegistered) { this.isRegistered = false; this.registerTools(); } });
     // MV3 service worker：异步初始化（用户浏览器场景 uuid 需读 chrome.storage），
     // 外部调 tryConnect/getStatus 等方法前会先经各方法内的守卫等待初始化完成
     void this.ensureInitialized().catch((err) => {

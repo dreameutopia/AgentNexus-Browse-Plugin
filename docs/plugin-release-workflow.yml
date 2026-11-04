@@ -1,0 +1,63 @@
+# Template for a third-party plugin repository. Copy into .github/workflows/release.yml.
+# Required variables: AGENTNEXUS_SDK_REPOSITORY (owner/repo), AGENTNEXUS_SDK_COMMIT (40-char SHA).
+# Required protected environment: plugin-release, with secret PLUGIN_PUBLISHER_PRIVATE_JWK.
+name: Release AgentNexus plugin
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: plugin-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: plugin-release
+    permissions:
+      contents: write
+    steps:
+      - name: Validate SDK pin
+        env:
+          SDK_COMMIT: ${{ vars.AGENTNEXUS_SDK_COMMIT }}
+          SDK_REPOSITORY: ${{ vars.AGENTNEXUS_SDK_REPOSITORY }}
+        run: |
+          [[ "$SDK_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$SDK_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: plugin
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ vars.AGENTNEXUS_SDK_REPOSITORY }}
+          ref: ${{ vars.AGENTNEXUS_SDK_COMMIT }}
+          path: sdk
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Install pinned SDK dependencies
+        working-directory: sdk
+        run: npm ci --ignore-scripts
+      - name: Check tag and package version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node -e 'const fs=require("fs"); const m=JSON.parse(fs.readFileSync("plugin/plugin.json","utf8")); if(process.env.RELEASE_TAG!=="v"+m.version)process.exit(1)'
+      - name: Sign, validate and publish
+        env:
+          PRIVATE_JWK: ${{ secrets.PLUGIN_PUBLISHER_PRIVATE_JWK }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          umask 077
+          key="$RUNNER_TEMP/publisher-key.json"
+          trap 'rm -f -- "$key"' EXIT
+          printf '%s' "$PRIVATE_JWK" > "$key"
+          unset PRIVATE_JWK
+          node sdk/scripts/plugin-cli.mjs pack plugin --key "$key" --out "$RUNNER_TEMP/plugin.anplugin"
+          node sdk/scripts/plugin-cli.mjs validate "$RUNNER_TEMP/plugin.anplugin"
+          gh release create "$RELEASE_TAG" --draft --verify-tag --notes-file plugin/README.md
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/plugin.anplugin"
+          gh release edit "$RELEASE_TAG" --draft=false

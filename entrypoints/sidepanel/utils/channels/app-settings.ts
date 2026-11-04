@@ -3,7 +3,8 @@
  *
  * 管理与渠道无关的全局配置：
  *   - interactTimeoutMinutes（interact 询问弹窗等待时长）
- *   - 文本/视觉对话轮次上限、连续工具失败阈值（循环守卫参数）
+ *   - defaultAgentId（新会话默认智能体，输入框未选时自动选中）
+ *   - maxIterations（对话轮次上限，文本与视觉策略统一）、连续工具失败阈值（循环守卫参数）
  *   - retryCount / retryInterval / temperature（全局请求参数，不按渠道单独配置）
  *   - defaultContextThreshold（新建模型的默认上下文阈值）
  *   - activeModelRef（当前生效模型的稳定引用；新会话与一次性调用方的默认选择）
@@ -25,6 +26,12 @@ export type AppSettingsSaveResult =
   | { ok: true }
   | { ok: false; errors: string[] };
 
+/** 加载结果：存储故障以结构化结果返回（与 ChannelStore.loadWithResult 同构） */
+export interface AppSettingsLoadResult {
+  ok: boolean;
+  issues: string[];
+}
+
 type Listener = () => void;
 
 const STORAGE_KEY = 'agent_nexus_app_settings';
@@ -41,7 +48,12 @@ class AppSettingsStore {
 
   // ==================== 加载 ====================
 
-  /** 从持久化引擎加载（单飞 + 幂等 + 对账重读，语义同 ChannelStore.load） */
+  /**
+   * 从持久化引擎加载（单飞 + 幂等 + 对账重读，语义同 ChannelStore.load）。
+   *
+   * 载入即变更：内存态被整体替换，**必须通知订阅者**——
+   * 否则注册表仍持有旧快照，UI 看到的可用模型与实际存储不一致。
+   */
   async load(): Promise<void> {
     if (this.loadPromise) {
       await this.loadPromise;
@@ -63,6 +75,25 @@ class AppSettingsStore {
       this.loadPromise = null;
     }
     this.attachStorageWatcher();
+    this.notify();
+  }
+
+  /**
+   * 加载并返回结构化结果（供需要区分「成功 / 存储故障」的调用方使用）。
+   * 存储故障不抛错：返回 ok=false + issues，内存态回落到默认设置。
+   */
+  async loadWithResult(): Promise<AppSettingsLoadResult> {
+    try {
+      await this.load();
+      return { ok: true, issues: [] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[AppSettingsStore] 应用设置加载失败:', error);
+      // 加载失败时内存态必须是确定的（默认设置），绝不停留在可能过期的旧值
+      this.settings = normalizeAppSettings(DEFAULT_APP_SETTINGS);
+      this.loaded = true;
+      return { ok: false, issues: [message] };
+    }
   }
 
   isLoaded(): boolean {
@@ -132,9 +163,8 @@ class AppSettingsStore {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
       if (!(STORAGE_KEY in changes)) return;
-      void this.load()
-        .then(() => this.notify())
-        .catch(error => console.warn('[AppSettingsStore] 跨上下文同步重载失败:', error));
+      // load() 内部已通知订阅者（载入即变更），此处无需二次通知
+      void this.load().catch(error => console.warn('[AppSettingsStore] 跨上下文同步重载失败:', error));
     });
   }
 }

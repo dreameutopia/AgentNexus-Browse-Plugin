@@ -32,6 +32,7 @@
             <!-- 智能体头像：图片或 emoji，无背景色 -->
             <div class="hub-card-title">
               <AgentAvatar class="hub-card-avatar" :avatar="agent.avatar" :size="26" :label="displayOf(agent).name" />
+              <span v-if="agent.plugin" class="hub-badge">{{ agent.plugin.displayName }} · {{ agent.plugin.version }}</span>
               <span class="hub-card-name" :title="displayOf(agent).name">{{ displayOf(agent).name }}</span>
             </div>
             <span class="hub-badge" :class="isPreset(agent) ? 'hub-badge-preset' : 'hub-badge-custom'">
@@ -48,6 +49,7 @@
             <span v-if="agent.skills?.length" class="hub-card-tools">{{ t('hub.agentSkillCount', { count: agent.skills.length }) }}</span>
             <span v-if="agent.vision" class="hub-badge hub-badge-vision">Vision</span>
             <span class="hub-card-ops">
+              <button v-if="agent.plugin" type="button" class="hub-op" @click="copyPluginAgent(agent)">{{ t('hub.copyPluginAgent') }}</button>
               <template v-if="!isPreset(agent)">
                 <button type="button" class="hub-op" @click="startEdit(agent)">{{ t('hub.edit') }}</button>
                 <button type="button" class="hub-op hub-op-danger" @click="removeAgent(agent)">{{ t('hub.delete') }}</button>
@@ -180,6 +182,7 @@
             <p v-else-if="extraTools.length > 0" class="hub-hint">{{ t('hub.extraToolsHint', { count: extraTools.length }) }}</p>
           </div>
 
+          <ExternalToolsPicker v-model="form.extraToolIds" :count="selectedToolCount" :max="MAX_TOOLS_PER_AGENT" />
           <!-- 关联技能：多选（可用清单 = 显式关联 ∪ 工具映射兜底；见 utils/skills/skill-availability） -->
           <div class="hub-field">
             <div class="hub-groups-head">
@@ -202,11 +205,12 @@
                     :disabled="!form.skills.includes(skill.id) && form.skills.length >= AGENT_SKILLS_MAX_COUNT"
                     @change="toggleSkill(skill.id)"
                   />
-                  <span class="hub-group-name">{{ skillOptionLabel(skill) }}</span>
+                  <span class="hub-group-name">{{ skillOptionLabel(skill) }}<small v-if="skill.plugin"> · {{ skill.plugin.displayName }} {{ skill.plugin.version }} · {{ skill.plugin.publisher }}</small></span>
                   <span class="hub-group-desc">{{ skill.enabled ? skill.description : t('hub.skillDisabledMark') }}</span>
                 </label>
               </div>
             </div>
+            <label v-for="missing in missingSkillRefs" :key="missing" class="hub-hint"><input type="checkbox" checked @change="toggleSkill(missing)" />{{ missing }} · {{ t('hub.skillDisabledMark') }}</label>
             <p class="hub-hint">{{ t('hub.fieldAgentSkillsHint') }}</p>
           </div>
 
@@ -258,6 +262,7 @@ import AgentAvatar from '@/common/AgentAvatar.vue';
 // 智能体展示文案随界面语言切换（预置智能体的多语言文案；自定义智能体沿用其自填文案）
 import { useAgentDisplay } from '@/common/use-agent-display';
 import CategorySelect from '../components/CategorySelect.vue';
+import ExternalToolsPicker from './ExternalToolsPicker.vue';
 import TagInput from '../components/TagInput.vue';
 // 头像 emoji 选择卡片（全量清单网格，取代原预置图片选择）
 import EmojiPicker from '../components/EmojiPicker.vue';
@@ -344,7 +349,7 @@ const refreshList = () => {
   agents.value = getAllAgents();
 };
 
-const isPreset = (agent: AgentConfig) => isPresetAgent(agent.id);
+const isPreset = (agent: AgentConfig) => isPresetAgent(agent.id) || !!agent.plugin;
 
 // 智能体展示文案（随界面语言切换；编辑表单仍用规范名 agent.name 作为存储键）
 const { displayOf } = useAgentDisplay();
@@ -508,6 +513,7 @@ async function onAvatarFileChange(event: Event): Promise<void> {
 }
 
 const extraTools = computed(() => form.extraToolIds);
+const missingSkillRefs = computed(() => form.skills.filter(ref => !skills.value.some(skill => skill.id === ref)));
 
 /** 当前已选工具总数（所选组工具并集 + 额外保留工具，去重计数） */
 const selectedToolCount = computed(() => {
@@ -592,8 +598,19 @@ function startCreate(): void {
   editing.value = true;
 }
 
+function copyPluginAgent(agent: AgentConfig): void {
+  startCreate();
+  const names = new Set(getAllAgents().map(a => a.name));
+  const base = agent.name.slice(0, 20) + ' (copy)'; let name = base;
+  for (let n = 2; names.has(name) && n < 1000; n++) name = base + n;
+  const selection = deriveGroupsFromTools(agent.tools);
+  form.name = name; form.description = agent.description; form.system = agent.system;
+  form.tags = [...agent.tags]; form.groups = selection.groups; form.extraToolIds = selection.extra;
+  form.skills = [...(agent.skills ?? [])]; form.category = agent.category; form.avatar = agent.avatar;
+}
+
 function startEdit(agent: AgentConfig): void {
-  if (isPresetAgent(agent.id)) return; // 预置不可编辑（防御）
+  if (isPresetAgent(agent.id) || agent.plugin) return; // 预置不可编辑（防御）
   editingSource.value = agent;
   editingExisting.value = true;
   const { groups, extra } = deriveGroupsFromTools(agent.tools);
@@ -606,11 +623,12 @@ function startEdit(agent: AgentConfig): void {
   // 关联技能引用 → id 归一：v1 数据可能以名称 / 模型标识持久化，编辑时统一经
   // resolveSkill（与运行时可用性解析同口径）转为当前记录 id，保证「勾选可见的」
   // 与「保存后生效的」完全一致，消除不可见关联的歧义；解析不到的悬挂引用
-  // 丢弃并告警（运行时本就会静默忽略它们，显式丢弃让编辑器所见即所得）
+  // 保留失效引用：只修改其它字段时，不能静默删除插件配置。
   form.skills = [...(agent.skills ?? [])].reduce<string[]>((ids, ref) => {
     const resolved = resolveSkill(ref);
     if (!resolved) {
-      console.warn(`[AgentManager] 智能体 "${agent.name}" 关联的技能引用 "${ref}" 无法解析，已从编辑表单剔除`);
+      console.warn(`[AgentManager] 智能体 "${agent.name}" 关联的技能引用 "${ref}" 暂不可用，编辑表单保留该引用`);
+      if (!ids.includes(ref)) ids.push(ref);
       return ids;
     }
     if (!ids.includes(resolved.id)) ids.push(resolved.id);

@@ -1,3 +1,4 @@
+import { wireNames } from '@/utils/plugins/wire-names';
 ﻿/**
  * AI对话API — 多协议统一版
  *
@@ -150,6 +151,7 @@ export class AiChatApi {
     options: ChatRequestOptions,
   ): Promise<{ finalMessage: ChatMessage; finishReason: string | null }> {
     const ctx = buildRequestContext(options);
+    const wire = wireNames(ctx.tools, messages);
     const startTime = Date.now();
 
     console.log(`[AiChatApi] ${label} 开始`, {
@@ -175,14 +177,14 @@ export class AiChatApi {
             ? `agentnexus:${options.metrics?.agentId || 'chat'}:v2` : undefined,
           model: ctx.providerConfig.model,
           // ChatMessage 即 UnifiedChatMessage 别名（结构同一），直通无需映射
-          messages,
-          tools: ctx.tools,
+          messages: wire.messages,
+          tools: wire.tools,
           tool_choice: ctx.tools && ctx.tools.length > 0 ? 'auto' : undefined,
           temperature: ctx.providerConfig.temperature,
           max_tokens: ctx.maxTokens,
           stream: true,
         },
-        toStreamCallbacks(callbacks),
+        toStreamCallbacks({ ...callbacks, onToolCall: c => callbacks.onToolCall?.(wire.decodeCall(c)), onComplete: m => callbacks.onComplete?.(wire.decodeMessage(m)) }),
         {
           providerConfig: ctx.providerConfig,
           signal: options.signal,
@@ -199,7 +201,7 @@ export class AiChatApi {
       });
 
       return {
-        finalMessage: result.finalMessage,
+        finalMessage: wire.decodeMessage(result.finalMessage),
         finishReason: result.finishReason,
       };
     } catch (error) {

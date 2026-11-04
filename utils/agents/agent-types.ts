@@ -156,6 +156,7 @@ export type PresetAgentConfig = AgentConfig & { display: PresetDisplayTexts };
  * 误导配置者并制造「改了没生效」的假象。
  */
 export interface AgentConfig {
+  plugin?: { key: string; version: string; displayName: string; publisher: string };
   /** 机器标识（预置为固定常量；自定义由名称生成的 ASCII slug，保证唯一） */
   id: string;
   /** 用户可见名称（存储键；唯一） */
@@ -250,11 +251,11 @@ export const AGENT_CATEGORY_MAX_CHARS = 24;
 /** 工具数量上限（与 hub 的组并集上限同数量级，这里只做存储层兜底） */
 export const AGENT_TOOLS_MAX_COUNT = 200;
 /** 单个工具 ID 长度上限 */
-export const AGENT_TOOL_ID_MAX_CHARS = 64;
+export const AGENT_TOOL_ID_MAX_CHARS = 256;
 /** 关联技能数量上限 */
 export const AGENT_SKILLS_MAX_COUNT = 20;
 /** 单个技能引用（id / 名称 / 模型标识）长度上限 */
-export const AGENT_SKILL_REF_MAX_CHARS = 96;
+export const AGENT_SKILL_REF_MAX_CHARS = 256;
 /** 生成的自定义智能体 id 前缀（名称无 ASCII 字符时的兜底基名） */
 export const AGENT_ID_FALLBACK_BASE = 'agent';
 
@@ -340,6 +341,7 @@ export function normalizeToolIds(value: unknown): string[] {
   const result: string[] = [];
   for (const raw of value) {
     if (result.length >= AGENT_TOOLS_MAX_COUNT) break;
+    if (typeof raw === 'string' && raw.startsWith('ed25519:') && (raw.length > AGENT_TOOL_ID_MAX_CHARS || !/^ed25519:[a-z2-7]{52}\/[a-z][a-z0-9]*(?:-[a-z0-9]+)*\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(raw))) continue;
     const toolId = migrateVisionToolId(clampText(raw, AGENT_TOOL_ID_MAX_CHARS));
     if (!toolId) continue;
     if (seen.has(toolId)) continue;
@@ -361,6 +363,7 @@ export function normalizeSkillRefs(value: unknown): string[] {
   const result: string[] = [];
   for (const raw of value) {
     if (result.length >= AGENT_SKILLS_MAX_COUNT) break;
+    if (typeof raw === 'string' && raw.startsWith('ed25519:') && (raw.length > AGENT_SKILL_REF_MAX_CHARS || !/^ed25519:[a-z2-7]{52}\/[a-z][a-z0-9]*(?:-[a-z0-9]+)*\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(raw))) continue;
     const ref = clampText(raw, AGENT_SKILL_REF_MAX_CHARS);
     if (!ref) continue;
     if (seen.has(ref)) continue;

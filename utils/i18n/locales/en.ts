@@ -379,7 +379,7 @@ const en: Schema = {
       testHint: 'Sends a minimal request to verify the configuration works',
       advancedSettings: 'Advanced settings',
       defaultsIntro:
-        'Global settings: retries and temperature apply to requests on every channel (no longer configured per channel); the context threshold is the default for newly created models (existing models can be adjusted individually under "Channels & models"). Also here: chat round limits, the consecutive tool-failure threshold and the question dialog wait time.',
+        'Global settings: retries and temperature apply to requests on every channel (no longer configured per channel); the context threshold is the default for newly created models (existing models can be adjusted individually under "Channels & models"). Also here: the default agent, the chat round limit, the consecutive tool-failure threshold and the question dialog wait time.',
       retryCount: 'Auto retries',
       retryCountHint: 'Retries with exponential backoff on failure (2s, 4s, 8s...); applies to all channels',
       retryInterval: 'Retry interval (seconds)',
@@ -392,12 +392,12 @@ const en: Schema = {
       interactTimeout: 'Question dialog wait time (minutes)',
       interactTimeoutHint:
         'Maximum wait time for the question dialog (including the minimized floating ball) when the agent asks you a question or requests authorization via the interact tool. On timeout the agent is told the user did not respond in time. Range 1-120 minutes, default 20.',
-      textMaxIterations: 'Text chat round limit',
-      textMaxIterationsHint:
-        'Maximum tool-loop rounds per task in text (non-vision) chat; the loop guard asks whether to continue once reached. Range 1-100, default 20.',
-      visionMaxIterations: 'Vision chat round limit',
-      visionMaxIterationsHint:
-        'Maximum tool-loop rounds per task in vision (screenshot) chat; the loop guard asks whether to continue once reached. Range 1-100, default 10.',
+      defaultAgent: 'Default agent',
+      defaultAgentHint:
+        'Agent auto-selected when the first message of a new session is sent without one (use @ in the input to switch manually). Defaults to the General Text Assistant; if the chosen agent is later deleted, it falls back to the General Text Assistant.',
+      maxIterations: 'Chat round limit',
+      maxIterationsHint:
+        'Maximum tool-loop rounds per task (applies to both text and vision chat); the loop guard asks whether to continue once reached. Range 1-100, default 30.',
       toolFailRounds: 'Consecutive all-failed rounds threshold',
       toolFailRoundsHint:
         'Pause and ask whether to continue after this many consecutive rounds in which every tool call failed (prevents burning tokens against a dead end). Any successful call resets the counter. Range 1-50, default 5.',
@@ -427,6 +427,23 @@ const en: Schema = {
       saveFailed: 'Failed to save configuration, please retry',
       invalidServiceUrl: 'Invalid API service URL',
       unsupportedProtocol: 'Unsupported protocol: {provider}',
+      // Endpoint liveness (code → text for the single source of truth in endpoint-liveness)
+      livenessNoChannels: 'No channel has been added yet — add a channel and a model first',
+      livenessChannelDisabled: 'Channel "{channel}" is disabled',
+      livenessDriverUnknown: 'Channel "{channel}" uses a protocol that is not registered (driver missing)',
+      livenessUrlEmpty: 'Channel "{channel}" has no API service URL',
+      livenessUrlInvalid: 'Channel "{channel}" has a malformed service URL',
+      livenessKeyMissing: 'Channel "{channel}" has no API key',
+      livenessModelDisabled: 'Model "{model}" is disabled',
+      livenessModelNameEmpty: 'Channel "{channel}" contains an unnamed model',
+      // Resolution failures (ModelResolveFailure → text in model-registry)
+      resolveUnconfigured: 'Model configuration is incomplete: no usable model yet — add a channel and model in settings',
+      resolveChannelMissing: 'Model configuration is incomplete: the channel was deleted — pick a model again in settings',
+      resolveChannelDisabled: 'Model configuration is incomplete: the channel is disabled — enable it in settings',
+      resolveDriverUnknown: 'Model configuration is incomplete: the channel protocol is not registered (driver missing) — check the protocol in settings',
+      resolveEndpointInvalid: 'Model configuration is incomplete: the channel lacks a valid service URL or API key — finish the channel setup first',
+      resolveModelMissing: 'Model configuration is incomplete: the selected model was deleted — pick a model again in settings',
+      resolveModelDisabled: 'Model configuration is incomplete: the selected model is disabled — enable it in settings',
       apiReturnedError: 'The API returned an error',
       connectSuccess: 'Connected ({model} · {latency}ms)',
       requestFailed: 'Request failed: {detail}',
@@ -444,8 +461,8 @@ const en: Schema = {
       validateThresholdMin: 'Context threshold cannot be less than 8192 tokens',
       validateThresholdMax: 'Context threshold cannot exceed 1048576 tokens',
       validateInteractTimeoutRange: 'Question dialog wait time must be an integer between 1 and 120 (minutes)',
-      validateTextIterationsRange: 'Text chat round limit must be an integer between 1 and 100',
-      validateVisionIterationsRange: 'Vision chat round limit must be an integer between 1 and 100',
+      validateMaxIterationsRange: 'Chat round limit must be an integer between 1 and 100',
+      validateDefaultAgentRequired: 'Please select a default agent',
       validateToolFailRoundsRange: 'Consecutive all-failed rounds threshold must be an integer between 1 and 50',
       validateModelNameEmpty: 'Model name cannot be empty',
       validateModelDuplicate: 'Duplicate model name: {name}',
@@ -884,6 +901,7 @@ const en: Schema = {
       statusElapsed: 'Elapsed {elapsed}',
       statusToolCalls: '{count} tool calls',
       statusHint: 'Learning in progress — keep focus on the browser window',
+      statusForceSubmitting: 'The AI has not submitted its result yet — asking it to wrap up and submit…',
       stopButton: 'Stop',
       stopTitle: 'Stop learning',
       stopBody: 'Stop now? The learning trace and everything learned so far will be discarded permanently.',
@@ -904,8 +922,9 @@ const en: Schema = {
       failureTitle: 'Learning flow failed',
       failureUnknown: 'An unknown error occurred',
       failureOk: 'OK',
+      // Hard failure but the draft was already learned: hand it over instead of discarding it
+      failureDraftKeptNotice: 'Validation hit an error, but the skill draft was already complete — it has been sent to the management center for you to create.',
       noDraftTitle: 'No output produced',
-      noDraftLearning: 'This learning run finished without submitting a skill draft — usually the flow was not completed, or submit_skill was never called.',
       noDraftValidating: 'This validation run finished without submitting a verdict — usually submit_validation was never called.',
       noDraftRetry: 'Retry',
       noDraftGiveUp: 'Finish',
@@ -924,6 +943,41 @@ const en: Schema = {
       // from the transcript, see App.vue)
       recoverHint: 'This session has a saved skill draft — you can finish creating the skill',
       recoverAction: 'Retry creating the skill',
+      // New-chat guard while a learning run is active (same dialog shape as the
+      // normal running-task guard, with learning-specific wording)
+      newChatBlockedTitle: 'Cannot start a new chat',
+      newChatBlockedMessage: 'Site learning is still running, so you cannot switch to a new chat. Wait for the learning to finish, or stop it first and try again.',
+      newChatBlockedValidatingMessage: 'Skill validation is still running, so you cannot switch to a new chat. Wait for the validation to finish, or stop it first and try again.',
+      // Learning failure (the model submitted status=failed/blocked, or never
+      // submitted a terminal outcome even after the wrap-up round)
+      learnFailedTitle: 'Learning did not complete',
+      learnFailedValidateTitle: 'Validation conclusion not submitted',
+      learnFailedIntro: 'This run did not get through, but the process has been recorded:',
+      learnFailedFindingsTitle: 'Reusable findings',
+      learnFailedSuggestionLabel: 'Suggested next step: ',
+      learnFailedNeedsHuman: 'This step needs you personally (sign in, clear a captcha, grant access) — the AI cannot work around it.',
+      learnFailedRetryable: 'This kind of blocker usually clears with a different entry point or keyword — no need to change strategy first.',
+      learnFailedChoose: 'Choose how to continue:',
+      learnFailedRelearn: 'Retry with these findings',
+      learnFailedRevalidate: 'Validate this skill again',
+      learnFailedCreate: 'Create it anyway',
+      learnFailedGiveUp: 'Finish',
+      // Failure reason codes
+      reasonLoginRequired: 'Login required',
+      reasonCaptcha: 'Captcha blocked',
+      reasonPermissionDenied: 'Permission denied',
+      reasonTargetMissing: 'Target not found',
+      reasonFlowBroken: 'Flow broken',
+      reasonLocatorUnstable: 'Unstable locator',
+      reasonPageUnreachable: 'Page unreachable',
+      reasonTimeout: 'Timed out',
+      reasonOther: 'Other',
+      // No terminal outcome even after the wrap-up round (a definite reason, not a guess)
+      failureNoSubmitDetailLearning: 'The model never submitted a result: it still did not call submit_skill after the wrap-up reminder, so this run produced nothing.',
+      failureNoSubmitDetailValidating: 'The model never submitted a verdict: it still did not call submit_validation after the wrap-up reminder, so this validation has no conclusion.',
+      failureNoSubmitSuggestion: 'You can learn again; if it keeps failing, narrow the goal or switch to the text exploration strategy.',
+      // Wrap-up round notice (does not interrupt the user)
+      forceSubmitNotice: 'The AI has not submitted its result yet — asking it to wrap up and submit…',
       // History list session-kind badge (kind='site-learn')
       sessionBadge: 'Site learning',
     },
@@ -1102,6 +1156,8 @@ const en: Schema = {
     moreSettings: 'More settings',
     tabAgents: 'Agents',
     tabSkills: 'Skills',
+    tabPlugins: 'Plugins',
+    copyPluginAgent: 'Copy as custom',
     newAgent: 'New agent',
     editAgent: 'Edit agent',
     newSkill: 'New skill',

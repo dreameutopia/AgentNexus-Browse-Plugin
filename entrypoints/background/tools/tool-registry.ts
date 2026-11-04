@@ -40,6 +40,8 @@ function convertExtendedToolToWebSocketFormat(tool: ExtendedTool): DynamicToolDe
       name: tool.name,
       description: schema.description || tool.metadata?.description || '',
       parameters,
+      inputSchema: structuredClone(schema.parameters),
+      ...(tool.metadata.plugin ? { source: tool.metadata.plugin } : {}),
     };
   } catch (error) {
     console.error(`[ToolRegistry] 转换高级工具失败:`, tool.name, error);
@@ -51,75 +53,18 @@ function convertExtendedToolToWebSocketFormat(tool: ExtendedTool): DynamicToolDe
  * 工具注册类
  */
 export class ToolRegistry {
-  private tools: Map<string, any> = new Map();
+  constructor() { registerAllTools(); }
 
-  constructor() {
-    this.collectTools();
+  /** Read the authoritative live registry, never a constructor-time copy. */
+  getToolDefinitions(): DynamicToolDefinition[] {
+    return highLevelToolRegistry.getAll().flatMap(tool => {
+      const definition = convertExtendedToolToWebSocketFormat(tool);
+      return definition ? [definition] : [];
+    });
   }
 
-  /**
-   * 收集所有工具
-   */
-  private collectTools(): void {
-    // 注册所有工具（包括浏览器工具）
-    registerAllTools();
-
-    // 从高级工具注册表收集所有工具
-    const allTools = highLevelToolRegistry.getAll();
-    for (const tool of allTools) {
-      if (tool && tool.name) {
-        this.tools.set(tool.name, { type: 'extended', tool });
-      }
-    }
-
-    console.log(`[ToolRegistry] 已收集 ${this.tools.size} 个工具`);
-  }
-
-  /**
-   * 获取所有工具的 WebSocket 格式定义
-   */
-  public getToolDefinitions(): DynamicToolDefinition[] {
-    const definitions: DynamicToolDefinition[] = [];
-
-    for (const [name, toolWrapper] of this.tools.entries()) {
-      let definition: DynamicToolDefinition | null = null;
-
-      // 所有工具现在都是 extended 类型
-      if (toolWrapper.type === 'extended') {
-        definition = convertExtendedToolToWebSocketFormat(toolWrapper.tool);
-      }
-
-      if (definition) {
-        definitions.push(definition);
-      }
-    }
-
-    console.log(`[ToolRegistry] 已生成 ${definitions.length} 个工具定义`);
-    return definitions;
-  }
-
-  /**
-   * 根据名称获取工具
-   */
-  public getTool(name: string): any | undefined {
-    const toolWrapper = this.tools.get(name);
-    return toolWrapper ? toolWrapper.tool : undefined;
-  }
-
-  /**
-   * 检查工具是否存在
-   */
-  public hasTool(name: string): boolean {
-    return this.tools.has(name);
-  }
-
-  /**
-   * 获取所有工具名称
-   */
-  public getToolNames(): string[] {
-    return Array.from(this.tools.keys());
-  }
+  getTool(name: string): ExtendedTool | undefined { return highLevelToolRegistry.get(name); }
+  hasTool(name: string): boolean { return !!highLevelToolRegistry.get(name); }
+  getToolNames(): string[] { return highLevelToolRegistry.getToolIds(); }
 }
-
-// 导出单例
 export const toolRegistry = new ToolRegistry();

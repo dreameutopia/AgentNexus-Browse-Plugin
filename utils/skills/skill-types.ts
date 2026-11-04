@@ -20,7 +20,7 @@ import { migrateVisionToolId } from '../tools/vision-tool-migration';
  */
 
 /** 技能来源 */
-export type SkillSource = 'preset' | 'custom';
+export type SkillSource = 'preset' | 'custom' | 'plugin';
 
 /**
  * 运行时技能记录。
@@ -28,6 +28,7 @@ export type SkillSource = 'preset' | 'custom';
  * `body` 为 SKILL.md 去掉 frontmatter 后的正文，由解析器生成、持久化时剥离。
  */
 export interface SkillRecord {
+  plugin?: { key: string; version: string; displayName: string; publisher: string };
   /** 全局唯一且不可变的技能 id（短 slug，存储键） */
   id: string;
   /** 技能名，规范约束：小写字母/数字/连字符（^[a-z0-9]+(-[a-z0-9]+)*$） */
@@ -321,7 +322,7 @@ export function composeModelSkillId(name: string, id: string): string {
 
 /** SkillRecord 便捷封装 */
 export function modelSkillIdOf(skill: Pick<SkillRecord, 'name' | 'id'>): string {
-  return composeModelSkillId(skill.name, skill.id);
+  return skill.id.startsWith('ed25519:') ? skill.id : composeModelSkillId(skill.name, skill.id);
 }
 
 /**

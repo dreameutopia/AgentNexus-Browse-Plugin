@@ -51,6 +51,23 @@
 
         <!-- 分区内容（v-show 常驻挂载：切换不丢分区态，子级 fixed 子弹窗不受影响） -->
         <div class="api-config-body">
+          <!-- 共享校验错误：任何分区的保存失败都在这里可见（应用设置分区的错误
+               原先只渲染在渠道分区里，用户在别的分区点保存会看不到任何反馈） -->
+          <div
+            v-show="settingsForm.validationErrors.value.length > 0"
+            class="config-validation-errors api-config-shared-errors"
+          >
+            <p
+              v-for="(error, index) in settingsForm.validationErrors.value"
+              :key="index"
+              class="config-error-item"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink: 0;">
+                <path d="M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z" fill="#ef4444"/>
+              </svg>
+              {{ error }}
+            </p>
+          </div>
           <section v-show="activeSection === 'channels'" class="api-section">
             <ChannelsSection />
           </section>
@@ -82,13 +99,13 @@
       <!-- 底部按钮 -->
       <div class="api-config-footer">
         <button class="api-config-btn api-config-btn-secondary" @click="handleCloseSidebar">
-          <svg v-if="!settingsForm.hadExistingConfig.value" width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <svg v-if="!modelRegistry.configured" width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M19 6.41L17.59 5L12 10.59L6.41 5L5 6.41L10.59 12L5 17.59L6.41 19L12 13.41L17.59 19L19 17.59L13.41 12L19 6.41Z" fill="currentColor"/>
           </svg>
           <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" fill="currentColor"/>
           </svg>
-          {{ settingsForm.hadExistingConfig.value ? t('sidepanel.apiConfig.back') : t('sidepanel.apiConfig.closeSidebar') }}
+          {{ modelRegistry.configured ? t('sidepanel.apiConfig.back') : t('sidepanel.apiConfig.closeSidebar') }}
         </button>
         <button class="api-config-btn api-config-btn-primary" @click="settingsForm.handleSave()" :disabled="settingsForm.isSaving.value">
           <svg v-if="!settingsForm.isSaving.value" width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -233,20 +250,18 @@ watch(
 
 function handleCloseSidebar() {
   // 已配置时：仅关闭弹窗（返回）。
-  // 关键修复：hadExistingConfig 由异步水合更新，用户快速点开弹窗并立刻点「返回」时
-  // 它可能还是初始的 false；此时若直接信任旧值会误调 window.close() 把整个侧边栏关掉，
-  // 用户重开侧边栏后弹窗又自动弹出，看起来就像「点击返回没有任何反应 / 配置好了还拒绝」。
-  // 因此兜底以点击瞬间的实时内存配置为准：只要实际已配置，绝不尝试关闭侧边栏。
+  // 判定直接读注册表的响应式 configured（单一事实源，随任何配置变更自动更新），
+  // 不再依赖由异步水合赋值的快照——后者在快速打开/关闭时可能还是旧值，
+  // 曾导致「配置好了还拒绝关闭」或误关整个侧边栏。
   emit('close');
 
-  if (settingsForm.hadExistingConfig.value) return;
-  if (!modelRegistry.isLoaded() || !modelRegistry.isConfigured()) {
-    // 真正的首次未配置场景：维持原「关闭侧边栏」语义
-    try {
-      window.close();
-    } catch {
-      // 如果 window.close() 不生效（某些浏览器限制），什么都不做
-    }
+  if (modelRegistry.configured) return;
+
+  // 真正的首次未配置场景：维持原「关闭侧边栏」语义
+  try {
+    window.close();
+  } catch {
+    // 如果 window.close() 不生效（某些浏览器限制），什么都不做
   }
 }
 

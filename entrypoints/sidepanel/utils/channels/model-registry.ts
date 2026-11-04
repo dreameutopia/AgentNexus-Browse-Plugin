@@ -12,17 +12,28 @@
  *   3. 可用模型清单（跨渠道扁平化，供选择器 / 一次性调用方）与视觉能力判定；
  *   4. 全局默认引用的自愈（渠道/模型被删除后 activeModelRef 自动回落）。
  *
- * 「可用」的判定（listOptions 的过滤条件，同时也是 resolve 的有效性条件）：
- *   渠道已启用 + 协议驱动已注册 + baseUrl 合法 + 模型已启用 + 模型名非空
- *   +（驱动要求时）apiKey 非空。
+ * 「可用」的判定统一委托 endpoint-liveness 层（单一事实源），本模块不再
+ * 自行实现过滤规则——判定口径只存在那一处，UI 与运行期永不漂移。
  *
- * 本模块无 Vue 依赖；订阅机制供 UI 层把变更同步到响应式状态。
+ * 响应式约定：`configured` / `options` / `blockerIssue` 由 Vue ref 承载，
+ * 任何渠道或应用设置变更（本上下文保存 / 跨上下文同步）都会自动刷新。
+ * UI 直接绑定，不再需要各自维护一份「输入框是否启用」的镜像 ref。
+ *
+ * 本模块仅依赖 Vue 的 ref（无组件上下文），可在 Node 中单测。
  */
 
-import { driverRegistry } from '../stream/driver-registry';
+import { ref } from 'vue';
+import { t } from '@/utils/i18n/core';
 import type { ModelEndpoint, ProviderType } from '../stream/types';
 import { channelStore } from './channel-store';
 import { appSettingsStore } from './app-settings';
+import {
+  checkChannelLiveness,
+  checkModelLiveness,
+  firstIssue,
+  type LivenessIssue,
+} from './endpoint-liveness';
+import { channelLabelOf } from './channel-display';
 import {
   clampInt,
   clampNumber,
@@ -108,40 +119,6 @@ export interface ModelOption {
 
 // ==================== 解析细节 ====================
 
-/** 端点有效性：驱动已知 + baseUrl 合法 +（策略要求时）apiKey 非空 */
-function endpointValidity(channel: ChannelConfig): ModelResolveFailure | null {
-  if (!driverRegistry.has(channel.protocol)) return 'driver-unknown';
-  const baseUrl = channel.baseUrl.trim();
-  if (!baseUrl) return 'endpoint-invalid';
-  try {
-    new URL(baseUrl);
-  } catch {
-    return 'endpoint-invalid';
-  }
-  if (driverRegistry.requiresApiKey(channel.protocol) && !channel.apiKey.trim()) {
-    return 'endpoint-invalid';
-  }
-  return null;
-}
-
-/** 单模型可用性检查：渠道侧 → 模型侧，返回 null 表示可用 */
-function modelAvailability(
-  channel: ChannelConfig | null,
-  model: ModelConfig | null,
-  ref: ModelRef,
-): ModelResolveFailure | null {
-  if (!channel) return 'channel-missing';
-  if (ref.channelId !== channel.id) return 'channel-missing';
-  if (!channel.enabled) return 'channel-disabled';
-  const endpointError = endpointValidity(channel);
-  if (endpointError) return endpointError;
-  if (!model) return 'model-missing';
-  if (ref.modelId !== model.id) return 'model-missing';
-  if (!model.enabled) return 'model-disabled';
-  if (!model.name.trim()) return 'endpoint-invalid';
-  return null;
-}
-
 /** 由「已确认可用」的渠道 + 模型构造端点快照（全部数值经钳制，脏配置进不来）。
  *  重试与采样温度是全局应用设置（不按渠道单独配置），此处从 appSettings 取值。 */
 function buildEndpoint(
@@ -149,7 +126,6 @@ function buildEndpoint(
   model: ModelConfig,
   settings: AppSettings,
 ): ResolvedModelEndpoint {
-  const channelLabel = channel.name.trim() || driverRegistry.tryGet(channel.protocol)?.meta.label || channel.protocol;
   return {
     provider: channel.protocol,
     baseUrl: channel.baseUrl.trim(),
@@ -165,46 +141,152 @@ function buildEndpoint(
       CONTEXT_THRESHOLD_DEFAULT,
     ),
     ref: { channelId: channel.id, modelId: model.id },
-    label: `${model.name.trim()} · ${channelLabel}`,
+    label: `${model.name.trim()} · ${channelLabelOf(channel)}`,
   };
+}
+
+/** 可用性问题 → 解析失败原因（单一映射点，两套枚举保持对齐） */
+function issueToFailure(issue: LivenessIssue): ModelResolveFailure {
+  switch (issue.code) {
+    case 'channel-disabled':
+      return 'channel-disabled';
+    case 'driver-unknown':
+      return 'driver-unknown';
+    case 'url-empty':
+    case 'url-invalid':
+    case 'key-missing':
+      return 'endpoint-invalid';
+    case 'model-disabled':
+      return 'model-disabled';
+    case 'model-name-empty':
+      // 模型名为空在归一层会被丢弃，理论上到不了这里；保守按端点无效处理
+      return 'endpoint-invalid';
+  }
 }
 
 // ==================== 注册表 ====================
 
+/** 注册表的状态快照（一次计算，三个只读出口共用） */
+interface RegistrySnapshot {
+  /** 可用模型清单 */
+  options: ModelOption[];
+  /** 是否至少存在一个完全可用的模型 */
+  configured: boolean;
+  /** 「未配置」时的第一条具体原因（纯数据；文案由 UI 层查 i18n 得到） */
+  blockerIssue: LivenessIssue | null;
+}
+
 class ModelRegistry {
+  /**
+   * 变更信号：底层存储状态发生变化即自增。
+   *
+   * 状态**不缓存在这里**——快照按 revision 惰性重算并记忆化：
+   *   - 读到的永远是当前事实（不存在「缓存过期」窗口）；
+   *   - 每次 revision 变化最多重算一次（多个 getter 共享同一份快照）；
+   *   - revision 是响应式 ref，UI 的 computed / 模板能正确追踪。
+   *
+   * 之所以不直接用 reactive 承载快照：领域层交给上层的必须是**普通对象**，
+   * 绝不能是 Vue 代理（代理会渗进会话落库 / 备份序列化的数据结构，
+   * 也让「读取即拿到同一引用」的深拷贝边界失效）。
+   */
+  private readonly revision = ref(0);
+  /** 记忆化快照（按 revision 失效） */
+  private snapshot: { revision: number; value: RegistrySnapshot } | null = null;
+  /** UI 层订阅者（配置变更通知） */
+  private readonly listeners = new Set<() => void>();
+
+  constructor() {
+    // 注册表**始终**监听底层存储：状态新鲜度不能取决于「有没有人订阅 UI」。
+    // 若只在 subscribe() 时才挂监听，未订阅时读取到的清单会停留在旧快照。
+    channelStore.subscribe(() => this.handleStoreChange());
+    appSettingsStore.subscribe(() => this.handleStoreChange());
+  }
+
+  /** 底层存储状态变化：作废快照 + 通知 UI 订阅者 */
+  private handleStoreChange(): void {
+    this.invalidate();
+    for (const listener of this.listeners) {
+      try {
+        listener();
+      } catch (error) {
+        // 单个订阅者异常绝不影响其它订阅者与主流程
+        console.warn('[ModelRegistry] 变更监听器执行失败:', error);
+      }
+    }
+  }
+
   /** 加载两个底层存储（单飞由各 store 自身保证） */
   async load(): Promise<void> {
     await Promise.all([channelStore.load(), appSettingsStore.load()]);
+    this.invalidate();
+  }
+
+  /**
+   * 加载并返回结构化结果（供需要区分「成功 / 存储故障」的启动路径使用）。
+   * 存储故障不抛错：返回 ok=false + issues，状态按内存态（空配置）重算。
+   */
+  async loadWithResult(): Promise<{ ok: boolean; issues: string[] }> {
+    const [channels, settings] = await Promise.all([
+      channelStore.loadWithResult(),
+      appSettingsStore.loadWithResult(),
+    ]);
+    this.invalidate();
+    const issues = [...channels.issues, ...settings.issues];
+    return { ok: channels.ok && settings.ok, issues };
   }
 
   isLoaded(): boolean {
     return channelStore.isLoaded() && appSettingsStore.isLoaded();
   }
 
-  /** 订阅配置变更（渠道或应用设置任一变化都会触发）；返回取消订阅函数 */
+  /**
+   * 订阅配置变更（渠道或应用设置任一变化都会触发）；返回取消订阅函数。
+   * 订阅回调在快照作废**之后**执行，保证回调里读到的是最新清单。
+   */
   subscribe(listener: () => void): () => void {
-    const offChannels = channelStore.subscribe(listener);
-    const offSettings = appSettingsStore.subscribe(listener);
+    this.listeners.add(listener);
     return () => {
-      offChannels();
-      offSettings();
+      this.listeners.delete(listener);
     };
+  }
+
+  /** 标记状态过期（下次读取时重算） */
+  private invalidate(): void {
+    this.revision.value += 1;
+  }
+
+  /** 当前快照（按 revision 记忆化；读取 revision 建立响应式依赖） */
+  private current(): RegistrySnapshot {
+    const revision = this.revision.value;
+    if (!this.snapshot || this.snapshot.revision !== revision) {
+      const options = this.buildOptions();
+      this.snapshot = {
+        revision,
+        value: {
+          options,
+          configured: options.length > 0,
+          blockerIssue: options.length > 0 ? null : this.firstBlocker(),
+        },
+      };
+    }
+    return this.snapshot.value;
   }
 
   // ==================== 可用模型清单 ====================
 
-  /** 跨渠道扁平的可用模型清单（渠道顺序 → 模型顺序，过滤规则见模块头注释） */
-  listOptions(): ModelOption[] {
+  /**
+   * 跨渠道扁平的可用模型清单（渠道顺序 → 模型顺序）。
+   * 判定委托 endpoint-liveness；本方法只做「过滤 + 投影」。
+   */
+  private buildOptions(): ModelOption[] {
     const options: ModelOption[] = [];
     for (const channel of channelStore.getAll()) {
-      if (!channel.enabled) continue;
-      if (endpointValidity(channel)) continue;
-      const channelLabel =
-        channel.name.trim() || driverRegistry.tryGet(channel.protocol)?.meta.label || channel.protocol;
+      const channelLiveness = checkChannelLiveness(channel);
+      if (!channelLiveness.ok) continue;
+      const channelLabel = channelLabelOf(channel);
       for (const model of channel.models) {
-        if (!model.enabled) continue;
+        if (!checkModelLiveness(channel, model, channelLiveness).ok) continue;
         const wireName = model.name.trim();
-        if (!wireName) continue;
         options.push({
           key: modelRefKey({ channelId: channel.id, modelId: model.id }),
           ref: { channelId: channel.id, modelId: model.id },
@@ -225,9 +307,42 @@ class ModelRegistry {
     return options;
   }
 
-  /** 是否已配置出至少一个可用模型（输入框启用 / 首次配置弹窗判定） */
-  isConfigured(): boolean {
-    return this.listOptions().length > 0;
+  /**
+   * 「未配置」时的第一条具体原因（无渠道 / 渠道全禁 / 端点不完整 逐级回落）
+   */
+  private firstBlocker(): LivenessIssue | null {
+    const channels = channelStore.getAll();
+    if (channels.length === 0) {
+      return { code: 'no-channels', channelLabel: '', modelName: '' };
+    }
+    for (const channel of channels) {
+      const channelLiveness = checkChannelLiveness(channel);
+      const channelIssue = firstIssue(channelLiveness.issues);
+      if (channelIssue) return channelIssue;
+      for (const model of channel.models) {
+        const modelIssue = firstIssue(checkModelLiveness(channel, model, channelLiveness).issues);
+        if (modelIssue) return modelIssue;
+      }
+    }
+    return null;
+  }
+
+  /** 响应式：是否已配置出至少一个可用模型（输入框启用 / 首次配置弹窗判定） */
+  get configured(): boolean {
+    return this.current().configured;
+  }
+
+  /** 响应式：可用模型清单（普通对象数组，非 Vue 代理） */
+  get options(): readonly ModelOption[] {
+    return this.current().options;
+  }
+
+  /**
+   * 响应式：「未配置」时的第一条具体原因（纯数据；文案由 UI 层查 i18n 得到）。
+   * configured=true 时恒为 null。
+   */
+  get blockerIssue(): LivenessIssue | null {
+    return this.current().blockerIssue;
   }
 
   // ==================== 解析 ====================
@@ -267,7 +382,7 @@ class ModelRegistry {
     }
 
     // 回落兜底：清单里的第一个可用模型
-    const options = this.listOptions();
+    const options = this.current().options;
     if (options.length > 0) {
       const attempt = this.resolveExact(options[0].ref);
       if (attempt.ok) {
@@ -288,10 +403,17 @@ class ModelRegistry {
     const channel = channelStore.get(normalized.channelId);
     if (!channel) return { ok: false, reason: 'channel-missing' };
     const model = channel.models.find(item => item.id === normalized.modelId) ?? null;
-    const failure = modelAvailability(channel, model, normalized);
-    if (failure) return { ok: false, reason: failure };
-    // 走到这里 modelAvailability 已保证 model 非空（防御：显式再断一次，杜绝 cast）
     if (!model) return { ok: false, reason: 'model-missing' };
+
+    // 可用性判定与清单同源：渠道 → 模型，任一失败即带精确原因
+    const channelLiveness = checkChannelLiveness(channel);
+    if (!channelLiveness.ok) {
+      return { ok: false, reason: issueToFailure(channelLiveness.issues[0]) };
+    }
+    const modelLiveness = checkModelLiveness(channel, model, channelLiveness);
+    if (!modelLiveness.ok) {
+      return { ok: false, reason: issueToFailure(modelLiveness.issues[0]) };
+    }
     return { ok: true, endpoint: buildEndpoint(channel, model, appSettingsStore.get()) };
   }
 
@@ -324,14 +446,34 @@ class ModelRegistry {
   /**
    * 自愈 activeModelRef：指向的模型已不可用（删除/禁用/端点失效）时，
    * 回落到首个可用模型；一个可用模型都没有则清空。
+   *
+   * 幂等且零副作用：引用本就有效时**不写盘**（避免每次订阅都做一次
+   * 无意义的存储往返）。
+   *
+   * 前置守卫：应用设置尚未加载时**不动手**——此时读到的 activeModelRef 恒为 null，
+   * 分不清「用户没设默认模型」与「还没读到用户设的那个」，
+   * 贸然写入会用首个可用模型覆盖用户原本的选择。
    * @returns 是否发生了修正
    */
   async healActiveRef(): Promise<boolean> {
+    if (!this.isLoaded()) return false;
+
     const current = appSettingsStore.getActiveModelRef();
-    const options = this.listOptions();
-    const stillValid = current && options.some(option => option.key === modelRefKey(current));
-    if (stillValid) return false;
+    const options = this.current().options;
+
+    // 引用本就有效 → 无需修正（保留用户选择的模型，不强制回落到首个）
+    if (current && options.some(option => option.key === modelRefKey(current))) {
+      return false;
+    }
+
+    // 目标值：首个可用模型；一个都没有则清空
     const next = options.length > 0 ? options[0].ref : null;
+
+    // 当前已是目标值（两者皆空）→ 不写盘。
+    // 这一步同时是**自触发的死循环闸门**：写入会触发变更通知 → 再次自愈，
+    // 若「无变化也照样写盘」就是无限自触发（一个可用模型都没有时必然发生）。
+    if (!current && !next) return false;
+
     const result = await appSettingsStore.save({ activeModelRef: next });
     if (!result.ok) {
       console.warn('[ModelRegistry] 默认模型自愈写入失败:', result.errors);
@@ -346,23 +488,23 @@ class ModelRegistry {
   }
 }
 
-/** 失败原因 → 可读中文提示（用户可见，含处置指引） */
+/** 失败原因 → 可读提示（用户可见，含处置指引；文案走 i18n 目录） */
 function describeFailure(reason: ModelResolveFailure): string {
   switch (reason) {
     case 'unconfigured':
-      return '模型配置不完整：尚无可用模型，请先在设置中添加渠道与模型';
+      return t('sidepanel.apiConfig.resolveUnconfigured');
     case 'channel-missing':
-      return '模型配置不完整：所属渠道已被删除，请在设置中重新选择模型';
+      return t('sidepanel.apiConfig.resolveChannelMissing');
     case 'channel-disabled':
-      return '模型配置不完整：所属渠道已被禁用，请在设置中启用该渠道';
+      return t('sidepanel.apiConfig.resolveChannelDisabled');
     case 'driver-unknown':
-      return '模型配置不完整：渠道使用的协议未注册（驱动缺失），请检查渠道协议设置';
+      return t('sidepanel.apiConfig.resolveDriverUnknown');
     case 'endpoint-invalid':
-      return '模型配置不完整：渠道缺少有效的服务地址或密钥，请先完成渠道设置';
+      return t('sidepanel.apiConfig.resolveEndpointInvalid');
     case 'model-missing':
-      return '模型配置不完整：所选模型已被删除，请在设置中重新选择模型';
+      return t('sidepanel.apiConfig.resolveModelMissing');
     case 'model-disabled':
-      return '模型配置不完整：所选模型已被禁用，请在设置中启用该模型';
+      return t('sidepanel.apiConfig.resolveModelDisabled');
   }
 }
 

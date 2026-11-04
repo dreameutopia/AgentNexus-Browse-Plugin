@@ -2,9 +2,9 @@
  * 渠道 + 模型 领域类型与常量（单一事实源）
  *
  * 领域模型（解耦后的配置结构）：
- *   AppSettings  —— 全局应用设置：interactTimeout、对话循环轮次与工具失败
- *                   阈值、全局请求参数（重试 / 采样温度）、新建模型的默认
- *                   上下文阈值、当前生效模型引用（activeModelRef）
+ *   AppSettings  —— 全局应用设置：interactTimeout、新会话默认智能体、对话循环
+ *                   轮次与工具失败阈值、全局请求参数（重试 / 采样温度）、新建
+ *                   模型的默认上下文阈值、当前生效模型引用（activeModelRef）
  *   ChannelConfig—— 渠道：一个上游服务接入点，独立持有 协议驱动 / baseUrl /
  *                   apiKey，并挂载多个模型（重试与采样是全局参数，不按渠道单独配置）
  *   ModelConfig  —— 模型：渠道内的具体模型，独立持有 展示名 / 视觉能力声明 /
@@ -75,10 +75,14 @@ export interface ChannelConfig {
 export interface AppSettings {
   /** interact 询问弹窗最长等待时长（分钟，1~120） */
   interactTimeoutMinutes: number;
-  /** 文本对话的最大工具循环轮次（1~100；装配时覆盖 runtime 的文本轮次上限） */
-  textMaxIterations: number;
-  /** 视觉对话的最大工具循环轮次（1~100；装配时覆盖 runtime 的视觉轮次上限） */
-  visionMaxIterations: number;
+  /**
+   * 新会话默认智能体 ID（输入框未选智能体时，首条消息发送前自动选中）。
+   * 存稳定 id 而非名称：智能体改名后引用不变；目标被删除时运行期经
+   * agentEngine.getDefaultSessionAgent 回落内置默认，不阻断发送。
+   */
+  defaultAgentId: string;
+  /** 对话循环的最大工具轮次（1~100；文本与视觉策略统一使用，装配时注入循环守卫） */
+  maxIterations: number;
   /**
    * 连续「整轮工具全部失败」触发延续确认的轮数阈值（1~50，默认 5）。
    * 单轮失败交模型自纠；连续全败说明环境性阻塞，达到该阈值时升级为
@@ -129,13 +133,20 @@ export const INTERACT_TIMEOUT_MAX_MINUTES = 120;
 export const INTERACT_TIMEOUT_DEFAULT_MINUTES = 20;
 
 /**
- * 对话循环轮次上限的合法边界（文本 / 视觉共用；校验 / 钳制 / UI 三处共用）。
- * 默认值与 runtime 装配层的 DEFAULT_TEXT_LIMITS / DEFAULT_VISION_LIMITS 对齐。
+ * 对话循环轮次上限的合法边界（校验 / 钳制 / UI 三处共用，永不漂移）。
+ * 文本与视觉策略统一使用同一上限（高级设置单值，默认 30 轮）。
  */
 export const ITERATIONS_MIN = 1;
 export const ITERATIONS_MAX = 100;
-export const TEXT_MAX_ITERATIONS_DEFAULT = 20;
-export const VISION_MAX_ITERATIONS_DEFAULT = 10;
+export const MAX_ITERATIONS_DEFAULT = 30;
+
+/**
+ * 新会话默认智能体 ID（AppSettings.defaultAgentId 的缺省值）。
+ * 取文本通用助手（Auto-Action）：其工具集为「元素定位 + 导航 + 点击输入」的
+ * 通用网页操作组合，覆盖面最广，作为无选择时的兜底不会像 vision / deep-search
+ * 那样带有强场景假设。与 agent-engine 的解析回落链保持一致。
+ */
+export const DEFAULT_SESSION_AGENT_ID = 'Auto-Action';
 
 /**
  * 连续「整轮工具全部失败」阈值的合法边界（校验 / 钳制 / UI 三处共用）。
@@ -200,8 +211,8 @@ export function generateId(prefix: string): string {
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   interactTimeoutMinutes: INTERACT_TIMEOUT_DEFAULT_MINUTES,
-  textMaxIterations: TEXT_MAX_ITERATIONS_DEFAULT,
-  visionMaxIterations: VISION_MAX_ITERATIONS_DEFAULT,
+  defaultAgentId: DEFAULT_SESSION_AGENT_ID,
+  maxIterations: MAX_ITERATIONS_DEFAULT,
   maxConsecutiveFailedToolRounds: FAILED_TOOL_ROUNDS_DEFAULT,
   retryCount: RETRY_COUNT_DEFAULT,
   retryInterval: RETRY_INTERVAL_DEFAULT,
@@ -252,10 +263,6 @@ function cloneModel(model: ModelConfig): ModelConfig {
 
 export function cloneChannel(channel: ChannelConfig): ChannelConfig {
   return { ...channel, models: channel.models.map(cloneModel) };
-}
-
-export function cloneChannelState(state: ChannelState): ChannelState {
-  return { channels: state.channels.map(cloneChannel) };
 }
 
 export function cloneAppSettings(settings: AppSettings): AppSettings {

@@ -24,17 +24,19 @@ import {
   type AgentWriteResult,
 } from '@/utils/agents/agent-store';
 import { getPresetToolIds } from '@/utils/tools/tool-presets';
+import { appSettingsStore, DEFAULT_SESSION_AGENT_ID } from '@/entrypoints/sidepanel/utils/channels';
 
 /** 默认（无智能体）系统提示词；与 App.vue 既有文案保持一致 */
 export const DEFAULT_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化助手，名叫AgentNexus，在用户的需求需要时，你可以基于页面信息与用户展开基本的文字对话；其他时候直接回答用户的问题即可
     如果用户需要更复杂的操作，你需要提醒他们在输入框输入@来查看其他智能体的不同能力来选择`;
 
 /**
- * 新会话的默认智能体 ID（用户未显式选择智能体时，首条消息发送前自动选中）。
- * 取文本通用助手（Auto-Action）：其工具集为「元素定位 + 导航 + 点击输入」的通用网页操作组合，
- * 覆盖面最广，作为无选择时的兜底不会像 vision / deep-search 那样带有强场景假设。
+ * 新会话默认智能体 ID（用户未显式选择智能体时，首条消息发送前自动选中）。
+ * 缺省值定义于 channel-types 的 DEFAULT_SESSION_AGENT_ID（文本通用助手
+ * Auto-Action），用户可在设置弹窗「高级设置 → 默认智能体」中更改，
+ * 读取经 appSettingsStore.defaultAgentId。
  */
-export const DEFAULT_SESSION_AGENT_ID = 'Auto-Action';
+export { DEFAULT_SESSION_AGENT_ID };
 
 export interface AgentToolsResolution {
   /** 解析出的智能体（null = 未指定智能体，走默认对话） */
@@ -110,16 +112,25 @@ class AgentEngine {
 
   /**
    * 解析「新会话默认智能体」（用户未选智能体时首条消息自动选中）。
-   * 按预置 ID 查找；找不到时回落预置名称再查一次（防御存储键名历史变更）。
-   * 两者皆无（极端：预置被移除）返回 null，调用方按「无智能体」降级，不报错。
+   * 优先取应用设置 defaultAgentId（高级设置可配，缺省 Auto-Action）；
+   * 配置的 id 未命中（极端：智能体被删除）时依次回落预置 ID → 预置名称
+   * 「文本通用助手」（防御存储键名历史变更）→ null（调用方按「无智能体」降级，不报错）。
    */
   getDefaultSessionAgent(): AgentConfig | null {
-    const byId = this.getById(DEFAULT_SESSION_AGENT_ID);
-    if (byId) return byId;
-    const fallback = this.get('文本通用助手');
-    if (fallback) {
+    const configuredId = appSettingsStore.get().defaultAgentId || DEFAULT_SESSION_AGENT_ID;
+    const configured = this.getById(configuredId);
+    if (configured) return configured;
+    if (configuredId !== DEFAULT_SESSION_AGENT_ID) {
+      const fallback = this.getById(DEFAULT_SESSION_AGENT_ID);
+      if (fallback) {
+        console.warn('[AgentEngine] 配置的默认智能体不存在，已回落预置默认（Auto-Action）');
+        return fallback;
+      }
+    }
+    const byName = this.get('文本通用助手');
+    if (byName) {
       console.warn('[AgentEngine] 默认智能体 ID 未命中，已按名称回落解析');
-      return fallback;
+      return byName;
     }
     console.warn('[AgentEngine] 默认智能体不存在（ID 与名称均未命中），本次以无智能体模式运行');
     return null;

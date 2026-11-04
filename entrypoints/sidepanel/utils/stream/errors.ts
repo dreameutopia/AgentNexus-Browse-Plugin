@@ -429,7 +429,7 @@ export function toApiErrorBlock(error: unknown): string {
   return (
     `<api-error kind="error" label="${escapeXmlText(t('sidepanel.apiConfig.apiErrorUnexpected'))}">\n` +
     `<summary>${escapeXmlText(firstLine)}</summary>\n` +
-    `<raw>\n${escapeXmlText(message)}\n</raw>\n` +
+    (message.trim() !== firstLine ? `<raw>\n${escapeXmlText(message)}\n</raw>\n` : '') +
     `</api-error>`
   );
 }

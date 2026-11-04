@@ -20,6 +20,7 @@ import LearnModelPicker from './LearnModelPicker.vue';
 import './learn-theme.css';
 import {
   LEARN_ERROR_KEYS,
+  countTextChars,
   filterLearnModels,
   needsVisionModel,
   shouldClearModelOnStrategyChange,
@@ -103,7 +104,8 @@ const noVisionModelAvailable = computed(
 
 const noModelAtAll = computed(() => props.modelCandidates.length === 0);
 
-const goalLength = computed(() => Array.from(form.goal).length);
+/** 目标字数（与校验同口径：码点计数 + 去首尾空白，见 learn-validate.countTextChars） */
+const goalLength = computed(() => countTextChars(form.goal.trim()));
 
 /** 错误码 → 展示文案 */
 function errorOf(field: LearnConfigField): string {

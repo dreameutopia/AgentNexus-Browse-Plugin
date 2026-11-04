@@ -182,7 +182,7 @@ export class InteractTool extends BaseTool {
     },
   };
 
-  async execute(raw: unknown): Promise<ToolResult> {
+  async execute(raw: unknown, executionContext?: { chatId?: string }): Promise<ToolResult> {
     // ── 入参形态防御：非对象统一收敛为空对象（缺失 question 走可读错误） ──
     const args =
       raw !== null && typeof raw === 'object' && !Array.isArray(raw)
@@ -216,7 +216,7 @@ export class InteractTool extends BaseTool {
     // ── 等待真实用户答复；处理器任何异常都收敛为失败结果 ──
     let resolution: InteractResolution;
     try {
-      resolution = await handler(request);
+      resolution = await handler(request, executionContext);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       return this.createErrorResponse(`询问用户时发生异常: ${reason}`);

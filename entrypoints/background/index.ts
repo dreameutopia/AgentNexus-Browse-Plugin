@@ -1,5 +1,7 @@
+import { initPluginHost } from './plugins/host';
 import { backgroundWebSocket } from './ws/websocket-background';
 import { initToolsManagerListener } from './tools/tools-manager-listener';
+import { initConversationRuntime } from './conversation-runtime';
 import { downloadDB } from '@/utils/download-database';
 import { initLocale, t } from '@/utils/i18n/core';
 import { notesDB, broadcastNotesChanged } from '@/utils/notes-database';
@@ -311,6 +313,8 @@ async function downloadImagesBatch(
 export default defineBackground(() => {
   // Initialize core services
   initToolsManagerListener();
+  void initPluginHost().catch(error => console.error('[Plugins] Host startup failed', error));
+  initConversationRuntime();
 
   // --- 右键菜单：保存页面功能 ---
   const CONTEXT_MENU_ID = 'save-page-content';

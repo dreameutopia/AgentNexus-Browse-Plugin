@@ -123,3 +123,6 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# Plugin publisher private keys
+*.publisher-key.json

@@ -28,7 +28,7 @@
       <div class="center-container">
         <section class="greeting-container" aria-labelledby="greeting-title">
           <div class="greeting-brand" aria-hidden="true">
-            <img class="greeting-logo" :src="greetingLogoUrl" alt="" width="48" height="48" />
+            <img class="greeting-logo" :src="greetingLogoUrl" alt="" width="26" height="26" />
             <span class="greeting-brand-name">AgentNexus</span>
           </div>
           <h1 id="greeting-title" class="greeting-title">{{ greetingText }}</h1>
@@ -253,7 +253,7 @@
           <button class="icon-btn" v-tip="t('sidepanel.app.historyDrawer')" @click="showHistoryDrawer = true">
             <svg t="1753196772574" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" width="18" height="18"><path d="M512 128c212.064 0 384 153.6 384 341.312 0 187.712-171.936 341.312-384 341.312-38.944 0-77.056-5.28-113.376-15.552l-107.2 60.96a32 32 0 0 1-47.936-31.616l11.776-96.768C173.28 683.632 128 579.808 128 469.312 128 281.6 299.936 128 512 128z m0 64c-176.448 0-320 124.288-320 277.312 0 92.896 40.704 177.76 111.904 234.4a32 32 0 0 1 11.84 26.944l-7.52 61.792 68.736-39.12a32 32 0 0 1 25.216-2.816c35.232 10.816 72.32 16.128 109.824 16.128 176.448 0 320-124.224 320-277.312S688.448 192 512 192zM352 432a48 48 0 1 1 0 96 48 48 0 0 1 0-96z m160 0a48 48 0 1 1 0 96 48 48 0 0 1 0-96z m160 0a48 48 0 1 1 0 96 48 48 0 0 1 0-96z" fill="currentColor"/></svg>
           </button>
-          <button class="icon-btn" v-tip="t('sidepanel.app.newChat')" @click="goHome">
+          <button class="icon-btn" v-tip="t('sidepanel.app.newChat')" @click="goHome()">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12z"/>
               <line x1="12" y1="7" x2="12" y2="13"/>
@@ -368,6 +368,7 @@
           :phase="learn.phase.value === 'validating' ? 'validating' : 'learning'"
           :elapsed-ms="learn.elapsedMs.value"
           :tool-calls="learn.toolCalls.value"
+          :force-submitting="learn.isForceSubmitting.value"
           @stop="learn.requestAbort()"
         />
 
@@ -408,12 +409,19 @@
             </button>
           </div>
 
-          <!-- 禁用提示信息（可点击打开配置弹窗） -->
-          <div v-if="!isChatInputEnabled && !learn.isLearnActive.value" class="input-disabled-notice" @click="showSettingsModal = true" style="cursor: pointer;" :title="t('sidepanel.app.configureApiHint')">
+          <!-- 禁用提示信息（可点击打开配置弹窗）。
+               必须是链条的最后一环（v-else）：成果兜底条（草稿回放）排在它前面，
+               否则 API 已配置时 textarea 命中 v-if、兜底条永远轮不到展示——
+               「暂存失败后重试创建技能」这条恢复路径就会变成死功能。
+               附具体原因：用户不必自己猜是缺密钥、地址写错还是模型被禁。 -->
+          <div v-else class="input-disabled-notice" @click="showSettingsModal = true" style="cursor: pointer;" :title="t('sidepanel.app.configureApiHint')">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 8px;">
               <path d="M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z" fill="#ff9800"/>
             </svg>
-            <span>{{ t('sidepanel.app.apiNotConfiguredPrefix') }}<span style="color: #3b82f6; text-decoration: underline;">{{ t('sidepanel.app.apiNotConfiguredLink') }}</span>{{ t('sidepanel.app.apiNotConfiguredSuffix') }}</span>
+            <span>
+              {{ t('sidepanel.app.apiNotConfiguredPrefix') }}<span style="color: #3b82f6; text-decoration: underline;">{{ t('sidepanel.app.apiNotConfiguredLink') }}</span>{{ t('sidepanel.app.apiNotConfiguredSuffix') }}
+              <span v-if="apiBlockerHint" class="input-disabled-reason">（{{ apiBlockerHint }}）</span>
+            </span>
           </div>
           
 
@@ -714,6 +722,8 @@ import ToolComponent from './Tool.vue';
 import { ChatMessageList, ChatHistoryDrawer, ContextUsageRing, GuardConfirmBar, PlanBoard } from '../components/chat';
 import { SiteLearnModal, LearnDialog, LearnStatusBar, LearnDegradedNotice } from '../components/learn';
 import { useLearnSession } from '../composables/use-learn-session';
+import { backgroundConversation as conversationEngine } from '../core/conversation/runtime-client';
+import { ACTIVE_CHAT_KEY } from '../core/conversation/runtime-protocol';
 import { SettingsModal, AsrConfigPrompt, DeepSearchWarning } from '../components/modals';
 import { VoiceAssistantCard, VoiceAssistantSettings, VoiceRecordingModal } from '../components/voice';
 import { AiProcessingOverlay, AppDialog, InteractDialog, MessageContainer, WebSocketStatusBar } from '../components/feedback';
@@ -731,18 +741,17 @@ import {
   type ModelOption,
   type ModelRef,
 } from '../utils/channels';
+// 端点活性问题的展示层映射（结构化事实 → 可读文案；随语言切换自动跟随）
+import { livenessIssueText } from '../utils/ui/liveness-message';
 // 核心引擎层：会话由引擎驱动，App 层只负责事件渲染与前置交互；
 // 智能体/技能的读取一律经引擎门面，不直连底层存储
 import {
   runtimeBuilder,
   transcriptEngine,
-  conversationEngine,
   composeLlmUserMessage,
   agentEngine,
   skillEngine,
-  contextCompactor,
   measureContextUsage,
-  COMPACTION_PRE_RUN_RATIO,
   type ConversationEvent,
   type ConversationRuntime,
   type ChatMessageRecord,
@@ -759,7 +768,7 @@ import {
 import { resolveDeepSearchToolIds } from '../config/deep-search-sites';
 // 网站学习成果兜底：草稿（SkillDraft）暂存 + 深链 hash（与 use-learn-session 同源）
 import { saveLearnDraft } from '@/utils/learn/learn-draft-store';
-import { LEARN_DRAFT_HASH, type SkillDraft } from '@/utils/learn/learn-types';
+import { learnDraftHash, type SkillDraft } from '@/utils/learn/learn-types';
 // 注册表权威源对账入口（@ / 面板开启时主动与 chrome.storage 同步，兜底跨上下文 onChanged 事件漏投）
 import { restoreCustomAgentsFromStorage } from '@/utils/agents/agent-store';
 import { restoreCustomSkillsFromStorage } from '@/utils/skills/skill-store';
@@ -1125,6 +1134,7 @@ const handleConversationEvent = (event: ConversationEvent): void => {
   }
   switch (event.type) {
     case 'user-message': {
+      if (messages.value.some(message => message.id === event.record.id)) break;
       messages.value.push({
         id: event.record.id,
         role: 'user',
@@ -1140,6 +1150,7 @@ const handleConversationEvent = (event: ConversationEvent): void => {
       break;
     }
     case 'assistant-start': {
+      messages.value = messages.value.filter(message => message.id !== event.messageId);
       // 「思考中」占位（与旧实现一致的 UI 状态）
       const thinking: RunningAssistantMessage = {
         id: event.messageId,
@@ -1597,12 +1608,14 @@ const getModelIconUrl = (modelName: string): string => {
 const currentModelIcon = computed(() => getModelIconUrl(activeChatModel.value));
 
 /**
- * 从模型注册表刷新候选清单与当前生效模型（启动加载、配置保存、跨上下文变更后调用）。
- * 当前键仍有效时保持不动（会话内已选择的模型不被设置保存冲掉）；
- * 失效（首装 / 模型被删或禁用）时优先回落全局默认，其次首个可用模型。
+ * 从模型注册表刷新候选清单与当前生效模型。
+ * 候选清单直接来自注册表的响应式状态（与可用性判定同源），
+ * 此处只负责「当前会话选中了哪个」的收敛逻辑：
+ *   当前键仍有效时保持不动（会话内已选择的模型不被设置保存冲掉）；
+ *   失效（首装 / 模型被删或禁用）时优先回落全局默认，其次首个可用模型。
  */
 const refreshModelOptions = () => {
-  modelOptions.value = modelRegistry.listOptions();
+  modelOptions.value = [...modelRegistry.options];
   const currentValid = modelOptions.value.some(option => option.key === activeModelKey.value);
   if (!currentValid) {
     const globalRef = appSettingsStore.getActiveModelRef();
@@ -1672,8 +1685,13 @@ const selectChatModel = async (option: ModelOption) => {
   }
 };
 
-// 新增：输入框禁用状态（由 API 配置驱动）
-const isChatInputEnabled = ref(false);
+// 输入框可用性直接绑定注册表的响应式状态（单一事实源）。
+// 任何渠道/设置变更（本上下文保存、跨上下文同步、备份恢复）都会自动刷新，
+// 不再需要手动维护一份会与真实配置脱节的镜像 ref。
+const isChatInputEnabled = computed(() => modelRegistry.configured);
+
+/** 「未配置」时第一条具体原因的可读文案（空串 = 已配置或无原因可述） */
+const apiBlockerHint = computed(() => livenessIssueText(modelRegistry.blockerIssue));
 
 // 设置弹窗状态（统一入口：渠道与模型 / 高级参数 / 备份 / 语音识别；历史分区导航隐藏）
 const showSettingsModal = ref(false);
@@ -1684,9 +1702,8 @@ const settingsInitialSection = ref<'channels' | 'advanced' | 'asr' | 'websites'>
 const handleSettingsClose = () => {
   showSettingsModal.value = false;
   settingsInitialSection.value = 'channels';
-  // 学习配置面板可能正开着（「去设置」引导用户补视觉模型）：关闭后刷新模型清单，
-  // 否则新添加的模型在下拉里不可见，「无可用模型 → 去设置」的引导会形成死循环
-  if (learn.phase.value === 'configuring') learn.refreshModels();
+  // 学习态模型候选的刷新已由 modelRegistry.subscribe 统一负责
+  //（配置变更时自动刷新 configuring / confirming 两个阶段），此处无需重复处理
 };
 
 /** 从「语音未配置」提示弹窗跳转到设置弹窗的语音识别分区 */
@@ -1887,7 +1904,7 @@ const agentOptionIndexes = computed<number[]>(() =>
 /** 按扁平下标选中（落在分组标题上时忽略） */
 const selectAgentAtIndex = (index: number): void => {
   const item = agentSelectorItems.value[index];
-  if (item && item.type === 'agent') selectAgent(item.agent.name);
+  if (item && item.type === 'agent') selectAgent(item.agent.plugin ? item.agent.id : item.agent.name);
 };
 
 /** 上下移动高亮（自动跳过分组标题，到边界后停住） */
@@ -2021,15 +2038,15 @@ const closeDeepSearchWarning = () => {
 // 设置弹窗处理方法
 const handleApiConfigSaved = async () => {
   showSettingsModal.value = false;
-  // 重新加载渠道与应用设置，更新输入框状态与模型选择器。
+  // 重新加载渠道与应用设置，刷新模型选择器。
   // 加载失败时退化为内存态继续（保存已成功，内存即最新），
-  // 绝不让弹窗关闭流程因对账读取失败而抛出
+  // 绝不让弹窗关闭流程因对账读取失败而抛出。
+  // 输入框可用性由注册表的响应式状态驱动，无需在此手动赋值。
   try {
     await modelRegistry.load();
   } catch (error) {
     console.warn('[App] 配置保存后对账加载失败（按内存态继续）:', error);
   }
-  isChatInputEnabled.value = modelRegistry.isConfigured();
   refreshModelOptions();
   // 模型阈值与生效模型可能已变：上下文预算随之重算（否则环上数字停留在旧阈值）
   void refreshContextUsage();
@@ -2037,22 +2054,18 @@ const handleApiConfigSaved = async () => {
 
 // 检查模型配置并显示/隐藏配置弹窗
 const checkApiConfig = async () => {
-  try {
-    await modelRegistry.load();
-  } catch (error) {
+  const result = await modelRegistry.loadWithResult();
+  if (!result.ok) {
     // 加载失败不阻塞启动：按内存态判定（首装/存储故障 = 未配置 → 弹设置）
-    console.error('[App] 模型配置加载失败:', error);
+    console.error('[App] 模型配置加载失败:', result.issues);
   }
-  const configured = modelRegistry.isConfigured();
-  isChatInputEnabled.value = configured;
   refreshModelOptions();
   // 启动自愈：全局默认引用指向已失效模型时（配置在别处被改）回落到首个可用
-  if (configured) {
+  if (modelRegistry.configured) {
     void modelRegistry.healActiveRef().catch(error => {
       console.warn('[App] 默认模型启动自愈失败:', error);
     });
-  }
-  if (!configured) {
+  } else {
     showSettingsModal.value = true;
   }
 };
@@ -2466,12 +2479,34 @@ watch(showSkillSelector, open => {
 // 返回主页（新建会话）
 // 运行中拒绝：直接终止会话会丢失进行中的任务与半成品输出——改为弹窗告知，
 // 用户可等待任务自然结束，或先用停止按钮手动终止后再新建。
+// 学习中同样拒绝：学习会话由编排层独占（草稿、验收报告、会话绑定都在其中），
+// 切走会让成果停在半路且界面与后台状态分裂——沿用同一形态的告知弹窗，
+// 让用户等待学习完成，或先中断学习后再试。
+// force=true 用于内部强制切换（会话被删除等本就需要重建界面的路径），
+// 不弹提示也不受守卫拦截。
 // 返回是否真正完成切换（false = 被运行中守卫拦截，界面保持原状）
-const goHome = async (): Promise<boolean> => {
+const goHome = async (options?: { force?: boolean }): Promise<boolean> => {
   if (isAiResponding.value) {
     await showAlert(
       t('sidepanel.app.newChatBlockedMessage'),
       t('sidepanel.app.newChatBlockedTitle'),
+      'warn',
+    );
+    return false;
+  }
+
+  // 学习运行中（含配置、确认、学习、验证、落盘）：拒绝切换会话。
+  // isLearnActive 覆盖除 idle / done 外的全部阶段；done 是交付后的静止态，
+  // 此时新建会话是合法的。
+  if (!options?.force && learn.isLearnActive.value) {
+    const validating = learn.phase.value === 'validating';
+    await showAlert(
+      t(
+        validating
+          ? 'sidepanel.learn.newChatBlockedValidatingMessage'
+          : 'sidepanel.learn.newChatBlockedMessage',
+      ),
+      t('sidepanel.learn.newChatBlockedTitle'),
       'warn',
     );
     return false;
@@ -2537,7 +2572,7 @@ async function retryCreateSkillFromLearn(): Promise<void> {
     saved = await saveLearnDraft(learnRecoverableDraft);
     if (!saved) toast.error(t('sidepanel.learn.draftSaveDegraded'));
   }
-  const opened = await openHubWithHash(LEARN_DRAFT_HASH);
+  const opened = await openHubWithHash(learnDraftHash());
   if (!opened) {
     toast.error(t('sidepanel.learn.openHubFailed'));
     return;
@@ -2556,7 +2591,7 @@ const showHistoryDrawer = ref(false);
  * 从历史抽屉加载会话：切换 activeChatId、重建 UI 消息、回显该会话持久化的
  * 智能体 / 技能 / 模型 / 系统提示词设置，并按回显结果立即重算上下文预算。
  */
-const loadHistorySession = async (chatId: string) => {
+const loadHistorySessionData = async (chatId: string) => {
   // 正在回答时先中止当前运行
   if (isAiResponding.value) {
     stopAiResponse();
@@ -2596,7 +2631,7 @@ const loadHistorySession = async (chatId: string) => {
     // ID 失配（智能体已被删除）再按名称兜底；两者皆无则清空选择，绝不阻断会话加载。
     // 展示用解析结果的当前名称，保证标签与最新命名一致
     const boundAgent = agentEngine.resolveRef(meta.agentId, meta.agentName);
-    selectedAgent.value = boundAgent ? boundAgent.name : '';
+    selectedAgent.value = boundAgent ? (boundAgent.plugin ? boundAgent.id : boundAgent.name) : '';
     // 技能回显：历史会话可能存技能 id（v2）或技能名（v1），统一经 resolveSkill
     // 三态解析为当前记录，取其 id 存入选中态（停用/已删除的静默剔除）；
     // 同一技能的多形态引用（id 与名称/模型标识并存）解析后按 id 去重，
@@ -2634,6 +2669,62 @@ const loadHistorySession = async (chatId: string) => {
     console.warn('[App] 加载历史会话失败:', error);
   }
 };
+
+const loadHistorySession = async (chatId: string) => {
+  if (isAiResponding.value) stopAiResponse();
+  const options = {
+    observer: handleConversationEvent,
+    onLimitReached: (kind: GuardKind, info: { iterations?: number; minutes?: number; consecutiveFailures?: number }) =>
+      new Promise<boolean>(resolve => openGuardConfirm({
+        kind,
+        count: kind === 'tool-failures' ? info.consecutiveFailures : info.iterations,
+        minutes: info.minutes,
+      }, resolve)),
+    onToolApproval: requestToolApproval,
+  };
+  await conversationEngine.attach(chatId, options, async snapshot => {
+    await loadHistorySessionData(chatId);
+    if (activeChatId.value !== chatId) return;
+    if (snapshot.record) {
+      // Replace a possibly newer disk snapshot with the atomic attach snapshot;
+      // buffered events then advance it exactly once, in their original order.
+      const record = snapshot.record;
+      const live = recordToUiMessage(record) as RunningAssistantMessage;
+      live.parts ??= [];
+      live.toolCalls ??= [];
+      live.isThinking = !record.content && !record.reasoning && !record.toolCalls.length;
+      runningAssistantMessages.set(record.id, live);
+      const index = messages.value.findIndex(message => message.id === record.id);
+      if (index < 0) messages.value.push(live);
+      else messages.value.splice(index, 1, live);
+    }
+    isAiResponding.value = snapshot.running;
+    isCompacting.value = snapshot.compacting;
+    showChatMode.value = snapshot.running || messages.value.length > 0;
+  });
+};
+
+conversationEngine.onSettled = (chatId, summary, error) => {
+  if (activeChatId.value !== chatId) return;
+  isAiResponding.value = false;
+  isCompacting.value = false;
+  settleGuard(false);
+  if (pendingToolApproval) {
+    settleDialogById(pendingToolApproval.dialogId, false);
+    pendingToolApproval?.finish(false);
+  }
+  dismissPendingInteracts();
+  if (error && !sendInFlight.value) pushSystemNotice(error);
+  if (summary?.contextUsage) contextUsage.value = summary.contextUsage;
+  removePageGlow();
+  void stopBorderEffectManagement().catch(console.warn);
+  void syncSessionContextCache(chatId);
+};
+
+// Synchronous storage keeps the selection even if the panel is closed immediately.
+watch(activeChatId, chatId => {
+  localStorage.setItem(ACTIVE_CHAT_KEY, chatId);
+}, { flush: 'sync' });
 
 /**
  * 按「当前会话 + 当前选择」重算上下文预算（输入栏圆环数据）。
@@ -2720,7 +2811,12 @@ const handleSessionDeleted = (chatId: string) => {
   // 级联清理该会话的计划（会话级隔离：会话不在则计划不留）
   dropPlan(chatId);
   if (chatId === activeChatId.value) {
-    goHome();
+    // 删掉的正是当前活跃会话。删在学习会话上意味着它的载体已不存在，
+    // 让学习继续跑只会产出孤儿记录（且草稿会带着一份已删会话的上下文落库）：
+    // 先中止学习并清理草稿，再强制回到主页重建界面（force 绕过新建会话守卫，
+    // 这里的切换是删除动作的必然收尾，不是用户主动发起的新建会话）。
+    if (learn.isLearnRunning.value) void learn.cleanupSession();
+    void goHome({ force: true });
     showHistoryDrawer.value = false;
   }
 };
@@ -3070,7 +3166,7 @@ const sendMessageInner = async () => {
     console.log(`[SendMessage] 入口触发, isAiResponding=${isAiResponding.value}, input="${userInput.value.trim().substring(0, 50)}", msgCount=${messages.value.length}`);
 
     // 前置检查：是否已有可用模型（渠道 + 模型齐全）
-    if (!modelRegistry.isConfigured()) {
+    if (!modelRegistry.configured) {
       console.warn(`[SendMessage] 尚无可用模型, 弹出配置弹窗`);
       showSettingsModal.value = true;
       return;
@@ -3121,7 +3217,8 @@ const sendMessageInner = async () => {
 
     messages.value = cleanupAssistantMessages(messages.value as ExtendedChatMessage[]);
 
-    // --- 1. 默认智能体兜底：新会话首条消息且用户未选智能体时自动选中文本通用助手 ---
+    // --- 1. 默认智能体兜底：新会话首条消息且用户未选智能体时自动选中默认智能体 ---
+    // 默认智能体可在设置「高级设置 → 默认智能体」配置（缺省文本通用助手）；
     // 必须先于会话创建与 runtime 装配：选中结果既要写入会话元信息（供后续会话切换回显），
     // 也要进入本次请求的 systemPrompt 与工具集。用户显式选择过则绝不覆盖。
     if (!activeChatId.value && !selectedAgent.value.trim()) {
@@ -3302,7 +3399,7 @@ const sendMessageInner = async () => {
       throw error;
     }
 
-    // --- 6. 上下文用量测量（全量口径）+ 发送前压缩（≥85%） ---
+    // --- 6. 上下文用量测量（全量口径）；发送前压缩由后台统一执行 ---
     // 本轮用户消息按真实请求口径计量（正文 + 附件全文 + 系统时间戳 + 图片体积，
     // 与引擎构造的 LLM 消息逐字同源，图片以 data URL 形态计入 JSON 序列化长度）
     const measureCurrent = () =>
@@ -3353,12 +3450,8 @@ const sendMessageInner = async () => {
       }
     }
 
-    // --- 6.8 响应态提前 + 预运行中止通道 ---
-    // 此前 isAiResponding 在引擎运行前才置位：发送前压缩（一次完整 LLM 调用，
-    // 长会话可达数十秒）期间停止按钮不出现，且引擎尚未登记运行、engine.abort
-    // 是空操作——用户在该阶段完全无法停止。现将响应态提前到压缩之前建立，
-    // 并配套预运行 AbortController：stopAiResponse 同时中止两者，停止能力
-    // 覆盖「压缩中 → 引擎准备 → 请求 API → 流式回复 → 工具执行」全阶段。
+    // --- 6.8 提前展示响应态；后台中止通道同时覆盖压缩与会话循环 ---
+    // 本地 controller 只记录停止意图，供发送入口的异常/输入恢复路径判定。
     const preRunAbort = new AbortController();
     preRunAbortController = preRunAbort;
     runEpoch += 1;
@@ -3385,62 +3478,7 @@ const sendMessageInner = async () => {
     };
 
     try {
-      // --- 6.9 发送前压缩（≥85%） ---
-      if (contextUsage.value.ratio >= COMPACTION_PRE_RUN_RATIO && effective.records.length > 0) {
-        pushSystemNotice(t('sidepanel.chat.compactionStart'));
-        isCompacting.value = true;
-        try {
-          // 压缩对象 = 初始上下文全体（含旧摘要系统消息 + 压缩点后的全部历史派生）；
-          // 不含合成激活轮——它随每次装配重建，压进摘要只会把技能正文永久写进记忆
-          // signal 接入停止通道：停止时压缩的 LLM 请求被真正取消（compact 抛 AbortError）
-          const compaction = await contextCompactor.compact({
-            messages: runtime.initialContext,
-            model: runtime.model,
-            threshold: runtime.model.contextThreshold,
-            signal: preRunAbort.signal,
-          });
-          // 持久化压缩状态：全部现有记录（压缩点 = 最大 seq）收拢为摘要
-          const maxSeq = effective.records.reduce((max, record) => Math.max(max, record.seq), 0);
-          await transcriptEngine.setCompaction(runChatId, compaction.summary, maxSeq);
-          effective = {
-            summary: compaction.summary,
-            compactedAt: Date.now(),
-            systemPromptSuffix: effective.systemPromptSuffix,
-            records: [],
-          };
-          // 缓存同步为压缩后的形态：后续切换智能体触发的预算重算不再按压缩前的全量历史估算
-          storeEffectiveContext(runChatId, effective);
-          runtime = await buildRuntime();
-          contextUsage.value = measureCurrent();
-          pushSystemNotice(
-            t('sidepanel.chat.compactionDone', {
-              from: formatTokensK(compaction.originalTokens),
-              to: formatTokensK(compaction.summaryTokens),
-            }),
-          );
-        } catch (compactionError) {
-          // 用户停止：压缩请求被 signal 取消——不是失败，按停止语义善后
-          //（若压缩已成功持久化则保留其结果，仅本轮发送中止，下次发送直接以摘要续跑）
-          if (preRunAbort.signal.aborted) {
-            console.info('[SendMessage] 用户在发送前压缩期间停止，本轮中止');
-            settlePreRunStop();
-            return;
-          }
-          // 优雅降级：压缩失败不阻断发送，本轮由窗口守卫裁剪兜底
-          const reason =
-            compactionError instanceof Error ? compactionError.message : String(compactionError);
-          console.warn('[SendMessage] 发送前压缩失败，降级为窗口裁剪:', compactionError);
-          pushSystemNotice(t('sidepanel.chat.compactionFailed', { reason }));
-        } finally {
-          isCompacting.value = false;
-        }
-        // 压缩成功后的间隙兜底：持久化 / 重建 runtime / 重测量期间停止
-        //（signal 已置位但 compact 未抛出的窗口，如恰好落在两个 await 之间）
-        if (preRunAbort.signal.aborted) {
-          settlePreRunStop();
-          return;
-        }
-      }
+      // 发送前压缩由后台执行；关闭侧边栏不会中断这次模型请求。
       console.log(`[SendMessage] runtime 装配完成, 可用工具: [${runtime.toolIds.join(', ')}], agent: ${agentConfig?.id || 'default'}, 模型: ${runtime.model.model}, 历史消息: ${runtime.initialContext.length} 条`);
 
       // --- 7. 引擎驱动（「思考中」占位由 assistant-start 事件创建；响应态与
@@ -3505,7 +3543,6 @@ const sendMessageInner = async () => {
         // 按停止语义善后而非错误卡片，且不恢复输入（避免与已入档消息重复）
         if (preRunAbort.signal.aborted) {
           console.info('[SendMessage] 用户在引擎准备阶段停止，本轮中止:', engineError);
-          pushSystemNotice(t('sidepanel.chat.stoppedByUser'));
           return;
         }
         // 防御：引擎级异常（并发冲突/空输入校验等通常已被上游拦截，到达此处属非典型失败）
@@ -3744,15 +3781,22 @@ const unsubscribeAgentEngine = agentEngine.onChange(handleRegistryChange);
 const unsubscribeSkillEngine = skillEngine.onChange(handleRegistryChange);
 // 模型注册表变更（本上下文保存设置 / 其它上下文经备份恢复写入）→ 刷新选择器清单；
 // 当前键仍有效时 refreshModelOptions 不会改动它，会话内选择不受影响。
-// 同时自愈全局默认引用：自愈仅在引用失效时写盘，写盘触发的再次通知
-// 经「已有效」判定收敛为 no-op，不存在通知循环
+// 自愈全局默认引用：healActiveRef 自身幂等（引用有效时零副作用、不写盘），
+// 无需额外防抖；订阅触发时状态已由注册表重算完毕。
 const unsubscribeModelRegistry = modelRegistry.subscribe(() => {
   refreshModelOptions();
   void modelRegistry.healActiveRef().catch(error => {
     console.warn('[App] 默认模型自愈失败:', error);
   });
+  // 学习配置面板开着时同步刷新候选：用户可能刚在设置里补了视觉模型，
+  // 不刷新会让「无可用模型 → 去设置」的引导形成死循环
+  if (learn.phase.value === 'configuring' || learn.phase.value === 'confirming') {
+    learn.refreshModels();
+  }
 });
 onUnmounted(() => {
+  conversationEngine.detach();
+  window.removeEventListener('beforeunload', detachConversationView);
   unsubscribeAgentEngine();
   unsubscribeSkillEngine();
   unsubscribeModelRegistry();
@@ -3769,7 +3813,9 @@ onUnmounted(() => {
   selectionStripResizeObserver = null;
 });
 
+const detachConversationView = () => conversationEngine.detach();
 onMounted(async () => {
+  window.addEventListener('beforeunload', detachConversationView);
   // 时段问候定时校准
   greetingTimer = setInterval(() => {
     greetingPeriod.value = getGreetingPeriod();
@@ -3784,6 +3830,16 @@ onMounted(async () => {
 
   // 会话计划对账（localStorage 缓存已同步恢复，此处补 chrome.storage 权威源）
   await restorePlansFromStorage();
+
+  const lastChatId = localStorage.getItem(ACTIVE_CHAT_KEY);
+  if (lastChatId) {
+    try {
+      if (await transcriptEngine.getSession(lastChatId)) await loadHistorySession(lastChatId);
+      else localStorage.removeItem(ACTIVE_CHAT_KEY);
+    } catch (error) {
+      console.warn('[App] 恢复侧边栏会话失败:', error);
+    }
+  }
 
   // 加载已保存的工作流
   try {

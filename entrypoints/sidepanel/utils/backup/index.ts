@@ -16,6 +16,7 @@
 
 export { BACKUP_VERSION, DATA_SECTION_ORDER, MEDIA_SECTION_IDS, SECTION_LABEL_KEYS, sectionLabelKey } from './types';
 export type {
+  ParseFailure,
   ApplyReport,
   BackupFile,
   BackupSection,

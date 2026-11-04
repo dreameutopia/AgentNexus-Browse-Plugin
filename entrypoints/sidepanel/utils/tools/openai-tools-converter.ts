@@ -1,3 +1,4 @@
+import { startPluginClient } from '@/utils/plugins/client';
 /**
  * OpenAI 格式工具转换器
  *
@@ -38,6 +39,7 @@ export type { OpenAITool } from '@/common/openai-types';
  */
 let _sidepanelToolsRegistered = false;
 if (!_sidepanelToolsRegistered && typeof globalThis.document !== 'undefined') {
+  void startPluginClient().catch(error => console.warn('[Plugins] Initialization failed', error));
   _sidepanelToolsRegistered = true;
   try {
     registerAllTools();

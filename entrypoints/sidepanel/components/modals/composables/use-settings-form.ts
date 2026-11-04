@@ -30,6 +30,8 @@ import {
   channelStore,
   modelRegistry,
   modelRefKey,
+  channelLabelOf,
+  checkChannelLiveness,
   createEmptyChannel,
   createEmptyModel,
   normalizeChannelState,
@@ -38,6 +40,7 @@ import {
   validateChannelState,
   type AppSettings,
   type ChannelConfig,
+  type ChannelLiveness,
   type ModelRef,
 } from '../../../utils/channels';
 import {
@@ -45,6 +48,8 @@ import {
   fetchModelList,
   ModelListError,
 } from '../../../utils/api/provider-endpoint';
+// 端点活性问题的展示层映射（结构化事实 → 可读文案；与运行期判定同源）
+import { livenessIssueText } from '../../../utils/ui/liveness-message';
 import { probeConnection } from '../../../utils/stream/probe';
 import { ApiRequestError, prettyJson } from '../../../utils/stream/errors';
 import { showConfirm } from '../../../composables/use-app-dialog';
@@ -90,8 +95,6 @@ export const settingsModalContextKey: InjectionKey<SettingsModalContext> =
 export interface SettingsFormApi {
   /** 共享错误子弹窗（壳渲染，各分区可写入） */
   errorDialog: Ref<ErrorDialogState | null>;
-  /** 是否已有可用配置（首次配置 vs 修改配置，决定底部次要按钮语义） */
-  hadExistingConfig: Ref<boolean>;
 
   // ---- 渠道草稿 ----
   /** 全部渠道草稿（深拷贝；底部保存统一持久化） */
@@ -129,6 +132,8 @@ export interface SettingsFormApi {
   activeMeta: ComputedRef<DriverMeta | null>;
   /** 选中渠道协议是否要求 API Key */
   channelRequiresApiKey: ComputedRef<boolean>;
+  /** 选中渠道草稿的活性（与运行期判定同源；测试/拉取可用性依据） */
+  channelLiveness: ComputedRef<ChannelLiveness>;
   /** 可以发起连通性测试 */
   canTest: ComputedRef<boolean>;
   fetchBtnTitle: ComputedRef<string>;
@@ -179,7 +184,6 @@ export const settingsFormKey: InjectionKey<SettingsFormApi> = Symbol('settings-f
 
 export function createSettingsForm(options: { onSaved: () => void }): SettingsFormApi {
   const errorDialog = ref<ErrorDialogState | null>(null);
-  const hadExistingConfig = ref(false);
 
   const channels = ref<ChannelConfig[]>([]);
   const selectedChannelId = ref('');
@@ -216,27 +220,29 @@ export function createSettingsForm(options: { onSaved: () => void }): SettingsFo
     return channel ? driverRegistry.requiresApiKey(channel.protocol) : true;
   });
 
+  /**
+   * 选中渠道的草稿活性（与运行期判定同源：checkChannelLiveness）。
+   * 端点三要素（地址 / 密钥 / 驱动）任一不合格时测试与拉取都不可用。
+   */
+  const channelLiveness = computed<ChannelLiveness>(() => {
+    const channel = selectedChannel.value;
+    return channel ? checkChannelLiveness(channel) : { ok: false, issues: [] };
+  });
+
   const canTest = computed(() => {
     const channel = selectedChannel.value;
     if (!channel) return false;
-    if (!channel.baseUrl.trim()) return false;
-    if (driverRegistry.requiresApiKey(channel.protocol) && !channel.apiKey.trim()) return false;
-    try {
-      new URL(channel.baseUrl.trim());
-    } catch {
-      return false;
-    }
+    if (!channelLiveness.value.ok) return false;
     return channel.models.length > 0 || modelInput.value.trim().length > 0;
   });
 
   const fetchBtnTitle = computed(() => {
     const channel = selectedChannel.value;
     if (!channel) return t('sidepanel.apiConfig.fillServiceUrlFirst');
-    if (!channel.baseUrl.trim()) return t('sidepanel.apiConfig.fillServiceUrlFirst');
-    if (driverRegistry.requiresApiKey(channel.protocol) && !channel.apiKey.trim()) {
-      return t('sidepanel.apiConfig.fillApiKeyFirst');
-    }
-    return t('sidepanel.apiConfig.fetchModelsHint');
+    // 端点不合格时给出具体原因（缺地址 / 地址非法 / 缺密钥…），而不是笼统提示
+    const issue = channelLiveness.value.issues[0];
+    if (!issue) return t('sidepanel.apiConfig.fetchModelsHint');
+    return livenessIssueText(issue);
   });
 
   const modelInputPlaceholder = computed(() => {
@@ -309,7 +315,6 @@ export function createSettingsForm(options: { onSaved: () => void }): SettingsFo
     }
     channels.value = channelStore.getAll();
     settingsDraft.value = appSettingsStore.get();
-    hadExistingConfig.value = modelRegistry.isConfigured();
 
     const stillExists = channels.value.some(channel => channel.id === selectedChannelId.value);
     if (!stillExists) {
@@ -352,7 +357,7 @@ export function createSettingsForm(options: { onSaved: () => void }): SettingsFo
   async function removeChannel(channelId: string): Promise<void> {
     const channel = channels.value.find(item => item.id === channelId);
     if (!channel) return;
-    const label = channel.name.trim() || driverRegistry.tryGet(channel.protocol)?.meta.label || channel.protocol;
+    const label = channelLabelOf(channel);
     const confirmed = await showConfirm(
       t('sidepanel.channels.removeChannelConfirm', { name: label }),
       t('sidepanel.channels.removeChannelTitle'),
@@ -434,18 +439,10 @@ export function createSettingsForm(options: { onSaved: () => void }): SettingsFo
     if (!channel || isFetchingModels.value) return;
     validationErrors.value = [];
 
-    if (!channel.baseUrl.trim()) {
-      validationErrors.value = [t('sidepanel.apiConfig.fillServiceUrlFirst')];
-      return;
-    }
-    try {
-      new URL(channel.baseUrl.trim());
-    } catch {
-      validationErrors.value = [t('sidepanel.apiConfig.invalidServiceUrl')];
-      return;
-    }
-    if (driverRegistry.requiresApiKey(channel.protocol) && !channel.apiKey.trim()) {
-      validationErrors.value = [t('sidepanel.apiConfig.fillApiKeyFirst')];
+    // 端点活性与运行期判定同源：不合格时给出第一条具体原因
+    if (!channelLiveness.value.ok) {
+      const issue = channelLiveness.value.issues[0];
+      validationErrors.value = [issue ? livenessIssueText(issue) : t('sidepanel.apiConfig.invalidServiceUrl')];
       return;
     }
 
@@ -656,7 +653,6 @@ export function createSettingsForm(options: { onSaved: () => void }): SettingsFo
 
       channels.value = channelStore.getAll();
       settingsDraft.value = appSettingsStore.get();
-      hadExistingConfig.value = modelRegistry.isConfigured();
       options.onSaved();
     } catch (error) {
       // 引擎写入失败（读回校验未过 / 存储不可用）：附上技术原因便于分析，
@@ -671,7 +667,6 @@ export function createSettingsForm(options: { onSaved: () => void }): SettingsFo
 
   return {
     errorDialog,
-    hadExistingConfig,
     channels,
     selectedChannelId,
     selectedChannel,
@@ -692,6 +687,7 @@ export function createSettingsForm(options: { onSaved: () => void }): SettingsFo
     driverList,
     activeMeta,
     channelRequiresApiKey,
+    channelLiveness,
     canTest,
     fetchBtnTitle,
     modelInputPlaceholder,

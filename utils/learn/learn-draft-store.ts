@@ -18,8 +18,13 @@
  * null，由调用方走「内存草稿 + 提示本次有效」的兜底，绝不抛错中断主流程。
  */
 
-import { LEARN_DRAFT_STORAGE_KEY, LEARN_DRAFT_TTL_MS } from './learn-types';
+import { LEARN_DRAFT_STORAGE_KEY, LEARN_DRAFT_TTL_MS, SKILL_MAX_TAGS } from './learn-types';
 import type { LearnDraftPayload, SkillDraft } from './learn-types';
+import {
+  SKILL_BODY_MAX_CHARS,
+  SKILL_DESCRIPTION_MAX_CHARS,
+  SKILL_NAME_MAX_CHARS,
+} from '@/utils/skills/skill-types';
 
 /**
  * takeLearnDraft 的结果形态（判别联合）。
@@ -62,8 +67,14 @@ export async function saveLearnDraft(draft: SkillDraft): Promise<boolean> {
     warnUnavailable('save', 'chrome.storage.local 缺失');
     return false;
   }
+  const payload: LearnDraftPayload = { draft, createdAt: Date.now() };
+  // 写入前自检：与其把不合约的载荷写进共享存储、让 hub 侧读到一个「数据异常」
+  // 再退回空表单，不如当场判定为写入失败——调用方据此走降级提示，用户能知情。
+  if (!isDraftPayload(payload)) {
+    console.warn('[LearnDraftStore] 草稿形态非法，未写入存储');
+    return false;
+  }
   try {
-    const payload: LearnDraftPayload = { draft, createdAt: Date.now() };
     await chrome.storage.local.set({ [LEARN_DRAFT_STORAGE_KEY]: payload });
     return true;
   } catch (error) {
@@ -136,23 +147,30 @@ export async function clearLearnDraft(): Promise<void> {
   }
 }
 
-/** 载荷形态校验（storage 是共享可写区，任何上下文都可能写入脏数据） */
+/**
+ * 载荷形态校验（storage 是共享可写区，任何上下文都可能写入脏数据）。
+ *
+ * 长度上限一并校验：storage 是跨页交付的载体，超限内容写进去会挤占配额、
+ * 在 hub 侧撑爆表单。校验与入库门槛同源（utils/skills/skill-types）。
+ */
 function isDraftPayload(value: unknown): value is LearnDraftPayload {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Partial<LearnDraftPayload>;
   if (typeof record.createdAt !== 'number' || !Number.isFinite(record.createdAt)) return false;
   const draft = record.draft as Partial<SkillDraft> | undefined;
   if (!draft || typeof draft !== 'object' || Array.isArray(draft)) return false;
-  return (
-    typeof draft.name === 'string' &&
-    draft.name.length > 0 &&
-    typeof draft.description === 'string' &&
-    typeof draft.body === 'string' &&
-    draft.body.length > 0 &&
-    typeof draft.category === 'string' &&
-    Array.isArray(draft.allowedTools) &&
-    draft.allowedTools.length > 0 &&
-    (draft.mode === 'text' || draft.mode === 'vision') &&
-    Array.isArray(draft.tags)
-  );
+  if (typeof draft.name !== 'string' || draft.name.length === 0) return false;
+  if (draft.name.length > SKILL_NAME_MAX_CHARS) return false;
+  if (typeof draft.description !== 'string') return false;
+  if (draft.description.length > SKILL_DESCRIPTION_MAX_CHARS) return false;
+  if (typeof draft.body !== 'string' || draft.body.length === 0) return false;
+  if (draft.body.length > SKILL_BODY_MAX_CHARS) return false;
+  if (typeof draft.category !== 'string') return false;
+  if (!Array.isArray(draft.allowedTools) || draft.allowedTools.length === 0) return false;
+  if (!draft.allowedTools.every(tool => typeof tool === 'string')) return false;
+  if (draft.mode !== 'text' && draft.mode !== 'vision') return false;
+  if (!Array.isArray(draft.tags) || !draft.tags.every(tag => typeof tag === 'string')) return false;
+  if (draft.tags.length > SKILL_MAX_TAGS) return false;
+  if (draft.summary !== undefined && typeof draft.summary !== 'string') return false;
+  return true;
 }

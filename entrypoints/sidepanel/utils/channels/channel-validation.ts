@@ -12,8 +12,9 @@
  * 校验错误返回已翻译的可读文案（经 i18n t()），由设置界面直接展示。
  */
 
-import { t } from '@/utils/i18n/core';
-import { driverRegistry } from '../stream/driver-registry';
+import { t, type MessageKey } from '@/utils/i18n/core';
+import { channelLabelOf } from './channel-display';
+import { checkChannelLiveness, type LivenessCode } from './endpoint-liveness';
 import {
   clampInt,
   clampNumber,
@@ -21,6 +22,7 @@ import {
   CONTEXT_THRESHOLD_MIN,
   CONTEXT_THRESHOLD_DEFAULT,
   DEFAULT_APP_SETTINGS,
+  DEFAULT_SESSION_AGENT_ID,
   FAILED_TOOL_ROUNDS_DEFAULT,
   FAILED_TOOL_ROUNDS_MAX,
   FAILED_TOOL_ROUNDS_MIN,
@@ -29,6 +31,7 @@ import {
   INTERACT_TIMEOUT_DEFAULT_MINUTES,
   ITERATIONS_MAX,
   ITERATIONS_MIN,
+  MAX_ITERATIONS_DEFAULT,
   normalizeModelRef,
   normalizeText,
   RETRY_COUNT_MAX,
@@ -40,8 +43,6 @@ import {
   TEMPERATURE_MAX,
   TEMPERATURE_MIN,
   TEMPERATURE_DEFAULT,
-  TEXT_MAX_ITERATIONS_DEFAULT,
-  VISION_MAX_ITERATIONS_DEFAULT,
   type AppSettings,
   type ChannelConfig,
   type ChannelState,
@@ -131,14 +132,6 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
     return { ...base, activeModelRef: null };
   }
   const value = raw as Record<string, unknown>;
-  // 兼容旧结构：历史数据把重试/温度/阈值放在 defaults 子对象里，
-  // 读取时先取顶层、缺失回落 defaults——存储归一层即完成结构迁移
-  const legacyDefaults =
-    typeof value.defaults === 'object' && value.defaults !== null && !Array.isArray(value.defaults)
-      ? (value.defaults as Record<string, unknown>)
-      : {};
-  const pick = (topLevel: unknown, legacy: unknown): unknown =>
-    topLevel === undefined ? legacy : topLevel;
   return {
     interactTimeoutMinutes: clampInt(
       value.interactTimeoutMinutes,
@@ -146,17 +139,14 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
       INTERACT_TIMEOUT_MAX_MINUTES,
       INTERACT_TIMEOUT_DEFAULT_MINUTES,
     ),
-    textMaxIterations: clampInt(
-      value.textMaxIterations,
+    // 默认智能体存稳定 id；脏类型 / 空串一律回落内置默认（Auto-Action）
+    defaultAgentId: normalizeText(value.defaultAgentId) || DEFAULT_SESSION_AGENT_ID,
+    // 文本与视觉策略统一的轮次上限（单一字段，默认 30）
+    maxIterations: clampInt(
+      value.maxIterations,
       ITERATIONS_MIN,
       ITERATIONS_MAX,
-      TEXT_MAX_ITERATIONS_DEFAULT,
-    ),
-    visionMaxIterations: clampInt(
-      value.visionMaxIterations,
-      ITERATIONS_MIN,
-      ITERATIONS_MAX,
-      VISION_MAX_ITERATIONS_DEFAULT,
+      MAX_ITERATIONS_DEFAULT,
     ),
     maxConsecutiveFailedToolRounds: clampInt(
       value.maxConsecutiveFailedToolRounds,
@@ -165,25 +155,25 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
       FAILED_TOOL_ROUNDS_DEFAULT,
     ),
     retryCount: clampInt(
-      pick(value.retryCount, legacyDefaults.retryCount),
+      value.retryCount,
       RETRY_COUNT_MIN,
       RETRY_COUNT_MAX,
       base.retryCount,
     ),
     retryInterval: clampInt(
-      pick(value.retryInterval, legacyDefaults.retryInterval),
+      value.retryInterval,
       RETRY_INTERVAL_MIN,
       RETRY_INTERVAL_MAX,
       base.retryInterval,
     ),
     temperature: clampNumber(
-      pick(value.temperature, legacyDefaults.temperature),
+      value.temperature,
       TEMPERATURE_MIN,
       TEMPERATURE_MAX,
       base.temperature,
     ),
     defaultContextThreshold: clampInt(
-      pick(value.defaultContextThreshold, legacyDefaults.contextThreshold),
+      value.defaultContextThreshold,
       CONTEXT_THRESHOLD_MIN,
       CONTEXT_THRESHOLD_MAX,
       base.defaultContextThreshold,
@@ -193,15 +183,6 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
 }
 
 // ==================== 语义校验（严格出：保存前逐项拦截） ====================
-
-function isValidUrl(value: string): boolean {
-  try {
-    new URL(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * 校验单个模型（渠道内保存前调用）。
@@ -223,21 +204,39 @@ export function validateModel(model: ModelConfig): string[] {
   return errors;
 }
 
-/** 校验单个渠道（保存前调用；含其全部模型） */
+/**
+ * 端点级问题码 → 保存期校验文案。
+ * 校验与活性判定共用同一份问题清单（endpoint-liveness），差别只在措辞：
+ * 校验说「请输入 API 密钥」（祈使句，指向修复动作），
+ * 活性诊断说「渠道「X」缺少 API 密钥」（陈述句，指出缺了什么）。
+ */
+const ENDPOINT_ISSUE_VALIDATION_KEYS = {
+  'driver-unknown': 'sidepanel.apiConfig.unsupportedProtocol',
+  'url-empty': 'sidepanel.apiConfig.validateUrlRequired',
+  'url-invalid': 'sidepanel.apiConfig.invalidServiceUrl',
+  'key-missing': 'sidepanel.apiConfig.validateApiKeyRequired',
+} as const satisfies Partial<Record<LivenessCode, MessageKey>>;
+
+/**
+ * 校验单个渠道（保存前调用；含其全部模型）。
+ *
+ * 端点三要素（协议 / 地址 / 密钥）的判定直接取自活性判定层，
+ * 保证「保存通过 ⟹ 端点确实可用」——两处各写一份 URL 解析或密钥规则，
+ * 迟早会漂移成「保存成功但运行期不可用」。
+ *
+ * 注意：被禁用的渠道是**合法配置**（只是不参与可用清单），不报错。
+ */
 export function validateChannel(channel: ChannelConfig): string[] {
   const errors: string[] = [];
 
-  if (!driverRegistry.has(channel.protocol)) {
-    errors.push(t('sidepanel.apiConfig.unsupportedProtocol', { provider: String(channel.protocol) }));
-  }
-  if (!channel.baseUrl.trim()) {
-    errors.push(t('sidepanel.apiConfig.validateUrlRequired'));
-  } else if (!isValidUrl(channel.baseUrl.trim())) {
-    errors.push(t('sidepanel.apiConfig.invalidServiceUrl'));
-  }
-  // 驱动策略：需要密钥的协议（非 Ollama 本地协议）必须填写 Key
-  if (driverRegistry.requiresApiKey(channel.protocol) && !channel.apiKey.trim()) {
-    errors.push(t('sidepanel.apiConfig.validateApiKeyRequired'));
+  for (const issue of checkChannelLiveness(channel).issues) {
+    const key = ENDPOINT_ISSUE_VALIDATION_KEYS[issue.code];
+    if (!key) continue;
+    errors.push(
+      key === 'sidepanel.apiConfig.unsupportedProtocol'
+        ? t(key, { provider: String(channel.protocol) })
+        : t(key),
+    );
   }
 
   if (channel.models.length === 0) {
@@ -274,7 +273,7 @@ export function validateChannelState(state: ChannelState): string[] {
     const channelErrors = validateChannel(channel);
     // 错误前缀带渠道名（无名渠道用协议标签），多渠道时能一眼定位是哪一个
     if (channelErrors.length > 0) {
-      const label = channel.name.trim() || driverRegistry.tryGet(channel.protocol)?.meta.label || channel.protocol;
+      const label = channelLabelOf(channel);
       errors.push(...channelErrors.map(error => `[${label}] ${error}`));
     }
   }
@@ -293,18 +292,14 @@ export function validateAppSettings(settings: AppSettings): string[] {
     errors.push(t('sidepanel.apiConfig.validateInteractTimeoutRange'));
   }
   if (
-    !Number.isInteger(settings.textMaxIterations) ||
-    settings.textMaxIterations < ITERATIONS_MIN ||
-    settings.textMaxIterations > ITERATIONS_MAX
+    !Number.isInteger(settings.maxIterations) ||
+    settings.maxIterations < ITERATIONS_MIN ||
+    settings.maxIterations > ITERATIONS_MAX
   ) {
-    errors.push(t('sidepanel.apiConfig.validateTextIterationsRange'));
+    errors.push(t('sidepanel.apiConfig.validateMaxIterationsRange'));
   }
-  if (
-    !Number.isInteger(settings.visionMaxIterations) ||
-    settings.visionMaxIterations < ITERATIONS_MIN ||
-    settings.visionMaxIterations > ITERATIONS_MAX
-  ) {
-    errors.push(t('sidepanel.apiConfig.validateVisionIterationsRange'));
+  if (!settings.defaultAgentId || !settings.defaultAgentId.trim()) {
+    errors.push(t('sidepanel.apiConfig.validateDefaultAgentRequired'));
   }
   if (
     !Number.isInteger(settings.maxConsecutiveFailedToolRounds) ||

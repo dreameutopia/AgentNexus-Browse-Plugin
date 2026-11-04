@@ -207,3 +207,7 @@ If you wish to use this project in proprietary software or commercial products t
 Vision Assistant explains the current page and guides the user: bounded visible DOM reads, component scrolling in four directions, original-image crops, and readiness refreshes. The user performs clicks, typing, and submissions. Runtime checks prevent skills and extra tools from granting execution capabilities; arbitrary JavaScript is excluded. See [Vision Assistant design and boundaries](tools/vision/VISION_ASSISTANT.md).
 
 视觉通用助手 使用 0–1000 的视口相对坐标和 CDP 输入，支持点击、拖拽、滚动、输入、悬停、键盘与按需 DOM 打标分析。厂商协议、工具参数、支持范围与迁移说明见 [视觉驱动说明](tools/vision/README.md)。
+
+## Third-party plugin development
+
+See the [plugin developer guide](docs/plugin-developer-guide.zh-CN.md) for package contracts, signing, GitHub distribution and compatibility boundaries. Run `npm run test:plugins` and `npm run test:plugins:ui` to validate lifecycle invariants and UI interactions.

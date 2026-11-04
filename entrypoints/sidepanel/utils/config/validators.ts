@@ -36,8 +36,8 @@ export function isAppSettingsLike(value: unknown): boolean {
     (isRecord(activeRef) && isOptionalString(activeRef.channelId) && isOptionalString(activeRef.modelId));
   return (
     isOptionalNumber(value.interactTimeoutMinutes) &&
-    isOptionalNumber(value.textMaxIterations) &&
-    isOptionalNumber(value.visionMaxIterations) &&
+    isOptionalString(value.defaultAgentId) &&
+    isOptionalNumber(value.maxIterations) &&
     isOptionalNumber(value.maxConsecutiveFailedToolRounds) &&
     isOptionalNumber(value.retryCount) &&
     isOptionalNumber(value.retryInterval) &&

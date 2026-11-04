@@ -1,3 +1,4 @@
+import { createPluginsBackupHandler } from '@/utils/plugins/backup';
 /**
  * 数据分区处理器注册表（备份引擎的「数据面」）
  *
@@ -271,7 +272,7 @@ export function createSkillsHandler(deps: SectionDeps): SectionHandler {
               : {};
 
       if (!custom.length && !Object.keys(toggles).length) return null;
-      return { custom, toggles } satisfies SkillsPayload;
+      return { custom, toggles: toggles as Record<string, boolean> } satisfies SkillsPayload;
     },
     validate(data: unknown): boolean {
       return isSkillsPayload(data);
@@ -931,6 +932,7 @@ export function createDataSectionHandlers(deps: SectionDeps): SectionHandler[] {
     createFilesHandler(deps),
     createMetricsHandler(deps),
     createMiscHandler(deps),
+    createPluginsBackupHandler(),
     createImagesHandler(),
     createNotesHandler(deps),
     createConversationsHandler(),

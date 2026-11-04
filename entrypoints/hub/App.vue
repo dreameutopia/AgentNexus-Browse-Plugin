@@ -44,6 +44,7 @@
           <section v-show="activeSection === 'skills'" class="api-section">
             <SkillManager ref="skillManagerRef" />
           </section>
+          <section v-show="activeSection === 'plugins'" class="api-section"><PluginManager /></section>
           <section v-show="activeSection === 'backup'" class="api-section">
             <BackupSection :active="activeSection === 'backup'" />
           </section>
@@ -70,15 +71,19 @@ import { t, useLocale, LOCALE_OPTIONS, type MessageKey } from '@/utils/i18n';
 // 复用设置弹窗壳样式（布局/头部/侧导航/分区容器），视觉与设置弹窗完全一致
 import '../sidepanel/components/modals/settings-modal.css';
 import AgentManager from './agents/AgentManager.vue';
+import PluginManager from './plugins/PluginManager.vue';
+import { startPluginClient } from '@/utils/plugins/client';
+void startPluginClient().catch(error => console.warn('[Plugins] Startup failed', error));
 import SkillManager from './skills/SkillManager.vue';
 import BackupSection from './BackupSection.vue';
 import { LEARN_DRAFT_HASH } from '@/utils/learn/learn-types';
 
-type HubSection = 'agents' | 'skills' | 'backup';
+type HubSection = 'agents' | 'skills' | 'plugins' | 'backup';
 
 const sections: ReadonlyArray<{ id: HubSection; labelKey: MessageKey }> = [
   { id: 'agents', labelKey: 'hub.tabAgents' },
   { id: 'skills', labelKey: 'hub.tabSkills' },
+  { id: 'plugins', labelKey: 'hub.tabPlugins' },
   { id: 'backup', labelKey: 'sidepanel.backup.title' },
 ];
 
@@ -96,6 +101,7 @@ const SECTION_HASHES: Readonly<Record<string, HubSection>> = {
   '#agents': 'agents',
   '#skills': 'skills',
   '#backup': 'backup',
+  '#plugins': 'plugins',
 };
 
 function consumeSectionHash(): boolean {
@@ -110,9 +116,14 @@ function consumeSectionHash(): boolean {
  * 解析草稿深链：命中则切到技能分区并清 hash，返回是否命中。
  * 无 hash 的常规打开不产生信号——交付信号唯一，避免用户普通打开管理中心
  * 被无关事件打断（草稿消费的防残留见 learn-draft-store 三重防线）。
+ *
+ * 匹配 `#new-skill` 或 `#new-skill?<nonce>`：nonce 由 sidepanel 每次交付时
+ * 随机生成，用于保证「hub 标签已停在同一 hash 上」的重复交付也能触发
+ * hashchange（URL 完全相同时不会产生 hashchange，成果会静默滞留）。
  */
 function consumeDraftHash(): boolean {
-  if (window.location.hash !== LEARN_DRAFT_HASH) return false;
+  const hash = window.location.hash;
+  if (hash !== LEARN_DRAFT_HASH && !hash.startsWith(`${LEARN_DRAFT_HASH}?`)) return false;
   activeSection.value = 'skills';
   window.history.replaceState(null, '', window.location.pathname + window.location.search);
   return true;

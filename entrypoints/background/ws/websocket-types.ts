@@ -36,6 +36,8 @@ export interface DynamicToolParameter {
 
 // ============ 工具定义 ============
 export interface DynamicToolDefinition {
+  inputSchema?: Record<string, unknown>;
+  source?: { key: string; version: string; publisher: string; digest: string };
   name: string;
   description: string;
   parameters: DynamicToolParameter[];

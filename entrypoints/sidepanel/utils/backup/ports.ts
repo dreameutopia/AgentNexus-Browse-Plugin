@@ -160,7 +160,7 @@ export function defaultIdb(): IdbPort | null {
       if (typeof factory.databases !== 'function') return null;
       try {
         const list = await factory.databases();
-        return Array.isArray(list) ? list.filter(item => typeof item?.name === 'string') : null;
+        return Array.isArray(list) ? list.filter((item): item is IDBDatabaseInfo & { name: string } => typeof item?.name === 'string') : null;
       } catch {
         return null;
       }

@@ -17,6 +17,10 @@
  */
 
 import type { StorageCategoryId } from './types';
+// 学习草稿键由学习域自有（utils/learn/learn-types 是该键的唯一事实源）：
+// 备份侧只消费、不再重复定义——两处各写一份字面量时，改名必然漏一处，
+// 漏的那处会表现为「统计缺数」且无任何报错。
+import { LEARN_DRAFT_STORAGE_KEY } from '@/utils/learn/learn-types';
 
 /** chrome.storage.local：自定义技能数组（utils/skills/skill-store） */
 export const SKILLS_STORAGE_KEY = 'agentNexusCustomSkills';
@@ -46,8 +50,6 @@ export const PYODIDE_ENV_STORAGE_KEY = 'pyodide_env_state';
 export const BROWSER_UUID_STORAGE_KEY = 'browserUuid';
 /** chrome.storage.local：会话级暂存（utils/data-ref-store；2h TTL，仅统计，不备份） */
 export const DATA_REFS_STORAGE_KEY = 'agentNexusDataRefs';
-/** chrome.storage.local：一次性学习草稿（utils/learn/learn-draft-store；TTL，仅统计，不备份） */
-export const LEARN_DRAFT_STORAGE_KEY = 'agentNexusSkillDraft';
 /** chrome.storage.local：网站校验缓存（entrypoints/background、entrypoints/content；可再生） */
 export const WEBSITE_VALIDATED_KEYS: readonly string[] = [
   '__websiteValidated',

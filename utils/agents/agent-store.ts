@@ -1,3 +1,4 @@
+import { pluginAgent, pluginAgents, onPluginsChange } from '@/utils/plugins/catalog';
 /**
  * 智能体存储（共享数据层）
  *
@@ -191,6 +192,7 @@ function rebuildCustomAgents(items: unknown): number {
         console.warn('[AgentStore] 跳过结构不完整的自定义智能体记录:', item);
         continue;
       }
+      if (agent.id.startsWith('ed25519:') || agent.plugin) continue;
       if (isPresetAgent(agent.id)) {
         console.warn(`[AgentStore] 跳过与预置 ID 撞车的自定义智能体: "${agent.name}" (${agent.id})`);
         continue;
@@ -269,11 +271,12 @@ subscribeStorageKey(CUSTOM_AGENTS_STORAGE_KEY, writeFingerprint, newValue => {
 
 /** 按名称获取智能体配置 */
 export function getAgentConfig(agentName: string): AgentConfig | null {
-  return agentsByName.get(agentName) ?? null;
+  return pluginAgent(agentName) ?? agentsByName.get(agentName) ?? null;
 }
 
 /** 按 ID 获取智能体配置 */
 export function getAgentById(agentId: string): AgentConfig | null {
+  const external = pluginAgent(agentId); if (external) return external;
   const name = agentsById.get(agentId);
   return name === undefined ? null : (agentsByName.get(name) ?? null);
 }
@@ -288,7 +291,7 @@ export function getAllAgents(): AgentConfig[] {
   const customs = [...agentsByName.values()]
     .filter(agent => !isPresetAgent(agent.id))
     .sort(compareAgents);
-  return [...presets, ...customs];
+  return [...presets, ...customs, ...pluginAgents()];
 }
 
 /** ID 是否已被占用（exceptId 用于编辑场景排除自身） */
@@ -347,6 +350,7 @@ export function setAgentConfig(
   if (!name || name.length > AGENT_NAME_MAX_CHARS) {
     return { ok: false, reason: 'invalid' };
   }
+  if (config?.plugin || config?.id?.startsWith('ed25519:')) return { ok: false, reason: 'invalid' };
   const normalized = normalizeAgentConfig({ ...config, name });
   if (!normalized || normalized.name !== name) {
     return { ok: false, reason: 'invalid' };
@@ -396,3 +400,5 @@ export function removeAgentConfig(agentName: string): AgentWriteResult {
   persistCustomAgents();
   return { ok: true, agent: existing };
 }
+
+onPluginsChange(notifyChange);

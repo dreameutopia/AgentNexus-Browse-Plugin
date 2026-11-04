@@ -8,6 +8,7 @@ import { OpenAITool } from '@/common/openai-types';
 
 // 工具元数据接口
 export interface ToolMetadata {
+  plugin?: { key: string; version: string; publisher: string; digest: string };
   name: string;
   description: string;
   category: string;
@@ -71,6 +72,8 @@ export interface ToolMetadata {
 // 会话感知工具（如 plan_tool）据此做数据隔离；不感知会话的工具可安全忽略
 // （可选参数，不破坏既有工具的 execute(args) 契约）。
 export interface ToolExecutionContext {
+  pluginBindings?: Record<string, { digest: string; epoch: number }>;
+  pluginApproved?: boolean;
   /** In-process cancellation; never serialize AbortSignal through runtime messages. */
   signal?: AbortSignal;
   /** Opaque GUI request ID for background cancellation. */
@@ -92,16 +95,28 @@ class ToolRegistry {
   private tools = new Map<string, ExtendedTool>();
   private categories = new Map<string, ExtendedTool[]>();
 
+  /** Replace only externally owned entries; validate the entire batch before mutation. */
+  replaceExternal(tools: ExtendedTool[]): void {
+    const next = new Map([...this.tools].filter(([, tool]) => !tool.metadata.plugin));
+    for (const tool of tools) {
+      if (!tool.metadata.plugin || !tool.name.startsWith(`${tool.metadata.plugin.key}/`) || next.has(tool.name)) throw new Error(`PLUGIN_REGISTRATION_CONFLICT: ${tool.name}`);
+      next.set(tool.name, tool);
+    }
+    const categories = new Map<string, ExtendedTool[]>();
+    for (const tool of next.values()) { const list = categories.get(tool.metadata.category) ?? []; list.push(tool); categories.set(tool.metadata.category, list); }
+    this.tools = next; this.categories = categories;
+  }
+
   /**
    * 注册工具
    *
    * 防御性语义：
-   * - 同名工具重复注册时，先把旧实例从其分类桶中摘除再写入新实例——
-   *   否则 categories 里会残留同一工具的多份引用，getByCategory 返回重复项；
-   * - 同一实例重复注册（registerAllTools 被重复调用）为幂等操作，直接返回；
+   * - 同名不同定义拒绝注册，不能通过覆盖让旧引用悄悄指向其它实现；
+   * - 同一实例或同类且契约相同的重复注册为幂等操作；
    * - 工具没有 name 属于编程错误，告警后拒绝注册，绝不让 undefined 键进 Map。
    */
   register(tool: ExtendedTool): void {
+    if (tool?.metadata?.plugin || tool?.name?.startsWith('ed25519:')) throw new Error('PLUGIN_REGISTRATION_REQUIRES_OWNER_BATCH');
     if (!tool || !tool.name) {
       console.warn(`[ToolRegistry] ⚠️ Attempted to register tool with undefined name:`, tool?.constructor?.name, tool);
       return;
@@ -113,15 +128,8 @@ class ToolRegistry {
         // 幂等：同一实例已注册，无需重复入列
         return;
       }
-      // 换代注册：摘除旧实例的分类引用，保持分类桶与 Map 一致
-      const prevCategory = existing.metadata?.category || 'unknown';
-      const prevList = this.categories.get(prevCategory);
-      if (prevList) {
-        const idx = prevList.indexOf(existing);
-        if (idx !== -1) prevList.splice(idx, 1);
-        if (prevList.length === 0) this.categories.delete(prevCategory);
-      }
-      console.warn(`[ToolRegistry] ⚠️ Tool "${tool.name}" re-registered, replacing previous instance`);
+      if (existing.constructor === tool.constructor && JSON.stringify(existing.openaiSchema) === JSON.stringify(tool.openaiSchema) && JSON.stringify(existing.metadata) === JSON.stringify(tool.metadata)) return;
+      throw new Error(`TOOL_REGISTRATION_CONFLICT: ${tool.name}`);
     }
 
     this.tools.set(tool.name, tool);

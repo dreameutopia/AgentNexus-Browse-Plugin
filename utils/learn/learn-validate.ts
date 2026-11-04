@@ -19,10 +19,13 @@
  */
 
 import {
+  LEARN_FAILURE_REASONS,
   SKILL_MAX_TAGS,
   SKILL_MODE_TAG,
   type LearnConfig,
   type LearnConfigInput,
+  type LearnFailureReason,
+  type LearnFailureReport,
   type LearnModelRef,
   type LearnStrategy,
   type LearnTargetMode,
@@ -30,6 +33,11 @@ import {
   type ValidatedLearnConfig,
   type ValidationReport,
 } from './learn-types';
+import {
+  SKILL_BODY_MAX_CHARS,
+  SKILL_DESCRIPTION_MAX_CHARS,
+  SKILL_NAME_MAX_CHARS,
+} from '@/utils/skills/skill-types';
 
 /** 学习目标字符上限（超长会让首轮请求吃掉大量上下文预算） */
 export const LEARN_GOAL_MAX_CHARS = 2000;
@@ -137,9 +145,20 @@ function validateUrl(raw: unknown): LearnConfigErrorCode | null {
 }
 
 /** 学习目标校验：非空 + 长度上限 */
+/**
+ * 文本长度按**码点**计（而非 UTF-16 码元）。
+ *
+ * 口径必须与 UI 的计数器一致：同一个输入，界面显示「1999/2000」却被校验
+ * 拒绝（或反过来）是典型的自相矛盾。码点计数让一个 emoji 记 1 字——
+ * 与用户「我打了几个字」的心智一致。
+ */
+export function countTextChars(text: string): number {
+  return Array.from(text).length;
+}
+
 function validateGoal(raw: unknown, maxChars: number): LearnConfigErrorCode | null {
   if (typeof raw !== 'string' || !raw.trim()) return 'goal-empty';
-  if (raw.trim().length > maxChars) return 'goal-too-long';
+  if (countTextChars(raw.trim()) > maxChars) return 'goal-too-long';
   return null;
 }
 
@@ -228,6 +247,22 @@ export const LEARN_ERROR_KEYS: Record<LearnConfigErrorCode, string> = {
   'model-no-vision': 'sidepanel.learn.errModelNoVision',
 };
 
+/**
+ * 失败原因码 → i18n key（与 LEARN_ERROR_KEYS 同惯例：纯逻辑层不持有文案）。
+ * UI 侧一次性收口映射，避免各组件散落 switch。
+ */
+export const LEARN_FAILURE_REASON_KEYS: Record<LearnFailureReason, string> = {
+  'login-required': 'sidepanel.learn.reasonLoginRequired',
+  captcha: 'sidepanel.learn.reasonCaptcha',
+  'permission-denied': 'sidepanel.learn.reasonPermissionDenied',
+  'target-missing': 'sidepanel.learn.reasonTargetMissing',
+  'flow-broken': 'sidepanel.learn.reasonFlowBroken',
+  'locator-unstable': 'sidepanel.learn.reasonLocatorUnstable',
+  'page-unreachable': 'sidepanel.learn.reasonPageUnreachable',
+  timeout: 'sidepanel.learn.reasonTimeout',
+  other: 'sidepanel.learn.reasonOther',
+};
+
 // ──── 回执对账（submit_skill / submit_validation 的返回体防御） ────
 // 工具层已做参数级校验，但工具无法感知本次学习的配置。编排层在事件流里
 // 捕获回执时调用本组纯函数：形态（能不能信）与语义（和配置是否一致）
@@ -253,16 +288,26 @@ function isLearnInternalTool(toolId: string): boolean {
  * 成功路径的回执由本域工具构造，正常不会触发；此守卫针对的是
  * 事件流里 `data.draft` / `data.report` 这类「任何成功工具都可能携带」
  * 的弱类型出口。
+ *
+ * 长度与数量上限一并校验（与工具层同一份常量）：守卫是编排层与弱类型出口
+ * 之间的最后一道闸门，放行一个超长正文会让它被原样写入跨页存储，
+ * 在浏览器配额里挤掉真正该留的数据。
  */
 export function asSkillDraft(value: unknown): SkillDraft | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const draft = value as Partial<SkillDraft>;
   if (typeof draft.name !== 'string' || !draft.name) return null;
+  if (draft.name.length > SKILL_NAME_MAX_CHARS) return null;
   if (typeof draft.description !== 'string' || typeof draft.category !== 'string') return null;
+  if (draft.description.length > SKILL_DESCRIPTION_MAX_CHARS) return null;
   if (typeof draft.body !== 'string' || !draft.body) return null;
+  if (draft.body.length > SKILL_BODY_MAX_CHARS) return null;
   if (draft.mode !== 'text' && draft.mode !== 'vision') return null;
   if (!Array.isArray(draft.allowedTools) || !draft.allowedTools.every(id => typeof id === 'string')) return null;
   if (!Array.isArray(draft.tags) || !draft.tags.every(tag => typeof tag === 'string')) return null;
+  if (draft.tags.length > SKILL_MAX_TAGS) return null;
+  // summary 可选：存在时必须是字符串（形态不符直接拒绝，不做静默丢弃）
+  if (draft.summary !== undefined && typeof draft.summary !== 'string') return null;
   return draft as SkillDraft;
 }
 
@@ -277,6 +322,32 @@ export function asValidationReport(value: unknown): ValidationReport | null {
     issues: report.issues.filter((issue): issue is string => typeof issue === 'string'),
     ...(typeof report.score === 'number' && Number.isFinite(report.score) ? { score: report.score } : {}),
     ...(typeof report.summary === 'string' ? { summary: report.summary } : {}),
+  };
+}
+
+/**
+ * 失败报告的形态守卫（submit_skill 以 status=failed/blocked 提交时的返回体）。
+ *
+ * 判据：reason 必须是已知机器码、detail 必须是非空字符串、findings 必须是
+ * 字符串数组。缺一不可——失败报告的价值全在「说清楚了」，缺字段的报告和
+ * 没有报告一样没用，宁可按无产出处理也不要放行半截描述。
+ */
+export function asLearnFailureReport(value: unknown): LearnFailureReport | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const report = value as Partial<LearnFailureReport>;
+  if (typeof report.reason !== 'string') return null;
+  if (!(LEARN_FAILURE_REASONS as readonly string[]).includes(report.reason)) return null;
+  if (typeof report.detail !== 'string' || !report.detail.trim()) return null;
+  if (!Array.isArray(report.findings) || !report.findings.every(item => typeof item === 'string')) {
+    return null;
+  }
+  return {
+    reason: report.reason as LearnFailureReason,
+    detail: report.detail.trim(),
+    findings: report.findings.map(item => item.trim()).filter(Boolean),
+    ...(typeof report.suggestion === 'string' && report.suggestion.trim()
+      ? { suggestion: report.suggestion.trim() }
+      : {}),
   };
 }
 

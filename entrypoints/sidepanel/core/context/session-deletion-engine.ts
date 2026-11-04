@@ -18,6 +18,7 @@
  */
 
 import { conversationEngine } from '../conversation/conversation-engine';
+import { backgroundConversation } from '../conversation/runtime-client';
 import { transcriptEngine } from './transcript-engine';
 import { chatDatabase } from './chat-database';
 import { imageStore, isImageRef } from '../images/image-store';
@@ -47,6 +48,7 @@ class SessionDeletionEngine {
 
     // 1) 中止运行中的对话（幂等：无运行时为 no-op）
     try {
+      if (typeof document !== 'undefined') await backgroundConversation.abortAndWait(chatId);
       if (conversationEngine.isRunning(chatId)) {
         conversationEngine.abort(chatId);
         // 等待运行真正退出（abort → 引擎收尾是异步的）；有界等待防悬挂

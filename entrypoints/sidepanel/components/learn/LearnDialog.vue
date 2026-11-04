@@ -1,17 +1,25 @@
 <script setup lang="ts">
 /**
- * 网站学习确认弹窗（六态合一）
+ * 网站学习确认弹窗（多态合一）
  *
  * 一个组件承载全部学习态确认，是因为它们共用同一套外壳与出入场动画，
- * 差异只在「正文 + 按钮组」——拆成六个组件会把 90% 的样式复制六遍。
+ * 差异只在「正文 + 按钮组」——拆成多个组件会把 90% 的样式复制多遍。
  * 分支用 v-if/else-if 严格按 mode 排他渲染，任一时刻只可能有一种形态。
+ *
+ * 形态：start（开始前确认）/ stop（运行中终止）/ limitWrapUp（轮数上限收尾）/
+ *      validationFail（盲测未通过）/ learnFailed（学习或验证失败）/
+ *      failure（不可恢复失败）/ noDraft（没有产出）。
  *
  * 纯受控：内容来自 props.view，动作通过 emit('answer', choice) 上抛，
  * 由 use-learn-session 决定后续流转（组件自身不做任何业务判断）。
+ * 各形态的合法选择集由 use-learn-session 的 allowedChoices 统一定义
+ * （learnFailed 按阶段分叉：验证阶段持有草稿，不提供「放弃」）。
  */
-import { t } from '@/utils/i18n';
+import { t, type MessageKey } from '@/utils/i18n';
 import './learn-theme.css';
 import type { LearnDialogChoice, LearnDialogView } from '@/entrypoints/sidepanel/composables/use-learn-session';
+import { LEARN_FAILURE_REASON_KEYS } from '@/utils/learn/learn-validate';
+import { isHumanBlockedReason, type LearnFailureReason } from '@/utils/learn/learn-types';
 
 const props = defineProps<{
   view: LearnDialogView | null;
@@ -21,7 +29,17 @@ const emit = defineEmits<{
   answer: [choice: LearnDialogChoice];
 }>();
 
-/**
+/** 失败原因码 → 展示文案（映射单点收敛在 learn-validate，此处只取文案） */
+const REASON_KEYS = LEARN_FAILURE_REASON_KEYS as Record<LearnFailureReason, MessageKey>;
+
+function reasonLabel(reason: LearnFailureReason): string {
+  return t(REASON_KEYS[reason]);
+}
+
+/** 该卡点是否必须由用户本人完成（决定建议文案：等人工 vs 换策略重试） */
+function needsHuman(reason: LearnFailureReason): boolean {
+  return isHumanBlockedReason(reason);
+}/**
  * 遮罩点击：仅对有「安全取消」语义的模式生效。
  * 必须显式二选一的模式（收尾 / 验证结论 / 无产出）对遮罩无响应——
  * 意外点击绝不能替用户做出选择（否则点一下遮罩就等于「仍要创建」/
@@ -184,6 +202,61 @@ function formatElapsed(ms: number): string {
             </button>
             <button type="button" class="learn-btn learn-btn--primary" @click="emit('answer', 'create')">
               {{ t('sidepanel.learn.createAnyway') }}
+            </button>
+          </footer>
+        </template>
+
+        <!-- ════════ 学习失败（模型主动提交 status=failed/blocked） ════════ -->
+        <template v-else-if="view.mode === 'learnFailed'">
+          <header class="learn-dialog__header">
+            <span class="learn-dialog__badge learn-dialog__badge--warn" aria-hidden="true">⚠️</span>
+            <h3 class="learn-dialog__title">
+              {{ view.stage === 'validating' ? t('sidepanel.learn.learnFailedValidateTitle') : t('sidepanel.learn.learnFailedTitle') }}
+            </h3>
+          </header>
+          <div class="learn-dialog__body">
+            <p class="learn-dialog__intro">{{ t('sidepanel.learn.learnFailedIntro') }}</p>
+            <p class="learn-dialog__text">
+              <span class="learn-reason">{{ reasonLabel(view.report.reason) }}</span>
+              {{ view.report.detail }}
+            </p>
+            <div v-if="view.report.findings.length" class="learn-findings">
+              <p class="learn-findings__title">{{ t('sidepanel.learn.learnFailedFindingsTitle') }}</p>
+              <ol class="learn-issues learn-issues--ok">
+                <li v-for="(finding, index) in view.report.findings" :key="index">{{ finding }}</li>
+              </ol>
+            </div>
+            <p v-if="view.report.suggestion" class="learn-dialog__muted">
+              {{ t('sidepanel.learn.learnFailedSuggestionLabel') }}{{ view.report.suggestion }}
+            </p>
+            <!-- 卡点性质决定建议方向：必须由人完成 vs 换个策略可以重试 -->
+            <p class="learn-dialog__muted">
+              {{ needsHuman(view.report.reason) ? t('sidepanel.learn.learnFailedNeedsHuman') : t('sidepanel.learn.learnFailedRetryable') }}
+            </p>
+            <p class="learn-dialog__intro">{{ t('sidepanel.learn.learnFailedChoose') }}</p>
+          </div>
+          <footer class="learn-dialog__footer">
+            <!-- 按钮组按阶段分叉：验证阶段已有学成的草稿，「结束」会白丢成果，
+                 故那里提供的是「仍要创建」（把草稿交付出去）；学习阶段尚无草稿，
+                 结束即放弃，没有可交付之物。合法选择集见 use-learn-session 的 allowedChoices。 -->
+            <button
+              v-if="view.stage === 'validating'"
+              type="button"
+              class="learn-btn learn-btn--ghost"
+              @click="emit('answer', 'create')"
+            >
+              {{ t('sidepanel.learn.learnFailedCreate') }}
+            </button>
+            <button
+              v-else
+              type="button"
+              class="learn-btn learn-btn--ghost"
+              @click="emit('answer', 'giveUp')"
+            >
+              {{ t('sidepanel.learn.learnFailedGiveUp') }}
+            </button>
+            <button type="button" class="learn-btn learn-btn--primary" @click="emit('answer', 'relearn')">
+              {{ view.stage === 'validating' ? t('sidepanel.learn.learnFailedRevalidate') : t('sidepanel.learn.learnFailedRelearn') }}
             </button>
           </footer>
         </template>
@@ -411,6 +484,43 @@ function formatElapsed(ms: number): string {
   line-height: 1.7;
   color: var(--learn-text-muted);
   word-break: break-word;
+}
+
+/* 失败原因分类标签（原因码 → 文案后的一枚胶囊） */
+.learn-reason {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--learn-warning-soft);
+  border: 1px solid var(--learn-warning-border);
+  color: var(--learn-warning);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 已探明的知识（失败也有产出，故用中性/正向配色而非危险色） */
+.learn-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.learn-findings__title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--learn-text-muted);
+}
+
+.learn-issues--ok {
+  background: var(--learn-surface);
+  border-color: var(--learn-border);
+}
+
+.learn-issues--ok li {
+  color: var(--learn-text);
 }
 
 .learn-dialog__footer {

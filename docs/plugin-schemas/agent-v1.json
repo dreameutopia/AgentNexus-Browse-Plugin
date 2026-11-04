@@ -1,0 +1,63 @@
+{
+  "$ref": "#/definitions/agent",
+  "definitions": {
+    "agent": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024,
+          "default": ""
+        },
+        "system": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "maxItems": 200
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/agent/properties/tools/items"
+          },
+          "maxItems": 20,
+          "default": []
+        },
+        "category": {
+          "type": "string",
+          "maxLength": 24,
+          "default": "general"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 16
+          },
+          "maxItems": 8,
+          "default": []
+        }
+      },
+      "required": [
+        "name",
+        "system",
+        "tools"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

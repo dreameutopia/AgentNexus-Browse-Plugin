@@ -164,7 +164,7 @@ export type ResolvedModelConfig = ResolvedModelEndpoint;
 // ==================== 运行时（runtime-builder 一次性装配，不可变） ====================
 
 export interface RuntimeLimits {
-  /** 工具循环最大轮数（装配时取应用设置的文本/视觉轮次上限） */
+  /** 工具循环最大轮数（装配时取应用设置的对话轮次上限，文本与视觉策略统一） */
   maxIterations: number;
   /** 单次运行最大时长（毫秒） */
   maxDurationMs: number;
@@ -184,6 +184,9 @@ export type { VisionRuntimeConfigImpl as VisionRuntimeConfig };
 type VisionRuntimeConfig = VisionRuntimeConfigImpl;
 
 export interface ConversationRuntime {
+  pluginToolCeiling?: string[];
+  pluginOwners?: string[];
+  pluginBindings?: Record<string, { digest: string; epoch: number }>;
   agentId?: string;
   /** Stable advertised catalog. Execution still checks toolIds / loaded skills. */
   advertisedToolIds?: string[];

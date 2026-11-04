@@ -207,3 +207,7 @@ ws://{host}:{port}/api/automation?browserUuid={browserUuid}&version={x.x.x}
 视觉助手负责“看懂并教我”：支持可见区域文字与控件状态读取、四向组件滚动、原图局部放大和等待重拍，由用户执行点击、填写与提交。运行时限制技能与附加工具不能越过观察边界；任意 JavaScript 执行不在其工具范围内。适用场景、工具及已知限制见 [视觉助手设计](tools/vision/VISION_ASSISTANT.md)。
 
 视觉通用助手 使用 0–1000 的视口相对坐标和 CDP 输入，支持点击、拖拽、滚动、输入、悬停、键盘与按需 DOM 打标分析。厂商协议、工具参数、支持范围与迁移说明见 [视觉驱动说明](tools/vision/README.md)。
+
+## 第三方插件开发
+
+插件开发、签名打包、GitHub 发布、兼容边界与维护说明见 [插件开发指南](docs/plugin-developer-guide.zh-CN.md)。运行 `npm run test:plugins` 和 `npm run test:plugins:ui` 验证插件内核与界面交互。

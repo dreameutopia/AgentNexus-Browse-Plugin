@@ -1,3 +1,4 @@
+import { pluginSkills, onPluginsChange } from '@/utils/plugins/catalog';
 /**
  * 技能存储（Skill Store）
  *
@@ -503,7 +504,7 @@ export function getAllSkills(): SkillRecord[] {
     (skill.source === 'preset' ? presets : customs).push(skill);
   }
   customs.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
-  return [...presets, ...customs];
+  return [...presets, ...customs, ...pluginSkills()];
 }
 
 /** 所有启用状态的技能（可用清单注入与 load_skill 报错回显的口径；「/」卡片用同一口径自行过滤） */
@@ -513,7 +514,7 @@ export function getEnabledSkills(): SkillRecord[] {
 
 /** 按 id 精确获取技能（首选查询路径） */
 export function getSkillById(id: string): SkillRecord | undefined {
-  return skillMap.get(id);
+  return id.startsWith('ed25519:') ? pluginSkills().find(s => s.id === id) : skillMap.get(id);
 }
 
 /** 按名称获取技能（同名时命中先注册者；仅供旧数据兼容与默认名避让，新引用走 id） */
@@ -537,6 +538,7 @@ export function resolveSkill(ref: string): SkillRecord | undefined {
   const trimmed = typeof ref === 'string' ? ref.trim() : '';
   if (!trimmed) return undefined;
 
+  if (trimmed.startsWith('ed25519:')) return pluginSkills().find(s => s.id === trimmed);
   const byId = skillMap.get(trimmed);
   if (byId) return byId;
 
@@ -668,3 +670,5 @@ export function setSkillEnabled(id: string, enabled: boolean): boolean {
 }
 
 export type { SkillRecord, StoredSkill };
+
+onPluginsChange(notifyChange);

@@ -14,6 +14,8 @@ const props = defineProps<{
   phase: 'learning' | 'validating';
   elapsedMs: number;
   toolCalls: number;
+  /** 是否处于强制收尾轮（模型未交终态，编排层补跑的一轮） */
+  forceSubmitting?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -45,7 +47,9 @@ function formatElapsed(ms: number): string {
       {{ t('sidepanel.learn.statusToolCalls', { count: props.toolCalls }) }}
     </span>
 
-    <span class="learn-status__hint">{{ t('sidepanel.learn.statusHint') }}</span>
+    <span class="learn-status__hint">
+      {{ props.forceSubmitting ? t('sidepanel.learn.statusForceSubmitting') : t('sidepanel.learn.statusHint') }}
+    </span>
 
     <button type="button" class="learn-status__stop" @click="emit('stop')">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">

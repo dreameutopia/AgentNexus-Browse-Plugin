@@ -46,7 +46,7 @@ export interface BackupSection {
 
 /** 备份文件 */
 export interface BackupFile {
-  format: string;
+  format: 'agentnexus.backup';
   version: number;
   appVersion: string;
   exportedAt: string;
@@ -128,6 +128,7 @@ export interface SectionHandler {
  *   rollback:null 的分区（其后无分区，失败时自身未变即可）。
  */
 export type DataSectionId =
+  | 'plugins'
   | 'skills'
   | 'agents'
   | 'plans'
@@ -147,6 +148,7 @@ export const DATA_SECTION_ORDER: readonly DataSectionId[] = [
   'files',
   'metrics',
   'misc',
+  'plugins',
   'images',
   'notes',
   'conversations',
@@ -166,6 +168,7 @@ export const SECTION_LABEL_KEYS: Record<string, MessageKey> = {
   locale: 'sidepanel.backup.secLocale',
   workflows: 'sidepanel.backup.secWorkflows',
   // 数据分区
+  plugins: 'hub.tabPlugins',
   skills: 'sidepanel.backup.secSkills',
   agents: 'sidepanel.backup.secAgents',
   plans: 'sidepanel.backup.secPlans',

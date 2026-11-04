@@ -122,6 +122,86 @@ export interface ValidationReport {
   summary?: string;
 }
 
+// ──── 终态分化：成功提交 / 失败提交 ────
+
+/**
+ * 学习终态提交的状态（submit_skill 的 status 参数）。
+ *
+ * 为什么要分化：终态工具此前只有「成功」一条路——成功必须同时交出合格的
+ * name/正文/工具清单，模型探索未完成时写不出合格正文，提交失败后拿到的只是
+ * 参数错误，拿不到任何「为什么没学成」的信息，于是常常改用一句文本总结收尾，
+ * 终态工具被无视、已探明的知识也随会话沉底。
+ *
+ * 现在失败也是**一等终态**：模型不必交出合格正文就能收尾，只需说清卡在哪、
+ * 为什么、以及已经探明了什么——失败同样有产出，编排层也拿得到确定的原因。
+ */
+export type LearnSubmitStatus =
+  /** 学习成功：交出可入库的技能草稿 */
+  | 'success'
+  /** 学习失败：流程本身没走通，原因已定位（换策略重试有意义） */
+  | 'failed'
+  /** 被外部条件阻断：必须由人完成某一步（登录、验证码、扫码、付费、授权） */
+  | 'blocked';
+
+/**
+ * 学习失败的机器原因码（模型选择，UI 映射文案）。
+ *
+ * 只列「卡点性质」而非「卡点细节」——细节由 detail 承载，枚举负责让用户
+ * 与后续决策能一眼看出这是「换个策略就能重试」还是「必须人工介入」。
+ */
+export const LEARN_FAILURE_REASONS = [
+  /** 需要登录 / 账号态失效 */
+  'login-required',
+  /** 验证码 / 扫码 / 人机校验 */
+  'captcha',
+  /** 权限不足 / 被禁 / 需授权 */
+  'permission-denied',
+  /** 目标页面或目标元素不存在 */
+  'target-missing',
+  /** 流程已变更、中途断链或无响应 */
+  'flow-broken',
+  /** 定位线索不稳定（每次刷新都变、无法重采） */
+  'locator-unstable',
+  /** 页面无法访问（网络、跨域、加载失败） */
+  'page-unreachable',
+  /** 超时未完成 */
+  'timeout',
+  /** 其它 */
+  'other',
+] as const;
+
+export type LearnFailureReason = (typeof LEARN_FAILURE_REASONS)[number];
+
+/** 失败原因是否「必须由人完成」（UI 据此给出不同建议：等待人工 vs 换策略重试） */
+export function isHumanBlockedReason(reason: LearnFailureReason): boolean {
+  return reason === 'login-required' || reason === 'captcha' || reason === 'permission-denied';
+}
+
+/**
+ * 学习失败报告（submit_skill 以 status=failed/blocked 提交时的返回体）。
+ *
+ * findings 是这份报告最有价值的部分：**失败也有产出**——已跑通的步骤、
+ * 已确认的定位线索、已踩到的坑都记在这里，用户拿到的不是一句「失败了」，
+ * 而是一份「学到了什么 + 卡在哪 + 下一步怎么办」。
+ */
+export interface LearnFailureReport {
+  /** 失败原因分类（机器码） */
+  reason: LearnFailureReason;
+  /** 具体说明：卡在哪一步、期望什么、实际发生什么 */
+  detail: string;
+  /** 已探明的可复用知识（即使失败也有价值） */
+  findings: string[];
+  /** 建议的下一步（人工介入 / 换策略 / 缩小目标） */
+  suggestion?: string;
+}
+
+/** 上一轮运行的反馈（注入下一轮学习 prompt，让模型带着问题清单重来） */
+export type LearnFeedback =
+  /** 盲测未通过：技能本身有问题 */
+  | { kind: 'validation'; report: ValidationReport }
+  /** 学习本身失败：流程没走通，原因已定位 */
+  | { kind: 'failure'; report: LearnFailureReport };
+
 // ──── 状态机 ────
 
 /**
@@ -193,6 +273,22 @@ export const LEARN_DRAFT_TTL_MS = 10 * 60 * 1000;
 
 /** 跨页深链 hash（hub 据此切到技能分区并触发预填） */
 export const LEARN_DRAFT_HASH = '#new-skill';
+
+/**
+ * 生成一次性草稿深链：`#new-skill?t=<nonce>`。
+ *
+ * 为什么必须带 nonce：hub 标签可能已经停在 `#new-skill` 上（上一次交付打开的）。
+ * 此时再次交付若 URL 完全相同，浏览器不会产生 hashchange，hub 侧就不会重新
+ * 消费草稿——用户看到的是上一次的旧表单，新成果静默丢失。
+ * nonce 让 fragment 每次都不同，hashchange 必然触发，交付信号可靠送达。
+ *
+ * hub 侧按「`#new-skill` 或以 `#new-skill?` 开头」识别（见 hub/App.vue 的
+ * consumeDraftHash），并在消费后用 replaceState 清掉 hash，避免重复触发。
+ */
+export function learnDraftHash(): string {
+  const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return `${LEARN_DRAFT_HASH}?t=${nonce}`;
+}
 
 /** 写入 hub 草稿的载荷形态 */
 export interface LearnDraftPayload {

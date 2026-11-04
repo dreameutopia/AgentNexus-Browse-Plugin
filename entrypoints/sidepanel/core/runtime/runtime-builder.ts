@@ -1,3 +1,6 @@
+import { pluginBindings, pluginToolCeiling } from '@/utils/plugins/catalog';
+import { isPluginRef, ownerOf } from '@/utils/plugins/contracts';
+import { startPluginClient, refresh as refreshPluginCatalog } from '@/utils/plugins/client';
 /**
  * 运行时装配引擎
  *
@@ -12,7 +15,7 @@
  * （缓存命中时为纯内存读），装配失败抛带原因的错误。
  */
 
-import { modelRegistry, appSettingsStore, FAILED_TOOL_ROUNDS_DEFAULT, type ModelRef } from '../../utils/channels';
+import { modelRegistry, appSettingsStore, FAILED_TOOL_ROUNDS_DEFAULT, MAX_ITERATIONS_DEFAULT, type ModelRef } from '../../utils/channels';
 import { agentEngine, DEFAULT_AGENT_SYSTEM_PROMPT } from '../registry/agent-engine';
 import { skillEngine, SKILL_TOOL_IDS } from '../registry/skill-engine';
 import { contextEngine } from '../context/context-engine';
@@ -98,17 +101,9 @@ export interface RuntimeBuildInput {
   contextSummaryAt?: number;
 }
 
-/** 文本对话循环限制的固定部分（轮次上限与连续失败阈值来自应用设置，见 build 内读取） */
-const DEFAULT_TEXT_LIMITS: RuntimeLimits = {
-  maxIterations: 20,
-  maxDurationMs: 10 * 60 * 1000,
-  toolTimeoutMs: 120 * 1000,
-  maxConsecutiveFailedToolRounds: FAILED_TOOL_ROUNDS_DEFAULT,
-};
-
-/** Vision 对话循环限制的固定部分（轮次上限与连续失败阈值来自应用设置，见 build 内读取） */
-const DEFAULT_VISION_LIMITS: RuntimeLimits = {
-  maxIterations: 10,
+/** 对话循环限制的固定部分（轮次上限与连续失败阈值来自应用设置，见 build 内读取） */
+const DEFAULT_LIMITS: RuntimeLimits = {
+  maxIterations: MAX_ITERATIONS_DEFAULT,
   maxDurationMs: 10 * 60 * 1000,
   toolTimeoutMs: 120 * 1000,
   maxConsecutiveFailedToolRounds: FAILED_TOOL_ROUNDS_DEFAULT,
@@ -161,12 +156,15 @@ class RuntimeBuilder {
    * 可预期：核心交互工具（无条件注入，任何智能体不可裁剪）→ 智能体 →
    * 技能预授权 → 会话附加 → 技能承载工具（承载工具按「存在可用技能」判定
    * 注入，与发现清单的存在条件严格一致）。
-   * 循环轮次上限与连续失败阈值取应用设置（高级设置：文本 / 视觉策略默认轮次、
-   * 连续工具失败停止阈值）。
+   * 循环轮次上限与连续失败阈值取应用设置（高级设置：对话轮次上限（文本与
+   * 视觉策略统一）、连续工具失败停止阈值）。
    */
   async build(input: RuntimeBuildInput): Promise<ConversationRuntime> {
+    if (typeof document !== 'undefined') { await startPluginClient(); await refreshPluginCatalog(); }
     // 单次解析：agent 本体 + 去重工具列表（避免 get/resolve 双重查找造成的不一致窗口）
     const { agent, toolIds: agentToolIds } = agentEngine.resolve(input.agentName);
+    const pluginCeiling = pluginToolCeiling(agent?.plugin?.key);
+    const allowedByPlugin = (id: string) => !pluginCeiling || pluginCeiling.includes(id) || CORE_SESSION_TOOL_IDS.includes(id) || SKILL_TOOL_IDS.includes(id);
     const isVisionGuide = agent?.id === 'Vision-Assistant';
     if (input.agentName && !agent) {
       throw new Error(`智能体 "${input.agentName}" 不存在`);
@@ -188,7 +186,7 @@ class RuntimeBuilder {
       ? []
       : skillEngine.resolveAvailableSkills(agent,
           isVisionGuide ? filterVisionAssistantTools(sessionToolIds) : sessionToolIds)
-        .filter(skill => !isVisionGuide || skill.allowedTools.every(isVisionAssistantTool));
+        .filter(skill => (!isVisionGuide || skill.allowedTools.every(isVisionAssistantTool)) && skill.allowedTools.every(allowedByPlugin));
 
     // ── 系统提示词（XML 分区） ──
     // 注意：不在此拼入「当前时间」——时间戳逐轮变化会使 system 前缀失配、
@@ -236,11 +234,11 @@ class RuntimeBuilder {
 
     // 合成激活轮（预选技能的 load_skill 调用）：正文不进 system prompt，
     // 由会话侧追加到本轮用户消息之后；此处只取其预授权工具参与工具合并
-    const selectedSkillNames = input.skillNames.filter(name => !isVisionGuide ||
-      skillEngine.get(name)?.allowedTools.every(isVisionAssistantTool));
+    const selectedSkillNames = input.skillNames.filter(name => (!isVisionGuide || skillEngine.get(name)?.allowedTools.every(isVisionAssistantTool)) && (!pluginCeiling || skillEngine.get(name)?.allowedTools.every(allowedByPlugin)));
     if (isVisionGuide && selectedSkillNames.length !== input.skillNames.length) {
       sections.push('<capability-boundary>\n本轮所选技能中存在不可用或超出观察范围的技能，已跳过激活。不要声称已运行这些技能；若用户目标依赖代操作，说明原因并建议切换视觉通用助手 / 文本通用助手 或数据收割机。\n</capability-boundary>');
     }
+    if (pluginCeiling && selectedSkillNames.length !== input.skillNames.length) sections.push('<capability-boundary>所选技能中有超出插件公开授权范围的能力，已跳过这些技能。请向用户说明限制，不得通过加载其它技能绕过。</capability-boundary>');
     const activation = skillEngine.buildActivationRound(selectedSkillNames);
     const discovery = skillEngine.buildDiscoverySection(
       [...availableSkills].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0), [],
@@ -278,24 +276,18 @@ class RuntimeBuilder {
     // ── 模型配置（会话内模型引用经注册表解析，引用失效自动回落默认） ──
     const model = this.resolveModel(input.modelRef);
 
-    // ── Vision 配置与限制（视觉声明来自智能体配置；有 vision 即用视觉循环限制）──
+    // ── Vision 配置与限制（视觉声明来自智能体配置；轮次上限文本/视觉统一取应用设置）──
     // visionOverride 三态：undefined=沿用 agent 声明、对象=启用/替换、null=显式禁用
     const vision =
       input.visionOverride !== undefined ? input.visionOverride : (agent?.vision ?? null);
     const appSettings = appSettingsStore.get();
-    // 基线（未覆盖时与改动前逐字一致）：轮次与连续失败阈值取应用设置，
+    // 基线：轮次上限与连续失败阈值取应用设置（文本与视觉策略统一同一轮次），
     // 固定时长/工具超时保持常量
-    const baselineLimits: RuntimeLimits = vision
-      ? {
-          ...DEFAULT_VISION_LIMITS,
-          maxIterations: appSettings.visionMaxIterations,
-          maxConsecutiveFailedToolRounds: appSettings.maxConsecutiveFailedToolRounds,
-        }
-      : {
-          ...DEFAULT_TEXT_LIMITS,
-          maxIterations: appSettings.textMaxIterations,
-          maxConsecutiveFailedToolRounds: appSettings.maxConsecutiveFailedToolRounds,
-        };
+    const baselineLimits: RuntimeLimits = {
+      ...DEFAULT_LIMITS,
+      maxIterations: appSettings.maxIterations,
+      maxConsecutiveFailedToolRounds: appSettings.maxConsecutiveFailedToolRounds,
+    };
     // 长任务（网站学习）经 limitsOverride 提升上限；只覆盖显式给出的字段
     const limits: RuntimeLimits = input.limitsOverride
       ? { ...baselineLimits, ...input.limitsOverride }
@@ -325,14 +317,17 @@ class RuntimeBuilder {
 
     return {
       chatId: input.chatId,
+      pluginBindings: pluginBindings(),
+      ...(pluginCeiling ? { pluginToolCeiling: [...new Set([...pluginCeiling, ...CORE_SESSION_TOOL_IDS, ...SKILL_TOOL_IDS])] } : {}),
+      pluginOwners: [...new Set([agent?.id ?? '', ...input.skillNames].filter(isPluginRef).map(ownerOf))],
       agentId: agent?.id ?? '',
       advertisedToolIds: finalizeToolIds([...new Set([
         ...toolIdSet,
         ...availableSkills.flatMap(skill => skill.allowedTools),
-      ])].filter(id => !isVisionGuide || isVisionAssistantTool(id)).sort()),
+      ])].filter(id => (!isVisionGuide || isVisionAssistantTool(id)) && allowedByPlugin(id)).sort()),
       systemPrompt,
       // 交付前终态归一化：去重保序 + 脏数据过滤 + 未注册 ID 剔除告警（见 finalizeToolIds）
-      toolIds: finalizeToolIds(isVisionGuide ? filterVisionAssistantTools([...toolIdSet]) : [...toolIdSet]),
+      toolIds: finalizeToolIds((isVisionGuide ? filterVisionAssistantTools([...toolIdSet]) : [...toolIdSet]).filter(allowedByPlugin)),
       ...(isVisionGuide ? { toolPolicy: 'vision-assistant' as const } : {}),
       model,
       limits,

@@ -20,7 +20,8 @@
           <path d="M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z" fill="currentColor"/>
         </svg>
       </span>
-      <span class="tool-name">{{ toolCall.name }}</span>
+      <span class="tool-name">{{ toolCall.name.startsWith('ed25519:') ? toolCall.name.split('/').pop() : toolCall.name }}</span>
+      <small v-if="pluginSource" :title="toolCall.name">{{ pluginSource }}</small>
       <span v-if="toolCall.status === 'error' && toolCall.error" class="tool-error-inline">{{ toolCall.error }}</span>
       <span class="tool-right">
         <span v-if="durationLabel" class="tool-time">{{ durationLabel }}</span>
@@ -59,6 +60,10 @@ const props = defineProps<{
   toolCall: ToolCallUI;
   messageId: string;
 }>();
+const pluginSource = computed(() => {
+  const plugin = props.toolCall.result?.plugin;
+  return plugin && typeof plugin.displayName === 'string' && typeof plugin.version === 'string' ? `${plugin.displayName} · ${plugin.version}` : '';
+});
 
 const emit = defineEmits<{
   'toggle-expansion': [];

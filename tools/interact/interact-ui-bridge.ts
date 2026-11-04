@@ -49,7 +49,7 @@ export interface InteractResolution {
 }
 
 /** UI 处理器：接收询问请求，负责呈现并最终 resolve 收敛结果 */
-export type InteractHandler = (request: InteractRequest) => Promise<InteractResolution>;
+export type InteractHandler = (request: InteractRequest, context?: { chatId?: string }) => Promise<InteractResolution>;
 
 let handler: InteractHandler | null = null;
 

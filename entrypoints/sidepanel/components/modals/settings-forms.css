@@ -15,6 +15,12 @@
   overflow-y: auto;
 }
 
+/* 壳级共享校验错误：任何分区的保存失败都在分区容器顶部统一可见
+   （应用设置分区的错误原先只渲染在渠道分区里，用户在别的分区点保存看不到反馈） */
+.api-config-shared-errors {
+  margin-bottom: 14px;
+}
+
 /* 协议选择器 */
 .provider-selector {
   display: grid;

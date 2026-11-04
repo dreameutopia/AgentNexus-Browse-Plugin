@@ -3,6 +3,27 @@
     <!-- 分区说明：全局请求参数 + 对话循环参数（文案见 defaultsIntro） -->
     <p class="config-form-hint config-section-intro">{{ t('sidepanel.apiConfig.defaultsIntro') }}</p>
 
+    <!-- 默认智能体（新会话首条消息未选智能体时自动选中） -->
+    <div class="config-form-group">
+      <label class="config-form-label">{{ t('sidepanel.apiConfig.defaultAgent') }}</label>
+      <select v-model="draft.defaultAgentId" class="config-form-input">
+        <optgroup
+          v-for="group in agentGroups"
+          :key="group.categoryId"
+          :label="group.label"
+        >
+          <option v-for="agent in group.agents" :key="agent.id" :value="agent.id">
+            {{ displayNameOf(agent) }}
+          </option>
+        </optgroup>
+        <!-- 草稿指向的默认智能体已被删除：原样展示 id，保存时由校验/运行期回落兜底 -->
+        <option v-if="defaultAgentMissing" :value="draft.defaultAgentId">
+          {{ draft.defaultAgentId }}
+        </option>
+      </select>
+      <p class="config-form-hint">{{ t('sidepanel.apiConfig.defaultAgentHint') }}</p>
+    </div>
+
     <!-- 重试次数（全局） -->
     <div class="config-form-group">
       <label class="config-form-label">{{ t('sidepanel.apiConfig.retryCount') }}</label>
@@ -77,34 +98,19 @@
       <p class="config-form-hint">{{ t('sidepanel.apiConfig.interactTimeoutHint') }}</p>
     </div>
 
-    <!-- 文本对话轮次上限（全局应用级） -->
+    <!-- 对话轮次上限（全局应用级，文本与视觉策略统一） -->
     <div class="config-form-group">
-      <label class="config-form-label">{{ t('sidepanel.apiConfig.textMaxIterations') }}</label>
+      <label class="config-form-label">{{ t('sidepanel.apiConfig.maxIterations') }}</label>
       <input
         type="number"
         class="config-form-input config-form-input-sm"
-        v-model.number="draft.textMaxIterations"
+        v-model.number="draft.maxIterations"
         :min="ITERATIONS_MIN"
         :max="ITERATIONS_MAX"
         step="1"
-        placeholder="20"
+        placeholder="30"
       />
-      <p class="config-form-hint">{{ t('sidepanel.apiConfig.textMaxIterationsHint') }}</p>
-    </div>
-
-    <!-- 视觉对话轮次上限（全局应用级） -->
-    <div class="config-form-group">
-      <label class="config-form-label">{{ t('sidepanel.apiConfig.visionMaxIterations') }}</label>
-      <input
-        type="number"
-        class="config-form-input config-form-input-sm"
-        v-model.number="draft.visionMaxIterations"
-        :min="ITERATIONS_MIN"
-        :max="ITERATIONS_MAX"
-        step="1"
-        placeholder="10"
-      />
-      <p class="config-form-hint">{{ t('sidepanel.apiConfig.visionMaxIterationsHint') }}</p>
+      <p class="config-form-hint">{{ t('sidepanel.apiConfig.maxIterationsHint') }}</p>
     </div>
 
     <!-- 连续工具失败轮次阈值（全局应用级） -->
@@ -127,15 +133,19 @@
 <script setup lang="ts">
 /**
  * 高级参数分区（应用设置）：
+ *   - 默认智能体 = 新会话首条消息未选智能体时的自动选中目标（存稳定 id，
+ *     删除后运行期回落预置 Auto-Action）
  *   - 重试 / 温度 / 新建模型上下文阈值 = 全局请求参数（对所有渠道生效，
  *     渠道编辑器不再单独配置这三项）
- *   - interact 询问等待时长 / 文本与视觉对话轮次上限 / 连续工具失败阈值
+ *   - interact 询问等待时长 / 对话轮次上限（文本与视觉策略统一）/ 连续工具失败阈值
  *     = 全局应用设置（轮次与失败阈值经 runtime 装配注入会话引擎的循环守卫）
  * 与渠道分区共享同一份表单草稿，由底部「保存」统一持久化。
  * 数值边界引用 channel-types 常量（校验 / 钳制 / UI 三处共用，永不漂移）。
  */
-import { inject } from 'vue';
-import { t } from '@/utils/i18n';
+import { computed, inject, onUnmounted, ref } from 'vue';
+import { t, type MessageKey } from '@/utils/i18n';
+import { agentEngine } from '../../../core/registry/agent-engine';
+import { useAgentDisplay } from '@/common/use-agent-display';
 import {
   FAILED_TOOL_ROUNDS_MAX,
   FAILED_TOOL_ROUNDS_MIN,
@@ -148,4 +158,31 @@ const form = inject(settingsFormKey) as SettingsFormApi;
 
 /** 顶层绑定在模板中自动解包 ref，模板可直接 draft.retryCount 双向绑定 */
 const draft = form.settingsDraft;
+
+// 默认智能体下拉（按分类分组，与聊天输入框选择器同一套分组与排序规则；
+// 分类显示名经 i18n 解析，自定义分类原样展示 id）。
+// 引擎内部表非响应式：注册表变更（本上下文 / hub 跨上下文同步）经版本号驱动重算。
+const { displayNameOf } = useAgentDisplay();
+const agentsVersion = ref(0);
+const unsubscribeAgents = agentEngine.onChange(() => {
+  agentsVersion.value++;
+});
+onUnmounted(unsubscribeAgents);
+
+const agentGroups = computed(() => {
+  void agentsVersion.value;
+  return agentEngine.listGroupedByCategory().map(group => ({
+    ...group,
+    label: group.labelKey ? t(group.labelKey as MessageKey) : group.categoryId,
+  }));
+});
+
+/** 草稿指向的默认智能体已被删除（下拉无法映射到现有条目时原样展示 id） */
+const defaultAgentMissing = computed(
+  () =>
+    !!draft.value.defaultAgentId &&
+    !agentGroups.value.some(group =>
+      group.agents.some(agent => agent.id === draft.value.defaultAgentId),
+    ),
+);
 </script>

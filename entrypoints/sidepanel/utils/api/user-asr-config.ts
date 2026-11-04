@@ -132,6 +132,31 @@ export function resolveTranscriptionEndpoint(baseUrl: string): string {
   return `${baseUrl.trim().replace(/\/+$/, '')}/audio/transcriptions`;
 }
 
+/** 供应商 id 白名单（未知值一律回落默认供应商） */
+const ASR_PROVIDERS: readonly AsrProvider[] = ['siliconflow', 'openai', 'groq', 'custom'];
+
+/**
+ * 逐字段归一 ASR 配置（宽容进、严格出）。
+ * 存储层不保证字段形状（备份导入 / 外部写入皆可能），所有字段进入业务前
+ * 必须过这一道：脏类型收敛为默认值，字符串去首尾空白，未知键直接丢弃。
+ */
+export function normalizeAsrConfig(raw: unknown): UserAsrConfig {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return { ...DEFAULT_ASR_CONFIG };
+  }
+  const value = raw as Record<string, unknown>;
+  const text = (input: unknown): string => (typeof input === 'string' ? input.trim() : '');
+  const provider = ASR_PROVIDERS.includes(value.provider as AsrProvider)
+    ? (value.provider as AsrProvider)
+    : DEFAULT_ASR_CONFIG.provider;
+  return {
+    provider,
+    baseUrl: text(value.baseUrl),
+    apiKey: text(value.apiKey),
+    model: text(value.model),
+  };
+}
+
 // ==================== 配置管理器 ====================
 
 /**
@@ -141,17 +166,27 @@ export function resolveTranscriptionEndpoint(baseUrl: string): string {
  * 读取按恢复阶梯自动降级并自愈。整个插件（输入框语音、语音助手）的
  * 语音转文字统一从这里读取配置。
  */
+/** 加载结果：存储故障以结构化结果返回（与渠道/应用设置存储同构） */
+export interface AsrLoadResult {
+  ok: boolean;
+  issues: string[];
+}
+
 export class AsrConfigManager {
   private static config: UserAsrConfig = { ...DEFAULT_ASR_CONFIG };
   private static loaded = false;
 
-  /** 从持久化引擎加载配置（应用启动或打开设置弹窗时调用） */
+  /**
+   * 从持久化引擎加载配置（应用启动或打开设置弹窗时调用）。
+   * 存储故障时**显式重置为默认配置**——绝不停留在可能过期的内存态，
+   * 否则调用方会拿旧配置去发请求，与实际存储状态不符。
+   */
   static async load(): Promise<UserAsrConfig> {
     try {
       const state = await getEngine().domain<UserAsrConfig>('asrConfig').load();
-      if (state.data) {
-        this.config = { ...DEFAULT_ASR_CONFIG, ...state.data };
-      }
+      // 逐字段归一：备份导入可能写入脏类型/多余字段，
+      // 直接展开会把未知键带进配置对象（并可能污染后续落盘）
+      this.config = normalizeAsrConfig(state.data);
       if (state.data && state.source !== 'primary') {
         console.warn(`[AsrConfig] 配置已从 ${state.source} 副本恢复:`, state.issues);
       } else if (state.issues.length) {
@@ -160,20 +195,43 @@ export class AsrConfigManager {
       this.loaded = true;
     } catch (error) {
       console.error('[AsrConfig] Failed to load config:', error);
+      // 加载失败：内存态必须是确定的（默认配置），绝不停留在过期值
+      this.config = { ...DEFAULT_ASR_CONFIG };
       this.loaded = true;
     }
     return { ...this.config };
   }
 
-  /** 保存配置（写入未通过读回校验时抛错，绝不静默丢数据） */
-  static async save(config: Partial<UserAsrConfig>): Promise<void> {
+  /**
+   * 加载并返回结构化结果（供需要区分「成功 / 存储故障」的调用方使用）。
+   * 存储故障不抛错：返回 ok=false + issues，配置已重置为默认。
+   */
+  static async loadWithResult(): Promise<AsrLoadResult> {
     try {
-      this.config = { ...this.config, ...config };
-      await getEngine().domain<UserAsrConfig>('asrConfig').save(this.config);
+      await this.load();
+      return { ok: true, issues: [] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, issues: [message] };
+    }
+  }
+
+  /**
+   * 保存配置（写入未通过读回校验时抛错，绝不静默丢数据）。
+   *
+   * 顺序纪律：**先落盘，成功后再更新内存态**——反序会让写盘失败时
+   * 内存里留下一份从未持久化的配置，转写请求会带着它去发 HTTP。
+   */
+  static async save(config: Partial<UserAsrConfig>): Promise<void> {
+    const merged = normalizeAsrConfig({ ...this.config, ...config });
+    try {
+      await getEngine().domain<UserAsrConfig>('asrConfig').save(merged);
     } catch (error) {
       console.error('[AsrConfig] Failed to save config:', error);
       throw error;
     }
+    // 落盘成功后才更新内存态：失败时内存与存储保持一致
+    this.config = merged;
   }
 
   /** 获取当前配置（内存副本） */

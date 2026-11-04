@@ -30,14 +30,14 @@
   align-items: center;
   justify-content: space-between;
   padding: 14px 16px;
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--surface-soft, #f3f1ed);
 }
 
 .history-drawer-header h3 {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
-  color: #1f2937;
+  color: var(--ink-primary, #292824);
 }
 
 .history-drawer-actions {
@@ -50,9 +50,9 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: rgba(102, 126, 234, 0.1);
-  color: #667eea;
-  border: 1px solid #667eea;
+  background: var(--surface-hover, #eeece7);
+  color: var(--ink-secondary, #787671);
+  border: 1px solid var(--ink-secondary, #787671);
   border-radius: 8px;
   padding: 4px 10px;
   font-size: 12px;
@@ -60,20 +60,20 @@
 }
 
 .history-new-btn:hover {
-  background: rgba(102, 126, 234, 0.18);
+  background: var(--surface-hover, #eeece7);
 }
 
 .history-close-btn {
   background: none;
   border: none;
-  color: #6b7280;
+  color: var(--ink-secondary, #787671);
   cursor: pointer;
   padding: 4px;
   display: flex;
 }
 
 .history-close-btn:hover {
-  color: #1f2937;
+  color: var(--ink-primary, #292824);
 }
 
 .history-drawer-body {
@@ -85,12 +85,12 @@
 .history-empty {
   padding: 40px 16px;
   text-align: center;
-  color: #9ca3af;
+  color: var(--ink-muted, #9b9790);
   font-size: 13px;
 }
 
 .history-item {
-  border: 1px solid #f3f4f6;
+  border: 1px solid var(--surface-soft, #f3f1ed);
   border-radius: 10px;
   padding: 10px 12px;
   margin-bottom: 8px;
@@ -99,13 +99,13 @@
 }
 
 .history-item:hover {
-  background: #f8fafc;
-  border-color: #e5e7eb;
+  background: var(--surface-canvas, #faf9f7);
+  border-color: var(--line-soft, #e4e2de);
 }
 
 .history-item.active {
-  background: rgba(102, 126, 234, 0.06);
-  border-color: #667eea;
+  background: var(--surface-hover, #eeece7);
+  border-color: var(--ink-secondary, #787671);
 }
 
 .history-item-title-row {
@@ -118,7 +118,7 @@
 .history-item-title {
   font-size: 13px;
   font-weight: 600;
-  color: #1f2937;
+  color: var(--ink-primary, #292824);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -126,13 +126,13 @@
 
 .history-item-time {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--ink-muted, #9b9790);
   flex-shrink: 0;
 }
 
 .history-item-preview {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--ink-secondary, #787671);
   margin-top: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -155,9 +155,9 @@
 }
 
 .history-badge.agent {
-  color: #667eea;
-  background: rgba(102, 126, 234, 0.1);
-  border-color: #667eea;
+  color: var(--ink-secondary, #787671);
+  background: var(--surface-hover, #eeece7);
+  border-color: var(--ink-secondary, #787671);
 }
 
 .history-badge.skill {
@@ -175,7 +175,7 @@
 
 .history-item-count {
   font-size: 10px;
-  color: #9ca3af;
+  color: var(--ink-muted, #9b9790);
 }
 
 .history-item-ops {
@@ -193,7 +193,7 @@
 .item-op {
   background: none;
   border: none;
-  color: #6b7280;
+  color: var(--ink-secondary, #787671);
   cursor: pointer;
   padding: 3px;
   display: inline-flex;
@@ -201,8 +201,8 @@
 }
 
 .item-op:hover {
-  background: #f3f4f6;
-  color: #1f2937;
+  background: var(--surface-soft, #f3f1ed);
+  color: var(--ink-primary, #292824);
 }
 
 .item-op.danger:hover {
@@ -218,7 +218,7 @@
 .history-rename input {
   flex: 1;
   min-width: 0;
-  border: 1px solid #667eea;
+  border: 1px solid var(--ink-secondary, #787671);
   border-radius: 6px;
   padding: 4px 8px;
   font-size: 12px;

@@ -1650,6 +1650,10 @@ async function main() {
       check(card.includes('rate_limit_error'), '流内错误: 卡片带原始事件 JSON');
     }
 
+    const disconnectedCard = toApiErrorBlock(new Error('会话后台连接已断开'));
+    eq(disconnectedCard.split('会话后台连接已断开').length - 1, 1, '单行内部错误只显示一次');
+    check(toApiErrorBlock(new Error('会话失败\n连接细节')).includes('<raw>'), '多行内部错误保留完整原文');
+
     // —— Retry-After：秒数识别 / HTTP-date 与非法值不识别 ——
     eq(parseRetryAfterMs('7'), 7000, 'Retry-After: 秒数解析');
     eq(parseRetryAfterMs(' 12 '), 12000, 'Retry-After: 容忍空白');
