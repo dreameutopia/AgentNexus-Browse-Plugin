@@ -1,0 +1,343 @@
+/**
+ * 存储占用面板样式（管理中心 · 备份与恢复分区）
+ *
+ * 与设置弹窗的 config-* / api-* 体系同构：沿用同一套间距、圆角与配色变量，
+ * 保证管理中心里的「备份」分区与其它分区视觉一致。
+ */
+
+/* ── 面板外壳 ── */
+
+.backup-storage {
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-color, rgba(127, 127, 127, 0.25));
+  border-radius: 10px;
+  background: var(--bg-secondary, rgba(127, 127, 127, 0.06));
+}
+
+.backup-storage-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.backup-storage-title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, inherit);
+}
+
+.backup-storage-desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary, rgba(127, 127, 127, 0.9));
+}
+
+.backup-storage-refresh {
+  flex: none;
+  padding: 4px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border-color, rgba(127, 127, 127, 0.3));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary, inherit);
+  cursor: pointer;
+}
+
+.backup-storage-refresh:hover:not(:disabled) {
+  background: rgba(127, 127, 127, 0.12);
+}
+
+.backup-storage-refresh:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ── 合计 ── */
+
+.backup-storage-total {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 12px 0 4px;
+}
+
+.backup-storage-total-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-primary, inherit);
+}
+
+.backup-storage-total-label {
+  font-size: 12px;
+  color: var(--text-secondary, rgba(127, 127, 127, 0.9));
+}
+
+.backup-storage-planes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: var(--text-secondary, rgba(127, 127, 127, 0.9));
+}
+
+/* ── 分类列表 ── */
+
+.backup-storage-categories {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.backup-storage-category {
+  border-top: 1px solid var(--border-color, rgba(127, 127, 127, 0.16));
+  padding-top: 8px;
+}
+
+.backup-storage-category:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.backup-storage-category-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.backup-storage-category-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backup-storage-category-size {
+  flex: none;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary, inherit);
+}
+
+.backup-storage-category-share {
+  flex: none;
+  width: 46px;
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary, rgba(127, 127, 127, 0.9));
+}
+
+.backup-storage-bar {
+  position: relative;
+  height: 6px;
+  margin-top: 5px;
+  border-radius: 3px;
+  background: rgba(127, 127, 127, 0.16);
+  overflow: hidden;
+}
+
+.backup-storage-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent-color, #4f8cff);
+  min-width: 2px;
+}
+
+.backup-storage-children {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.backup-storage-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary, rgba(127, 127, 127, 0.95));
+}
+
+.backup-storage-child-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backup-storage-child-size {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.backup-storage-child-share {
+  flex: none;
+  width: 46px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.backup-storage-tip {
+  margin: 5px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-secondary, rgba(127, 127, 127, 0.95));
+}
+
+.backup-storage-tip-label {
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.backup-storage-reclaimable {
+  margin: 4px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #c07d2a;
+}
+
+.backup-storage-badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  border: 1px solid var(--border-color, rgba(127, 127, 127, 0.3));
+  color: var(--text-secondary, rgba(127, 127, 127, 0.9));
+  white-space: nowrap;
+}
+
+.backup-storage-badge.off {
+  opacity: 0.65;
+}
+
+/* ── 对话媒体构成 ── */
+
+.backup-storage-media {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color, rgba(127, 127, 127, 0.16));
+}
+
+.backup-storage-media-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.backup-storage-media-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: rgba(127, 127, 127, 0.16);
+}
+
+.backup-storage-media-bar-text {
+  background: var(--accent-color, #4f8cff);
+}
+
+.backup-storage-media-bar-media {
+  background: #d08b3a;
+}
+
+.backup-storage-media-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--text-secondary, rgba(127, 127, 127, 0.95));
+}
+
+.backup-storage-media-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.backup-storage-media-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.backup-storage-media-dot.text {
+  background: var(--accent-color, #4f8cff);
+}
+
+.backup-storage-media-dot.media {
+  background: #d08b3a;
+}
+
+.backup-storage-note {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary, rgba(127, 127, 127, 0.85));
+}
+
+/* ── 统计说明 ── */
+
+.backup-storage-issues {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(200, 140, 40, 0.35);
+  background: rgba(200, 140, 40, 0.08);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.backup-storage-issues-title {
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+
+.backup-storage-issues ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.backup-storage-issues li {
+  margin: 2px 0;
+}
+
+/* ── 导入预览里的分区清单 ── */
+
+.backup-preview-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.backup-preview-item {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color, rgba(127, 127, 127, 0.3));
+  font-size: 11px;
+  color: var(--text-secondary, rgba(127, 127, 127, 0.95));
+}
+
+.backup-preview-item.data {
+  border-color: rgba(79, 140, 255, 0.45);
+  color: var(--accent-color, #4f8cff);
+}

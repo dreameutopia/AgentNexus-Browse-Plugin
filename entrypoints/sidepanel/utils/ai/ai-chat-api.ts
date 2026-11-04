@@ -84,6 +84,8 @@ function toStreamCallbacks(callbacks: StreamEventCallback): StreamCallbacks {
 
 /** 请求级选项：端点快照必填；采样参数可按请求覆盖端点默认值 */
 export interface ChatRequestOptions {
+  /** Immutable per-run schema snapshot. IDs remain the execution allow-list. */
+  toolDefinitions?: OpenAITool[];
   metrics?: import('../stream/types').RequestMetricsContext;
   /** 按 ID 解析的工具定义列表（经 openaiToolsConverter 转协议格式） */
   tools?: string[];
@@ -119,7 +121,7 @@ function buildRequestContext(options: ChatRequestOptions): RequestContext {
       temperature: options.temperature ?? options.endpoint.temperature,
       stream: true,
     },
-    tools: options.tools ? openaiToolsConverter.getToolsByIds(options.tools) : undefined,
+    tools: options.toolDefinitions ?? (options.tools ? openaiToolsConverter.getToolsByIds(options.tools) : undefined),
     maxTokens: options.maxTokens,
     retryCount: options.endpoint.retryCount,
     retryIntervalMs: options.endpoint.retryIntervalMs,

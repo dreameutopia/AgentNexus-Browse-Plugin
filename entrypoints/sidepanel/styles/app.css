@@ -89,430 +89,112 @@ h1 {
   max-height: 100%;
 }
 
-/* 居中容器 */
+/* 空会话：中性色画布、静态品牌与清晰的文字层级。 */
+.app-container.is-welcome { background: #faf9f7; }
+.is-welcome .main-content { padding: 56px 24px 32px; }
+
 .center-container {
   display: flex;
-  flex-direction: column;
+  flex: 1;
+  min-height: 0;
   align-items: center;
   justify-content: center;
-  min-height: 100%;
-  padding: 20px;
-}
-
-/* 问候语容器 */
-.greeting-container {
-  text-align: center;
-  margin-bottom: 40px;
-}
-
-.greeting-title {
-  position: relative;
-  /* 收缩到最终文案宽度：配合 ghost 占位，打字过程中整行尺寸恒定不跳动 */
-  display: inline-block;
-  max-width: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  font-size: 30px;
-  font-weight: 700;
-  color: #1a1a1a;
-  margin: 0;
-  letter-spacing: -0.02em;
-  line-height: 1.35;
-}
-
-/* 最终文案占位（不可见）：撑出整行宽度，换行位置与打字图层完全一致 */
-.greeting-title-ghost {
-  visibility: hidden;
-  user-select: none;
-  pointer-events: none;
-}
-
-/* 实际打字图层：绝对定位铺满占位宽度；居中对齐，换行后第二行同样居中 */
-.greeting-title-live {
-  position: absolute;
-  left: 0;
-  top: 0;
   width: 100%;
+}
+
+.greeting-container {
+  width: 100%;
+  max-width: 480px;
+  padding-bottom: clamp(12px, 5vh, 48px);
   text-align: center;
-  /* 每轮以新 key 重挂载，翻入动画随之重播 */
-  animation: greeting-roll-in 0.56s cubic-bezier(0.22, 1, 0.36, 1) both;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  animation: welcome-enter 360ms ease-out both;
 }
 
-/* 回滚中：整行带透视向后翻倒并淡出，翻完换样式重新翻入 */
-.greeting-title-live.is-rollout {
-  animation: greeting-roll-out 0.42s ease-in forwards;
-}
-
-@keyframes greeting-roll-in {
-  from {
-    opacity: 0;
-    transform: perspective(640px) rotateX(-58deg);
-  }
-  to {
-    opacity: 1;
-    transform: perspective(640px) rotateX(0deg);
-  }
-}
-
-@keyframes greeting-roll-out {
-  from {
-    opacity: 1;
-    transform: perspective(640px) rotateX(0deg);
-  }
-  to {
-    opacity: 0;
-    transform: perspective(640px) rotateX(56deg);
-  }
-}
-
-/* 文字运行段：承载轮换样式（渐变需要背景贴合文字，故单独一层，光标留在层外） */
-.greeting-text-run {
-  display: inline;
-}
-
-/* 样式 1：品牌渐变流光 —— 与 logo 同源的蓝紫渐变 + 缓慢流动 */
-.greeting-text-run.is-style-1 {
-  background-image: linear-gradient(95deg, #38bdf8 0%, #7c5cff 45%, #a855f7 100%);
-  background-size: 200% 100%;
-  background-position: 0% 50%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  filter: drop-shadow(0 2px 10px rgba(124, 92, 255, 0.28));
-  animation: greeting-gradient-flow 4.2s ease-in-out infinite alternate;
-}
-
-/* 渐变层不能叠加字符级 filter/opacity 动画（会打断 background-clip:text 的裁剪），
-   故该轮字符直接就位，恰好与另外两轮的「浮现」形成节奏差异 */
-.greeting-text-run.is-style-1 .greeting-char {
-  animation: none;
-}
-
-@keyframes greeting-gradient-flow {
-  from {
-    background-position: 0% 50%;
-  }
-  to {
-    background-position: 100% 50%;
-  }
-}
-
-/* 样式 2：星辉发光 —— 品牌靛蓝 + 柔光晕染 */
-.greeting-text-run.is-style-2 {
-  color: #4f46e5;
-  text-shadow:
-    0 0 18px rgba(99, 102, 241, 0.45),
-    0 0 4px rgba(99, 102, 241, 0.3);
-}
-
-/* 逐字浮现：透明度 + 轻微模糊收敛（inline 元素不响应 transform，故用 filter） */
-.greeting-char {
-  animation: greeting-char-in 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-@keyframes greeting-char-in {
-  from {
-    opacity: 0;
-    filter: blur(6px);
-  }
-  to {
-    opacity: 1;
-    filter: blur(0);
-  }
-}
-
-/* 光标：与 logo 同源的蓝紫渐变；打字时常亮，收尾后呼吸式闪烁 */
-.greeting-caret {
-  display: inline-block;
-  width: 3px;
-  height: 1.02em;
-  margin-left: 3px;
-  border-radius: 2px;
-  vertical-align: -0.16em;
-  background: linear-gradient(180deg, #38bdf8 0%, #7c5cff 52%, #a855f7 100%);
-  box-shadow: 0 0 10px rgba(124, 92, 255, 0.55);
-}
-
-.greeting-caret.is-idle {
-  animation: greeting-caret-blink 1.15s ease-in-out infinite;
-}
-
-@keyframes greeting-caret-blink {
-  0%,
-  42% {
-    opacity: 1;
-  }
-  58%,
-  100% {
-    opacity: 0;
-  }
-}
-
-/* ── 品牌 logo：替代时段表情的视觉锚点，蓝紫光晕与 logo 配色同源 ── */
 .greeting-brand {
-  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 64px;
-  height: 64px;
-  margin: 0 auto 18px;
-  animation: greeting-brand-in 0.95s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-.greeting-logo-halo {
-  position: absolute;
-  inset: 2px;
-  border-radius: 50%;
-  background: radial-gradient(
-    circle at 50% 56%,
-    rgba(124, 92, 255, 0.32) 0%,
-    rgba(56, 189, 248, 0.16) 44%,
-    rgba(56, 189, 248, 0) 72%
-  );
-  filter: blur(6px);
-  animation: greeting-halo-breathe 5.5s ease-in-out infinite;
+  gap: 6px;
+  margin-bottom: 24px;
 }
 
 .greeting-logo {
-  position: relative;
-  /* 硬上限：即使外层样式丢失也不会超过这个尺寸（原图 500×500） */
-  width: 42px;
-  height: 42px;
-  max-width: 100%;
-  max-height: 100%;
+  display: block;
+  width: 48px;
+  height: 48px;
   object-fit: contain;
-  filter: drop-shadow(0 8px 16px rgba(88, 101, 242, 0.36));
-  animation: greeting-logo-float 6.5s ease-in-out 1s infinite;
+  flex-shrink: 0;
 }
 
-@keyframes greeting-brand-in {
-  from {
-    opacity: 0;
-    transform: translateY(16px) scale(0.86);
-    filter: blur(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-    filter: blur(0);
-  }
-}
-
-@keyframes greeting-halo-breathe {
-  0%,
-  100% {
-    opacity: 0.7;
-    transform: scale(0.96);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.06);
-  }
-}
-
-@keyframes greeting-logo-float {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(-7px);
-  }
-}
-
-/* 系统开启「减弱动态效果」时静止 logo、翻滚与光标（文案由脚本直接全文呈现且不循环） */
-@media (prefers-reduced-motion: reduce) {
-  .greeting-brand,
-  .greeting-logo-halo,
-  .greeting-logo,
-  .greeting-title-live,
-  .greeting-title-live.is-rollout,
-  .greeting-text-run,
-  .greeting-text-run.is-style-1,
-  .greeting-char,
-  .greeting-caret,
-  .greeting-caret.is-idle {
-    animation: none;
-  }
-}
-
-/* ── 时段问候动态表情（深夜😴 清晨☕ 上午⚡ 下午👋 晚上✨）── */
-.greeting-emoji {
-  position: relative;
-  width: 84px;
-  height: 84px;
-  margin: 0 auto 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(102, 126, 234, 0.16) 0%, rgba(102, 126, 234, 0) 70%);
-  animation: greeting-halo 4.5s ease-in-out infinite;
-}
-
-.greeting-emoji-char {
-  position: relative;
-  display: inline-block;
-  font-size: 42px;
-  line-height: 1;
-  user-select: none;
-}
-
-/* 光晕呼吸（默认节奏，各时段可覆盖配色与时长） */
-@keyframes greeting-halo {
-  0%, 100% { transform: scale(1); opacity: 0.85; }
-  50% { transform: scale(1.08); opacity: 1; }
-}
-
-/* 深夜 😴：月夜靛蓝光晕 + 安睡呼吸 + zzz 上飘 */
-.greeting-emoji.is-lateNight {
-  background: radial-gradient(circle, rgba(99, 102, 241, 0.18) 0%, rgba(99, 102, 241, 0) 70%);
-  animation-duration: 6s;
-}
-
-.greeting-emoji.is-lateNight .greeting-emoji-char {
-  animation: greeting-sleep 5s ease-in-out infinite;
-}
-
-@keyframes greeting-sleep {
-  0%, 100% { transform: translateY(0) rotate(0deg); }
-  50% { transform: translateY(3px) rotate(-3deg); }
-}
-
-.greeting-emoji.is-lateNight::before,
-.greeting-emoji.is-lateNight::after {
-  content: 'z';
-  position: absolute;
-  z-index: 1;
-  font-family: Georgia, 'Times New Roman', serif;
-  font-style: italic;
-  font-weight: 700;
-  color: #6366f1;
-  animation: greeting-zzz 3.2s ease-out infinite;
-}
-
-.greeting-emoji.is-lateNight::before {
-  top: 16px;
-  right: 18px;
+.greeting-brand-name {
+  color: #777570;
   font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.035em;
 }
 
-.greeting-emoji.is-lateNight::after {
-  top: 6px;
-  right: 6px;
-  font-size: 19px;
-  animation-delay: 1.6s;
+.greeting-title {
+  margin: 0;
+  color: #292824;
+  font-size: clamp(23px, 5.4vw, 30px);
+  font-weight: 500;
+  letter-spacing: -0.035em;
+  line-height: 1.5;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
 }
 
-@keyframes greeting-zzz {
-  0% { opacity: 0; transform: translate(0, 2px) scale(0.8); }
-  25% { opacity: 1; }
-  100% { opacity: 0; transform: translate(8px, -14px) scale(1.05); }
+.greeting-subtitle {
+  max-width: 340px;
+  margin: 14px auto 0;
+  color: #787671;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.85;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
 }
 
-/* 清晨 ☕：暖橙光晕 + 轻柔浮动 + 杯口热气升腾 */
-.greeting-emoji.is-dawn {
-  background: radial-gradient(circle, rgba(249, 115, 22, 0.16) 0%, rgba(249, 115, 22, 0) 70%);
-  animation-duration: 5s;
+.is-welcome .bottom-section {
+  background: transparent;
+  border-top-color: transparent;
+  box-shadow: none;
+  padding: 8px 16px 16px;
 }
 
-.greeting-emoji.is-dawn .greeting-emoji-char {
-  animation: greeting-float 2.6s ease-in-out infinite;
+.is-welcome .input-container {
+  background: #fff;
+  border-color: #e4e2de;
+  border-radius: 20px;
+  box-shadow: 0 2px 8px rgb(41 40 36 / 3%);
 }
 
-@keyframes greeting-float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-4px); }
+.is-welcome .input-container:focus-within {
+  border-color: #a5a09a;
+  box-shadow: 0 0 0 3px rgb(41 40 36 / 4%);
 }
 
-.greeting-emoji.is-dawn .greeting-emoji-char::before,
-.greeting-emoji.is-dawn .greeting-emoji-char::after {
-  content: '';
-  position: absolute;
-  top: -12px;
-  width: 3px;
-  height: 12px;
-  border-radius: 3px;
-  background: linear-gradient(to top, rgba(148, 163, 184, 0.55), rgba(148, 163, 184, 0));
-  filter: blur(1px);
-  animation: greeting-steam 2.4s ease-in-out infinite;
+@keyframes welcome-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-.greeting-emoji.is-dawn .greeting-emoji-char::before {
-  left: calc(50% - 8px);
+@media (max-width: 360px) {
+  .is-welcome .main-content { padding-inline: 20px; }
+  .greeting-brand { margin-bottom: 20px; }
+  .greeting-subtitle { max-width: 240px; }
 }
 
-.greeting-emoji.is-dawn .greeting-emoji-char::after {
-  left: calc(50% + 5px);
-  animation-delay: 1.2s;
+@media (max-height: 500px) {
+  .is-welcome .main-content { padding-top: 44px; padding-bottom: 16px; }
+  .greeting-container { padding-bottom: 0; }
+  .greeting-brand { margin-bottom: 10px; }
+  .greeting-subtitle { margin-top: 8px; }
 }
 
-@keyframes greeting-steam {
-  0% { opacity: 0; transform: translateY(4px) scaleY(0.6); }
-  40% { opacity: 1; }
-  100% { opacity: 0; transform: translateY(-14px) scaleY(1.1); }
-}
-
-/* 上午 ⚡：金黄光晕 + 电光充能脉冲（爆发后小憩，元气感） */
-.greeting-emoji.is-morning {
-  background: radial-gradient(circle, rgba(250, 204, 21, 0.28) 0%, rgba(250, 204, 21, 0) 70%);
-}
-
-.greeting-emoji.is-morning .greeting-emoji-char {
-  animation: greeting-zap 2.4s cubic-bezier(0.68, -0.55, 0.27, 1.55) infinite;
-}
-
-@keyframes greeting-zap {
-  0%, 55%, 100% { transform: scale(1) rotate(0deg); filter: brightness(1); }
-  10% { transform: scale(1.22) rotate(-6deg); filter: brightness(1.5); }
-  20% { transform: scale(0.96) rotate(4deg); filter: brightness(1.1); }
-  30% { transform: scale(1.18) rotate(-3deg); filter: brightness(1.45); }
-  42% { transform: scale(1) rotate(0deg); filter: brightness(1); }
-}
-
-/* 下午 👋：晴空蓝光晕 + 拟人挥手（连挥几下再稍作停顿） */
-.greeting-emoji.is-afternoon {
-  background: radial-gradient(circle, rgba(14, 165, 233, 0.16) 0%, rgba(14, 165, 233, 0) 70%);
-}
-
-.greeting-emoji.is-afternoon .greeting-emoji-char {
-  transform-origin: 65% 85%;
-  animation: greeting-wave 2.8s ease-in-out infinite;
-}
-
-@keyframes greeting-wave {
-  0%, 55%, 100% { transform: rotate(0deg); }
-  10% { transform: rotate(18deg); }
-  18% { transform: rotate(-10deg); }
-  26% { transform: rotate(16deg); }
-  34% { transform: rotate(-8deg); }
-  44% { transform: rotate(10deg); }
-}
-
-/* 晚上 ✨：暮紫光晕 + 星光闪烁（缩放/亮度/微旋转） */
-.greeting-emoji.is-evening {
-  background: radial-gradient(circle, rgba(139, 92, 246, 0.2) 0%, rgba(139, 92, 246, 0) 70%);
-}
-
-.greeting-emoji.is-evening .greeting-emoji-char {
-  animation: greeting-twinkle 2.2s ease-in-out infinite;
-}
-
-@keyframes greeting-twinkle {
-  0%, 100% { transform: scale(1) rotate(0deg); opacity: 0.85; filter: brightness(1); }
-  50% { transform: scale(1.15) rotate(12deg); opacity: 1; filter: brightness(1.35); }
-}
-
-/* 系统开启「减弱动态效果」时静止表情，保留光晕配色 */
 @media (prefers-reduced-motion: reduce) {
-  .greeting-emoji,
-  .greeting-emoji::before,
-  .greeting-emoji::after,
-  .greeting-emoji .greeting-emoji-char,
-  .greeting-emoji .greeting-emoji-char::before,
-  .greeting-emoji .greeting-emoji-char::after {
-    animation: none;
-  }
+  .greeting-container { animation: none; }
 }
 
 /* 功能按钮区域 */
@@ -577,25 +259,6 @@ h1 {
 
 /* 响应式设计 */
 @media (max-width: 480px) {
-  .greeting-container {
-    padding-top: 40px;
-    margin-bottom: 30px;
-  }
-  
-  .greeting-emoji {
-    width: 68px;
-    height: 68px;
-    margin-bottom: 16px;
-  }
-  
-  .greeting-emoji-char {
-    font-size: 34px;
-  }
-  
-  .greeting-title {
-    font-size: 26px;
-  }
-  
   .action-buttons {
     gap: 8px;
     max-width: 100%;
@@ -847,51 +510,62 @@ h1 {
   gap: 8px; /* 统一按钮间距 */
 }
 
-/* 会话内模型选择器（替换原“推理”按钮）：按钮 + 上下文用量环 + 向上弹出的下拉菜单 */
+/* 会话内模型选择器（替换原“推理”按钮）：按钮 + 向上弹出的下拉菜单。
+   上下文用量圆环已移至输入栏右侧（附件按钮左侧） */
 .model-select-wrap {
   position: relative; /* 下拉菜单定位基准 */
-  display: flex;      /* 按钮与右侧上下文环同行排列 */
+  display: flex;      /* 按钮与下拉菜单容器同行排列 */
   align-items: center;
   gap: 6px;
 }
 
-/* 模型选择按钮：中性灰底 + 近黑文字（去掉淡紫底与紫字），模型名加粗 */
+/* 模型选择按钮：极浅灰底 + 常规字重。
+   去掉边框与重字重，让它在输入栏底部保持安静，只在悬停/展开时"浮起"一层底色 */
 .model-select-btn {
-  background: #f1f3f5;
-  border: 1px solid #e5e7eb;
-  border-radius: 20px; /* 胶囊形状 */
-  padding: 6px 12px;
+  background: #f7f8fa;
+  border: 1px solid transparent;
+  border-radius: 999px; /* 胶囊形状 */
+  padding: 4px 9px;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   cursor: pointer;
-  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
-  color: #111827;
-  font-size: 13px;
-  font-weight: 600;
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+  color: #4b5563;
+  font-family: inherit; /* 按钮默认字体会掉出全局字体栈，中英文会各走各的 */
+  font-size: 12.5px;
+  line-height: 1.4;
   max-width: 220px; /* 模型名过长时截断，避免撑爆输入栏 */
 }
 
 .model-select-btn:hover {
-  background: #e5e7eb;
-  border-color: #d1d5db;
-  color: #000000;
+  background: #eef0f3;
+  color: #374151;
 }
 
-/* 未配置模型：中性灰底 + 灰字，警示语义交由下拉空态提示承担 */
+/* 展开态：底色再深一档，让"菜单已打开"有明确反馈 */
+.model-select-btn.is-open {
+  background: #e8eaee;
+  color: #374151;
+}
+
+/* 未配置模型：中性灰字，警示语义交由下拉空态提示承担 */
 .model-select-btn.no-model {
+  color: #9ca3af;
+}
+
+.model-select-btn.no-model:hover {
   color: #6b7280;
-  background: #f3f4f6;
-  border-color: #e5e7eb;
 }
 
 /* 按钮左侧的品牌图标（按模型名映射，未命中显示扩展默认图标） */
 .model-select-logo {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   flex-shrink: 0;
-  border-radius: 3px;
+  border-radius: 3.5px;
   object-fit: contain;
+  opacity: 0.92;
 }
 
 .model-select-name {
@@ -899,34 +573,41 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 700; /* 模型名加粗，作为按钮内主视觉 */
-  letter-spacing: 0.1px;
+  font-weight: 400; /* 常规字重：模型名不再压过输入栏其余文字 */
+  letter-spacing: 0;
 }
 
-/* 下拉箭头：常态灰，悬停/展开时转近黑 */
+/* 下拉箭头：常态浅灰，悬停/展开时转深灰并轻微上翻 */
 .model-select-btn .dropdown-arrow {
   flex-shrink: 0;
-  transition: transform 0.2s, color 0.2s;
-  color: #9ca3af;
+  width: 11px;
+  height: 11px;
+  transition: transform 0.2s ease, color 0.2s ease;
+  color: #b6bbc3;
 }
 
 .model-select-btn:hover .dropdown-arrow,
 .model-select-btn.is-open .dropdown-arrow {
-  color: #111827;
+  color: #6b7280;
+}
+
+.model-select-btn.is-open .dropdown-arrow {
+  transform: rotate(180deg);
 }
 
 .model-select-dropdown {
   position: absolute;
   bottom: calc(100% + 8px); /* 在输入栏上方弹出 */
   left: 0;
-  min-width: 240px;
-  max-width: 300px;
-  max-height: 260px;
+  min-width: 250px;
+  max-width: 320px;
+  max-height: 280px;
   overflow-y: auto;
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  overscroll-behavior: contain;
+  background: #ffffff;
+  border: 1px solid #e8eaed;
+  border-radius: 14px;
+  box-shadow: 0 12px 32px -10px rgba(17, 24, 39, 0.18), 0 2px 8px rgba(17, 24, 39, 0.06);
   padding: 6px;
   z-index: 1100;
 }
@@ -934,52 +615,54 @@ h1 {
 .model-select-option {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 8px;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: 9px;
   cursor: pointer;
-  transition: background-color 0.15s;
-  color: #374151;
+  transition: background-color 0.15s ease;
+  color: #4b5563;
   font-size: 13px;
+  font-weight: 400;
 }
 
 .model-select-option:hover {
-  background: #f3f4f6;
+  background: #f5f6f8;
 }
 
-/* 选中项：灰底 + 近黑文字（取代淡紫底与紫字） */
+/* 选中项：轻底色 + 深色文字，字重只抬半档，不做厚重强调 */
 .model-select-option.active {
-  background: #e5e7eb;
+  background: #eef0f3;
   color: #111827;
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .model-select-check {
   flex-shrink: 0;
-  color: #111827;
+  color: #374151;
 }
 
 /* 视觉能力标签：中性灰底 + 深灰文字，与选中项的深色区分靠「描边 + 浅底」 */
 .model-select-vision-tag {
   flex-shrink: 0;
-  padding: 1px 7px;
+  padding: 1px 6px;
   border-radius: 999px;
   font-size: 10px;
-  font-weight: 600;
-  line-height: 1.6;
-  letter-spacing: 0.5px;
-  color: #4b5563;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.2px;
+  color: #6b7280;
   background: #f3f4f6;
-  border: 1px solid #d1d5db;
+  border: 1px solid #e5e7eb;
 }
 
 /* 下拉选项左侧的品牌图标 */
 .model-select-option-logo {
-  width: 18px;
-  height: 18px;
+  width: 17px;
+  height: 17px;
   flex-shrink: 0;
-  border-radius: 3px;
+  border-radius: 3.5px;
   object-fit: contain;
+  opacity: 0.92;
 }
 
 .model-select-option-name {
@@ -996,15 +679,15 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10px;
-  color: #9ca3af;
+  font-size: 10.5px;
+  color: #a8adb5;
   padding-left: 4px;
 }
 
 .model-select-empty {
   padding: 10px 12px;
   font-size: 12px;
-  color: #6b7280;
+  color: #9ca3af;
   cursor: pointer; /* 点击跳转 API 配置 */
   white-space: nowrap;
 }
@@ -1663,17 +1346,22 @@ h1 {
   background: linear-gradient(135deg, rgba(102, 126, 234, 0.02) 0%, rgba(118, 75, 162, 0.02) 100%);
 }
 
-/* 新的底部工具栏样式 */
+/* 新的底部工具栏样式：左对齐排布——学习入口为第一个子元素，恒定贴左 */
 .bottom-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 6px;
   margin-bottom: 0px;
   padding: 2px;
   background: rgba(255, 255, 255, 0.03);
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* 工具栏右侧按钮组：胶囊条缺席时仍靠右（胶囊条自身 flex:1 已占据中间余量） */
+.bottom-toolbar > .right-actions {
+  margin-left: auto;
 }
 
 /* 左侧模式切换器 */

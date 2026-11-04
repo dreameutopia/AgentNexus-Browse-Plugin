@@ -100,6 +100,12 @@ export interface SectionHandler {
   id: string;
   /** 媒体门控：导出时 includeMedia=false 则整体跳过（图片/捕获文件） */
   media?: boolean;
+  /**
+   * 采集过程中的提示（可选；引擎在 collect 之后统一收集并展示）。
+   * 用途：记录「采集成功但内容被降级」的情况（例如未包含多媒体时剥离了
+   * 笔记内联图片）——这类信息必须让用户知道，否则会以为备份是完整的。
+   */
+  notices?: string[];
   /** 导出采集；null = 无数据（该分区不出现在备份中） */
   collect(): Promise<unknown | null>;
   /** 纯结构校验（全部分区先校验；false → 整体拒绝、零写入）。不得有副作用、不得抛错 */
@@ -180,11 +186,142 @@ export function sectionLabelKey(id: string): MessageKey | undefined {
 /** 分区摘要（导入预览用：条目数等，key+参数交给 UI 做 i18n 插值） */
 export type SectionSummary = { key: MessageKey; params: Record<string, number> };
 
+// ==================== 数据分区载荷 ====================
+
+/**
+ * 各数据分区的备份载荷形状（备份文件里的 `data` 字段）。
+ *
+ * 约定：
+ * - 载荷一律是**普通 JSON 可序列化值**（Blob 一律先转 base64 字符串），
+ *   保证备份文件可被任何 JSON 解析器读取；
+ * - 每个载荷自带 `schema` 版本号（写在外层 section.schema），字段增删时
+ *   递增，便于将来做迁移；
+ * - 载荷校验（validate）是**纯函数**：只判结构，不访问存储、不抛错。
+ */
+
+/** 技能分区载荷 */
+export interface SkillsPayload {
+  /** 自定义技能数组（StoredSkill[]） */
+  custom: unknown[];
+  /** 预置技能启停覆盖（skillId → enabled） */
+  toggles: Record<string, boolean>;
+}
+
+/** 智能体分区载荷 */
+export interface AgentsPayload {
+  /** 自定义智能体数组（AgentConfig[]） */
+  custom: unknown[];
+}
+
+/** 会话计划分区载荷 */
+export interface PlansPayload {
+  /** plan-store 的持久化载荷（{ v, sessions, dropped }） */
+  payload: unknown;
+}
+
+/** 托管文件分区载荷 */
+export interface FilesPayload {
+  /** 文件 id → ManagedFile */
+  files: Record<string, unknown>;
+}
+
+/** 用量统计分区载荷 */
+export interface MetricsPayload {
+  /** ai_usage_metrics_v1 的原始聚合数据 */
+  metrics: unknown;
+}
+
+/** 杂项分区载荷（开关 / 主题等零散键） */
+export interface MiscPayload {
+  /** chrome.storage.local 零散键 */
+  chrome: Record<string, unknown>;
+  /** localStorage 零散键（键 → 字符串值） */
+  local: Record<string, string>;
+}
+
+/** 图片分区载荷的单条记录（Blob 以 base64 承载） */
+export interface ImageBackupEntry {
+  /** 内容哈希（主键） */
+  hash: string;
+  /** MIME */
+  mime: string;
+  /** 原始字节数 */
+  byteSize: number;
+  /** 入库时间 */
+  createdAt: number;
+  /**
+   * 8 位资源短 id（回答里引用截图的凭据）。
+   * 随备份一起保留：短 id 变了，历史回答里的 <agent-image id="..."> 就会失效。
+   * 旧备份无此字段 → 恢复后该图不可被引用（内容仍在）。
+   */
+  shortId?: string;
+  /** 图片字节的 base64 编码 */
+  data: string;
+}
+
+/** 图片分区载荷 */
+export interface ImagesPayload {
+  images: ImageBackupEntry[];
+}
+
+/** 笔记分区载荷 */
+export interface NotesPayload {
+  /** Note[]（完整记录，保留原始 id / 时间戳） */
+  notes: unknown[];
+}
+
+/** 会话分区载荷 */
+export interface ConversationsPayload {
+  /** 会话元信息 */
+  sessions: unknown[];
+  /** 消息记录 */
+  messages: unknown[];
+}
+
+/** 捕获文件分区载荷的单条记录（Blob 以 base64 承载） */
+export interface CapturedFileBackupEntry {
+  id: string;
+  filename: string;
+  sourcePageUrl: string;
+  mimeType: string;
+  /** 原始字节数 */
+  size: number;
+  capturedAt: number;
+  /** 文件字节的 base64 编码 */
+  data: string;
+}
+
+/** 捕获文件分区载荷 */
+export interface CapturedFilesPayload {
+  files: CapturedFileBackupEntry[];
+}
+
 // ==================== 存储占用报告 ====================
+
+/**
+ * 存储占用分类 id（固定分类集，UI 展示顺序即此顺序）。
+ *
+ * 分类之间**互斥**：每个字节只归属一个分类，总计 = 各分类之和（无重复计数）。
+ * 未被任何分类认领的键归入 `other`，保证「分类合计 == 实际占用」。
+ */
+export type StorageCategoryId =
+  | 'conversations'
+  | 'images'
+  | 'notes'
+  | 'capturedFiles'
+  | 'skills'
+  | 'agents'
+  | 'plans'
+  | 'files'
+  | 'metrics'
+  | 'misc'
+  | 'config'
+  | 'python'
+  | 'other';
 
 /** 报告分类中的一项（bytes = -1 表示该项统计失败，UI 显示「—」） */
 export interface StorageCategoryStat {
-  id: string;
+  id: StorageCategoryId;
   labelKey: MessageKey;
   /** 占用字节数（估算值；-1 = 统计失败） */
   bytes: number;
@@ -216,6 +353,30 @@ export interface StorageChildStat {
   share: number;
 }
 
+/**
+ * 对话数据的「文字 vs 多媒体」构成（用户视角的会话占用）。
+ *
+ * 口径说明：转录文字与多媒体分处两个库（文字在 AgentNexusChatDB，多媒体在
+ * AgentNexusImageDB），因此这里是**归属视图**而非所有权视图——多媒体按
+ * 「被哪个会话引用」归属到会话；同一张图片被多个会话引用时，各会话各记一份
+ * （这是用户视角的真实占用感受），而分类合计里图片库只计一次（所有权视图）。
+ * 两者口径不同，故本字段独立于 categories 呈现，不参与总计求和。
+ */
+export interface ConversationMediaSplit {
+  /** 会话元信息 + 消息文字与结构（转录库自有字节） */
+  textBytes: number;
+  /** 会话引用的多媒体（图片）字节 */
+  mediaBytes: number;
+  /** textBytes + mediaBytes */
+  totalBytes: number;
+  /** mediaBytes / totalBytes（0..1） */
+  mediaShare: number;
+  /** 关联多媒体条目数（去重后的图片张数，按会话归属计数） */
+  mediaCount?: number;
+  /** 文字条目数（会话数 + 消息数） */
+  textCount?: number;
+}
+
 /** 存储占用总报告 */
 export interface StorageReport {
   /** 全插件合计（chrome.storage.local + localStorage + 全部 IndexedDB 库） */
@@ -227,6 +388,8 @@ export interface StorageReport {
   /** IndexedDB 各库合计（估算） */
   idbBytes: number;
   categories: StorageCategoryStat[];
+  /** 对话数据的文字 / 多媒体构成 */
+  conversationMedia: ConversationMediaSplit;
   /** 统计过程中的非致命问题（透明呈现，不静默吞掉） */
   issues: string[];
   generatedAt: number;

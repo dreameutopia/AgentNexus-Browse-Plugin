@@ -27,11 +27,26 @@ export interface StoredImage {
   byteSize: number;
   /** 入库时间（毫秒时间戳；孤儿回收的宽限期判定依据） */
   createdAt: number;
+  /**
+   * 8 位资源短 id（插件内唯一）。
+   *
+   * 回答里引用截图时用短 id 而非 64 位内容哈希——模型可读、可复述、
+   * 用户也看得懂。唯一性由 images 表上的 shortId 唯一索引在存储层保证
+   * （冲突时写入方换 id 重试），因此短 id 在整个插件内不会撞车。
+   */
+  shortId?: string;
 }
 
-const DB_NAME = 'AgentNexusImageDB';
-const DB_VERSION = 1;
-const IMAGES_STORE = 'images';
+/** 数据库名（导出供备份 / 存储统计引擎定位同一份数据，避免键名漂移） */
+export const IMAGE_DB_NAME = 'AgentNexusImageDB';
+/** 图片表名（导出供备份引擎定位） */
+export const IMAGE_STORE_NAME = 'images';
+
+const DB_NAME = IMAGE_DB_NAME;
+const DB_VERSION = 2;
+const IMAGES_STORE = IMAGE_STORE_NAME;
+/** 短 id 唯一索引名（回答中引用截图的查找入口） */
+const SHORT_ID_INDEX = 'shortId';
 
 class ImageDatabase {
   private db: IDBDatabase | null = null;
@@ -73,9 +88,18 @@ class ImageDatabase {
       };
       request.onupgradeneeded = event => {
         const db = (event.target as IDBOpenDBRequest).result;
+        const upgradeTx = (event.target as IDBOpenDBRequest).transaction!;
+        let store: IDBObjectStore;
         if (!db.objectStoreNames.contains(IMAGES_STORE)) {
-          const store = db.createObjectStore(IMAGES_STORE, { keyPath: 'hash' });
+          store = db.createObjectStore(IMAGES_STORE, { keyPath: 'hash' });
           store.createIndex('createdAt', 'createdAt', { unique: false });
+        } else {
+          // 既有库升级：索引只能在升级事务里建，且必须用事务取 store
+          store = upgradeTx.objectStore(IMAGES_STORE);
+        }
+        // 短 id 唯一索引：插件内唯一性由存储层兜底（写入冲突 → 调用方换 id 重试）
+        if (!store.indexNames.contains(SHORT_ID_INDEX)) {
+          store.createIndex(SHORT_ID_INDEX, 'shortId', { unique: true });
         }
       };
     });
@@ -92,7 +116,14 @@ class ImageDatabase {
       const transaction = db.transaction(stores, mode);
       let result: T;
       transaction.onabort = () => reject(transaction.error ?? new Error('事务中断'));
-      transaction.onerror = () => reject(transaction.error ?? new Error('事务失败'));
+      transaction.onerror = event => {
+        // 请求级错误优先：唯一索引冲突一类的约束错误，其 DOMException 挂在
+        // 请求上，而 transaction.error 在事务真正中止前仍为 null——只取后者
+        // 会把 ConstraintError 变成无信息的「事务失败」，调用方
+        // （短 id 分配的换 id 重试）将无法识别并重试。
+        const requestError = (event.target as IDBRequest | null)?.error ?? null;
+        reject(requestError ?? transaction.error ?? new Error('事务失败'));
+      };
       transaction.oncomplete = () => resolve(result);
       Promise.resolve(work(transaction)).then(
         value => {
@@ -135,6 +166,22 @@ class ImageDatabase {
     return result ?? null;
   }
 
+  /**
+   * 按短 id 取图（唯一索引命中）。
+   * 回答中引用截图时由渲染层调用：短 id → 记录 → object URL。
+   * 不存在返回 null（图片已被回收或 id 非法）。
+   */
+  async getByShortId(shortId: string): Promise<StoredImage | null> {
+    if (!shortId) return null;
+    const db = await this.open();
+    const tx = db.transaction([IMAGES_STORE], 'readonly');
+    const index = tx.objectStore(IMAGES_STORE).index(SHORT_ID_INDEX);
+    const result = (await ImageDatabase.requestToPromise(
+      index.get(shortId),
+    )) as StoredImage | undefined;
+    return result ?? null;
+  }
+
   /** 批量删除；返回实际删除条数（幂等：不存在的 hash 不计数） */
   async deleteMany(hashes: readonly string[]): Promise<number> {
     if (hashes.length === 0) return 0;
@@ -172,6 +219,33 @@ class ImageDatabase {
   async clear(): Promise<void> {
     await this.tx([IMAGES_STORE], 'readwrite', tx => {
       tx.objectStore(IMAGES_STORE).clear();
+    });
+  }
+
+  /**
+   * 全部图片记录（备份 / 存储统计用）。
+   * 读取失败抛错——绝不返回空数组冒充「没有图片」（会让统计缺数且无告警）。
+   */
+  async listAll(): Promise<StoredImage[]> {
+    const db = await this.open();
+    const tx = db.transaction([IMAGES_STORE], 'readonly');
+    const result = await ImageDatabase.requestToPromise(
+      tx.objectStore(IMAGES_STORE).getAll() as IDBRequest<StoredImage[]>,
+    );
+    return Array.isArray(result) ? result : [];
+  }
+
+  /**
+   * 原子恢复：单事务内清空图片表并写入给定记录。
+   *
+   * 事务失败即整体不落库（备份契约的分区原子性硬要求）。
+   * 整表替换语义：备份即权威。
+   */
+  async restoreAll(records: readonly StoredImage[]): Promise<void> {
+    await this.tx([IMAGES_STORE], 'readwrite', tx => {
+      const store = tx.objectStore(IMAGES_STORE);
+      store.clear();
+      for (const record of records) store.put(record);
     });
   }
 }

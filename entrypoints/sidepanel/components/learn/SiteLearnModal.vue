@@ -16,6 +16,7 @@
 import { computed, reactive, ref, watch } from 'vue';
 import { t, type MessageKey } from '@/utils/i18n';
 import LearnHintPopover from './LearnHintPopover.vue';
+import LearnModelPicker from './LearnModelPicker.vue';
 import './learn-theme.css';
 import {
   LEARN_ERROR_KEYS,
@@ -144,8 +145,8 @@ function selectStrategy(strategy: LearnStrategy): void {
   form.strategy = strategy;
 }
 
-function selectModel(event: Event): void {
-  form.modelKey = (event.target as HTMLSelectElement).value;
+function selectModel(modelKey: string): void {
+  form.modelKey = modelKey;
   if (form.modelKey) modelClearedNotice.value = false;
 }
 
@@ -248,7 +249,7 @@ function submit(): void {
 
           <!-- 学习策略 -->
           <div class="learn-field">
-            <span class="learn-field__label">
+            <span class="learn-field__label learn-field__label--row">
               {{ t('sidepanel.learn.strategyLabel') }}
               <LearnHintPopover
                 :title="t('sidepanel.learn.strategyHintTitle')"
@@ -309,17 +310,12 @@ function submit(): void {
                 {{ t('sidepanel.learn.modelGoSettings') }}
               </button>
             </div>
-            <select
+            <LearnModelPicker
               v-else
-              class="learn-field__select"
-              :value="form.modelKey"
-              @change="selectModel"
-            >
-              <option value="" disabled>{{ t('sidepanel.learn.modelLabel') }}</option>
-              <option v-for="model in visibleModels" :key="model.key" :value="model.key">
-                {{ model.label }}{{ model.channelName ? ` · ${model.channelName}` : '' }}
-              </option>
-            </select>
+              :models="visibleModels"
+              :model-key="form.modelKey"
+              @update:model-key="selectModel"
+            />
 
             <p v-if="modelClearedNotice" class="learn-field__notice">
               {{ t('sidepanel.learn.strategyClearedModel') }}
@@ -370,16 +366,20 @@ function submit(): void {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  /* 窄侧边栏下留白自适应，避免弹窗被挤出可视区 */
+  padding: clamp(12px, 3vw, 24px);
   background: var(--learn-scrim);
   backdrop-filter: blur(2px);
+  overflow: hidden;
 }
 
 .learn-modal {
   display: flex;
   flex-direction: column;
   width: min(560px, 100%);
-  max-height: min(88vh, 760px);
+  /* 高度以遮罩内容盒为上限：再矮的视口也只是正文内部纵向滚动 */
+  max-height: 100%;
+  min-width: 0;
   border-radius: 14px;
   overflow: hidden;
 }
@@ -391,6 +391,11 @@ function submit(): void {
   gap: 12px;
   padding: 18px 20px 12px;
   border-bottom: 1px solid var(--learn-border);
+}
+
+/* 标题块允许收缩，长副标题不至于把关闭按钮挤出弹窗 */
+.learn-modal__header > div {
+  min-width: 0;
 }
 
 .learn-modal__title {
@@ -405,12 +410,14 @@ function submit(): void {
   font-size: 12px;
   line-height: 1.6;
   color: var(--learn-text-muted);
+  overflow-wrap: anywhere;
 }
 
 .learn-modal__close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 auto;
   width: 28px;
   height: 28px;
   border: none;
@@ -432,12 +439,16 @@ function submit(): void {
   gap: 16px;
   padding: 16px 20px;
   overflow-y: auto;
+  /* 只允许纵向滚动：任何子元素的意外溢出都不会长出横向滚动条 */
+  overflow-x: hidden;
+  min-height: 0;
 }
 
 .learn-field {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
 }
 
 .learn-field--row {
@@ -448,12 +459,18 @@ function submit(): void {
 }
 
 .learn-field__label {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
   color: var(--learn-text);
+}
+
+/* 问号按钮换行后独占整行（LearnHintPopover 内部用 display:contents 接入） */
+.learn-field__label--row {
+  flex-wrap: wrap;
 }
 
 .learn-field__sub {
@@ -470,9 +487,9 @@ function submit(): void {
 }
 
 .learn-field__input,
-.learn-field__textarea,
-.learn-field__select {
+.learn-field__textarea {
   width: 100%;
+  min-width: 0;
   padding: 9px 11px;
   border: 1px solid var(--learn-border-strong);
   border-radius: 9px;
@@ -493,8 +510,7 @@ function submit(): void {
 }
 
 .learn-field__input:focus,
-.learn-field__textarea:focus,
-.learn-field__select:focus {
+.learn-field__textarea:focus {
   border-color: var(--learn-accent);
   box-shadow: 0 0 0 3px var(--learn-accent-soft);
 }
@@ -551,7 +567,8 @@ function submit(): void {
 /* 分段选择（目标模式 / 学习策略） */
 .learn-segmented {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, 1fr)：等分列不被内容最小宽度撑破 */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -559,6 +576,7 @@ function submit(): void {
   display: flex;
   flex-direction: column;
   gap: 3px;
+  min-width: 0;
   padding: 10px 12px;
   border: 1px solid var(--learn-border-strong);
   border-radius: 10px;
@@ -588,12 +606,14 @@ function submit(): void {
 .learn-segmented__title {
   font-size: 13px;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .learn-segmented__desc {
   font-size: 11px;
   line-height: 1.5;
   color: var(--learn-text-muted);
+  overflow-wrap: anywhere;
 }
 
 /* 开关 */
@@ -633,6 +653,7 @@ function submit(): void {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
 }
 
 /* 底部按钮 */

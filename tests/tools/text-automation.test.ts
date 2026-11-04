@@ -158,7 +158,7 @@ export async function testTextAutomation(
         (id) =>
           id.startsWith('vision_') || id.includes('screenshot') || id === 'ocr'
       ),
-      'Auto Action 工具集不含视觉能力'
+      '文本通用助手 工具集不含视觉能力'
     );
     const observe = new BrowserObserveTool(),
       interact = new BrowserInteractTool(),

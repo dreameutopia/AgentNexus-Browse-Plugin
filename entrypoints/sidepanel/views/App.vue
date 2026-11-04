@@ -1,5 +1,5 @@
 <template>
-  <div class="app-container" @click="handleContainerClick">
+  <div class="app-container" :class="{ 'is-welcome': !showChatMode }" @click="handleContainerClick">
     <!-- WebSocket 状态栏 -->
     <WebSocketStatusBar 
       :status="wsConnectionStatus" 
@@ -26,39 +26,14 @@
     <div class="main-content" v-show="!showChatMode">
       <!-- 居中容器 -->
       <div class="center-container">
-        <!-- 问候语区域 -->
-        <div class="greeting-container">
-          <!-- 时段动态表情暂时注释：样式与时段逻辑均保留，取消注释即可恢复
-          <div class="greeting-emoji" :class="`is-${greetingPeriod}`" aria-hidden="true">
-            <span class="greeting-emoji-char">{{ greetingEmoji }}</span>
-          </div>
-          -->
-          <!-- 品牌 logo：打字机文案的视觉锚点，配色与 logo 的蓝紫渐变同源 -->
+        <section class="greeting-container" aria-labelledby="greeting-title">
           <div class="greeting-brand" aria-hidden="true">
-            <span class="greeting-logo-halo"></span>
-            <img
-              class="greeting-logo"
-              :src="greetingLogoUrl"
-              alt=""
-              width="42"
-              height="42"
-            />
+            <img class="greeting-logo" :src="greetingLogoUrl" alt="" width="48" height="48" />
+            <span class="greeting-brand-name">AgentNexus</span>
           </div>
-          <h1 class="greeting-title" :aria-label="greetingText">
-            <!-- 定宽占位：整行宽度恒等于最终文案，打字过程中不左右跳动 -->
-            <span class="greeting-title-ghost">{{ greetingText }}</span
-            ><span
-              class="greeting-title-live"
-              :class="{ 'is-rollout': isRollout }"
-              :key="passId"
-              aria-hidden="true"
-              ><span class="greeting-text-run" :class="`is-style-${styleIndex}`"
-                ><span v-for="(ch, i) in typedChars" :key="i" class="greeting-char">{{ ch }}</span
-              ></span
-              ><span class="greeting-caret" :class="{ 'is-idle': typingDone }"></span
-            ></span>
-          </h1>
-        </div>
+          <h1 id="greeting-title" class="greeting-title">{{ greetingText }}</h1>
+          <p class="greeting-subtitle">{{ t('sidepanel.app.greetingSubtitle') }}</p>
+        </section>
       </div>
     </div>
 
@@ -76,6 +51,25 @@
     <!-- 底部输入区域 -->
     <div class="bottom-section">
       <div class="bottom-toolbar">
+        <!-- 网站学习入口（工具栏最左侧，恒定贴左；图标 + 「学习」文字同体为一个按钮）。
+             学习流程进行中禁用——状态条上已有终止入口，避免两个入口并存引发歧义 -->
+        <button
+          class="learn-entry-btn"
+          type="button"
+          :disabled="learn.isLearnActive.value"
+          :title="t('sidepanel.learn.entryTip')"
+          :aria-label="t('sidepanel.learn.entryTip')"
+          @click="learn.openModal()"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path
+              d="M12 1.5L14.35 9.65L22.5 12L14.35 14.35L12 22.5L9.65 14.35L1.5 12L9.65 9.65L12 1.5Z"
+              fill="currentColor"
+            />
+          </svg>
+          <span class="learn-entry-btn__label">{{ t('sidepanel.learn.entryLabel') }}</span>
+        </button>
+
         <!-- 左侧模式切换按钮 -->
         <div class="mode-selector-wrapper">
           <button class="mode-toggle-btn" @click.stop="toggleModeSelector" :title="t('sidepanel.app.switchMode')" style = "display:none" >
@@ -108,25 +102,6 @@
             </div>
           </Transition>
         </div>
-
-        <!-- 网站学习入口（输入框上方、已选智能体胶囊条左侧；图标 + 「学习」文字同体为一个按钮）。
-             学习流程进行中禁用——状态条上已有终止入口，避免两个入口并存引发歧义 -->
-        <button
-          class="learn-entry-btn"
-          type="button"
-          :disabled="learn.isLearnActive.value"
-          :title="t('sidepanel.learn.entryTip')"
-          :aria-label="t('sidepanel.learn.entryTip')"
-          @click="learn.openModal()"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path
-              d="M12 1.5L14.35 9.65L22.5 12L14.35 14.35L12 22.5L9.65 14.35L1.5 12L9.65 9.65L12 1.5Z"
-              fill="currentColor"
-            />
-          </svg>
-          <span class="learn-entry-btn__label">{{ t('sidepanel.learn.entryLabel') }}</span>
-        </button>
 
         <!-- 已选智能体/技能胶囊条（设置与历史会话按钮之间；超出可横向滚动：
              小滚动条 + 边缘渐隐作提示，「+N」悬浮/点击展开管理弹层） -->
@@ -462,9 +437,7 @@
                   </svg>
                 </button>
 
-                <!-- 上下文用量圆环（模型选择器右侧；悬浮展示全量成分明细） -->
-                <ContextUsageRing :usage="contextUsage" :compacting="isCompacting" />
-
+                <!-- 上下文用量圆环已移至输入栏右侧（附件按钮左侧），此处仅保留模型下拉 -->
                 <Transition name="dropdown">
                   <div class="model-select-dropdown" v-show="showModelSelectorMenu" @click.stop>
                     <div
@@ -499,6 +472,8 @@
             </div>
 
             <div class="right-actions">
+              <!-- 上下文用量圆环（附件按钮左侧；悬浮展示全量成分明细） -->
+              <ContextUsageRing :usage="contextUsage" :compacting="isCompacting" />
               <button class="input-action-btn" :disabled="!isChatInputEnabled" v-tip="t('sidepanel.app.attachment')" @click="handleFileUpload">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M16.5,6V17.5A4,4 0 0,1 12.5,21.5A4,4 0 0,1 8.5,17.5V5A2.5,2.5 0 0,1 11,2.5A2.5,2.5 0 0,1 13.5,5V15.5A1,1 0 0,1 12.5,16.5A1,1 0 0,1 11.5,15.5V6H10V15.5A2.5,2.5 0 0,0 12.5,18A2.5,2.5 0 0,0 15,15.5V5A4,4 0 0,0 11,1A4,4 0 0,0 7,5V17.5A5.5,5.5 0 0,0 12.5,23A5.5,5.5 0 0,0 18,17.5V6H16.5Z" fill="currentColor"/>
@@ -548,13 +523,13 @@
                 class="agent-icon"
                 :avatar="item.agent.avatar"
                 :size="22"
-                :label="item.agent.name"
+                :label="item.display.name"
               />
               <div class="agent-info">
-                <div class="agent-name">{{ item.agent.name }}</div>
-                <div class="agent-desc">{{ item.agent.description }}</div>
-                <div v-if="item.agent.tags.length" class="agent-tags">
-                  <span v-for="tag in item.agent.tags" :key="tag" class="agent-tag">{{ tag }}</span>
+                <div class="agent-name">{{ item.display.name }}</div>
+                <div class="agent-desc">{{ item.display.description }}</div>
+                <div v-if="item.display.tags.length" class="agent-tags">
+                  <span v-for="tag in item.display.tags" :key="tag" class="agent-tag">{{ tag }}</span>
                 </div>
               </div>
             </div>
@@ -732,6 +707,8 @@ import { ref, onMounted, watch, onUnmounted, computed, nextTick } from 'vue';
 import { t, type MessageKey } from '@/utils/i18n';
 // 智能体头像展示（图片或 emoji，无背景色）：预置 / 自定义 / 导入三类智能体共用
 import AgentAvatar from '@/common/AgentAvatar.vue';
+// 智能体展示文案随界面语言切换（预置智能体的多语言文案；自定义智能体沿用其自填文案）
+import { useAgentDisplay } from '@/common/use-agent-display';
 import ToolComponent from './Tool.vue';
 // 组件按功能域从 barrel 引入（chat / modals / voice / feedback）
 import { ChatMessageList, ChatHistoryDrawer, ContextUsageRing, GuardConfirmBar, PlanBoard } from '../components/chat';
@@ -772,6 +749,7 @@ import {
   type ContextUsage,
   type EffectiveContext,
   type AgentConfig,
+  type AgentDisplayText,
   type SkillRecord,
   type ToolApprovalRequest,
   type GuardKind,
@@ -1774,9 +1752,7 @@ const {
   toggleAutoWake,
 } = useVoiceAssistant(voiceAssistantDeps);
 
-// ── 时段问候：五个时段各配一句文案与一个动态表情 ──
-// 深夜😴（安睡+zzz）/ 清晨☕（浮动+热气）/ 上午⚡（充能脉冲）/ 下午👋（拟人挥手）/ 晚上✨（星光闪烁）
-// 注意：动态表情已随模板一并暂时注释（见 template 中的 greeting-emoji 区块），恢复时同步解开注释即可
+// 时段问候保持静态展示，每分钟校准，随语言切换更新。
 type GreetingPeriod = 'lateNight' | 'dawn' | 'morning' | 'afternoon' | 'evening';
 
 const GREETING_KEY: Record<GreetingPeriod, MessageKey> = {
@@ -1786,16 +1762,6 @@ const GREETING_KEY: Record<GreetingPeriod, MessageKey> = {
   afternoon: 'sidepanel.app.greetingAfternoon',
   evening: 'sidepanel.app.greetingEvening',
 };
-
-/*
-const GREETING_EMOJI: Record<GreetingPeriod, string> = {
-  lateNight: '😴',
-  dawn: '☕',
-  morning: '⚡',
-  afternoon: '👋',
-  evening: '✨',
-};
-*/
 
 // 依据当前小时划分五个问候时段（23–4 深夜 / 4–9 清晨 / 9–13 上午 / 13–17 下午 / 17–23 晚上）
 const getGreetingPeriod = (): GreetingPeriod => {
@@ -1810,140 +1776,12 @@ const getGreetingPeriod = (): GreetingPeriod => {
 const greetingPeriod = ref<GreetingPeriod>(getGreetingPeriod());
 // 文案经 i18n 解析（key 派发），语言切换后自动跟随
 const welcomeSentence = computed<MessageKey>(() => GREETING_KEY[greetingPeriod.value]);
-// const greetingEmoji = computed<string>(() => GREETING_EMOJI[greetingPeriod.value]);
 
-// 每分钟校准一次时段：侧边栏常驻跨过整点时，问候文案与表情自动跟随
+// 侧边栏跨过整点时自动更新问候
 let greetingTimer: ReturnType<typeof setInterval> | null = null;
 
-// ── 欢迎语打字机（无限循环）──
-// 视觉锚点是项目 logo（替代被注释的时段表情）。一个循环：
-// 逐字打出 → 停留（光标呼吸）→ 整行透视回滚 → 换一套样式翻入重新打字，
-// 三套样式（素色 / 品牌渐变流光 / 星辉发光）轮换，周而复始。
-// 首字延迟给 logo 留出入场呼吸感；整行宽度由 ghost 占位锁定，打字时不跳动。
-
-/** 项目 logo（public/logo.png 经扩展运行时地址引用，与模型图标同一套取法） */
 const greetingLogoUrl = chrome.runtime.getURL('logo.png');
-
-/** 当前应展示的问候文案（i18n 解析；时段流转 / 语言切换都会更新它） */
 const greetingText = computed<string>(() => t(welcomeSentence.value));
-
-/** 已打出的前缀文本 */
-const typedText = ref('');
-/** 已打出的字符序列（按码点切分，避免把代理对拆开） */
-const typedChars = computed<string[]>(() => Array.from(typedText.value));
-/** 停留阶段标志：打完后光标由常亮转为待机呼吸闪烁 */
-const typingDone = ref(false);
-/** 回滚进行中：整行带透视翻出淡出，随后换样式翻入 */
-const isRollout = ref(false);
-/** 轮换样式序号：0 素色 / 1 品牌渐变流光 / 2 星辉发光，每轮回滚后 +1 */
-const styleIndex = ref(0);
-/** 轮次编号：作为打字图层的 key，每轮重挂载以重播「翻入」动画 */
-const passId = ref(0);
-
-/** 打完后的停留时长（毫秒），停留结束即回滚 */
-const TYPE_HOLD_MS = 2400;
-/** 回滚翻出动画时长（须与 CSS 的 greeting-roll-out 一致） */
-const ROLL_OUT_MS = 420;
-/** 翻入后延迟起手打字，让新样式先立住 */
-const ROLL_IN_LEAD_MS = 300;
-/** 轮换样式数量（与 CSS 的 .is-style-N 一一对应） */
-const GREETING_STYLE_COUNT = 3;
-
-let typeTimer: ReturnType<typeof setTimeout> | null = null;
-/** 打字代际标记：文案变更 / 组件销毁时递增，作废仍在排队的旧定时器 */
-let typeEpoch = 0;
-
-/** 标点后多停一拍，节奏更接近真人输入 */
-const typePauseAfter = (ch: string): number => (/[，。！？,.!?；;：:]/.test(ch) ? 240 : 0);
-
-const stopTypewriter = () => {
-  if (typeTimer) {
-    clearTimeout(typeTimer);
-    typeTimer = null;
-  }
-};
-
-/** 是否为中日韩表意 / 标点与全角字符（决定单字停顿时长） */
-const isWideChar = (ch: string): boolean => {
-  const code = ch.codePointAt(0) ?? 0;
-  return (
-    (code >= 0x3400 && code <= 0x9fff) || // CJK 统一表意文字
-    (code >= 0x3000 && code <= 0x303f) || // CJK 符号与标点
-    (code >= 0xff00 && code <= 0xffef) // 全角形式
-  );
-};
-
-/**
- * 启动「逐字打出 → 停留 → 回滚 → 换样式翻入」的无限循环，
- * 直到文案变更（时段流转 / 语言切换）或组件销毁。
- * @param text 目标文案
- * @param leadIn 首字延迟（毫秒），给 logo 入场留出呼吸感
- */
-const runTypewriter = (text: string, leadIn = 0) => {
-  stopTypewriter();
-  const epoch = ++typeEpoch;
-  const chars = Array.from(text); // 按码点切分，代理对（生僻字 / 表情）不会被拆开
-  typedText.value = '';
-  typingDone.value = false;
-  isRollout.value = false;
-  styleIndex.value = 0;
-  passId.value = 0;
-  if (!text) return;
-  // 系统开启「减弱动态效果」时直接呈现全文，不进入循环
-  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    typedText.value = text;
-    typingDone.value = true;
-    return;
-  }
-
-  /** 排队本轮回调；代际不匹配（文案已被替换 / 组件已销毁）则静默作废 */
-  const schedule = (fn: () => void, delay: number) => {
-    typeTimer = setTimeout(() => {
-      if (epoch !== typeEpoch) return;
-      fn();
-    }, delay);
-  };
-
-  // ── 阶段一：逐字打出 ──
-  const typeIn = (shown: number, delay: number) => {
-    schedule(() => {
-      typedText.value = chars.slice(0, shown + 1).join('');
-      if (shown + 1 >= chars.length) {
-        // 打完 → 停留，光标转呼吸闪烁
-        typingDone.value = true;
-        schedule(rollOut, TYPE_HOLD_MS);
-        return;
-      }
-      // 中文 / 全角字符略慢、英文略快，再叠加随机抖动，形成自然的呼吸节奏
-      const ch = chars[shown];
-      const base = isWideChar(ch) ? 104 : 56;
-      typeIn(shown + 1, base + typePauseAfter(ch) + Math.random() * 54);
-    }, delay);
-  };
-
-  // ── 阶段二：回滚（整行带透视翻出淡出） ──
-  const rollOut = () => {
-    typingDone.value = false;
-    isRollout.value = true;
-    schedule(() => {
-      // 回滚到底：换下一套样式，以新 key 重挂载让「翻入」重播，再从头打字
-      typedText.value = '';
-      styleIndex.value = (styleIndex.value + 1) % GREETING_STYLE_COUNT;
-      passId.value += 1;
-      isRollout.value = false;
-      typeIn(0, ROLL_IN_LEAD_MS);
-    }, ROLL_OUT_MS);
-  };
-
-  typeIn(0, leadIn);
-};
-
-// 文案变化即重打（首轮 leadIn 让 logo 先入场，其后即时衔接）
-watch(
-  greetingText,
-  (text, previous) => runTypewriter(text, previous === undefined ? 560 : 0),
-  { immediate: true },
-);
 
 // 文字选择相关状态
 const selectedText = ref('');
@@ -1961,6 +1799,9 @@ const { enabledWebsites } = useDeepSearchSites();
 
 // 智能体配置（经引擎门面读取）
 const agents = ref(agentEngine.list());
+
+// 智能体展示文案（随界面语言切换；选中态仍用规范名 agent.name 作为存储键）
+const { displayOf, displayNameOf } = useAgentDisplay();
 
 /**
  * 注册表版本号：引擎内部表是普通 Map（非响应式），直接读引擎的计算属性
@@ -1988,28 +1829,36 @@ const activeTrigger = computed<{ trigger: '@' | '/'; query: string } | null>(() 
 const categoryLabel = (categoryId: string): string =>
   agentEngine.categoryLabel(categoryId, key => t(key as MessageKey));
 
-/** 智能体面板列表（面板内搜索框按名称/描述/标签/分类名过滤；输入框不再按字过滤） */
+/**
+ * 智能体面板列表（面板内搜索框按名称/描述/标签/分类名过滤；输入框不再按字过滤）。
+ * 匹配用当前语言的展示文案——用户看到什么就搜得到什么。
+ */
 const matchedAgents = computed(() => {
   if (!showAgentSelector.value) return agents.value;
   const q = agentSelectorQuery.value.trim().toLowerCase();
   if (!q) return agents.value;
-  return agents.value.filter(
-    a =>
-      a.name.toLowerCase().includes(q) ||
-      a.description.toLowerCase().includes(q) ||
-      a.tags.some(tag => tag.toLowerCase().includes(q)) ||
-      categoryLabel(a.category).toLowerCase().includes(q),
-  );
+  return agents.value.filter(a => {
+    const { name, description, tags } = displayOf(a);
+    return (
+      name.toLowerCase().includes(q) ||
+      description.toLowerCase().includes(q) ||
+      tags.some(tag => tag.toLowerCase().includes(q)) ||
+      categoryLabel(a.category).toLowerCase().includes(q)
+    );
+  });
 });
 
 /**
  * 智能体选择器的扁平条目：分组标题与智能体选项交替排列。
  * 扁平化的价值：selectedAgentIndex 直接作为数组下标参与高亮与键盘导航，
  * 标题项由 selectAgentAtIndex / moveAgentSelection 识别并跳过，无需维护二级索引。
+ *
+ * 每项带 display（当前语言的展示文案）：界面渲染用 display，
+ * 选中仍用 agent.name（存储键，不随语言变化）。
  */
 type AgentSelectorItem =
   | { type: 'header'; key: string; label: string }
-  | { type: 'agent'; key: string; agent: AgentConfig };
+  | { type: 'agent'; key: string; agent: AgentConfig; display: AgentDisplayText };
 
 const agentSelectorItems = computed<AgentSelectorItem[]>(() =>
   agentEngine.groupForDisplay(matchedAgents.value).flatMap(group => [
@@ -2018,7 +1867,12 @@ const agentSelectorItems = computed<AgentSelectorItem[]>(() =>
       key: `category-${group.categoryId}`,
       label: group.labelKey ? t(group.labelKey as MessageKey) : group.categoryId,
     },
-    ...group.agents.map(agent => ({ type: 'agent' as const, key: agent.id, agent })),
+    ...group.agents.map(agent => ({
+      type: 'agent' as const,
+      key: agent.id,
+      agent,
+      display: displayOf(agent),
+    })),
   ]),
 );
 
@@ -2420,11 +2274,13 @@ const SELECTION_STRIP_SKILL_ICON_PATH = 'M7,2H17L15,9H21L11,22L13,13H6L7,2Z';
 const selectionStripChips = computed<SelectionStripChip[]>(() => {
   const chips: SelectionStripChip[] = [];
   if (selectedAgent.value) {
+    // 胶囊标题用当前语言的展示名；key 仍用规范名（存储键，不随语言变化）
+    const agent = agentEngine.get(selectedAgent.value);
     chips.push({
       kind: 'agent',
       key: `agent:${selectedAgent.value}`,
-      label: selectedAgent.value,
-      avatar: agentEngine.get(selectedAgent.value)?.avatar,
+      label: agent ? displayNameOf(agent) : selectedAgent.value,
+      avatar: agent?.avatar,
     });
   }
   // 已选技能中的重名集合：重名胶囊补显 id，否则两个一模一样的胶囊
@@ -2812,7 +2668,7 @@ const refreshContextUsage = async (options: { force?: boolean } = {}): Promise<v
     });
     const usage = measureContextUsage({
       systemPrompt: runtime.systemPrompt,
-      toolIds: runtime.toolIds,
+      toolIds: runtime.advertisedToolIds ?? runtime.toolIds,
       // 合成激活轮同样是「下一次发送将占用的预算」的一部分：
       // 预选技能的 load_skill 正文随会话注入，漏计会让环上数字系统性偏低
       messages: [...runtime.initialContext, ...runtime.activationContext],
@@ -3265,7 +3121,7 @@ const sendMessageInner = async () => {
 
     messages.value = cleanupAssistantMessages(messages.value as ExtendedChatMessage[]);
 
-    // --- 1. 默认智能体兜底：新会话首条消息且用户未选智能体时自动选中 Auto Action ---
+    // --- 1. 默认智能体兜底：新会话首条消息且用户未选智能体时自动选中文本通用助手 ---
     // 必须先于会话创建与 runtime 装配：选中结果既要写入会话元信息（供后续会话切换回显），
     // 也要进入本次请求的 systemPrompt 与工具集。用户显式选择过则绝不覆盖。
     if (!activeChatId.value && !selectedAgent.value.trim()) {
@@ -3452,7 +3308,7 @@ const sendMessageInner = async () => {
     const measureCurrent = () =>
       measureContextUsage({
         systemPrompt: runtime.systemPrompt,
-        toolIds: runtime.toolIds,
+        toolIds: runtime.advertisedToolIds ?? runtime.toolIds,
         messages: [
           // 与引擎组装顺序逐字同源：初始上下文 → 本轮用户消息 → 合成激活轮
           ...runtime.initialContext,
@@ -3905,9 +3761,6 @@ onUnmounted(() => {
     clearInterval(greetingTimer);
     greetingTimer = null;
   }
-  // 打字机定时器随组件销毁清除（代际 +1，作废排队中的回调）
-  stopTypewriter();
-  typeEpoch += 1;
   // 守卫确认收敛（清倒计时定时器）+ 持久化降级订阅退订
   settleGuard(false);
   unsubscribePersistenceIssues();
@@ -3917,7 +3770,7 @@ onUnmounted(() => {
 });
 
 onMounted(async () => {
-  // 时段问候定时校准（greetingPeriod 驱动文案与动态表情）
+  // 时段问候定时校准
   greetingTimer = setInterval(() => {
     greetingPeriod.value = getGreetingPeriod();
   }, 60_000);

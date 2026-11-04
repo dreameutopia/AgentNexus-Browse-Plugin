@@ -1,17 +1,17 @@
-# Vision Action：相对坐标 GUI 驱动
+# 视觉通用助手：相对坐标 GUI 驱动
 
-视觉助手的观察工具、能力上限及与 Vision Action 的职责区别见 [视觉助手设计](VISION_ASSISTANT.md)。视觉助手解释并指导用户操作；Vision Action 接受委托后实际执行并验证。
+视觉助手的观察工具、能力上限及与视觉通用助手的职责区别见 [视觉助手设计](VISION_ASSISTANT.md)。视觉助手解释并指导用户操作；视觉通用助手接受委托后实际执行并验证。
 
-Vision Action、网站视觉学习/验证以及 WebSocket 视觉命令共用 CDP 输入驱动。
+视觉通用助手、网站视觉学习/验证以及 WebSocket 视觉命令共用 CDP 输入驱动。
 旧的像素 bbox、数字 ID 点击、simple/advanced 双协议已删除，不提供兼容入口。
 需要 Chromium 的 `chrome.debugger`、`scripting` 权限及可访问的网页标签页。
 Firefox、不允许调试的页面、浏览器地址栏/菜单、操作系统对话框和桌面不受此驱动控制。
 
 ## 坐标和截图
 
-视觉循环每轮工具完成后，强制等待 **3 秒**再自动截图，可由用户停止提前中断；同一批工具里显式调用 screenshot 也不能绕过操作后的间隔。首截图、无需续拍的只读结果、已返回并复用的截图不额外重拍。动画／异步生成需要更长时间时，Vision Action、视觉助手和 Auto Action 均可用 `generic_wait({waitSeconds})`：有限非负秒数，超过 600 自动限制为 600，支持取消。长等待采用独立执行超时，不会被常规 120 秒工具超时截断；等待时间不消耗主动工作预算，实际总耗时仍照常统计。等待结束须重新核对页面结果。
+视觉循环每轮工具完成后，强制等待 **3 秒**再自动截图，可由用户停止提前中断；同一批工具里显式调用 screenshot 也不能绕过操作后的间隔。首截图、无需续拍的只读结果、已返回并复用的截图不额外重拍。动画／异步生成需要更长时间时，视觉通用助手、视觉助手和文本通用助手均可用 `generic_wait({waitSeconds})`：有限非负秒数，超过 600 自动限制为 600，支持取消。长等待采用独立执行超时，不会被常规 120 秒工具超时截断；等待时间不消耗主动工作预算，实际总耗时仍照常统计。等待结束须重新核对页面结果。
 
-`screenshot({mode:'observe'})` 使用 `tabs.captureVisibleTab`，不附加调试器；视觉助手的自动和手动截图均强制此模式，观察 ID 不允许执行 GUI 输入。默认 `mode:'action'` 保留 CDP 会话，供 Vision Action / WebSocket 交互使用。
+`screenshot({mode:'observe'})` 使用 `tabs.captureVisibleTab`，不附加调试器；视觉助手的自动和手动截图均强制此模式，观察 ID 不允许执行 GUI 输入。默认 `mode:'action'` 保留 CDP 会话，供视觉通用助手 / WebSocket 交互使用。
 
 首次附加 debugger 后先等待连续两次视口采样稳定，再截图；捕获期间几何变化最多重拍一次，不重试输入动作。会话保留至少覆盖截图 120 秒有效期及 30 秒余量，避免原来的 60 秒闲置脱离在模型思考期间使提示栏消失。用户主动断开或 DevTools 抢占后，检查旧 ID 不会重新附加调试器，必须取新图。
 
@@ -38,23 +38,43 @@ Firefox、不允许调试的页面、浏览器地址栏/菜单、操作系统对
 
 ## 工具
 
-所有工具均需 `screenshotId`（`screenshot` 除外）。
+GUI 仅注册一个工具 `vision_gui`，完整保留 click/drag/input/hover/keyboard/scroll/mark/inspect/zoom/check 共10个 action。`screenshot`、OCR及只读视觉助手的 `vision_read*` 保持各自能力边界。
+调用使用同一个顶层对象：`vision_gui({action:"click", screenshotId, point:{x:500,y:500}})`，不嵌套 parameters。所有 GUI action 都需最新 screenshotId；每个 action 有独立封闭 schema 分支与运行时校验，未知字段、跨 action 参数、非有限数和互斥滚动模式在访问浏览器前拒绝。
+交互与mark触发新图；inspect/zoom/check保留源图。缩略图通过独立图片通道返回，不能冒充新视口截图。不可逆审批只适用于click/drag/input/keyboard/scroll，保留confirm与意图关键词兜底。
+旧的10个工具不再注册，也没有执行别名；存储的agent工具ID、技能allowedTools和发送给模型的旧工具引导统一迁移为vision_gui，历史工具调用记录保留原样。自定义agent与动态技能同样注入一次独立的<vision-gui-tool> XML引导段。
+工具设计参考：[减少选择歧义与明确工具契约](https://www.anthropic.com/engineering/writing-tools-for-agents)、[JSON Schema组合](https://json-schema.org/understanding-json-schema/reference/combining)。
 
 | 工具 | 参数与行为 |
 | --- | --- |
-| `screenshot` | 原样截取可见网页，不隐藏滚动条、不移动布局，返回新截图和 ID |
-| `vision_click` | `point`, `button: left/right/middle`, `count: 1/2/3`, 可选 `modifiers`, `holdMs: 0..3000`；支持修饰键点击和长按 |
-| `vision_drag` | `from`, `to`, 可选最多128个 `waypoints`、`button`、`modifiers`、总移动 `durationMs: 200..3000`、`holdBeforeMs/holdAfterMs: 0..3000`；经过所有中间点，按住等待再释放 |
-| `vision_scroll` | `direction + percent: 0.001..300`，或互斥的 `deltaX/deltaY: -20000..20000` CSS像素；支持斜向与精细滚动，可选 `point`, `durationMs`, `modifiers` |
-| `vision_input` | `point`, `text`（最多 10000 UTF-16 单元）, `clickFirst`、`clear`；`inputMode: text` 插入Unicode字素，`keys` 对可打印ASCII派发逐键事件 |
-| `vision_hover` | `point`, 可选 `durationMs`、`modifiers`，默认停留 500ms |
-| `vision_keyboard` | `keys` 同时按下的组合，最多 5 个；支持左右修饰键、F1–F24、编辑导航/锁定键、字母数字和ASCII标点、数字小键盘；大写/移位符号推断Shift，字符键为US布局，别名与物理键重复会拒绝 |
-| `vision_mark` | 请求**下一次自动截图**绘制元素框和数字，不直接截图、不点击 |
-| `vision_inspect` | `id`：检查该截图数字元素的 CSS/XPath、frameId、shadow scope、属性、文字、状态、选项和祖先信息 |
+| `screenshot` | 原样截取可见网页，不隐藏滚动条、不移动布局，返回新截图和 ID；截图同时被存档并返回 8 位短 id（`imageId`），可在回答中引用 |
+| `vision_gui(action="click")` | `point`, `button: left/right/middle`, `count: 1/2/3`, 可选 `modifiers`, `holdMs: 0..3000`；支持修饰键点击和长按 |
+| `vision_gui(action="drag")` | `from`, `to`, 可选最多128个 `waypoints`、`button`、`modifiers`、总移动 `durationMs: 200..3000`、`holdBeforeMs/holdAfterMs: 0..3000`；默认按下后、到达终点后分别随机停顿500..1500ms（可各自显式覆盖）；直线先加速后减速，自由路径按直线分段经过所有中间点；停顿中取消立即清理并释放 |
+| `vision_gui(action="scroll")` | `direction + percent: 0.001..300`，或互斥的 `deltaX/deltaY: -20000..20000` CSS像素；支持斜向与精细滚动，可选 `point`, `durationMs`, `modifiers` |
+| `vision_gui(action="input")` | `point`, `text`（最多 10000 UTF-16 单元）, `clickFirst`、`clear`；`inputMode: text` 插入Unicode字素，`keys` 对可打印ASCII派发逐键事件 |
+| `vision_gui(action="hover")` | `point`, 可选 `durationMs`、`modifiers`，默认停留 500ms |
+| `vision_gui(action="keyboard")` | `keys` 同时按下的组合，最多 5 个；支持左右修饰键、F1–F24、编辑导航/锁定键、字母数字和ASCII标点、数字小键盘；大写/移位符号推断Shift，字符键为US布局，别名与物理键重复会拒绝 |
+| `vision_gui(action="mark")` | 请求**下一次自动截图**绘制元素框和数字，不直接截图、不点击 |
+| `vision_gui(action="inspect")` | `id`：检查该截图数字元素的 CSS/XPath、frameId、shadow scope、属性、文字、状态、选项和祖先信息 |
+| `vision_gui(action="zoom")` | `region` 原图范围，`scale:1..4`（默认2），返回父截图绑定的 viewId 与局部图 |
+| `vision_gui(action="check")` | 可选 point/viewId、expect、timeoutMs:0..5000、stableMs:0..500，有界只读检查并可生成 guardId |
+
+## 截图存档与回答引用
+
+`screenshot` 除了「恢复观察」，还承担「把某个界面状态留给用户看」的职责：调用成功后，视口截图按内容寻址写入图片库（与视觉循环的自动重截图同一处存储），并分配一个 8 位短 id（`imageId`，8 位小写字母数字，插件内唯一——唯一性由图片库的唯一索引在存储层保证，冲突时写入方换 id 重试）。
+
+会话引擎把短 id 注入工具结果（`data.imageId`，并在截图描述末尾附上引用语法），模型据此在最终回答里写：
+
+```
+<agent-image id="a1b2c3d4" alt="订单已提交" />
+```
+
+渲染链路与 `<api-error>`/`<think>` 同构：markdown-it 解析前摘出标签、解析后回填成截图引用卡片，再由 `agent-image-renderer.ts` 按短 id 反查 object URL 注入图片本体；图片缺失（已回收 / id 不存在）时显示占位而不是破图。代码块里的同名标签是字面量，不还原。
+
+短 id 随备份一起保存与恢复（图片分区条目含 `shortId`），因此历史回答里的引用在备份还原后仍然有效。视觉助手（观察+指导）不参与该机制：它不代替用户操作，也不引用截图。
 
 ### 快捷键调用与映射
 
-`vision_keyboard({screenshotId,keys:["Control","Shift","ArrowLeft"]})` 表示一个同时按下的组合键；动作结束逆序释放，失败也会清理。每个后续组合使用自动回传的新截图，不能把连续的多个快捷键拼进同一个数组。先点击目标控件确认焦点。
+`vision_gui({action:"keyboard",screenshotId,keys:["Control","Shift","ArrowLeft"]})` 表示一个同时按下的组合键；动作结束逆序释放，失败也会清理。每个后续组合使用自动回传的新截图，不能把连续的多个快捷键拼进同一个数组。先点击目标控件确认焦点。
 
 | 用途 | Windows/Linux 常见组合 | macOS 常见组合 |
 | --- | --- | --- |
@@ -69,7 +89,7 @@ Firefox、不允许调试的页面、浏览器地址栏/菜单、操作系统对
 
 修饰键可指定 ControlLeft/Right、ShiftLeft/Right、AltLeft/Right、MetaLeft/Right。数字小键盘支持 Numpad0–9、NumpadEnter/Add/Subtract/Multiply/Divide/Decimal，按数字/运算符语义派发，不模拟硬件 NumLock 状态切换。其他支持键包括 F1–F24、ContextMenu、CapsLock、NumLock、ScrollLock、Pause、PrintScreen。物理键重复（如 Ctrl 与 ControlLeft）会返回 INVALID_ARGUMENT。
 
-这些是网页内容区的 CDP 键盘事件，不保证触发系统截屏、Alt+Tab、地址栏或浏览器保留快捷键。剪贴板受权限和页面处理影响，必须核验实际结果；输入已知文本可直接使用 vision_input。标签页管理、URL 导航和刷新优先使用专用浏览器工具。字符与物理键不同，US字符映射及位置字段参考 [KeyboardEvent.code](https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/code) 和 [CDP Input](https://chromedevtools.github.io/devtools-protocol/tot/Input/)。
+这些是网页内容区的 CDP 键盘事件，不保证触发系统截屏、Alt+Tab、地址栏或浏览器保留快捷键。剪贴板受权限和页面处理影响，必须核验实际结果；输入已知文本可直接使用 vision_gui(action="input")。标签页管理、URL 导航和刷新优先使用专用浏览器工具。字符与物理键不同，US字符映射及位置字段参考 [KeyboardEvent.code](https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/code) 和 [CDP Input](https://chromedevtools.github.io/devtools-protocol/tot/Input/)。
 
 ### 鼠标手势与输入细节
 
@@ -92,7 +112,7 @@ text 模式支持 Unicode，但不模拟输入法候选窗或 composition 流程
 排队等待超过 30 秒的请求拒绝执行。单条浏览器命令、脚本注入、清理和文件传输均有独立等待上限。
 输入焦点在每个字素前核对同一元素引用；跨平台清空分别使用 Windows/Linux Control+A、macOS Meta+A。
 截图结果包含 `capabilities`，明确列出能力和不支持项。模型侧视口图像请求 high detail（服务支持时），这只是清晰度请求，不保证厂商保留全部像素或模型定位绝对准确。
-可变停顿、变速曲线不是反检测技术：点击前的定位、页面脚本响应和服务端行为都不会因此成为“与真人完全一致”。不承诺不触发风控，不加入指纹伪装、代理轮换或验证码绕过。
+可变停顿、移动加减速不是反检测技术：点击前的定位、页面脚本响应和服务端行为都不会因此成为“与真人完全一致”。不承诺不触发风控，不加入指纹伪装、代理轮换或验证码绕过。
 
 ## 可分析的错误结果
 
@@ -109,9 +129,9 @@ WebSocket 是受信任执行通道，其调用方负责授权；它不经过聊�
 
 ## 按需打标与 RPA 检查
 
-1. 根据原始截图操作。需要 DOM 分析时调用 `vision_mark({screenshotId})`。
+1. 根据原始截图操作。需要 DOM 分析时调用 `vision_gui({action:"mark",screenshotId})`。
 2. 会话引擎执行后续自动截图：采集 frame 内可交互 DOM、分配全局数字、绘制、截图、finally 清理覆盖层。
-3. 使用新截图 ID 调用 `vision_inspect({screenshotId,id})`。
+3. 使用新截图 ID 调用 `vision_gui({action:"inspect",screenshotId,id})`。
 4. 记录 CSS/XPath 及其 frame/shadow 作用域；后续动作继续用相对坐标。
 
 标记仅保留下一张截图。再次截图后必须使用新 ID；需要更多检查时可以再次请求打标。
@@ -150,7 +170,7 @@ XPath 不跨 shadow root；返回 shadowHosts 的 CSS 路径链和 xpathScope。
 
 ## 放大定位、目标守卫与结果验收
 
-`vision_zoom({screenshotId,region:{x,y,width,height},scale?})` 裁剪原截图，不改变页面缩放，也不重拍页面。
+`vision_gui({action:"zoom",screenshotId,region:{x,y,width,height},scale?})` 裁剪原截图，不改变页面缩放，也不重拍页面。
 输出父 `screenshotId`、`viewId`、按源像素边界修正的 `region`、`sourcePixels`、图像尺寸和来源时间。
 动作传 `viewId` 时，point/from/to/waypoints **全部**是该局部图0–1000坐标，由驱动映射回原图；不传时仍使用完整截图坐标。
 局部范围以 floor/ceil 得到的真实像素边界为准，不用请求时未舍入的region猜测。映射不依赖输出放大倍率。
@@ -158,7 +178,7 @@ XPath 不跨 shadow root；返回 shadowHosts 的 CSS 路径链和 xpathScope。
 缓存只保留最新原图（base64上限16MiB），返回 `zoomAvailable` 供调用方判断。解码上限64MP，输出上限2048px/4MP。
 源图过大时应调整窗口或使用DOM辅助，不循环重拍相同大图；放大不能恢复源图中不存在的细节。
 
-`vision_check({screenshotId,point?,viewId?,expect?,timeoutMs?,stableMs?})` 只读返回页面状态、ARIA忙碌计数、可见对话框和点位目标。
+`vision_gui({action:"check",screenshotId,point?,viewId?,expect?,timeoutMs?,stableMs?})` 只读返回页面状态、ARIA忙碌计数、可见对话框和点位目标。
 expect 支持 `urlIncludes`、`textIncludes`、`nameIncludes`、`enabled`、`editable`、`checked`、`valueEquals`，点位条件需传point。
 文字检查使用有限预算的已渲染文本节点范围及命中测试；跨节点拆分、裁剪、复杂遮挡、Canvas和iframe可能无法确证。
 valueEquals在页面中比较且不返回实际值；密码值检查不开放。结果附 `observedAt`、`sourceCapturedAt` 和覆盖范围。
@@ -184,9 +204,9 @@ guard不是像素校验、授权或业务正确性证明。原图刷新、过期
 ## WebSocket 协议
 
 `VisionActionPayload = {action, parameters}`。action 为 `screenshot/click/drag/scroll/input/hover/keyboard/mark/inspect/zoom/check`。
-parameters 与函数工具相同，截图可传 `{}`；旧 `screenshotMode`、bbox、elementId 命令已移除。
+parameters 与统一函数工具去掉顶层 action 后的字段相同，截图可传 `{}`；旧 `screenshotMode`、bbox、elementId 命令已移除。
 外部客户端在每个交互后应主动请求 screenshot；mark 后也必须请求 screenshot 才会绘制数字框。
-zoom/check参数与vision_zoom/vision_check相同。crop经文件通道发送时名称为region.png，响应保留父图ID、viewId和region元数据。
+zoom/check参数分别与vision_gui的同名action分支相同。crop经文件通道发送时名称为region.png，响应保留父图ID、viewId和region元数据。
 必须区分协议success与检查status；success=true、status=failed表示检查完成且条件不符合。
 
 ```json

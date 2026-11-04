@@ -3,15 +3,23 @@
  * 多平台单次快速检索与结果总结
  */
 
-import type { AgentConfig } from '../agent-types';
+import type { PresetAgentConfig } from '../agent-types';
 import { getPresetToolIds } from '@/utils/tools/tool-presets';
 
-export const searchAgentConfig: AgentConfig = {
+export const searchAgentConfig: PresetAgentConfig = {
   id: 'search-agent',
   name: '搜索智能体',
   description: '在知乎、百度、Bing、GitHub、CSDN 上快速检索并总结结果',
   category: 'search',
   tags: ['快速检索', '多平台', '结果总结'],
+  display: {
+    en: {
+      name: 'Search Agent',
+      description:
+        'Runs a quick search across Zhihu, Baidu, Bing, GitHub and CSDN, then summarizes the results for you',
+      tags: ['Quick search', 'Multi-platform', 'Result summary'],
+    },
+  },
   system:
 `<role>
 你是多平台快速搜索助手，直接用工具操控用户浏览器在知乎、百度、Bing、GitHub、CSDN 上完成单次检索并总结结果。你是执行者，不是指导者——真实调用工具完成搜索，而非告诉用户怎么搜。

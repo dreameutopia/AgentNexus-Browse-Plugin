@@ -14,11 +14,18 @@ import type { ChatMessageRecord, ChatSessionMeta } from '../types';
 import { normalizeImageRefs } from '../images/image-store';
 import { protocolImageRefs } from './protocol-history';
 
-const DB_NAME = 'AgentNexusChatDB';
+/** 数据库名（导出供备份 / 存储统计引擎定位同一份数据，避免键名漂移） */
+export const CHAT_DB_NAME = 'AgentNexusChatDB';
+/** 会话表名（导出供备份引擎定位） */
+export const CHAT_SESSIONS_STORE = 'sessions';
+/** 消息表名（导出供备份引擎定位） */
+export const CHAT_MESSAGES_STORE = 'messages';
+
 /** v2：messages 增加 byImageRef（multiEntry）索引——按图片引用统计引用方 / 回收判定 */
 const DB_VERSION = 2;
-const SESSIONS_STORE = 'sessions';
-const MESSAGES_STORE = 'messages';
+const DB_NAME = CHAT_DB_NAME;
+const SESSIONS_STORE = CHAT_SESSIONS_STORE;
+const MESSAGES_STORE = CHAT_MESSAGES_STORE;
 /** 列表页标题/预览截断 */
 const PREVIEW_MAX_CHARS = 80;
 
@@ -268,7 +275,7 @@ class ChatDatabase {
     // 存储边界归一：图片引用去重/形态校验/上限收敛（防御外部写入与运行期
     // 直改 record.imageRefs 的脏数据）；其余字段原样落库
     const normalized: ChatMessageRecord = { ...record, imageRefs: [...new Set([
-      ...normalizeImageRefs(record.imageRefs), ...protocolImageRefs(record.modelMessages),
+      ...normalizeImageRefs(record.imageRefs), ...protocolImageRefs(record.modelMessages), ...protocolImageRefs(record.modelContext),
     ])] };
     return this.tx([MESSAGES_STORE, SESSIONS_STORE], 'readwrite', async tx => {
       const sessions = tx.objectStore(SESSIONS_STORE);
@@ -446,7 +453,7 @@ class ChatDatabase {
           return;
         }
         const record = cursor.value as ChatMessageRecord;
-        for (const ref of [...normalizeImageRefs(record.imageRefs), ...protocolImageRefs(record.modelMessages)]) {
+        for (const ref of [...normalizeImageRefs(record.imageRefs), ...protocolImageRefs(record.modelMessages), ...protocolImageRefs(record.modelContext)]) {
           refs.add(ref);
         }
         cursor.continue();
@@ -465,6 +472,81 @@ class ChatDatabase {
     const tx = db.transaction([MESSAGES_STORE], 'readonly');
     const index = tx.objectStore(MESSAGES_STORE).index('byImageRef');
     return ChatDatabase.requestToPromise(index.count(IDBKeyRange.only(imageRef)));
+  }
+
+  // ──── 全量读取 / 原子恢复（备份引擎用） ────
+
+  /**
+   * 全部会话（备份 / 存储统计用；不受 listSessions 分页限制）。
+   * 读取失败抛错——由调用方记入 issues，绝不静默返回空数组（把「读失败」
+   * 伪装成「没有会话」会造成统计缺数，且无任何报错）。
+   */
+  async listAllSessions(): Promise<ChatSessionMeta[]> {
+    const db = await this.open();
+    return new Promise<ChatSessionMeta[]>((resolve, reject) => {
+      const tx = db.transaction([CHAT_SESSIONS_STORE], 'readonly');
+      const request = tx.objectStore(CHAT_SESSIONS_STORE).openCursor();
+      const items: ChatSessionMeta[] = [];
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) {
+          resolve(items);
+          return;
+        }
+        items.push(cursor.value as ChatSessionMeta);
+        cursor.continue();
+      };
+      request.onerror = () => reject(request.error ?? new Error('读取全部会话失败'));
+    });
+  }
+
+  /**
+   * 全部消息（备份 / 存储统计用；不受分页限制）。
+   * 读取失败抛错——同 listAllSessions，绝不把失败伪装成空库。
+   */
+  async listAllMessages(): Promise<ChatMessageRecord[]> {
+    const db = await this.open();
+    return new Promise<ChatMessageRecord[]>((resolve, reject) => {
+      const tx = db.transaction([CHAT_MESSAGES_STORE], 'readonly');
+      const request = tx.objectStore(CHAT_MESSAGES_STORE).openCursor();
+      const items: ChatMessageRecord[] = [];
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) {
+          resolve(items);
+          return;
+        }
+        items.push(cursor.value as ChatMessageRecord);
+        cursor.continue();
+      };
+      request.onerror = () => reject(request.error ?? new Error('读取全部消息失败'));
+    });
+  }
+
+  /**
+   * 原子恢复：单事务内清空会话/消息表并写入给定数据。
+   *
+   * 原子性是备份契约的硬要求——事务失败即整体不落库，绝不出现「会话写了、
+   * 消息没写」的半截状态。整表替换语义（replace）：备份即权威，本机旧数据
+   * 不保留；需要「保留本机」语义时由调用方走 fill 策略（整分区跳过）。
+   *
+   * 唯一索引 byChatSeq 保证重复 (chatId, seq) 会在事务内触发约束错误 →
+   * 事务中止 → 数据整体不变（有意为之：备份数据自相矛盾时必须失败而非静默覆盖）。
+   */
+  async restoreSessions(
+    sessions: readonly ChatSessionMeta[],
+    messages: readonly ChatMessageRecord[],
+  ): Promise<void> {
+    await this.tx([CHAT_SESSIONS_STORE, CHAT_MESSAGES_STORE], 'readwrite', tx => {
+      const sessionStore = tx.objectStore(CHAT_SESSIONS_STORE);
+      const messageStore = tx.objectStore(CHAT_MESSAGES_STORE);
+      sessionStore.clear();
+      messageStore.clear();
+      for (const meta of sessions) sessionStore.put(meta);
+      for (const record of messages) messageStore.put({ ...record, imageRefs: [...new Set([
+        ...normalizeImageRefs(record.imageRefs), ...protocolImageRefs(record.modelMessages), ...protocolImageRefs(record.modelContext),
+      ])] });
+    });
   }
 }
 

@@ -448,6 +448,8 @@ type AnyRecord = Record<string, any>;
 function dataOf(result: { data?: AnyRecord }): AnyRecord { return result.data ?? {}; }
 const { testElementInteraction } = await import('./element-interaction.test');
 await testElementInteraction(check, eq);
+const { testSiteLearning } = await import('./site-learning.test');
+await testSiteLearning(check);
 const { testTextAutomation } = await import('./text-automation.test');
 await testTextAutomation(check, eq);
 
@@ -921,7 +923,11 @@ await testTextAutomation(check, eq);
 
 // ==================== 汇总 ====================
 await import('./wait-navigation.test');
+await import('./vision-gui.test');
 await import('./vision-assistant.test');
+await import('./prompt-cache.test');
+await import('./agent-i18n.test');
+await import('./agent-image.test');
 
 console.log(`\n[tools] 通过 ${passed} 项，失败 ${failures.length} 项`);
 if (failures.length > 0) {

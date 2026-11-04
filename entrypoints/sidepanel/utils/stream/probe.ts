@@ -15,7 +15,7 @@
  *   由调用方直接展示，403 / 429 / 密钥失效等都能看到服务端原文。
  */
 
-import { streamClient } from './stream-client';
+import { streamClient, applyCacheCompatibility } from './stream-client';
 import { driverRegistry } from './driver-registry';
 import { ApiRequestError, parseJsonSafe } from './errors';
 import { normalizeUsageFromBody } from './adapters/usage-normalize';
@@ -83,6 +83,9 @@ export async function probeConnection(query: ProbeQuery): Promise<ProbeSuccess> 
   };
 
   const body = adapter.buildRequestBody(requestConfig);
+  // A one-off connectivity probe has no reusable history and should also work
+  // on gateways that have not implemented optional cache directives.
+  applyCacheCompatibility(body, 'off');
   // 适配器为对话链路固定产出流式请求；探测只需状态码与错误体 → 关掉 stream。
   // OpenAI 请求体上的 stream_options 仅对流式有意义，非流式一并摘除，
   // 避免严格网关对「非流式 + stream_options」的组合返回 400。

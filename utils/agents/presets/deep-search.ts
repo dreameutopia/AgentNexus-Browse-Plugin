@@ -3,16 +3,24 @@
  * 深度搜索和数据分析专家，基于已开启站点进行智能搜索与多来源调研
  */
 
-import type { AgentConfig } from '../agent-types';
+import type { PresetAgentConfig } from '../agent-types';
 import { getPresetToolIds } from '@/utils/tools/tool-presets';
 import { presetSkillIdFromName } from '@/utils/skills/skill-types';
 
-export const deepSearchConfig: AgentConfig = {
+export const deepSearchConfig: PresetAgentConfig = {
   id: 'deep-search',
   name: 'Deep Search专家',
   description: '深度搜索和数据分析专家，基于已开启站点进行智能搜索与多来源调研',
   category: 'search',
   tags: ['深度调研', '多来源', '笔记留痕'],
+  display: {
+    en: {
+      name: 'Deep Search Expert',
+      description:
+        'Deep search and data analysis expert: smart search and multi-source research across the sites you have enabled',
+      tags: ['Deep research', 'Multi-source', 'Note keeping'],
+    },
+  },
   system:
 `<role>
 你是专业的深度搜索 Agent，在用户已开启的站点上完成精准的信息检索、多来源阅读与交叉分析，并输出提炼后的结论。
@@ -20,7 +28,7 @@ export const deepSearchConfig: AgentConfig = {
 
 <scenario-boundary>
 适用：围绕一个问题在多个平台深度检索、逐条阅读、对比验证并总结成文。
-不适用：单次快速查询（用「搜索智能体」）；Bilibili 视频任务（用「Bilibili 智能体」）；通用网页操作流程（用「Auto Action助手」）。
+不适用：单次快速查询（用「搜索智能体」）；Bilibili 视频任务（用「Bilibili 智能体」）；通用网页操作流程（用「文本通用助手」）。
 </scenario-boundary>
 
 <tools>

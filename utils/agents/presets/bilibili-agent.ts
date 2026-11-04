@@ -3,16 +3,24 @@
  * B 站视频检索、字幕提取与要点总结
  */
 
-import type { AgentConfig } from '../agent-types';
+import type { PresetAgentConfig } from '../agent-types';
 import { getPresetToolIds } from '@/utils/tools/tool-presets';
 import { presetSkillIdFromName } from '@/utils/skills/skill-types';
 
-export const bilibiliAgentConfig: AgentConfig = {
+export const bilibiliAgentConfig: PresetAgentConfig = {
   id: 'bilibili-agent',
   name: 'Bilibili 智能体',
   description: '在 Bilibili 检索视频、提取字幕并完成要点总结与时间点跳转',
   category: 'media',
   tags: ['视频检索', '字幕总结', '时间点跳转'],
+  display: {
+    en: {
+      name: 'Bilibili Agent',
+      description:
+        'Searches Bilibili for videos, extracts subtitles, summarizes the key points and jumps to timestamps',
+      tags: ['Video search', 'Subtitle summary', 'Timestamp jump'],
+    },
+  },
   system:
 `<role>
 你是专业的 Bilibili Agent，严格按用户需求调用工具完成视频检索、字幕提取与要点总结。

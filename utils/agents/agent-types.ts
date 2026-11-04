@@ -1,3 +1,10 @@
+import { migrateVisionToolId, migrateVisionToolPrompt } from '../tools/vision-tool-migration';
+import {
+  DEFAULT_LOCALE,
+  NON_DEFAULT_LOCALES,
+  type Locale,
+  type NonDefaultLocale,
+} from '../i18n/locales';
 /**
  * 智能体领域类型与纯逻辑（无副作用层）
  *
@@ -12,7 +19,9 @@
  * 安全与稳健约定：
  *   - 所有长度/数量上限在此集中声明，UI 与写入层共用同一套数字，杜绝两处漂移；
  *   - 归一化函数对任意输入都不抛错（脏数据 → 合理默认值或 null）；
- *   - id / name 是身份字段，归一化时不改写（改写会破坏已持久化的引用关系）。
+ *   - id / name 是身份字段，归一化时不改写（改写会破坏已持久化的引用关系）；
+ *   - 本层不感知 vue-i18n：多语言文案按「语言 → 文案」存放（见 AgentDisplayText），
+ *     展示侧解析时传入当前语言即可（与 categoryLabelOf 同一思路）。
  */
 
 // ==================== 分类 ====================
@@ -92,13 +101,48 @@ export interface AgentCategoryGroup {
 
 /** 视觉运行配置：声明后该智能体进入「截图 → 多模态消息 → 工具后重截图」循环 */
 export interface VisionRuntimeConfig {
-  /** 统一原始视口截图；vision_mark 请求下一张截图附带数字框 */
+  /** 统一原始视口截图；vision_gui(action="mark") 请求下一张截图附带数字框 */
   screenshotTool: 'screenshot';
   /** 截图工具参数 */
   screenshotArgs: Record<string, unknown>;
   /** 每轮工具成功执行后重截图并注入合成多模态用户消息 */
   reScreenshotAfterTools: boolean;
 }
+
+/**
+ * 智能体展示文案（随界面语言切换的「显示形态」）。
+ *
+ * 与 AgentConfig 顶层 name/description/tags 的关系：
+ *   - 顶层字段是「规范值」：既是存储键（name）、也是默认语言的展示文案；
+ *   - 本结构承载**非默认语言**的展示文案，按语言键索引。
+ * 因此规范值永远存在（自定义智能体只有规范值），切换语言时缺项自然回落规范值，
+ * 无需任何「按语言重建对象」的逻辑。
+ */
+export interface AgentDisplayText {
+  /** 用户可见名称（非默认语言用；默认语言用 AgentConfig.name） */
+  name: string;
+  /** 用户可见描述（非默认语言用；默认语言用 AgentConfig.description） */
+  description: string;
+  /** 用户可见标签（非默认语言用；默认语言用 AgentConfig.tags） */
+  tags: string[];
+}
+
+/**
+ * 预置智能体的多语言展示文案表。
+ *
+ * 与自定义智能体的区别：预置智能体的文案由代码维护、随产品发布，
+ * 因此要求「除默认语言外的每种语言都必须提供文案」——新增语言时编译期即暴露缺口，
+ * 而不是运行时静默回落成中文。
+ */
+export type PresetDisplayTexts = Record<NonDefaultLocale, AgentDisplayText>;
+
+/**
+ * 预置智能体配置：与自定义智能体的唯一差别是 display 必填。
+ *
+ * 因此「每个预置智能体都必须提供全部非默认语言的文案」是编译期约束：
+ * 新增预置忘了写英文 → 编译报错；新增语言忘了给预置补文案 → 同样编译报错。
+ */
+export type PresetAgentConfig = AgentConfig & { display: PresetDisplayTexts };
 
 /**
  * 智能体配置（预置与自定义共用的领域对象）。
@@ -132,6 +176,11 @@ export interface AgentConfig {
   category: string;
   /** 标签（多个；保序去重，用于选择器过滤与管理页检索） */
   tags: string[];
+  /**
+   * 预置智能体的多语言展示文案（默认语言沿用上方规范值，此处只放其余语言）。
+   * 自定义智能体不声明本字段——其文案由用户自行撰写，不随界面语言变化。
+   */
+  display?: PresetDisplayTexts;
   /** 视觉运行配置：缺省 = 纯文本对话 */
   vision?: VisionRuntimeConfig;
   /**
@@ -139,6 +188,30 @@ export interface AgentConfig {
    * 缺省 = 无头像，由 UI 回退默认 emoji。
    */
   avatar?: AgentAvatar;
+}
+
+/**
+ * 取智能体在指定语言下的展示文案。
+ *
+ * 回落规则（自上而下）：
+ *   1. 该语言的展示文案（预置智能体的 display[locale]）；
+ *   2. 规范值（顶层 name/description/tags，即默认语言文案）。
+ * 自定义智能体没有 display，永远取规范值——它们的文案由用户自行撰写，
+ * 不应随界面语言变化。
+ *
+ * 纯函数（不依赖 vue-i18n）：调用方传入当前语言，切换语言时重新求值即可。
+ */
+export function agentDisplayOf(
+  agent: AgentConfig,
+  locale: Locale,
+): { name: string; description: string; tags: string[] } {
+  // display 只收录非默认语言，默认语言直接用规范值——故此处取不到即回落
+  const localized = locale === DEFAULT_LOCALE ? undefined : agent.display?.[locale as NonDefaultLocale];
+  return {
+    name: localized?.name ?? agent.name,
+    description: localized?.description ?? agent.description,
+    tags: localized?.tags ?? agent.tags,
+  };
 }
 
 /**
@@ -185,8 +258,12 @@ export const AGENT_SKILL_REF_MAX_CHARS = 96;
 /** 生成的自定义智能体 id 前缀（名称无 ASCII 字符时的兜底基名） */
 export const AGENT_ID_FALLBACK_BASE = 'agent';
 
-/** 图片头像地址长度上限（data URL 会远大于普通路径，故给足额度） */
-export const AGENT_AVATAR_IMAGE_MAX_CHARS = 262_144;
+/**
+ * 图片头像地址长度上限（data URL 会远大于普通路径，故给足额度）。
+ * 上传头像经 avatar-image 压缩到 1MB 内：1MB 字节的 base64 约 1.4M 字符，
+ * 上限取 1.5M 字符留出 data URL 前缀余量，与 AGENT_AVATAR_MAX_BYTES 配套。
+ */
+export const AGENT_AVATAR_IMAGE_MAX_CHARS = 1_500_000;
 /** emoji 头像长度上限（容纳 ZWJ / 变体选择符等组合序列） */
 export const AGENT_AVATAR_EMOJI_MAX_CHARS = 16;
 
@@ -199,8 +276,8 @@ export const DEFAULT_AGENT_AVATAR: AgentEmojiAvatar = { type: 'emoji', value: '�
 
 /**
  * 内置头像图片清单（public/agent 下的静态资源）。
- * 预置智能体从这里挑头像，用户新建智能体时也可直接选用，
- * 保证「预置 / 自定义 / 导入」三类智能体的头像风格一致。
+ * 预置智能体从这里挑头像；自定义智能体的编辑器不再提供预置选择，
+ * 改为「上传图片 / 选择 emoji」两条通道（见 hub 的头像选择器）。
  */
 export interface BuiltinAgentAvatar {
   /** 稳定 id（存储于 AgentAvatar.src 的绝对路径片段） */
@@ -263,7 +340,7 @@ export function normalizeToolIds(value: unknown): string[] {
   const result: string[] = [];
   for (const raw of value) {
     if (result.length >= AGENT_TOOLS_MAX_COUNT) break;
-    const toolId = clampText(raw, AGENT_TOOL_ID_MAX_CHARS);
+    const toolId = migrateVisionToolId(clampText(raw, AGENT_TOOL_ID_MAX_CHARS));
     if (!toolId) continue;
     if (seen.has(toolId)) continue;
     seen.add(toolId);
@@ -356,6 +433,26 @@ export function normalizeAvatar(value: unknown): AgentAvatar | undefined {
 }
 
 /**
+ * 多语言展示文案归一化：校验「每个非默认语言都齐备 name/description/tags」。
+ * 缺任一语言或字段类型不对 → 整体丢弃（回落默认语言文案），不做半吊子修补。
+ */
+function normalizeDisplayTexts(value: unknown): PresetDisplayTexts | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const source = value as Record<string, unknown>;
+  const result: Partial<Record<NonDefaultLocale, AgentDisplayText>> = {};
+  for (const locale of NON_DEFAULT_LOCALES) {
+    const entry = source[locale];
+    if (!entry || typeof entry !== 'object') return undefined;
+    const { name, description, tags } = entry as Partial<AgentDisplayText>;
+    if (typeof name !== 'string' || typeof description !== 'string' || !Array.isArray(tags)) return undefined;
+    const normalizedTags = normalizeTags(tags);
+    if (normalizedTags.length !== tags.length) return undefined;
+    result[locale] = { name, description, tags: normalizedTags };
+  }
+  return result as PresetDisplayTexts;
+}
+
+/**
  * 持久化记录 → 合规 AgentConfig；结构性缺失（id/name/system）返回 null。
  *
  * 校验策略：身份字段（id/name）只校验不改写；其余字段一律收敛（钳制/去重/默认值）。
@@ -367,7 +464,7 @@ export function normalizeAgentConfig(value: unknown): AgentConfig | null {
   const candidate = value as Partial<AgentConfig>;
   const id = typeof candidate.id === 'string' ? candidate.id.trim() : '';
   const name = typeof candidate.name === 'string' ? candidate.name.trim() : '';
-  const system = typeof candidate.system === 'string' ? candidate.system : '';
+  const system = typeof candidate.system === 'string' ? migrateVisionToolPrompt(candidate.system) : '';
   // 结构性缺失不可修复：没有 id 无法参与预置判定与引用，没有名称无法定位存储键
   if (!id || !name || !system) return null;
 
@@ -382,6 +479,8 @@ export function normalizeAgentConfig(value: unknown): AgentConfig | null {
   };
   const skills = normalizeSkillRefs(candidate.skills);
   if (skills.length > 0) config.skills = skills;
+  const display = normalizeDisplayTexts(candidate.display);
+  if (display) config.display = display;
   const vision = normalizeVision(candidate.vision);
   if (vision) config.vision = vision;
   const avatar = normalizeAvatar(candidate.avatar);

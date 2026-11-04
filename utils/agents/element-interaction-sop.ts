@@ -1,7 +1,8 @@
 /** Shared by text automation, harvesting and site learning/validation. */
 export const ELEMENT_INTERACTION_SOP = `<text-interaction-sop>
-你只使用文本、DOM、辅助功能和浏览器原生输入，不需要图片或坐标。
+以下规则适用于文本、DOM、辅助功能和浏览器原生输入通道；视觉策略也保留这些能力。
 观察：browser_observe(view="controls") 读取按钮与输入；buttons/inputs 分类；structure 读取表格行列/单元格属性/值/选项/滚动容器/canvas；accessibility 读取浏览器辅助功能语义。后两者用于普通枚举不足的复杂界面。
+指定元素属性：枚举后 browser_observe(view="element",elementId,frameId) 读取真实 XPath、文字、属性、状态、外观和 frame 内位置；不传过滤/分页参数。XPath 优先，未命中则单独用 regex 搜索文字/placeholder/aria-label，核对 Context 与属性；过滤未命中的候选也可能返回，只有 Hit 才算命中。Shadow 内路径不能直接作为文档 XPath。
 新查询、改变条件、滚动加载或任何操作后，省略 snapshotId，从 page=1 重采。续读同一冻结结果传 snapshotId 和 nextPage，省略条件表示继承；nextPage=null 即结束，禁止越界盲翻。DOM regex/xpath 命中置顶，非命中仍在；AX regex 只返回匹配语义节点。两种来源不能混用快照。
 # 是快照内全局行号，不是元素 ID。ElementId 必须原样使用，不猜 CSS 或引用。DOM 引用同时传同一行 FrameId；ax: 引用自带路由，不传 FrameId。Context、role、行列索引和选区用于区分同名目标，无法区分时继续观察，禁止随意选第一个。
 browser_interact 的 action：click=DOM 点击；fill=标准输入/textarea/select 填充；focus=聚焦；keys=一个浏览器原生组合键；type=向已聚焦编辑器插入文本；scroll=按 CSS 像素滚动引用对应的容器（省略 ElementId 只滚动指定 FrameId 的文档）。每次必须提供 description 说明目标与意图；不可逆动作 confirm=true。仅提供当前 action 对应的参数。
@@ -10,7 +11,7 @@ DOM click/fill 后检查业务反馈。原生 keys/type 后读取返回的 focus
 在线表格：先 structure/accessibility 识别工作表、名称框、选区、公式栏和编辑器。名称框 fill 单元格/范围地址后 keys Enter 导航；观察选区，再用 keys Enter/F2 进入编辑模式，观察实际焦点后 type，keys Enter 提交，最后回读值/公式与保存反馈。不同网站快捷键可能不同，只有观察与实际反馈支持时才使用；缺少语义时不能猜单元格。
 STALE_ELEMENT / STALE_SNAPSHOT / FOCUS_CHANGED：重采并核对现状；WRONG_TAB：切回来源或在当前页重采。注入失败/超时可能已部分生效，禁止盲目重复发送、提交、追加。一次调用一个有依赖的操作，按键异常释放由工具处理。
 虚拟表格只渲染部分行列，coverage.complete=false 不等于全表；滚动指定容器后重采，不能把 DOM 行号当业务记录 ID。辅助功能不保证暴露未加载数据。无关页面变化不重新排序旧快照，新增数据必须新采集。
-数据源：已确认且有权限的 API/导出优先用于批量数据；browser_page_exec 代码是 async 函数体，用 return 输出结果；可指定 FrameId（子 frame 严格 CSP 可尝试 world=ISOLATED,strategy=scripting 读 DOM，不能假定可读主世界状态）。browser_network_capture(action=start/read/stop) 是被动观察新请求，正文经 dataRef 返回，不能假设获得全部数据或具备接口写权限。
+数据源：已确认且有权限的 API/导出优先用于批量数据；browser_page_exec 代码是 async 函数体，用 return 输出结果；可指定 FrameId（子 frame 严格 CSP 可尝试 world=ISOLATED,strategy=scripting 读 DOM，不能假定可读主世界状态）。
 同一目标最多连续过滤3次，再换观察视图、容器滚动或脚本探测。结果不足时明确说明未覆盖区域，不能把空 DOM、截图不可用或接口拒绝解释为文档没有内容。目标与权限仍不可确认则停止对应操作并说明卡点。
 技能保存可重新执行的 regex/XPath、语义、工作表/记录识别和恢复规则；禁止持久化运行期 ElementId、AX 引用、snapshotId、captureId 或固定 FrameId。
 </text-interaction-sop>`;

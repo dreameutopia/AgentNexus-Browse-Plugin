@@ -3,6 +3,7 @@
  */
 import { ref, reactive } from 'vue';
 import type { ToolDefinition, ExecutionResult } from './types';
+import { resolveActionDefinition } from './types';
 
 export function useToolExecution() {
   const selectedTool = ref<ToolDefinition | null>(null);
@@ -22,7 +23,7 @@ export function useToolExecution() {
     });
 
     if (selectedTool.value) {
-      Object.entries(selectedTool.value.parameters).forEach(([name, param]) => {
+      Object.entries(resolveActionDefinition(selectedTool.value, toolParams.action).parameters).forEach(([name, param]) => {
         if (param.default !== undefined) {
           toolParams[name] = param.default;
         }
@@ -38,11 +39,13 @@ export function useToolExecution() {
 
     try {
       const processedParams: Record<string, any> = {};
+      const definition = resolveActionDefinition(selectedTool.value, toolParams.action);
 
       for (const [name, value] of Object.entries(toolParams)) {
-        if (value === undefined || value === null || value === '') continue;
+        if (value === undefined || value === null || value === '' && name !== 'text') continue;
+        if (!Object.hasOwn(definition.parameters, name)) continue;
 
-        const param = selectedTool.value.parameters[name];
+        const param = definition.parameters[name];
 
         if (param && (param.type === 'object' || param.type === 'array')) {
           try {

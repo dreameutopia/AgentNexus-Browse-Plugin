@@ -1,6 +1,6 @@
 # 纯文本网页交互协议
 
-Auto Action 不配置视觉模型、截图或坐标动作。运行期统一规范在 utils/agents/element-interaction-sop.ts，Auto Action、数据收割机和网站学习/验证共用。
+文本通用助手 不配置视觉模型、截图或坐标动作。运行期统一规范在 utils/agents/element-interaction-sop.ts，文本通用助手、数据收割机和网站学习/验证共用。
 
 ## 工具分工
 
@@ -8,7 +8,7 @@ Auto Action 不配置视觉模型、截图或坐标动作。运行期统一规�
 | --- | --- | --- |
 | browser_observe | DOM 控件、输入、表格结构、选项、滚动容器、当前焦点、浏览器辅助功能树 | 未加载内容或整张工作簿的完整数据 |
 | browser_interact | click/fill/focus/keys/type/scroll，按节点引用操作 | 页面业务已保存、任意画布均可编辑 |
-| browser_network_capture | start/read/stop，被动观察真实请求及文本响应，完整正文进入 dataRef | 全历史网络记录、二进制协议解码、接口写权限 |
+| browser_network_capture | start/read/stop，被动观察真实请求及文本响应，完整正文进入 dataRef（**仅数据收割 / 网站学习 / 技能验证场景具备；文本通用助手与视觉通用助手 不携带**） | 全历史网络记录、二进制协议解码、接口写权限 |
 | browser_page_exec | 指定 tab/frame 的脚本与 dataRef 数据通道 | 任意闭包、Worker、跨域 frame 自动可读 |
 | browser_get_page_text | 顶层及可注入 frame、可访问 shadow root 的有界文本 | 对 Canvas 像素的识别 |
 
@@ -80,7 +80,7 @@ keys/type 后读取返回的 focus。Tab、Enter、F2 可能切换到新编辑�
 
 ## 网络与脚本
 
-网络 start 后才捕获请求，read 分页返回元信息/受限预览及 dataRef，stop 结束当前观察，停止后仍可读取已捕获结果。默认上限100请求、正文每条1M字符/合计4M字符、并发4条、55秒。非文本或未解码正文明确标记 unavailable；掉包与未覆盖子 target 会声明，不宣称全量。
+网络 start 后才捕获请求，read 分页返回元信息/受限预览及 dataRef，stop 结束当前观察，停止后仍可读取已捕获结果。默认上限100请求、正文每条1M字符/合计4M字符、并发4条、55秒。非文本或未解码正文明确标记 unavailable；掉包与未覆盖子 target 会声明，不宣称全量。两个 action agent（文本通用助手 / 视觉通用助手）不携带网络观察工具：它们的职责是操作页面，观察网络对定位与操作是噪声，且该工具占用与视觉 GUI 共享的调试会话互斥队列。
 
 脚本支持 Chrome FrameId，不会在子 frame 不可执行时静默改用主页面。编译权限探测失败才能安全切换引擎；用户代码已经开始、无返回或传输异常均不自动重放。代码统一为 async 函数体，使用 return 返回结果；不再猜测表达式完成值或通过错误文案重试。CDP 执行失败不再自动去另一个 world 重放。
 

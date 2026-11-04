@@ -14,7 +14,6 @@ import { cancelGuiRequest } from '@/tools/vision/gui-cancellation';
 const TOOL_MESSAGE_TYPES = {
   // 浏览器工具
   BROWSER_NAVIGATE: 'browser_navigate',
-  BROWSER_SCREENSHOT: 'browser_screenshot',
   BROWSER_WINDOW: 'browser_window',
   BROWSER_SEARCH_BOOKMARKS: 'browser_search_bookmarks',
   BROWSER_SEARCH_HISTORY: 'browser_search_history',

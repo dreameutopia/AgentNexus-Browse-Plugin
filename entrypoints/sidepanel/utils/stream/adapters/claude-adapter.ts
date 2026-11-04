@@ -16,6 +16,7 @@
 import { BaseAdapter, type StreamAccumulator } from './base-adapter';
 import { ApiRequestError, createInBandError } from '../errors';
 import { mergeUsageSafe, normalizeClaudeUsage } from './usage-normalize';
+import { nativeItems, setNativeItems, nativePartIndex } from './native-replay';
 import {
   SAFE_TOOL_ID_PATTERN,
   parseReplayArguments,
@@ -31,7 +32,8 @@ import type {
 
 /** Claude SSE 事件中的 content_block 类型 */
 interface ClaudeContentBlock {
-  type: 'text' | 'tool_use';
+  type: string;
+  [key: string]: any;
   text?: string;
   id?: string;
   name?: string;
@@ -94,7 +96,7 @@ export class ClaudeAdapter extends BaseAdapter {
     vision: true,
     remoteImageUrl: 'native',
     tools: true,
-    reasoning: false,
+    reasoning: true,
   };
 
   /**
@@ -133,10 +135,20 @@ export class ClaudeAdapter extends BaseAdapter {
     }
 
     // 其余消息折叠为合法轮次（连续同角色合并 + 并行 tool_result 同轮回放）
-    body.messages = this.foldClaudeTurns(config.messages.filter(m => m.role !== 'system'));
+    body.messages = this.foldClaudeTurns(config.messages.filter(m => m.role !== 'system'), { ...config });
     // Automatic moving breakpoint for growing agent histories; the explicit
     // system checkpoint remains reusable after compaction or an image change.
     body.cache_control = { type: 'ephemeral' };
+    // Explicit moving checkpoint also supports gateways predating automatic
+    // top-level cache_control. Markers are transport metadata, not prompt text.
+    const lastTurn = body.messages[body.messages.length - 1];
+    const mark = (turn: any) => {
+      const block = Array.isArray(turn?.content) ? [...turn.content].reverse().find(b => !['thinking', 'redacted_thinking'].includes(b.type)) : undefined;
+      if (block) block.cache_control = { type: 'ephemeral' };
+    };
+    mark(lastTurn);
+    const priorTurn = body.messages[body.messages.length - 3];
+    mark(priorTurn);
 
     // 生成参数
     if (config.temperature !== undefined) body.temperature = config.temperature;
@@ -216,7 +228,7 @@ export class ClaudeAdapter extends BaseAdapter {
    *   - 单条纯文本轮保持字符串 content（Claude 两种形态等价，字符串可读性更好）；
    *   - 空轮次（无有效 block）直接跳过，避免空 content 消息被服务端拒绝。
    */
-  private foldClaudeTurns(messages: UnifiedChatMessage[]): Array<{ role: string; content: any }> {
+  private foldClaudeTurns(messages: UnifiedChatMessage[], config: StreamRequestConfig): Array<{ role: string; content: any }> {
     // 预扫描：全部 assistant.tool_calls 的原始 id 集合（用于识别孤儿 tool 结果）
     const knownCallIds = new Set<string>();
     for (const msg of messages) {
@@ -244,10 +256,19 @@ export class ClaudeAdapter extends BaseAdapter {
 
     const turns: Array<{ role: 'user' | 'assistant'; blocks: any[] }> = [];
     messages.forEach((msg, index) => {
-      const blocks = this.messageToBlocks(msg, String(index), knownCallIds, rewriteId);
+      const blocks = this.messageToBlocks(msg, String(index), knownCallIds, rewriteId, config);
       if (blocks.length === 0) return;
       const role: 'user' | 'assistant' = msg.role === 'assistant' ? 'assistant' : 'user';
       const last = turns[turns.length - 1];
+      if (msg.role === 'user' && Array.isArray(msg.toolFeedbackFor) && msg.toolFeedbackFor.every(id => typeof id === 'string') && last?.role === 'user') {
+        const ids = new Set(msg.toolFeedbackFor.map(id => rewriteId(id, `feedback_${index}`)));
+        const result = [...last.blocks].reverse().find(block => block.type === 'tool_result' && ids.has(block.tool_use_id));
+        if (result) {
+          const existing = typeof result.content === 'string' ? [{ type: 'text', text: result.content }] : result.content;
+          result.content = [...existing, { type: 'text', text: '以下为整批工具完成后的观察反馈；历史截图只作证据，坐标操作须使用最新有效截图。' }, ...blocks];
+          return;
+        }
+      }
       if (last && last.role === role) {
         last.blocks.push(...blocks);
       } else {
@@ -255,12 +276,7 @@ export class ClaudeAdapter extends BaseAdapter {
       }
     });
 
-    return turns.map(turn => {
-      if (turn.blocks.length === 1 && turn.blocks[0].type === 'text') {
-        return { role: turn.role, content: turn.blocks[0].text as string };
-      }
-      return { role: turn.role, content: turn.blocks };
-    });
+    return turns.map(turn => ({ role: turn.role, content: turn.blocks }));
   }
 
   /**
@@ -271,6 +287,7 @@ export class ClaudeAdapter extends BaseAdapter {
     seed: string,
     knownCallIds: Set<string>,
     rewriteId: (raw: string, seed: string) => string,
+    config: StreamRequestConfig,
   ): any[] {
     // 工具结果消息 → tool_result block；
     // 缺失 id 或 id 不属于任何已回放的 tool_use（孤儿结果）时降级为文本，
@@ -292,6 +309,9 @@ export class ClaudeAdapter extends BaseAdapter {
 
     // 助手消息：文本 + 工具调用（tool_use；参数经防御性解析，永不抛错）
     if (msg.role === 'assistant') {
+      const native = nativeItems(msg, config, 'claude');
+      if (native?.length) return native.map((block, index) => block.type === 'tool_use'
+        ? { ...block, id: rewriteId(block.id, `${seed}_u${index}`) } : block);
       const blocks: any[] = [];
       const text = this.plainTextOf(msg.content);
       if (text) blocks.push({ type: 'text', text });
@@ -393,6 +413,7 @@ export class ClaudeAdapter extends BaseAdapter {
 
     try {
       const event = JSON.parse(data);
+      const blockIndex = nativePartIndex(event.index);
 
       switch (event.type) {
         case 'message_start':
@@ -406,12 +427,17 @@ export class ClaudeAdapter extends BaseAdapter {
         case 'content_block_start': {
           // 内容块开始 — 如果是 tool_use，记录 id 和 name
           const block = event.content_block as ClaudeContentBlock;
+          if (block && typeof block.type === 'string') {
+            (acc.nativeBlocks ??= new Map()).set(blockIndex, structuredClone(block));
+            if (block.type === 'text' && block.text) this.handleContentToken(block.text, acc, callbacks);
+            if (block.type === 'thinking' && block.thinking) this.handleReasoningToken(block.thinking, acc, callbacks);
+          }
           if (block?.type === 'tool_use' && block.id) {
-            const index: number = event.index ?? 0;
+            const index = blockIndex;
             acc.toolCallChunks.set(index, {
               id: block.id,
               name: block.name || '',
-              arguments: '', // input 将在后续的 delta 中增量接收
+              arguments: block.input && Object.keys(block.input).length ? JSON.stringify(block.input) : '',
             });
           }
           break;
@@ -419,6 +445,13 @@ export class ClaudeAdapter extends BaseAdapter {
 
         case 'content_block_delta': {
           const delta = event.delta;
+          const block = acc.nativeBlocks?.get(blockIndex);
+          if (block && delta?.type === 'text_delta' && typeof delta.text === 'string') block.text = (block.text ?? '') + delta.text;
+          if (block && delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+            block.thinking = (block.thinking ?? '') + delta.thinking;
+            this.handleReasoningToken(delta.thinking, acc, callbacks);
+          }
+          if (block && delta?.type === 'signature_delta' && typeof delta.signature === 'string') block.signature = (block.signature ?? '') + delta.signature;
 
           // 文本增量
           if (delta?.type === 'text_delta' && delta.text) {
@@ -427,7 +460,7 @@ export class ClaudeAdapter extends BaseAdapter {
 
           // 工具输入增量（JSON 片段）
           if (delta?.type === 'input_json_delta' && delta.partial_json) {
-            const index: number = event.index ?? 0;
+            const index = blockIndex;
             const chunk = acc.toolCallChunks.get(index);
             if (chunk) {
               chunk.arguments += delta.partial_json;
@@ -437,6 +470,14 @@ export class ClaudeAdapter extends BaseAdapter {
         }
 
         case 'content_block_stop': {
+          const index = blockIndex;
+          const block = acc.nativeBlocks?.get(index);
+          if (block) {
+            if (block.type === 'tool_use') block.input = parseReplayArguments(acc.toolCallChunks.get(index)?.arguments || '{}');
+            const items = acc.finalMessage.nativeReplay?.items ?? [];
+            items[index] = structuredClone(block);
+            setNativeItems(acc.finalMessage, 'claude', items);
+          }
           // 工具调用完成态由 acc.toolCallChunks 按 index 收敛（arguments 已随
           // input_json_delta 增量拼接完毕），此处无需额外处理
           break;

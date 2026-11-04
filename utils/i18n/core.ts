@@ -13,14 +13,17 @@
 import zhCN from './locales/zh-CN';
 import en from './locales/en';
 import type { Schema } from './locales/zh-CN';
+import {
+  DEFAULT_LOCALE,
+  SUPPORTED_LOCALES,
+  type Locale,
+  type NonDefaultLocale,
+} from './locales';
 
 // ==================== 语言定义 ====================
 
-export const SUPPORTED_LOCALES = ['zh-CN', 'en'] as const;
-export type Locale = (typeof SUPPORTED_LOCALES)[number];
-
-/** 兜底语言（消息目录的源语言，缺 key 时回落到中文） */
-export const DEFAULT_LOCALE: Locale = 'zh-CN';
+export { SUPPORTED_LOCALES, DEFAULT_LOCALE };
+export type { Locale, NonDefaultLocale };
 
 /** chrome.storage.local 中持久化的语言键名 */
 export const LOCALE_STORAGE_KEY = 'ui_locale';

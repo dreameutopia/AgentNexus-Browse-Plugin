@@ -72,11 +72,25 @@ export interface AdapterCapabilities {
 
 /** 统一的消息格式，上层代码统一使用此类型 */
 export interface UnifiedChatMessage {
+  /** Client observation following this tool batch, not a new human task. */
+  toolFeedbackFor?: string[];
+  /** Lossless provider output. Transport metadata, never generic prompt text. */
+  nativeReplay?: NativeReplay;
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string | VisionContent[];
   name?: string;
   tool_calls?: UnifiedToolCall[];
   tool_call_id?: string;
+}
+
+export interface NativeReplay {
+  requestPrefix?: string;
+  inputPrefix?: string;
+  provider: ProviderType;
+  model?: string;
+  scope?: string;
+  reasoningTokens?: number;
+  items: Record<string, any>[];
 }
 
 /** 视觉内容（图片+文字混合） */
@@ -91,6 +105,8 @@ export interface VisionContent {
 
 /** 统一的工具调用格式 */
 export interface UnifiedToolCall {
+  /** Opaque Gemini signature, replayed only by the Gemini adapter. */
+  geminiThoughtSignature?: string;
   id: string;
   type: 'function';
   function: {
@@ -103,6 +119,8 @@ export interface UnifiedToolCall {
 
 /** 统一的请求配置 */
 export interface StreamRequestConfig {
+  /** In-memory endpoint/model identity, used to isolate opaque provider state. */
+  replayScope?: string;
   /** Local diagnostics only; adapters must never serialize this field. */
   metrics?: RequestMetricsContext;
   /** Only set for endpoints that explicitly support this parameter. */

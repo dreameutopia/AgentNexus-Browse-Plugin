@@ -32,7 +32,7 @@ import { appendSystemTimestamp } from '../../utils/system-time';
 import { t } from '@/utils/i18n/core';
 import type { ToolExecutionContext } from '@/tools/registry';
 import { transcriptEngine } from '../context/transcript-engine';
-import { contextEngine } from '../context/context-engine';
+import { contextEngine, toModelFacingContent } from '../context/context-engine';
 import { storeProtocolMessages } from '../context/protocol-history';
 import { contextCompactor } from '../context/compactor';
 import { measureContextUsage, COMPACTION_RUNTIME_RATIO } from '../context/context-meter';
@@ -40,7 +40,6 @@ import { imageStore } from '../images/image-store';
 import { toApiErrorBlock } from '../../utils/stream/errors';
 import { INTERACTIVE_TOOL_NAMES } from '@/tools/interact/interact-prompt';
 import { toolRegistry } from '@/tools/registry';
-import type { ContextGuardResult } from '../../utils/ai/context-window-guard';
 import { skillEngine } from '../registry/skill-engine';
 import { filterVisionAssistantTools, isVisionAssistantTool } from '@/utils/agents/vision-assistant-policy';
 import { needsVisionRefresh, takeVisionToolImage, withoutVisionImage, VISION_TOOL_SETTLE_DELAY_MS, type VisionToolImage } from './vision-feedback';
@@ -149,6 +148,9 @@ export class EmptyRunInputError extends Error {
 }
 
 interface RunHandle {
+  previousCompactions?: number;
+  toolSchemas?: Map<string, import('@/common/openai-types').OpenAITool>;
+  previousRequest?: ChatMessage[];
   /** Only the current incomplete stream; completed rounds live in modelMessages. */
   roundText?: string;
   abortController: AbortController;
@@ -359,9 +361,19 @@ export class ConversationEngine {
 
       // ── 2. 助手记录占位 + 快照定时器 ──
       record = await transcriptEngine.createAssistantRecord(runtime.chatId);
-      record.modelMessages = await storeProtocolMessages(runtime.activationContext);
+      const activationContext = structuredClone(runtime.activationContext);
+      const activationIds = new Map<string, string>();
+      for (const message of activationContext) for (const call of message.tool_calls ?? []) {
+        const id = `${record.id}_${activationIds.size}`;
+        activationIds.set(call.id, id);
+        call.id = id;
+      }
+      for (const message of activationContext) if (message.tool_call_id && activationIds.has(message.tool_call_id)) {
+        message.tool_call_id = activationIds.get(message.tool_call_id);
+      }
+      record.modelMessages = await storeProtocolMessages(activationContext);
       // vision 首截图引用挂接到助手消息：立即落库保证运行中断/重载后图片不丢；
-      // 截图不回注后续跨轮上下文。双写语义（各司其职，同一时点原子推进）：
+      // 模型侧由 modelMessages 保留原始图片位置；UI 引用与时间线各司其职：
       //   - imageRefs：引用集合（byImageRef 索引据此计数，删除引擎按它回收）；
       //   - parts['image']：时间线片段（按截屏顺序内联渲染为「查看屏幕」容器）。
       if (initialScreenshotRef) {
@@ -381,10 +393,10 @@ export class ConversationEngine {
         history: [
           ...runtime.initialContext,
           ...(userHistoryMessage ? [userHistoryMessage] : []),
-          // 合成激活轮紧跟本轮用户消息：预选技能的 load_skill 调用只进模型
-          // 上下文、不落转录（UI 不会出现这轮「凭空」的工具卡片），
+          // 合成激活轮紧跟本轮用户消息：modelMessages 保留原始轮次，
+          // UI 不会出现这轮「凭空」的工具卡片，
           // 但对模型而言与真实调用逐字同源
-          ...runtime.activationContext,
+          ...activationContext,
         ],
         runUserMessage: userHistoryMessage,
         record,
@@ -477,12 +489,19 @@ export class ConversationEngine {
         const mergedToolIds = handle.dynamicToolIds.size > 0
           ? [...new Set([...runtime.toolIds, ...handle.dynamicToolIds])]
           : runtime.toolIds;
-        const sessionToolIds = runtime.advertisedToolIds ?? (runtime.toolPolicy === 'vision-assistant'
-          ? filterVisionAssistantTools(mergedToolIds) : mergedToolIds);
+        const advertised = runtime.advertisedToolIds ?? mergedToolIds;
+        const sessionToolIds = runtime.toolPolicy === 'vision-assistant'
+          ? filterVisionAssistantTools(advertised) : advertised;
+        const toolSchemas = handle.toolSchemas ??= new Map();
+        for (const schema of openaiToolsConverter.getToolsByIds(sessionToolIds.filter(id => !toolSchemas.has(id)))) {
+          toolSchemas.set(schema.function.name, structuredClone(schema));
+        }
+        const toolDefinitions = sessionToolIds.flatMap(id => toolSchemas.has(id) ? [structuredClone(toolSchemas.get(id)!)] : []);
 
         // ── 上下文用量测量 + 运行时压缩（95%）：测量先于组装（反映真实需求量）；
         //    压缩失败仅告警降级，本轮继续由窗口守卫裁剪，绝不阻断对话 ──
         handle.lastUsage = measureContextUsage({
+          toolDefinitions,
           systemPrompt: runtime.systemPrompt,
           toolIds: sessionToolIds,
           messages: handle.history,
@@ -493,6 +512,7 @@ export class ConversationEngine {
           if (compacted) {
             handle.compactions += 1;
             handle.lastUsage = measureContextUsage({
+              toolDefinitions,
               systemPrompt: runtime.systemPrompt,
               toolIds: sessionToolIds,
               messages: handle.history,
@@ -501,7 +521,8 @@ export class ConversationEngine {
           }
         }
 
-        // 组装本轮请求（system + 运行历史 → 窗口保护 → 超裁时向模型注入事实注记）
+        // Assemble a lossless request. Compaction is the only automatic history
+        // rewrite; never send a silently truncated fallback after it fails.
         const guarded = contextEngine.protect(
           [
             { role: 'system', content: runtime.systemPrompt },
@@ -509,7 +530,19 @@ export class ConversationEngine {
           ] as ChatMessage[],
           runtime.model.contextThreshold,
         );
-        const requestMessages = this.applyTrimNotice(guarded);
+        if (guarded.truncated || handle.lastUsage.totalTokens > runtime.model.contextThreshold) {
+          throw new Error('上下文无法完整放入当前模型窗口，且未能通过压缩解决。本次未发送删减历史的请求；完整记录已保留。请提高上下文阈值、使用更大窗口的模型或缩小单次输入。');
+        }
+        const requestMessages = guarded.messages;
+        const previous = handle.previousRequest;
+        let sharedPrefixMessages = 0;
+        while (previous && sharedPrefixMessages < Math.min(previous.length, requestMessages.length) &&
+          JSON.stringify(previous[sharedPrefixMessages]) === JSON.stringify(requestMessages[sharedPrefixMessages])) sharedPrefixMessages++;
+        if (previous && sharedPrefixMessages < previous.length && handle.previousCompactions === handle.compactions) {
+          throw new Error('检测到未压缩情况下的历史前缀变化，已保留完整记录并停止本次请求，避免发送被改写的上下文。');
+        }
+        handle.previousRequest = requestMessages;
+        handle.previousCompactions = handle.compactions;
 
         const hasImageContent = requestMessages.some(
           message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'),
@@ -529,6 +562,10 @@ export class ConversationEngine {
               arguments: call.function.arguments,
             };
             handle.record.toolCalls.push(uiCall);
+            handle.record.modelPartial = {
+              role: 'assistant', content: handle.roundText ?? '',
+              tool_calls: [...(handle.record.modelPartial?.tool_calls ?? []), structuredClone(call)],
+            };
             handle.record.parts.push({ type: 'tool', toolCall: { ...uiCall } });
             collapseReasoningParts(handle.record);
             emit({ type: 'tool-call', chatId: runtime.chatId, messageId: record.id, call: { ...uiCall } });
@@ -536,7 +573,14 @@ export class ConversationEngine {
           onComplete: () => undefined,
           onError: error => console.warn('[ConversationEngine] 流式错误回调:', error),
         }, {
+          metrics: {
+            agentId: runtime.agentId ?? '', runId: handle.record.id, iteration: totalIterations,
+            compacted: handle.compactions > 0, trimmed: guarded.truncated,
+            sharedPrefixMessages,
+            prefixChanged: !!previous && sharedPrefixMessages < previous.length,
+          },
           tools: sessionToolIds,
+          toolDefinitions,
           signal: abortController.signal,
           // 端点快照：协议/端点/凭据/采样默认值全部定值于装配时刻，
           // 运行中用户切换协议或密钥不会影响本次运行的后续请求
@@ -581,6 +625,13 @@ export class ConversationEngine {
 
         // ── 工具执行（按调用顺序串行 + 各自超时 + 可中止 + 审批门） ──
         handle.history.push(finalMessage);
+        const modelRoundStart = handle.record.modelMessages?.length ?? 0;
+        const contextRoundStart = handle.record.modelContext?.length;
+        await this.appendModelMessages(handle, [finalMessage, ...toolCalls.map(call => ({
+          role: 'tool' as const, tool_call_id: call.id, name: call.function.name,
+          content: JSON.stringify({ success: false, error: 'Tool execution has not completed; do not assume it succeeded.' }),
+        }))]);
+        handle.roundText = '';
         // 本轮工具执行的时长截止点：串行模式下 N 个挂死调用最坏累加 N×单工具
         // 超时，必须以运行时长上限截断，否则一轮即可超出 maxDurationMs 数倍
         const toolDeadlineMs = guardStartMs + runtime.limits.maxDurationMs;
@@ -596,6 +647,8 @@ export class ConversationEngine {
         // budget. Wall-clock duration/usage still includes the entire wait.
         guardStartMs += toolOutcome.waitedMs;
         handle.history.push(...toolOutcome.messages);
+        handle.record.modelMessages = (handle.record.modelMessages ?? []).slice(0, modelRoundStart);
+        if (contextRoundStart !== undefined) handle.record.modelContext = handle.record.modelContext?.slice(0, contextRoundStart);
         await this.appendModelMessages(handle, [finalMessage, ...toolOutcome.messages]);
         handle.roundText = '';
 
@@ -659,16 +712,16 @@ export class ConversationEngine {
         // 只有浏览器类工具会改变页面状态（导航/点击/注入）；笔记、技能等纯数据
         // 工具的固定等待纯属额外延迟，多轮累积会显著拖慢对话节奏
         if (!runtime.vision && toolCalls.some(call => call.function?.name?.startsWith('browser_') ||
-          ['vision_click', 'vision_drag', 'vision_input', 'vision_keyboard', 'vision_scroll'].includes(call.function?.name ?? '')) &&
-          needsVisionRefresh(toolCalls.map(call => call.function?.name ?? ''), toolOutcome.images,
+          call.function?.name === 'vision_gui') &&
+          needsVisionRefresh(toolCalls, toolOutcome.images,
             name => toolRegistry.getTool(name)?.metadata.visionRefresh)) {
           await this.interruptibleDelay(TOOL_SETTLE_DELAY_MS, abortController.signal);
         }
 
-        // ── vision：工具成功后重截图，注入合成多模态用户消息（仅历史，不入转录；
+        // ── vision：工具成功后重截图，持久化合成多模态用户消息到模型历史；
         //    截图本体入库并挂接到本条助手消息——imageRefs 入引用集合、
         //    parts['image'] 按发生顺序进入时间线，UI 据此内联渲染「查看屏幕」） ──
-        if (runtime.vision && (runtime.vision.reScreenshotAfterTools || toolOutcome.images.length > 0) && toolOutcome.messages.length > 0) {
+        if ((runtime.vision?.reScreenshotAfterTools || toolOutcome.images.length > 0) && toolOutcome.messages.length > 0) {
           const continuation = await this.buildVisionContinuationMessage(
             runtime,
             toolCalls,
@@ -748,24 +801,6 @@ export class ConversationEngine {
     }
   }
 
-  // ==================== 内部：窗口裁剪告知 ====================
-
-  /**
-   * 超限裁剪时向模型注入事实注记（附在 system 提示词尾部）。
-   * 模型感知不到守卫的存在：不告知时它会假设早期对话仍随请求携带，并基于
-   * 「记忆里还有」的错觉引用已被移除的内容——这是长会话中典型幻觉来源之一。
-   * 明确告知后，模型可以向用户求证而非臆测。
-   * 注记只追加在被裁剪的请求上：正常请求的 system 前缀保持逐字节稳定，
-   * 不会因此破坏提供商的前缀上下文缓存。
-   */
-  private applyTrimNotice(guarded: ContextGuardResult): ChatMessage[] {
-    if (!guarded.truncated || guarded.messages.length === 0) return guarded.messages;
-    const notice =
-      `\n\n<context-status>注：因上下文长度接近上限，最早的 ${guarded.removedMessages} 条消息` +
-      `已从本次请求中移除。如确需依赖早期信息，请向用户确认，不要凭记忆臆测。</context-status>`;
-    return [...guarded.messages, { role: 'user', content: notice }];
-  }
-
   // ==================== 内部：运行时上下文压缩 ====================
 
   /**
@@ -812,6 +847,8 @@ export class ConversationEngine {
         contextCompactor.buildSummaryMessage(result.summary, Date.now()),
         ...tail,
       ];
+      handle.record.modelContext = await storeProtocolMessages(handle.history);
+      await transcriptEngine.flush(handle.record);
       handle.emit({
         type: 'compaction',
         chatId: runtime.chatId,
@@ -827,7 +864,7 @@ export class ConversationEngine {
       // 边界对齐持久化：压缩头恰好等于初始上下文（边界落在本轮用户消息）时，
       // 压缩点可用 runtime.priorMaxSeq 精确表达，落库后下次发送直接以摘要续跑，
       // 免去 85% 预压缩对同一段历史重复调用模型；边界落在运行内（vision 合成
-      // 消息之前等）时压缩跨越了未定稿的流式内容，seq 无法表达，保持仅内存生效。
+      // 消息之前等）时 seq 无法表达该边界，由本条记录的 modelContext 检查点恢复。
       // 持久化失败已由转录引擎经持久化降级通道通知用户，此处不重试不阻断。
       const boundaryAligned =
         handle.runUserMessage !== null && history[lastUserIndex] === handle.runUserMessage;
@@ -838,7 +875,7 @@ export class ConversationEngine {
           runtime.priorMaxSeq,
         );
         if (!persisted) {
-          console.warn('[ConversationEngine] 运行时压缩摘要持久化失败（不影响本次运行，下次发送将重新压缩）');
+          console.warn('[ConversationEngine] 会话压缩元信息写入失败；本条模型历史检查点仍保留压缩结果');
         }
       }
       return true;
@@ -872,6 +909,7 @@ export class ConversationEngine {
     if (!token || handle.abortController.signal.aborted) return;
     let cleanToken = token;
     handle.roundText = (handle.roundText ?? '') + token;
+    handle.record.modelPartial = { ...handle.record.modelPartial, role: 'assistant', content: handle.roundText };
     const hasToolCalls = handle.record.toolCalls.length > 0;
     const hasTextPart = handle.record.parts.some(part => part.type === 'text' && part.content);
     if (hasToolCalls && !hasTextPart) {
@@ -1004,7 +1042,7 @@ export class ConversationEngine {
         // apply before parsing, approval, skill loading, or any side effect.
         if ((!runtime.toolIds.includes(toolName) && !handle.dynamicToolIds.has(toolName)) ||
             (runtime.toolPolicy === 'vision-assistant' && !isVisionAssistantTool(toolName))) {
-          throw new Error(`TOOL_NOT_ALLOWED: ${toolName} 不在本轮工具范围内。${runtime.toolPolicy === 'vision-assistant' ? '视觉助手只观察并指导；代操作请切换 Vision Action / Auto Action。' : '请使用本轮已提供的工具。'}`);
+          throw new Error(`TOOL_NOT_ALLOWED: ${toolName} 不在本轮工具范围内。${runtime.toolPolicy === 'vision-assistant' ? '视觉助手只观察并指导；代操作请切换视觉通用助手 / 文本通用助手。' : '请使用本轮已提供的工具。'}`);
         }
         // 参数解析先于审批：无效参数直接以可控失败回传模型自纠，
         // 不浪费用户的审批注意力；审批预览也得以展示解析后的 JSON
@@ -1065,7 +1103,7 @@ export class ConversationEngine {
         // 反馈即刻生效，不再被最长 120s 的工具超时卡住
         if (runtime.vision && ['screenshot','vision_read_wait'].includes(toolName) && handle.captureGapPending)
           await this.interruptibleDelay(VISION_TOOL_SETTLE_DELAY_MS, signal);
-        if (runtime.vision && needsVisionRefresh([toolName], [], name => toolRegistry.getTool(name)?.metadata.visionRefresh))
+        if (runtime.vision && needsVisionRefresh([toolCall], [], name => toolRegistry.getTool(name)?.metadata.visionRefresh))
           handle.captureGapPending = true;
         const result = await new Promise<ToolResult>((resolve, reject) => {
           const callController = new AbortController();
@@ -1163,15 +1201,41 @@ export class ConversationEngine {
         if (success && toolRegistry.getTool(toolName)?.metadata.terminal === true) {
           handle.stopAfterRound = true;
         }
-        if (runtime.vision && success) {
-          const image = takeVisionToolImage(result, results.length,toolName);
-          if (image) { images.push(image); if (image.kind === 'viewport') handle.captureGapPending = false; }
+        if (success) {
+          const image = takeVisionToolImage(result, results.length,toolName,args);
+          if (image) {
+            images.push(image);
+            if (image.kind === 'viewport') handle.captureGapPending = false;
+            // 视口截图归档：与 vision loop 的自动重截图存进同一处图片库，
+            // 并分配 8 位短 id —— 模型据此在最终回答里用
+            // <agent-image id="xxxxxxxx" /> 把这张截图展示给用户
+            // 视觉助手（观察+指导）不参与：它不代替用户操作，也不引用截图
+            if (image.kind === 'viewport' && runtime.toolPolicy !== 'vision-assistant') {
+              const archived = await this.archiveViewportImage(image);
+              if (archived) {
+                image.imageRef = archived.ref;
+                image.shortId = archived.shortId;
+                // 短 id 注入工具结果：回传模型的 JSON 里必须带上它，
+                // 否则模型无从得知该用哪个 id 引用这张图
+                if (result.data && typeof result.data === 'object') {
+                  const data = result.data as Record<string, unknown>;
+                  data.imageId = archived.shortId;
+                  // 引用语法紧挨着 id：模型照抄邻近指令的成功率远高于远端协议
+                  if (typeof data.text === 'string') {
+                    data.text =
+                      `${data.text} Archived for citation: imageId=${archived.shortId} — ` +
+                      `show it to the user in your final answer with <agent-image id="${archived.shortId}" />.`;
+                  }
+                }
+              }
+            }
+          }
         }
         results.push({
           role: 'tool',
           tool_call_id: toolCall.id,
           name: toolName,
-          content: JSON.stringify(Object.assign({ success }, runtime.vision ? withoutVisionImage(result) : result)),
+          content: JSON.stringify(Object.assign({ success }, (runtime.vision || images.some(image => image.callIndex === results.length)) ? withoutVisionImage(result) : result)),
         });
       } catch (error) {
         // 中止归一化：中止瞬间并发到达的其它错误（底层通道被关闭等）统一按
@@ -1349,6 +1413,31 @@ export class ConversationEngine {
   }
 
   /**
+   * 视口截图归档（工具产出的截图）。
+   *
+   * 落进与 vision loop 自动重截图**同一处图片库**（内容寻址 + 8 位短 id），
+   * 因此「自动拍的」与「模型主动存档的」在存储与引用上完全同构：都被会话
+   * 记录的图片引用持有，都能在回答里按短 id 引用。
+   *
+   * 失败一律降级为 null（不阻断工具结果与后续流程）：归档只是附加能力，
+   * 截图本身已经回传给模型，存档失败不应让整轮失败。
+   */
+  private async archiveViewportImage(
+    image: VisionToolImage,
+  ): Promise<{ ref: string; shortId: string } | null> {
+    try {
+      const ref = await imageStore.putFromDataUrl(image.image);
+      if (!ref) return null;
+      const shortId = await imageStore.getShortId(ref);
+      if (!shortId) return null;
+      return { ref, shortId };
+    } catch (error) {
+      console.warn('[ConversationEngine] 截图归档失败（降级为不引用）:', error);
+      return null;
+    }
+  }
+
+  /**
    * 截图；失败 / 超时 / 中止一律返回 null（降级为纯文本，绝不阻断主流程）。
    * 竞争等待自带独立超时与中止通道：截图经工具通道执行、不受主循环 per-call
    * 超时包装覆盖，无界等待会让一次卡死的截图工具悬挂整个运行（准备阶段首拍
@@ -1412,7 +1501,7 @@ export class ConversationEngine {
   }
 
   /**
-   * 工具成功后：重截图 + 合成「继续完成任务」多模态用户消息（仅运行历史）。
+   * 工具成功后：重截图 + 合成「继续完成任务」多模态用户消息（模型历史）。
    * 结果摘要安全化：文本截断至 VISION_SUMMARY_MAX_CHARS；截图结果以
    * 「见随附图片」占位（新截图作为 image_url 部件随消息附上，base64
    * 绝不进入文本部件）。
@@ -1426,7 +1515,7 @@ export class ConversationEngine {
     images: VisionToolImage[],
     signal: AbortSignal,
   ): Promise<{ message: ChatMessage; imageRefs: string[] } | null> {
-    const refresh = !!runtime.vision?.reScreenshotAfterTools && needsVisionRefresh(toolCalls.map(call => call.function.name), images,
+    const refresh = !!runtime.vision?.reScreenshotAfterTools && needsVisionRefresh(toolCalls, images,
       name => toolRegistry.getTool(name)?.metadata.visionRefresh);
     // Tool results already contain the evidence; reads/plans need no synthetic
     // continuation, delay, or new image invalidating the current screenshot ID.
@@ -1477,7 +1566,14 @@ export class ConversationEngine {
     if (refresh) await this.interruptibleDelay(VISION_TOOL_SETTLE_DELAY_MS, signal);
     if (signal.aborted) return null;
     const fresh = refresh ? await this.captureScreenshot(runtime, signal) : null;
-    const delivered = refresh ? (fresh ? [{ image: fresh.image, description: fresh.description }] : []) : images.slice(-4);
+    const delivered = images.map(image => ({
+      image: image.image,
+      description: image.description,
+      // 工具产出的截图已在工具循环里归档（同一处图片库），此处复用其引用，
+      // 不重复写库；自动续拍没有引用，走常规入库
+      imageRef: image.imageRef,
+    }));
+    if (fresh) delivered.push({ image: fresh.image, description: fresh.description });
     const imageRefs: string[] = [];
     for (const visual of delivered) {
       (content as Array<{ type: string; text?: string }>).push({ type: 'text', text: visual.description });
@@ -1485,13 +1581,13 @@ export class ConversationEngine {
         type: 'image_url',
         image_url: { url: visual.image, detail: 'high' },
       } as never);
-      const imageRef = await imageStore.putFromDataUrl(visual.image);
+      const imageRef = visual.imageRef ?? await imageStore.putFromDataUrl(visual.image);
       if (imageRef) imageRefs.push(imageRef);
     }
     if (refresh && !fresh) {
       (content as Array<{ type: string; text?: string }>).push({ type: 'text', text: 'Latest viewport screenshot unavailable. Call screenshot to recover. Do not reuse earlier screenshot IDs or infer coordinates from older images.' });
     }
-    return { message: { role: 'user', content }, imageRefs };
+    return { message: { role: 'user', content, toolFeedbackFor: toolCalls.map(call => call.id) }, imageRefs };
   }
 
   // ==================== 内部：收尾 ====================
@@ -1509,7 +1605,7 @@ export class ConversationEngine {
     if (status !== 'done') {
       await this.appendModelMessages(handle, [{ role: 'user', content: status === 'aborted'
         ? '[System status: the previous run was interrupted. Completed tool results remain valid; unfinished operations are not evidence of success.]'
-        : '[System status: the previous model request failed. Its partial output may be incomplete.]' }]);
+        : `[System status: the previous run failed. Its partial output may be incomplete.] ${toModelFacingContent(error ?? '')}` }]);
     }
     if (handle.snapshotTimer !== null) {
       window.clearInterval(handle.snapshotTimer);
@@ -1537,7 +1633,9 @@ export class ConversationEngine {
 
   private async appendModelMessages(handle: RunHandle, messages: ChatMessage[]): Promise<void> {
     const stored = await storeProtocolMessages(messages);
+    delete handle.record.modelPartial;
     handle.record.modelMessages = [...(handle.record.modelMessages ?? []), ...stored];
+    if (handle.record.modelContext) handle.record.modelContext = [...handle.record.modelContext, ...stored];
     await transcriptEngine.flush(handle.record);
   }
 

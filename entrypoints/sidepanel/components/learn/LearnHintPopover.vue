@@ -1,102 +1,153 @@
 <script setup lang="ts">
 /**
- * 学习策略问号解释框
+ * 学习策略问号解释卡
  *
- * 纯 CSS 触发（hover / focus-within），不引入浮层定位库：
- * 解释卡紧贴问号右侧展开，无外部依赖、无 resize/scroll 失位问题，
- * 键盘 Tab 到问号即可展开（可访问性与鼠标一致）。
+ * 形态：问号按钮 + **就地展开**的解释卡（inline disclosure），不做浮层。
  *
- * 内容由调用方以行数组传入——解释文案属于 i18n，组件只负责呈现。
+ * 为什么不做绝对定位浮层：
+ *   弹窗正文是纵向滚动容器（overflow-y: auto）。绝对定位的浮层留在容器内时，
+ *   其宽度会计入滚动容器的可滚动溢出区域——解释卡固定 300px 宽，窄侧边栏里
+ *   必然撑破右侧，正文因此长出一条横向滚动条；而且浮层还会被滚动视口裁切。
+ *   现在解释卡进入正常文档流：根节点 display: contents 让触发器与解释卡直接
+ *   成为标签行的 flex 项，解释卡 flex-basis: 100% 换行独占一行，
+ *   宽度天然等于字段宽度——不产生任何横向溢出，也无需 JS 定位。
+ *
+ * 图标用 lucide CircleQuestionMark（此前手写 Material path 因填充规则问题
+ * 渲染成一坨实心圆点，看着像个小黑球，已废弃）。
  */
-defineProps<{
+import { onBeforeUnmount, ref, useId, watch } from 'vue';
+import { CircleQuestionMark } from 'lucide-vue-next';
+
+const props = defineProps<{
   /** 卡片标题 */
   title: string;
   /** 逐行说明（每项渲染为一段） */
   lines: string[];
 }>();
+
+const open = ref(false);
+const rootRef = ref<HTMLElement | null>(null);
+const panelId = `learn-hint-${useId()}`;
+
+function toggle(): void {
+  open.value = !open.value;
+}
+
+function close(): void {
+  open.value = false;
+}
+
+/** 点击解释卡外部时收起（触发器与卡片本体都算内部） */
+function onDocumentPointerDown(event: PointerEvent): void {
+  if (!open.value) return;
+  const target = event.target as Node | null;
+  if (target && rootRef.value?.contains(target)) return;
+  close();
+}
+
+watch(open, value => {
+  if (value) {
+    document.addEventListener('pointerdown', onDocumentPointerDown, true);
+  } else {
+    document.removeEventListener('pointerdown', onDocumentPointerDown, true);
+  }
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onDocumentPointerDown, true);
+});
 </script>
 
 <template>
-  <span class="learn-hint" tabindex="0" role="button" :aria-label="title">
-    <svg
-      class="learn-hint__icon"
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden="true"
+  <span ref="rootRef" class="learn-hint">
+    <button
+      type="button"
+      class="learn-hint__trigger"
+      :aria-expanded="open"
+      :aria-controls="panelId"
+      :aria-label="props.title"
+      @click="toggle"
+      @keydown.esc.stop.prevent="close"
     >
-      <path
-        d="M12 2A10 10 0 1 0 12 22A10 10 0 0 0 12 2ZM12 17H13V15H11V16H12V17ZM12.07 11H10.5C10.5 8.5 13.5 8.75 13.5 6.5C13.5 5.12 12.66 4 11.5 4C10.35 4 9.4 4.74 9.08 5.76L10.71 6.42C10.85 5.96 11.14 5.66 11.5 5.66C11.93 5.66 12.28 6.01 12.28 6.5C12.28 7.5 10.5 7.67 10.5 11H12.07Z"
-        fill="currentColor"
-      />
-    </svg>
+      <CircleQuestionMark class="learn-hint__icon" :size="15" :stroke-width="2" aria-hidden="true" />
+    </button>
 
-    <span class="learn-hint__card" role="tooltip">
-      <strong class="learn-hint__title">{{ title }}</strong>
-      <span v-for="(line, index) in lines" :key="index" class="learn-hint__line">{{ line }}</span>
-    </span>
+    <Transition name="learn-hint">
+      <span v-if="open" :id="panelId" class="learn-hint__panel" role="tooltip">
+        <span class="learn-hint__panel-inner">
+          <strong class="learn-hint__title">{{ props.title }}</strong>
+          <span v-for="(line, index) in props.lines" :key="index" class="learn-hint__line">{{ line }}</span>
+        </span>
+      </span>
+    </Transition>
   </span>
 </template>
 
 <style scoped>
+/* 根节点不生成盒子：让触发器与解释卡直接参与标签行的 flex 排布 */
 .learn-hint {
-  position: relative;
+  display: contents;
+}
+
+.learn-hint__trigger {
   display: inline-flex;
   align-items: center;
-  vertical-align: middle;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--learn-text-faint, #9ca3af);
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+
+.learn-hint__trigger:hover,
+.learn-hint__trigger:focus-visible {
+  color: var(--learn-accent, #667eea);
+  background: var(--learn-accent-soft, rgba(102, 126, 234, 0.12));
   outline: none;
 }
 
 .learn-hint__icon {
-  color: var(--learn-text-faint, #9ca3af);
-  cursor: help;
-  transition: color 0.15s ease;
+  display: block;
 }
 
-.learn-hint:hover .learn-hint__icon,
-.learn-hint:focus-visible .learn-hint__icon {
-  color: var(--learn-accent, #667eea);
+/* 解释卡：独占标签行的一整行，宽度＝字段宽度 */
+.learn-hint__panel {
+  display: grid;
+  grid-template-rows: 1fr;
+  flex: 0 0 100%;
+  min-width: 0;
+  transition:
+    grid-template-rows 0.22s ease,
+    opacity 0.16s ease;
 }
 
-.learn-hint__card {
-  position: absolute;
-  left: 20px;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 60;
-  width: 300px;
-  padding: 12px 14px;
+.learn-hint__panel-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow: hidden;
+  padding: 10px 12px;
   border-radius: 10px;
-  background: var(--learn-bg, #ffffff);
-  color: var(--learn-text, #1f2937);
-  box-shadow:
-    0 8px 28px rgba(15, 23, 42, 0.16),
-    0 0 0 1px var(--learn-border, #e5e7eb);
+  background: var(--learn-surface, #f8fafc);
+  border: 1px solid var(--learn-border, #e5e7eb);
+  color: var(--learn-text-muted, #6b7280);
   font-size: 12px;
   line-height: 1.7;
   text-align: left;
-  /* 默认不可见但保留可聚焦性：hover / focus 展开 */
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition:
-    opacity 0.16s ease,
-    visibility 0.16s ease;
-}
-
-.learn-hint:hover .learn-hint__card,
-.learn-hint:focus-visible .learn-hint__card,
-.learn-hint:focus-within .learn-hint__card {
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
+  overflow-wrap: anywhere;
 }
 
 .learn-hint__title {
   display: block;
-  margin-bottom: 6px;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--learn-text-strong, #111827);
@@ -104,14 +155,23 @@ defineProps<{
 
 .learn-hint__line {
   display: block;
-  color: var(--learn-text-muted, #6b7280);
-}
-
-.learn-hint__line + .learn-hint__line {
-  margin-top: 6px;
 }
 
 .learn-hint__line:last-child {
   color: var(--learn-text-faint, #9ca3af);
+}
+
+/* 展开/收起动画：grid-template-rows 0fr ↔ 1fr */
+.learn-hint-enter-active,
+.learn-hint-leave-active {
+  transition:
+    grid-template-rows 0.22s ease,
+    opacity 0.16s ease;
+}
+
+.learn-hint-enter-from,
+.learn-hint-leave-to {
+  grid-template-rows: 0fr;
+  opacity: 0;
 }
 </style>

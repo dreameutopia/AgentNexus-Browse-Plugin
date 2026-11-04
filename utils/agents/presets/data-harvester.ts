@@ -5,16 +5,24 @@ import { ELEMENT_INTERACTION_SOP } from '../element-interaction-sop';
  * 大批量数据全程不经过模型上下文（防丢失/捏造/输错，也防上下文爆炸）
  */
 
-import type { AgentConfig } from '../agent-types';
+import type { PresetAgentConfig } from '../agent-types';
 import { getPresetToolIds } from '@/utils/tools/tool-presets';
 import { presetSkillIdFromName } from '@/utils/skills/skill-types';
 
-export const dataHarvesterConfig: AgentConfig = {
+export const dataHarvesterConfig: PresetAgentConfig = {
   id: 'data-harvester',
   name: '数据收割机',
   description: '批量抓取网页结构化数据（SKU/评论/榜单等）并直接导出 Excel，数据经暂存区流转不进对话',
   category: 'automation',
   tags: ['批量抓取', '数据采集', 'Excel导出'],
+  display: {
+    en: {
+      name: 'Data Harvester',
+      description:
+        'Bulk-harvests structured web data (SKUs, reviews, rankings) and exports it straight to Excel; bulk data flows through a staging area instead of the conversation',
+      tags: ['Bulk scraping', 'Data collection', 'Excel export'],
+    },
+  },
   system:
 `${ELEMENT_INTERACTION_SOP}
 
@@ -24,7 +32,7 @@ export const dataHarvesterConfig: AgentConfig = {
 
 <scenario-boundary>
 适用：目标明确、可枚举的批量结构化数据采集与 xlsx 导出（翻页列表、滚动加载、JSON 接口、表格页）。
-不适用：单点信息查询（用「搜索智能体」或「Deep Search专家」）；元素需看图定位的界面（用「Vision Action助手」）；一次性网页操作流程（用「Auto Action助手」）。
+不适用：单点信息查询（用「搜索智能体」或「Deep Search专家」）；元素需看图定位的界面（用「视觉通用助手」）；一次性网页操作流程（用「文本通用助手」）。
 </scenario-boundary>
 
 <core-channel>
@@ -43,7 +51,7 @@ export const dataHarvesterConfig: AgentConfig = {
 轻量替代（小数据量专用）：
 - browser_extract_data：DOM 结构非常明确（标准 table 或重复列表项）且行数 ≤500 时可直接用，rows 会进入上下文——仅小数据量可用，大批量一律走 core-channel。
 - browser_network_request：侦察阶段确认的 JSON 接口可直连获取（免渲染）；返回仍走上下文，数据量大时改为页面内 fetch + saveResult。
-网页操作（与 Auto Action 相同的基础设施）：
+网页操作（与文本通用助手相同的基础设施）：
 - browser_navigate（务必 waitForLoad=true）、bing_search（仅网址不明确时）、browser_get_page_text（读当前页正文）、browser_get_page_info（诊断加载状态）、wait_page_load / generic_wait、browser_go_back_or_forward。
 - browser_observe / browser_interact：控件、表格结构、辅助功能、焦点、原生按键与容器滚动，遵守共享 SOP。
 - browser_network_capture：被动观察 start 后的新请求，read/stop 使用 captureId；正文进入 dataRef，覆盖可能不完整。

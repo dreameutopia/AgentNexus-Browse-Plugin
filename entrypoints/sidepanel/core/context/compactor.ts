@@ -13,15 +13,14 @@
  *   3. 摘要以系统级消息注入并被窗口守卫优先保护（永不因超限被裁掉）。
  *
  * 防御性设计：
- *   - 压缩请求负载超过阈值 90% 时，从最旧消息起丢弃并显式告知（这些消息本来
- *     就是被压缩对象，不丢整体就会请求失败）；
- *   - 流式输出失败 / 结果为空 → 抛 CompactionError，调用方优雅降级为窗口裁剪；
+ *   - 压缩负载超过预算时分段摘要并归并，原文与图片均进入压缩输入，不删除最旧消息；
+ *   - 流式输出失败 / 结果为空 → 抛 CompactionError，完整历史不能容纳时停止发送；
  *   - 剥离模型输出中的 <think> 推理段；无 <summary> 包裹时自动补包（格式自愈）。
  */
 
 import { aiChatApi, type ChatMessage } from '../../utils/ai/ai-chat-api';
 import { ApiRequestError } from '../../utils/stream/errors';
-import { estimateTextTokens } from '../../utils/ai/token-estimate';
+import { estimateTextTokens, sliceTextToTokenBudget, IMAGE_CONTEXT_TOKENS } from '../../utils/ai/token-estimate';
 import type { ResolvedModelConfig } from '../types';
 
 // ==================== 依赖注入（可测试性） ====================
@@ -102,7 +101,7 @@ function stripThinkBlocks(text: string): string {
 
 /** 单条消息序列化为压缩输入的紧凑文本行 */
 function serializeMessage(message: ChatMessage, index: number): string {
-  const label = `[${index}] ${message.role.toUpperCase()}`;
+  const label = `[${index}] ${message.toolFeedbackFor?.length ? 'TOOL_FEEDBACK' : message.role.toUpperCase()}`;
   const parts: string[] = [];
   if (typeof message.content === 'string') {
     if (message.content) parts.push(message.content);
@@ -123,7 +122,7 @@ function serializeMessage(message: ChatMessage, index: number): string {
   return `${label}: ${parts.join('\n') || '（空）'}`;
 }
 
-class ContextCompactor {
+export class ContextCompactor {
   constructor(private readonly deps: CompactorDeps = defaultDeps) {}
 
   /**
@@ -131,48 +130,72 @@ class ContextCompactor {
    * 中止信号触发时同样抛错（abort 场景由上层按运行中止语义处理）。
    */
   async compact(input: CompactionInput): Promise<CompactionResult> {
+    return this.compactInternal(input, 0, { calls: 0 });
+  }
+
+  private async compactInternal(input: CompactionInput, depth: number, budget: { calls: number }): Promise<CompactionResult> {
+    if (input.signal?.aborted) throw new DOMException('Compaction aborted', 'AbortError');
     if (input.messages.length === 0) {
       throw new CompactionError('无可压缩的历史消息');
     }
 
-    // ── 序列化 + 负载防御（token 口径，与守卫/用量环同源）：超限时从最旧
-    //    消息起丢弃（它们本就是被压缩对象）。图片在序列化时仅保留「（附图）」
-    //    占位，天然不携带 base64 载荷进压缩请求 ──
-    const payloadBudget = Math.max(Math.floor(input.threshold * PAYLOAD_RATIO_LIMIT), 8192);
+    // Text serialization and image accounting share the normal context budget.
+    // Actual images are attached separately, never encoded as prompt text.
+    const payloadBudget = Math.max(1, Math.floor(input.threshold * PAYLOAD_RATIO_LIMIT) - estimateTextTokens(COMPACTION_SYSTEM_PROMPT) - 512);
     const lines = input.messages.map((message, index) => serializeMessage(message, index));
-    let droppedOldest = 0;
-    let included = lines;
+    const images = input.messages.map(message => Array.isArray(message.content) ? message.content.filter(part => part.type === 'image_url' && part.image_url) : []);
+    const costs = lines.map((line, index) => estimateTextTokens(line) + 1 + images[index].length * IMAGE_CONTEXT_TOKENS);
+    const droppedOldest = 0;
     const totalTokens =
-      lines.reduce((total, line) => total + estimateTextTokens(line), 0) + lines.length;
+      costs.reduce((total, cost) => total + cost, 0);
     if (totalTokens > payloadBudget) {
-      included = [];
-      let used = 0;
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const lineCost = estimateTextTokens(lines[i]) + 1;
-        if (used + lineCost > payloadBudget) break;
-        included.unshift(lines[i]);
-        used += lineCost;
+      if (depth >= 3 || payloadBudget < 1024) throw new CompactionError('无法在当前窗口内完整压缩历史，原始记录已保留，请使用更大的上下文窗口');
+      const groups: ChatMessage[][] = [];
+      let group: ChatMessage[] = [], used = 0;
+      const add = (message: ChatMessage, cost: number) => {
+        if (cost > payloadBudget) throw new CompactionError('单张历史图片超出压缩预算，请使用更大的上下文窗口');
+        if (used + cost > payloadBudget && group.length) { groups.push(group); group = []; used = 0; }
+        group.push(message); used += cost;
+      };
+      for (let index = 0; index < lines.length; index++) {
+        let remaining = lines[index];
+        while (remaining) {
+          const text = sliceTextToTokenBudget(remaining, payloadBudget - 256);
+          if (!text) throw new CompactionError('压缩预算不足，无法完整保留文本');
+          remaining = remaining.slice(text.length);
+          const message: ChatMessage = { role: 'user', content: `[原记录 ${index} 的连续文本片段]\n${text}` };
+          add(message, estimateTextTokens(serializeMessage(message, 0)) + 1);
+        }
+        for (const image of images[index]) {
+          const message: ChatMessage = { role: 'user', content: [{ type: 'text', text: `原记录 ${index} 的视觉证据` }, image] };
+          add(message, IMAGE_CONTEXT_TOKENS + 128);
+        }
       }
-      droppedOldest = lines.length - included.length;
-      if (included.length === 0) {
-        throw new CompactionError('压缩负载预算不足以容纳任何消息');
+      if (group.length) groups.push(group);
+      const summaries: ChatMessage[] = [];
+      for (let index = 0; index < groups.length; index++) {
+        const result = await this.compactInternal({ ...input, messages: groups[index] }, depth + 1, budget);
+        summaries.push({ role: 'user', content: `[按原始顺序的分段摘要 ${index + 1}/${groups.length}]\n${result.summary}` });
       }
+      const merged = await this.compactInternal({ ...input, messages: summaries }, depth + 1, budget);
+      return { ...merged, originalTokens: totalTokens, droppedOldest: 0 };
     }
 
-    const omissionNote =
-      droppedOldest > 0
-        ? `\n\n[注：最早的 ${droppedOldest} 条消息因体积超限未纳入本次压缩，请结合已有信息忽略该部分。]`
-        : '';
     const userPayload =
-      `[待压缩对话记录（按时间顺序，含工具调用与结果）]\n${included.join('\n')}${omissionNote}\n\n` +
+      `[待压缩对话记录（按时间顺序，含工具调用与结果）]\n${lines.join('\n')}\n\n` +
       `请依据以上记录输出 <summary> 压缩摘要。`;
+    const payloadContent: Exclude<ChatMessage['content'], string> = [{ type: 'text', text: userPayload }];
+    for (let index = droppedOldest; index < images.length; index++) for (const image of images[index]) {
+      payloadContent.push({ type: 'text', text: `以下图片属于记录 [${index}]；总结可确认的视觉证据，无法确认的内容必须明确标注。` }, image);
+    }
 
     // ── 流式请求（长负载必须流式，避免非流式请求的超时断链） ──
+    if (++budget.calls > 16) throw new CompactionError('完整压缩所需分段过多，已停止额外请求并保留原始记录，请使用更大的上下文窗口');
     let streamed = '';
     const { finalMessage } = await this.deps.sendStream(
       [
         { role: 'system', content: COMPACTION_SYSTEM_PROMPT },
-        { role: 'user', content: userPayload },
+        { role: 'user', content: payloadContent.length > 1 ? payloadContent : userPayload },
       ],
       {
         onToken: token => {
@@ -184,12 +207,13 @@ class ContextCompactor {
         onError: error => console.warn('[ContextCompactor] 压缩流式错误回调:', error),
       },
       {
-        // 低温度提升摘要的事实保真度；不封装输出上限——摘要以信息完整性优先，
-        // 长度交由提供商按模型能力决定（见 ModelEndpoint 契约）
-        temperature: 0.2,
+        // Keep the endpoint's sampling defaults. Forcing a low temperature can
+        // degrade newer reasoning models; preserve facts through the summary
+        // instructions rather than silently changing model configuration.
         signal: input.signal,
         // 压缩与主对话共用同一运行级端点快照，保证协议一致
         endpoint: input.model,
+        metrics: { kind: 'compaction' },
       },
     ).catch(error => {
       // ApiRequestError 携带的 Markdown 展示块不适合塞进单行降级通知，
@@ -233,11 +257,14 @@ class ContextCompactor {
 
   /** 摘要 → 注入用的系统消息（守卫将其作为 system 优先保护，永不因超限被裁） */
   buildSummaryMessage(summary: string, compactedAt: number): ChatMessage {
+    const date = new Date(compactedAt);
+    const timestamp = Number.isFinite(compactedAt) && compactedAt > 0 && Number.isFinite(date.getTime())
+      ? date.toISOString() : '时间未记录';
     return {
       role: 'system',
       content:
         `<conversation-memory>\n` +
-        `以下是对本会话先前对话的压缩摘要（压缩于 ${new Date(compactedAt).toLocaleString()}）。` +
+        `以下是对本会话先前对话的压缩摘要（压缩于 ${timestamp}）。` +
         `这是当前任务目标的权威记忆；摘要之后的消息是压缩后新增的对话。\n\n${summary}\n` +
         `</conversation-memory>`,
     };

@@ -24,6 +24,14 @@ export interface ToolDefinition {
   version: string;
   parameters: Record<string, ToolParameter>;
   required: string[];
+  actionSchemas?: Record<string, { parameters: Record<string, ToolParameter>; required: string[] }>;
+}
+
+export function resolveActionDefinition(tool: ToolDefinition, action: unknown): ToolDefinition {
+  const branch = typeof action === 'string' && Object.hasOwn(tool.actionSchemas ?? {}, action) ? tool.actionSchemas?.[action] : undefined;
+  return branch ? { ...tool, ...branch } : tool.actionSchemas ? {
+    ...tool, parameters: { action: tool.parameters.action }, required: ['action'],
+  } : tool;
 }
 
 /** 工具分类 */

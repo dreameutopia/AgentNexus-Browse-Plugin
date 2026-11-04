@@ -148,9 +148,9 @@ class UsageMetricsEngine {
 
       const provider = (input.provider || '').toString();
       const model = (input.model || '').toString();
-      const kind = input.kind || 'chat';
+      const kind = input.kind === 'probe' || input.kind === 'asr' || input.kind === 'compaction' ? input.kind : 'chat';
       const outcome = input.outcome === 'success' || input.outcome === 'aborted' ? input.outcome : 'failed';
-      const usage = (input.usage && typeof input.usage === 'object') ? input.usage : undefined;
+      const usage = safeUsage(input.usage);
 
       if (this.hydrated) {
         this.applyRecord(this.data, { ...input, provider, model, kind, outcome, usage });
@@ -319,6 +319,7 @@ class UsageMetricsEngine {
         if (!entry || typeof entry.provider !== 'string' || typeof entry.model !== 'string') continue;
         const sanitized: ModelUsageMetrics = {
           ...metricContext(entry), provider: entry.provider, model: entry.model,
+          requestKind: entry.requestKind === 'compaction' ? 'compaction' : entry.requestKind === 'probe' ? 'probe' : entry.requestKind === 'asr' ? 'asr' : 'chat',
           lastUsedAt: toSafeCount(entry.lastUsedAt), ...createEmptyCounters(),
         };
         for (const counter of Object.keys(createEmptyCounters()) as Array<keyof UsageCounters>) sanitized[counter] = toSafeCount(entry[counter]);
@@ -375,7 +376,7 @@ class UsageMetricsEngine {
     if (usage?.reasoningTokens !== undefined) {
       totals.reasoningTokens = addSafe(totals.reasoningTokens, toSafeCount(usage.reasoningTokens));
     }
-    if (usage?.cachedInputTokens !== undefined) {
+    if (usage?.cachedInputTokens !== undefined && usage.inputTokens !== undefined) {
       // 仅上报了缓存字段的请求参与命中率统计（undefined = 协议未上报，不进分母）
       totals.cachedInputTokens = addSafe(totals.cachedInputTokens, toSafeCount(usage.cachedInputTokens));
       totals.cacheReportedRequests = addSafe(totals.cacheReportedRequests, 1);
@@ -385,7 +386,7 @@ class UsageMetricsEngine {
     const context = metricContext(input);
     const scopeKey = JSON.stringify([input.provider, context.channelId ?? '', context.modelId ?? input.model, context.agentId ?? '', input.kind]);
     if (data.byScope[scopeKey] || Object.keys(data.byScope).length < MAX_MODELS) {
-      const scope = data.byScope[scopeKey] ??= { ...context, provider: input.provider, model: input.model, lastUsedAt: 0, ...createEmptyCounters() };
+      const scope = data.byScope[scopeKey] ??= { ...context, requestKind: input.kind, provider: input.provider, model: input.model, lastUsedAt: 0, ...createEmptyCounters() };
       for (const counter of Object.keys(before) as Array<keyof UsageCounters>) scope[counter] = addSafe(scope[counter], totals[counter] - before[counter]);
       scope.lastUsedAt = Date.now();
     }
@@ -427,7 +428,7 @@ class UsageMetricsEngine {
     if (usage?.reasoningTokens !== undefined) {
       entry.reasoningTokens = addSafe(entry.reasoningTokens, toSafeCount(usage.reasoningTokens));
     }
-    if (usage?.cachedInputTokens !== undefined) {
+    if (usage?.cachedInputTokens !== undefined && usage.inputTokens !== undefined) {
       entry.cachedInputTokens = addSafe(entry.cachedInputTokens, toSafeCount(usage.cachedInputTokens));
       entry.cacheReportedRequests = addSafe(entry.cacheReportedRequests, 1);
       entry.cacheEligibleInputTokens = addSafe(entry.cacheEligibleInputTokens, inputTokens);
@@ -557,6 +558,42 @@ class UsageMetricsEngine {
 }
 
 /** 空数据工厂 */
+function metricContext(input: Partial<UsageRecordInput>): import('../stream/types').RequestMetricsContext {
+  const result: import('../stream/types').RequestMetricsContext = {};
+  for (const key of ['channelId', 'modelId', 'channelLabel', 'agentId', 'runId'] as const) {
+    if (typeof input[key] === 'string') result[key] = input[key]!.slice(0, 160);
+  }
+  for (const key of ['iteration', 'sharedPrefixMessages'] as const) {
+    if (typeof input[key] === 'number' && Number.isFinite(input[key]) && input[key]! >= 0) result[key] = toSafeCount(input[key]);
+  }
+  for (const key of ['compacted', 'trimmed', 'prefixChanged'] as const) {
+    if (typeof input[key] === 'boolean') result[key] = input[key];
+  }
+  return result;
+}
+
+function safeUsage(usage: UsageRecordInput['usage']): UsageRecordInput['usage'] {
+  if (!usage || typeof usage !== 'object') return undefined;
+  const result: NonNullable<UsageRecordInput['usage']> = {};
+  for (const key of ['inputTokens', 'outputTokens', 'cachedInputTokens', 'totalTokens', 'reasoningTokens'] as const) {
+    if (typeof usage[key] === 'number' && Number.isFinite(usage[key]) && usage[key]! >= 0) result[key] = toSafeCount(usage[key]);
+  }
+  if (result.inputTokens !== undefined && result.cachedInputTokens !== undefined) result.cachedInputTokens = Math.min(result.cachedInputTokens, result.inputTokens);
+  return result;
+}
+
+function addCacheDiagnostics(totals: UsageCounters, input: UsageRecordInput): void {
+  const usage = input.usage;
+  if (usage?.cachedInputTokens === undefined || usage.inputTokens === undefined) return;
+  totals.cacheObservedRequests = addSafe(totals.cacheObservedRequests, 1);
+  if (usage.cachedInputTokens > 0) totals.cacheHitRequests = addSafe(totals.cacheHitRequests, 1);
+  if ((input.iteration ?? 0) > 1 && input.kind === 'chat') {
+    totals.continuationCacheRequests = addSafe(totals.continuationCacheRequests, 1);
+    totals.continuationInputTokens = addSafe(totals.continuationInputTokens, toSafeCount(usage.inputTokens));
+    totals.continuationCachedTokens = addSafe(totals.continuationCachedTokens, toSafeCount(usage.cachedInputTokens));
+  }
+}
+
 function createEmptyData(): UsageMetricsData {
   return {
     schemaVersion: SCHEMA_VERSION,

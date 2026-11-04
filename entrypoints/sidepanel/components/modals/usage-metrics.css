@@ -54,6 +54,21 @@
   color: #94a3b8;
 }
 
+.usage-cache-filters { flex-wrap: wrap; }
+.usage-cache-filters select {
+  flex: 1 1 120px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  color: #334155;
+  background: white;
+  font: inherit;
+  font-size: 12px;
+}
+.usage-request-list { max-height: 360px; overflow-y: auto; }
+
 .usage-reset-btn {
   appearance: none;
   border: 1px solid #e5e7eb;

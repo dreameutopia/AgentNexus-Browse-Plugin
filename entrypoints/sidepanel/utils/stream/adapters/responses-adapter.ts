@@ -29,6 +29,7 @@
 import { BaseAdapter, type StreamAccumulator } from './base-adapter';
 import { createInBandError } from '../errors';
 import { mergeUsageSafe, normalizeResponsesUsage } from './usage-normalize';
+import { nativeItems, setNativeItems, nativePartIndex } from './native-replay';
 import type {
   AdapterCapabilities,
   ProviderType,
@@ -72,6 +73,8 @@ export class ResponsesAdapter extends BaseAdapter {
 
       // ---------- 助手消息：文本 + 回放 function_call ----------
       if (msg.role === 'assistant') {
+        const native = nativeItems(msg, config, 'openai-responses');
+        if (native?.length) { input.push(...native); continue; }
         const text = typeof msg.content === 'string' ? msg.content : this.extractText(msg.content);
         if (text) {
           // 文本用 EasyInputMessage（content 为字符串，避免 part 类型歧义）
@@ -120,6 +123,7 @@ export class ResponsesAdapter extends BaseAdapter {
       stream: true,
       // 无状态调用：每轮都带上完整历史，不在服务端留存
       store: false,
+      include: ['reasoning.encrypted_content'],
     };
 
     if (config.temperature !== undefined) body.temperature = config.temperature;
@@ -164,17 +168,11 @@ export class ResponsesAdapter extends BaseAdapter {
   }
 
   /**
-   * 追加纯文本 input 消息；与上一条同角色纯文本消息合并。
-   * Responses 的 input 是扁平 item 列表，连续同角色文本消息合并为一条，
-   * 保证「主系统提示 + 压缩摘要记忆」等多个 system 消息的语义不丢且形态规范。
+   * 追加纯文本 input 消息，保留原始 item 边界；后续同角色更新也只能追加，
+   * 不能为了合并消息而改写已经发送过的 content。
    */
   private pushTextItem(input: any[], role: string, text: string): void {
     if (!text) return;
-    const last = input[input.length - 1];
-    if (last && last.role === role && typeof last.content === 'string' && !last.type) {
-      last.content = `${last.content}\n\n${text}`;
-      return;
-    }
     input.push({ role, content: text });
   }
 
@@ -243,7 +241,7 @@ export class ResponsesAdapter extends BaseAdapter {
       case 'response.output_item.added': {
         const item = event.item;
         if (item?.type === 'function_call') {
-          const index: number = event.output_index ?? acc.toolCallChunks.size;
+          const index = nativePartIndex(event.output_index, acc.toolCallChunks.size);
           acc.toolCallChunks.set(index, {
             // call_id 是与 function_call_output 配对的关键
             id: item.call_id || item.id || `call_${index}`,
@@ -256,7 +254,7 @@ export class ResponsesAdapter extends BaseAdapter {
 
       // ---------- 工具参数增量 ----------
       case 'response.function_call_arguments.delta': {
-        const index: number = event.output_index ?? 0;
+        const index = nativePartIndex(event.output_index);
         const chunk = acc.toolCallChunks.get(index);
         if (chunk && typeof event.delta === 'string') {
           chunk.arguments += event.delta;
@@ -266,7 +264,7 @@ export class ResponsesAdapter extends BaseAdapter {
 
       // ---------- 工具参数终值（权威，覆盖增量） ----------
       case 'response.function_call_arguments.done': {
-        const index: number = event.output_index ?? 0;
+        const index = nativePartIndex(event.output_index);
         const chunk = acc.toolCallChunks.get(index);
         if (chunk && typeof event.arguments === 'string') {
           chunk.arguments = event.arguments;
@@ -277,8 +275,14 @@ export class ResponsesAdapter extends BaseAdapter {
       // ---------- 工具调用完成 ----------
       case 'response.output_item.done': {
         const item = event.item;
+        if (item && typeof item === 'object' && typeof item.type === 'string') {
+          const replay = acc.finalMessage.nativeReplay?.items ?? [];
+          const index = nativePartIndex(event.output_index, replay.length);
+          replay[index] = structuredClone(item);
+          setNativeItems(acc.finalMessage, 'openai-responses', replay);
+        }
         if (item?.type === 'function_call') {
-          const index: number = event.output_index ?? 0;
+          const index = nativePartIndex(event.output_index);
           const existing = acc.toolCallChunks.get(index);
           acc.toolCallChunks.set(index, {
             id: item.call_id || item.id || existing?.id || `call_${index}`,
@@ -293,6 +297,24 @@ export class ResponsesAdapter extends BaseAdapter {
       // ---------- 结束（Responses 无 [DONE] 哨兵，以 completed/incomplete 收尾） ----------
       case 'response.completed':
       case 'response.incomplete': {
+        if (Array.isArray(event.response?.output) && event.response.output.length) {
+          setNativeItems(acc.finalMessage, 'openai-responses', structuredClone(event.response.output));
+          let visible = '';
+          acc.toolCallChunks.clear();
+          event.response.output.forEach((item: any, index: number) => {
+            if (item?.type === 'function_call') acc.toolCallChunks.set(index, {
+              id: item.call_id || item.id || `call_${index}`, name: item.name || '', arguments: item.arguments || '{}',
+            });
+            if (item?.type === 'message' && Array.isArray(item.content)) for (const part of item.content) {
+              if (part.type === 'output_text' && typeof part.text === 'string') visible += part.text;
+              if (part.type === 'refusal' && typeof part.refusal === 'string') visible += part.refusal;
+            }
+          });
+          const streamed = typeof acc.finalMessage.content === 'string' ? acc.finalMessage.content : '';
+          if (visible.startsWith(streamed) && visible.length > streamed.length) this.handleContentToken(visible.slice(streamed.length), acc, callbacks);
+        } else if (acc.finalMessage.nativeReplay) {
+          acc.finalMessage.nativeReplay.items = acc.finalMessage.nativeReplay.items.filter(Boolean);
+        }
         // token 消耗：completed 事件的 response.usage 为完整终值
         //（input/output/total + cached_tokens + reasoning_tokens）
         if (event.response?.usage) {

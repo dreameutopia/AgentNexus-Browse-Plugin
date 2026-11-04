@@ -47,6 +47,8 @@ export interface ToolMetadata {
    * 判定实现见 tools/confirm-guard.ts。
    */
   requiresConfirm?: boolean;
+  /** Restrict semantic confirmation to these actions in a unified tool. */
+  requiresConfirmActions?: string[];
   /**
    * 终止型工具：**成功执行**后会话引擎结束本轮运行。
    *

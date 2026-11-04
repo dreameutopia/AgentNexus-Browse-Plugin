@@ -36,6 +36,29 @@ export {
 /** 可接受的最低历史版本 */
 export const MIN_BACKUP_VERSION = 1;
 
+/**
+ * 默认备份文件名（完整备份：配置 + 数据）
+ * 与 config/backup 的 defaultBackupFileName 区分开——前者是「配置备份」，
+ * 后者是「完整备份」，文件名不同可避免用户把两者搞混。
+ */
+export function defaultFullBackupFileName(date: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const stamp =
+    `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}` +
+    `-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+  return `agentnexus-backup-${stamp}.json`;
+}
+
+/**
+ * 序列化为紧凑 JSON（完整备份用）。
+ *
+ * 校验和是对 sections 对象计算的，与序列化格式无关，因此紧凑序列化
+ * 不影响完整性校验；数据分区含 base64 图片时，缩进会额外膨胀约 10%。
+ */
+export function serializeBackupCompact(backup: BackupFile): string {
+  return JSON.stringify(backup);
+}
+
 /** 已知分区全集：配置 6 分区 + 数据 9 分区（解析告警判定用） */
 const KNOWN_SECTION_IDS: ReadonlySet<string> = new Set<string>([
   ...ALL_SECTION_IDS,

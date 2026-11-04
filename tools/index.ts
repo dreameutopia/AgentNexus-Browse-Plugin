@@ -85,9 +85,8 @@ export * from './data'; // 导出数据引用通道工具（data_ref_tool）
 export * from './learn'; // 导出网站学习工具（submit_skill / submit_validation）
 export * from './base-tool';
 
-// ScreenshotTool 在 browser（capture.ts）与 vision 两个子模块中同名，
-// 上面的 export * 会产生歧义（TS2308）；这里显式指定 barrel 对外导出 vision 版本，
-// browser 版本仍可从 './browser' 子路径单独引入。
+// ScreenshotTool 只存在于 vision 子模块（tools/browser/capture.ts 的旧版
+// browser_screenshot 已下线），此处显式导出以保持对外入口稳定。
 export { ScreenshotTool } from './vision';
 
 // 导出工具注册表类型和实例

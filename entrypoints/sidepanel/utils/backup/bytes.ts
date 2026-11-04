@@ -70,3 +70,90 @@ export function percentText(share: number): string {
   const percent = share * 100;
   return percent < 1 ? `${percent.toFixed(1)}%` : `${Math.round(percent)}%`;
 }
+
+// ==================== 通用值体积估算 ====================
+
+/**
+ * 任意可结构化克隆值的字节估算（用于 IndexedDB 记录这类「没有 getBytesInUse
+ * 可用」的存储面）。
+ *
+ * 与 jsonBytes 的区别：jsonBytes 走 JSON.stringify，遇到 Blob / ArrayBuffer
+ * 只会算成 `{}`（≈2 字节），会把图片库这类二进制存储统计成接近 0——正是
+ * 「统计缺数」的典型来源。本函数按真实载荷计量：
+ *   - Blob        → size（真实字节）
+ *   - ArrayBuffer → byteLength
+ *   - TypedArray  → byteLength
+ *   - string      → UTF-8 字节数
+ *   - number/boolean → 8 字节（JS 标量在序列化层的近似开销）
+ *   - 数组/对象  → 逐项累加（对象额外计入键名的 UTF-8 字节）
+ *
+ * 循环引用经 seen 集合截断（不会无限递归），代价是循环部分只计一次。
+ */
+export function estimateValueBytes(value: unknown, seen: Set<object> = new Set()): number {
+  if (value === null || value === undefined) return 0;
+  const type = typeof value;
+  if (type === 'string') return utf8Bytes(value as string);
+  if (type === 'number' || type === 'boolean' || type === 'bigint') return 8;
+  if (type === 'function' || type === 'symbol') return 0;
+
+  const obj = value as object;
+  if (seen.has(obj)) return 0;
+  seen.add(obj);
+
+  try {
+    // 注意用 obj（已是 object）做 instanceof —— unknown 不能直接做左操作数
+    if (typeof Blob !== 'undefined' && obj instanceof Blob) return obj.size;
+    if (obj instanceof ArrayBuffer) return obj.byteLength;
+    if (ArrayBuffer.isView(obj)) return obj.byteLength;
+
+    if (Array.isArray(obj)) {
+      let total = 0;
+      for (const item of obj) total += estimateValueBytes(item, seen);
+      return total;
+    }
+
+    let total = 0;
+    for (const [key, item] of Object.entries(obj as Record<string, unknown>)) {
+      total += utf8Bytes(key) + estimateValueBytes(item, seen);
+    }
+    return total;
+  } catch {
+    // 不可枚举 / 抛错的 exotic 对象按 0 计，绝不让统计整体失败
+    return 0;
+  } finally {
+    seen.delete(obj);
+  }
+}
+
+// ==================== base64 编解码（二进制分区落盘用） ====================
+
+/** 字节数组 → base64（分块规避超长参数栈溢出；无 btoa 时返回空串） */
+export function bytesToBase64(bytes: Uint8Array): string {
+  if (typeof btoa !== 'function') return '';
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  try {
+    return btoa(binary);
+  } catch {
+    return '';
+  }
+}
+
+/** base64 → 字节数组（非法输入返回 null，不抛错） */
+export function base64ToBytes(base64: string): Uint8Array | null {
+  if (typeof atob !== 'function') return null;
+  try {
+    const normalized = base64.replace(/\s+/g, '');
+    const binary = atob(normalized);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index++) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  } catch {
+    return null;
+  }
+}

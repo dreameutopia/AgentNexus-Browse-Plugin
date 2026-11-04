@@ -17,6 +17,7 @@
 import { BaseAdapter, type StreamAccumulator } from './base-adapter';
 import { ApiRequestError, createInBandError } from '../errors';
 import { mergeUsageSafe, normalizeOllamaUsage } from './usage-normalize';
+import { nativeItems, setNativeItems } from './native-replay';
 import type {
   AdapterCapabilities,
   ProviderType,
@@ -33,7 +34,7 @@ export class OllamaAdapter extends BaseAdapter {
     vision: true,
     remoteImageUrl: 'base64',
     tools: true,
-    reasoning: false,
+    reasoning: true,
   };
 
   /**
@@ -42,8 +43,14 @@ export class OllamaAdapter extends BaseAdapter {
   buildRequestBody(config: StreamRequestConfig): any {
     // 转换消息格式：Ollama 多模态使用 images 数组而非嵌套 content
     const messages = config.messages.map(msg => {
+      const thinking = nativeItems(msg, config, 'ollama')?.[0]?.thinking;
+      const base = { role: msg.role, content: msg.content,
+        ...(msg.name ? { name: msg.name } : {}), ...(msg.tool_call_id ? { tool_call_id: msg.tool_call_id } : {}),
+        ...(msg.tool_calls ? { tool_calls: msg.tool_calls.map(({ geminiThoughtSignature: _signature, ...call }) => call) } : {}),
+        ...(typeof thinking === 'string' ? { thinking } : {}),
+      };
       if (typeof msg.content === 'string') {
-        return msg;
+        return base;
       }
 
       // 多模态内容 — 提取文本和图片
@@ -68,20 +75,20 @@ export class OllamaAdapter extends BaseAdapter {
         }
 
         const converted: any = {
-          role: msg.role,
+          ...base,
           content: texts.join('\n'),
         };
         if (images.length > 0) {
           converted.images = images;
         }
         // 保留工具相关字段
-        if (msg.tool_calls) converted.tool_calls = msg.tool_calls;
+        if (msg.tool_calls) converted.tool_calls = msg.tool_calls.map(({ geminiThoughtSignature: _signature, ...call }) => call);
         if (msg.tool_call_id) converted.tool_call_id = msg.tool_call_id;
         if (msg.name) converted.name = msg.name;
         return converted;
       }
 
-      return msg;
+      return base;
     });
 
     const body: any = {
@@ -184,13 +191,15 @@ export class OllamaAdapter extends BaseAdapter {
         // 新版另有 prompt_eval_cached_count（提示缓存命中）
         acc.usage = mergeUsageSafe(acc.usage, normalizeOllamaUsage(chunk));
         // 统一语义：有工具调用时优先标记 tool_calls（与其它协议一致）
-        acc.finishReason =
-          acc.toolCallChunks.size > 0 ? 'tool_calls' : acc.finishReason || 'stop';
-        return true; // 流结束
       }
 
       // 文本内容
       const message = chunk.message;
+      if (typeof message?.thinking === 'string' && message.thinking) {
+        const previous = acc.finalMessage.nativeReplay?.items[0]?.thinking ?? '';
+        setNativeItems(acc.finalMessage, 'ollama', [{ thinking: previous + message.thinking }]);
+        this.handleReasoningToken(message.thinking, acc, callbacks);
+      }
       if (message && message.content) {
         this.handleContentToken(message.content, acc, callbacks);
       }
@@ -203,6 +212,10 @@ export class OllamaAdapter extends BaseAdapter {
         }
       }
 
+      if (chunk.done) {
+        acc.finishReason = acc.toolCallChunks.size > 0 ? 'tool_calls' : acc.finishReason || 'stop';
+        return true;
+      }
       return false; // 继续处理
     } catch (parseError) {
       // 流内 in-band 错误必须向上抛；其余（非 JSON 行等）容错跳过并留痕

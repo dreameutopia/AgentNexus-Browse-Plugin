@@ -19,7 +19,7 @@
 
 import { SUPPORTED_LOCALES } from '@/utils/i18n/core';
 import { stableStringify } from './checksum';
-import { ResilientDomain } from './kv-store';
+import { MIRROR_SUFFIX, ResilientDomain, SNAPSHOT_SUFFIX } from './kv-store';
 import { ENGINE_SCHEMA } from './envelope';
 import type {
   DomainDiagnostics,
@@ -56,6 +56,36 @@ export const ALL_SECTION_IDS: readonly SectionId[] = [
   'locale',
   'workflows',
 ];
+
+/**
+ * 引擎在 chrome.storage.local 中占用的**全部**键（单一事实源）。
+ *
+ * 每个受管域写三层冗余（主键 + __mirror + __snaps），原生键写裸值——
+ * 存储统计的「配置」分类必须按这张清单计量，否则会漏掉镜像/快照层，
+ * 表现为「统计缺数」：分类合计与 getBytesInUse(null) 对不上。
+ */
+export function configStorageKeys(): string[] {
+  const keys: string[] = [];
+  for (const def of DOMAIN_DEFS) {
+    keys.push(def.key, `${def.key}${MIRROR_SUFFIX}`, `${def.key}${SNAPSHOT_SUFFIX}`);
+  }
+  for (const def of Object.values(RAW_SECTION_DEFS)) keys.push(def.key);
+  return keys;
+}
+
+/** 受管配置域的键（主键 + 镜像 + 快照；不含原生键） */
+export function configDomainStorageKeys(): string[] {
+  const keys: string[] = [];
+  for (const def of DOMAIN_DEFS) {
+    keys.push(def.key, `${def.key}${MIRROR_SUFFIX}`, `${def.key}${SNAPSHOT_SUFFIX}`);
+  }
+  return keys;
+}
+
+/** 原生（裸值）配置键（语言 / 工作流） */
+export function configRawStorageKeys(): string[] {
+  return Object.values(RAW_SECTION_DEFS).map(def => def.key);
+}
 
 /** 分区快照（读取/备份用） */
 export interface SectionSnapshot {

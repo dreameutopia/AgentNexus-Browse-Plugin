@@ -93,7 +93,7 @@
         <span class="usage-group-hint">{{ t('sidepanel.metrics.modelShareHint') }}</span>
       </div>
       <div class="usage-model-list">
-        <div v-for="entry in snapshot.models" :key="`${entry.provider}::${entry.model}`" class="usage-model-row">
+        <div v-for="entry in snapshot.models" :key="JSON.stringify([entry.provider, entry.channelId, entry.modelId, entry.model])" class="usage-model-row">
           <div class="usage-model-head">
             <span class="usage-model-name" :title="entry.model">{{ entry.model }}</span>
             <span class="usage-model-provider">{{ providerLabel(entry.provider) }}</span>
@@ -104,10 +104,59 @@
             <div class="usage-model-bar-fill" :style="{ width: barWidth(entry.share ?? 0) }"></div>
           </div>
           <div class="usage-model-meta">
+            <span>{{ entry.channelLabel || t('sidepanel.metrics.legacyChannel') }}</span>
             <span>{{ t('sidepanel.metrics.totalRequests') }} {{ formatCount(entry.requests) }}</span>
             <span>{{ t('sidepanel.metrics.successRate') }} {{ modelSuccessRate(entry) }}</span>
             <span>{{ t('sidepanel.metrics.inputTokens') }} {{ formatTokens(entry.inputTokens) }}</span>
             <span>{{ t('sidepanel.metrics.outputTokens') }} {{ formatTokens(entry.outputTokens) }}</span>
+            <span>{{ t('sidepanel.metrics.cacheHitRate') }} {{ cacheRatio(entry) }}</span>
+            <span>{{ t('sidepanel.metrics.cacheRequestRate') }} {{ cacheRequestRatio(entry) }}</span>
+            <span>{{ t('sidepanel.metrics.continuationCache') }} {{ continuationRatio(entry) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="usage-group-title">{{ t('sidepanel.metrics.cacheDiagnostics') }}</div>
+      <p class="config-form-hint">{{ t('sidepanel.metrics.cacheExplanation') }}</p>
+      <div class="usage-header-actions usage-cache-filters">
+        <select v-model="selectedChannel" :aria-label="t('sidepanel.metrics.channelFilter')">
+          <option value="*">{{ t('sidepanel.metrics.allChannels') }}</option>
+          <option v-for="item in channelOptions" :key="item.id" :value="item.id">{{ item.label }}</option>
+        </select>
+        <select v-model="selectedModel" :aria-label="t('sidepanel.metrics.modelFilter')">
+          <option value="*">{{ t('sidepanel.metrics.allModels') }}</option>
+          <option v-for="model in modelOptions" :key="model" :value="model">{{ model }}</option>
+        </select>
+        <select v-model="selectedAgent" :aria-label="t('sidepanel.metrics.agentFilter')">
+          <option value="*">{{ t('sidepanel.metrics.allAgents') }}</option>
+          <option v-for="agent in agentOptions" :key="agent" :value="agent">{{ agent || t('sidepanel.metrics.otherRequests') }}</option>
+        </select>
+      </div>
+      <div class="usage-model-list">
+        <div v-for="entry in filteredScopes" :key="JSON.stringify([entry.provider, entry.channelId, entry.modelId, entry.agentId, entry.requestKind])" class="usage-model-row">
+          <div class="usage-model-head"><span class="usage-model-name">{{ entry.model }}</span></div>
+          <div class="usage-model-meta">
+            <span>{{ entry.channelLabel || t('sidepanel.metrics.legacyChannel') }}</span>
+            <span>{{ entry.agentId || t('sidepanel.metrics.otherRequests') }} · {{ entry.requestKind }}</span>
+            <span>{{ t('sidepanel.metrics.cacheHitRate') }} {{ cacheRatio(entry) }}</span>
+            <span>{{ t('sidepanel.metrics.cacheRequestRate') }} {{ cacheRequestRatio(entry) }}</span>
+            <span>{{ t('sidepanel.metrics.continuationCache') }} {{ continuationRatio(entry) }}</span>
+            <span>{{ t('sidepanel.metrics.cacheHitDetail', { cached: formatTokens(entry.cachedInputTokens), base: formatTokens(entry.cacheEligibleInputTokens) }) }}</span>
+          </div>
+        </div>
+      </div>
+      <div class="usage-group-title">{{ t('sidepanel.metrics.recentRequests') }}</div>
+      <div class="usage-model-list usage-request-list">
+        <div v-for="(entry, index) in filteredRequests" :key="`${entry.at}:${index}`" class="usage-model-row">
+          <div class="usage-model-head"><span class="usage-model-name">{{ entry.model }}</span><span>{{ formatTime(entry.at) }}</span></div>
+          <div class="usage-model-meta">
+            <span>{{ entry.channelLabel || t('sidepanel.metrics.legacyChannel') }}</span>
+            <span>{{ entry.agentId || t('sidepanel.metrics.otherRequests') }} · {{ entry.kind }} · {{ entry.outcome }}</span>
+            <span v-if="entry.runId">{{ entry.runId.slice(-8) }} #{{ entry.iteration }}</span>
+            <span>{{ t('sidepanel.metrics.inputTokens') }} {{ entry.usage?.inputTokens ?? '—' }}</span>
+            <span>{{ t('sidepanel.metrics.cachedTokens') }} {{ entry.usage?.cachedInputTokens ?? '—' }}</span>
+            <span v-if="entry.iteration">{{ entry.iteration === 1 ? t('sidepanel.metrics.firstRound') : entry.prefixChanged ? t('sidepanel.metrics.prefixChanged') : t('sidepanel.metrics.prefixStable') }}</span>
+            <span v-if="entry.trimmed || entry.compacted">{{ t('sidepanel.metrics.contextChanged') }}</span>
           </div>
         </div>
       </div>
@@ -147,6 +196,22 @@ const { locale } = useLocale();
 // ==================== 引擎订阅 ====================
 
 const snapshot = ref<UsageMetricsSnapshot>(aiUsageMetrics.getSnapshot());
+const selectedChannel = ref('*');
+const selectedModel = ref('*');
+const selectedAgent = ref('*');
+const channelOptions = computed(() => [...new Map(snapshot.value.scopes.map(e => [e.channelId ?? '', { id: e.channelId ?? '', label: e.channelLabel || t('sidepanel.metrics.legacyChannel') }])).values()]);
+const modelOptions = computed(() => [...new Set(snapshot.value.scopes.map(e => e.model))].sort());
+const agentOptions = computed(() => [...new Set(snapshot.value.scopes.map(e => e.agentId ?? ''))].sort());
+function matchesScope(e: { channelId?: string; model: string; agentId?: string }): boolean {
+  return (selectedChannel.value === '*' || (e.channelId ?? '') === selectedChannel.value) &&
+    (selectedModel.value === '*' || e.model === selectedModel.value) &&
+    (selectedAgent.value === '*' || (e.agentId ?? '') === selectedAgent.value);
+}
+const filteredScopes = computed(() => snapshot.value.scopes.filter(matchesScope));
+const filteredRequests = computed(() => snapshot.value.recentRequests.filter(matchesScope));
+function cacheRatio(e: ModelUsageMetrics): string { return e.cacheEligibleInputTokens > 0 ? percentLabel(e.cachedInputTokens / e.cacheEligibleInputTokens) : '—'; }
+function cacheRequestRatio(e: ModelUsageMetrics): string { return e.cacheObservedRequests > 0 ? percentLabel(e.cacheHitRequests / e.cacheObservedRequests) : '—'; }
+function continuationRatio(e: ModelUsageMetrics): string { return e.continuationInputTokens > 0 ? percentLabel(e.continuationCachedTokens / e.continuationInputTokens) : '—'; }
 let unsubscribe: (() => void) | undefined;
 let disarmTimer: ReturnType<typeof setTimeout> | undefined;
 

@@ -207,14 +207,14 @@ try {
     const b=document.createElement('button');b.id='guard-target';b.textContent='Guard Save';b.style='position:fixed;left:800px;top:100px;width:130px;height:35px';window.guardClicks=0;b.onclick=()=>guardClicks++;document.body.append(b);
     const r=b.getBoundingClientRect();return {x:(r.x+r.width/2)/innerWidth*1000,y:(r.y+r.height/2)/innerHeight*1000};})()`);
   const guardShot=await driver.captureGuiScreenshot();
-  const guardCheck=await new driver.VisionCheckTool().execute({screenshotId:guardShot.screenshotId,point:guardPoint,expect:{enabled:true,nameIncludes:'Guard Save'},stableMs:20,timeoutMs:500});
+  const guardCheck=await new driver.VisionGuiTool().execute({action:'check',screenshotId:guardShot.screenshotId,point:guardPoint,expect:{enabled:true,nameIncludes:'Guard Save'},stableMs:20,timeoutMs:500});
   assert.equal(guardCheck.success,true);assert.equal(guardCheck.data.status,'passed');assert.ok(guardCheck.data.guardId);
   await evaluate('document.querySelector("#guard-target").disabled=true');
   await assert.rejects(driver.executeGui('click',{screenshotId:guardShot.screenshotId,point:guardPoint,guardId:guardCheck.data.guardId}),e=>e.code==='TARGET_CHANGED');
   assert.equal(await evaluate('guardClicks'),0);
   await evaluate('document.querySelector("#guard-target").disabled=false');
   const allowedShot=await driver.captureGuiScreenshot();
-  const allowedCheck=await new driver.VisionCheckTool().execute({screenshotId:allowedShot.screenshotId,point:guardPoint,expect:{enabled:true},stableMs:20,timeoutMs:500});
+  const allowedCheck=await new driver.VisionGuiTool().execute({action:'check',screenshotId:allowedShot.screenshotId,point:guardPoint,expect:{enabled:true},stableMs:20,timeoutMs:500});
   await driver.executeGui('click',{screenshotId:allowedShot.screenshotId,point:guardPoint,guardId:allowedCheck.data.guardId});
   assert.equal(await evaluate('guardClicks'),1);
   const zoomShot=await driver.captureGuiScreenshot();
@@ -231,9 +231,9 @@ try {
   assert.equal((await evaluate('hits.splice(0)'))[0].id,'target');
   await assert.rejects(driver.executeGui('click',{screenshotId:zoomShot.screenshotId,viewId,point:cropPoint}),e=>e.code==='STALE_SCREENSHOT');
   const verifyShot=await driver.captureGuiScreenshot();
-  const verified=await new driver.VisionCheckTool().execute({screenshotId:verifyShot.screenshotId,point:field,expect:{valueEquals:'Aa!?[]{}123'},stableMs:0});
+  const verified=await new driver.VisionGuiTool().execute({action:'check',screenshotId:verifyShot.screenshotId,point:field,expect:{valueEquals:'Aa!?[]{}123'},stableMs:0});
   assert.equal(verified.data.status,'passed');
-  const unknown=await new driver.VisionCheckTool().execute({screenshotId:verifyShot.screenshotId,expect:{textIncludes:'text-that-is-not-rendered'},stableMs:0});
+  const unknown=await new driver.VisionGuiTool().execute({action:'check',screenshotId:verifyShot.screenshotId,expect:{textIncludes:'text-that-is-not-rendered'},stableMs:0});
   assert.equal(unknown.data.status,'unknown');
   const canvasPoint=await evaluate(`(() => {
     const proof=document.createElement('div');proof.textContent='Verification complete';proof.style='position:fixed;left:800px;top:180px;width:190px';
@@ -241,11 +241,11 @@ try {
     const canvas=document.createElement('canvas');canvas.style='position:fixed;left:800px;top:270px;width:80px;height:40px';document.body.append(proof,clipped,canvas);
     return {x:840/innerWidth*1000,y:290/innerHeight*1000};})()`);
   const evidenceShot=await driver.captureGuiScreenshot();
-  const visibleProof=await new driver.VisionCheckTool().execute({screenshotId:evidenceShot.screenshotId,expect:{textIncludes:'Verification complete'},stableMs:0});
+  const visibleProof=await new driver.VisionGuiTool().execute({action:'check',screenshotId:evidenceShot.screenshotId,expect:{textIncludes:'Verification complete'},stableMs:0});
   assert.equal(visibleProof.data.status,'passed');
-  const clippedProof=await new driver.VisionCheckTool().execute({screenshotId:evidenceShot.screenshotId,expect:{textIncludes:'Hidden clipped verification'},stableMs:0});
+  const clippedProof=await new driver.VisionGuiTool().execute({action:'check',screenshotId:evidenceShot.screenshotId,expect:{textIncludes:'Hidden clipped verification'},stableMs:0});
   assert.equal(clippedProof.data.status,'unknown');
-  const canvasProof=await new driver.VisionCheckTool().execute({screenshotId:evidenceShot.screenshotId,point:canvasPoint,stableMs:20,timeoutMs:500});
+  const canvasProof=await new driver.VisionGuiTool().execute({action:'check',screenshotId:evidenceShot.screenshotId,point:canvasPoint,stableMs:20,timeoutMs:500});
   assert.equal(canvasProof.data.target.opaqueContent,true);assert.equal(canvasProof.data.guardId,undefined);
   }
   // Guide observations use production driver/transport and isolated payloads.

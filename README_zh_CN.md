@@ -42,7 +42,7 @@
 自研上下文引擎（上下文计量、转录引擎、上下文窗口守护）自动裁剪与压缩历史消息，配合会话数据库实现聊天记录持久化，长对话不溢出、可回溯。
 
 ### 🤖 智能体系统
-内置 7 个预置智能体：深度搜索（Deep Search）、自动操作（Auto Action）、视觉助手（Vision Assistant）、视觉操作（Vision Action）、搜索智能体（Search Agent）、Bilibili 智能体、思维导图助手；支持在管理中心自定义智能体（模型、提示词、工具集、技能挂载）。
+内置 8 个预置智能体：深度搜索（Deep Search）、文本通用助手（General Text Assistant）、视觉助手（Vision Assistant）、视觉通用助手（General Vision Assistant）、搜索智能体（Search Agent）、数据收割机（Data Harvester）、Bilibili 智能体、思维导图助手；预置智能体的名称、描述、分类与标签随界面语言切换；支持在管理中心自定义智能体（模型、提示词、工具集、技能挂载）。
 
 ### 📚 技能系统
 支持技能（Skill）加载与资源读取，内置 3 个技能：Bilibili 视频总结、网页调研报告、XLSX 创建；支持技能导入导出与可用性管理（设计理念详见下文「技能设计」）。
@@ -101,7 +101,7 @@ Markdown 渲染支持 Mermaid 图表、KaTeX 公式、PlantUML、代码高亮与
 ## 📦 实现阶段
 
 ### ✅ 已实现
-- 完备的工具集（17 大类、70+ 工具）与 7 个预置智能体
+- 完备的工具集（17 大类、70+ 工具）与 8 个预置智能体
 - 与 AgentNexus 主程序的 WebSocket 通信及工具调度
 - OpenAI / OpenAI Responses / Claude / Gemini / Ollama 协议的正式接入（含契约测试）
 - 独立使用能力：智能体引擎、上下文引擎与会话持久化
@@ -202,8 +202,8 @@ ws://{host}:{port}/api/automation?browserUuid={browserUuid}&version={x.x.x}
 </p>
 
 
-### Vision Action GUI automation
+### 视觉通用助手 GUI 自动化
 
 视觉助手负责“看懂并教我”：支持可见区域文字与控件状态读取、四向组件滚动、原图局部放大和等待重拍，由用户执行点击、填写与提交。运行时限制技能与附加工具不能越过观察边界；任意 JavaScript 执行不在其工具范围内。适用场景、工具及已知限制见 [视觉助手设计](tools/vision/VISION_ASSISTANT.md)。
 
-Vision Action 使用 0–1000 的视口相对坐标和 CDP 输入，支持点击、拖拽、滚动、输入、悬停、键盘与按需 DOM 打标分析。厂商协议、工具参数、支持范围与迁移说明见 [视觉驱动说明](tools/vision/README.md)。
+视觉通用助手 使用 0–1000 的视口相对坐标和 CDP 输入，支持点击、拖拽、滚动、输入、悬停、键盘与按需 DOM 打标分析。厂商协议、工具参数、支持范围与迁移说明见 [视觉驱动说明](tools/vision/README.md)。

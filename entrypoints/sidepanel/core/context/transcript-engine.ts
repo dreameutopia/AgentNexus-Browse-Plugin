@@ -94,6 +94,18 @@ export interface PersistenceIssue {
 export type FeedbackWriteResult = 'saved' | 'missing' | 'failed';
 
 class TranscriptEngine {
+  /** Failed writes remain usable by the next turn in this process. Never let a
+   * quota failure silently rebuild a conversation from an older DB snapshot. */
+  private volatileRecords = new Map<string, ChatMessageRecord>();
+  private latestWrites = new Map<string, number>();
+  private writeChats = new Map<string, string>();
+  private writeEpoch = 0;
+
+  private withVolatile(chatId: string, records: ChatMessageRecord[], afterSeq = 0): ChatMessageRecord[] {
+    const merged = new Map(records.map(record => [record.id, record]));
+    for (const record of this.volatileRecords.values()) if (record.chatId === chatId && record.seq > afterSeq) merged.set(record.id, structuredClone(record));
+    return [...merged.values()].sort((a, b) => a.seq - b.seq);
+  }
   /** 会话内 seq 计数器（chatId → 已分配最大 seq）；挂载后由 ensureSeqSeed 填充 */
   private seqCounters = new Map<string, number>();
   private seeded = new Set<string>();
@@ -162,10 +174,13 @@ class TranscriptEngine {
    * （历史抽屉等）一律走删除引擎，不要直接调用本方法。
    */
   async deleteSession(chatId: string): Promise<void> {
+    await chatDatabase.deleteSession(chatId);
     this.seqCounters.delete(chatId);
     this.seeded.delete(chatId);
     this.seeding.delete(chatId);
-    await chatDatabase.deleteSession(chatId);
+    for (const [id, writingChat] of this.writeChats) if (writingChat === chatId) {
+      this.volatileRecords.delete(id); this.latestWrites.delete(id); this.writeChats.delete(id);
+    }
   }
 
   /**
@@ -208,7 +223,7 @@ class TranscriptEngine {
 
   async loadSessionRecords(chatId: string): Promise<ChatMessageRecord[]> {
     const page = await chatDatabase.getMessagesPage(chatId, { limit: Number.MAX_SAFE_INTEGER });
-    return page.records;
+    return this.withVolatile(chatId, page.records);
   }
 
   // ──── 上下文压缩状态（模型面专用；用户面转录永不被改动） ────
@@ -252,7 +267,7 @@ class TranscriptEngine {
     }
 
     try {
-      const records = await chatDatabase.getMessagesAfter(chatId, upTo);
+      const records = this.withVolatile(chatId, await chatDatabase.getMessagesAfter(chatId, upTo), upTo);
       await this.preloadRecordImages(records);
       return { summary, compactedAt, systemPromptSuffix, records };
     } catch (error) {
@@ -410,8 +425,18 @@ class TranscriptEngine {
    */
   async flush(record: ChatMessageRecord): Promise<void> {
     record.updatedAt = Date.now();
+    const epoch = ++this.writeEpoch;
+    this.latestWrites.set(record.id, epoch);
+    this.writeChats.set(record.id, record.chatId);
+    let snapshot = record;
+    let messageSaved = false;
     try {
-      const { skipped } = await chatDatabase.saveMessage(record);
+      snapshot = structuredClone(record);
+      const { skipped } = await chatDatabase.saveMessage(snapshot);
+      messageSaved = true;
+      if (this.latestWrites.get(record.id) === epoch) {
+        this.volatileRecords.delete(record.id); this.latestWrites.delete(record.id); this.writeChats.delete(record.id);
+      }
       if (skipped) {
         console.warn(`[TranscriptEngine] 会话 ${record.chatId} 已不存在，丢弃消息 ${record.id} 的落库`);
         return;
@@ -424,6 +449,8 @@ class TranscriptEngine {
         });
       }
     } catch (error) {
+      if (!messageSaved && this.latestWrites.get(record.id) !== epoch) return;
+      if (this.latestWrites.get(record.id) === epoch) this.volatileRecords.set(record.id, snapshot);
       console.warn('[TranscriptEngine] 消息落库失败（已降级为内存态）:', error);
       this.notifyPersistenceIssue('message-flush', error);
     }

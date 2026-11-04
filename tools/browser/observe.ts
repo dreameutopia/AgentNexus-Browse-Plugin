@@ -1,4 +1,5 @@
 import { exclusiveText } from './text-runtime';
+import { elementInspectPayload } from './element-inspect-payload';
 /** Explicit, bounded snapshots. A fresh request always scans; continuation never silently changes datasets. */
 import { BaseBrowserTool } from '../base/browser-tool';
 import type { ToolMetadata } from '../registry';
@@ -29,7 +30,9 @@ interface Snapshot {
   fingerprints: Map<number, string>;
 }
 export interface ElementGetterArgs {
-  view?: ScanMode | 'accessibility';
+  view?: ScanMode | 'accessibility' | 'element';
+  elementId?: string;
+  frameId?: number;
   regex?: string;
   xpath?: string;
   page?: number;
@@ -54,13 +57,14 @@ export class BrowserObserveTool extends BaseBrowserTool {
       '纯文本页面观察：控件、输入、表格结构和浏览器辅助功能树，稳定引用与快照分页',
     category: 'browser',
     version: '6.0.0',
+    visionRefresh: 'none',
   };
   openaiSchema: OpenAITool = {
     type: 'function',
     function: {
       name: this.name,
       description:
-        '纯文本观察页面及可注入 frame。controls=按钮与输入；buttons/inputs=分类；structure=表格行列/选区/值/选项/滚动容器/canvas；accessibility=浏览器辅助功能语义（需要 debugger，可能仅部分覆盖）。DOM 引用需配合同一行 FrameId；AX 引用自带路由，只支持 focus/keys/type。新查询从 page=1；续读传 snapshotId 和 nextPage；改条件省略快照。未渲染数据不会自动出现。',
+        '观察页面及可注入 frame。controls=按钮与输入；buttons/inputs=分类；element=传枚举得到的 elementId 和 frameId，读取指定元素的属性、XPath、文字、状态、外观与 frame 内位置；structure=表格/滚动容器；accessibility=辅助功能语义。DOM 引用需配合同一行 FrameId；AX 引用不支持 element。新查询从 page=1；续读传 snapshotId 和 nextPage；改条件省略快照。未渲染数据不会自动出现。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -73,6 +77,7 @@ export class BrowserObserveTool extends BaseBrowserTool {
               'inputs',
               'structure',
               'accessibility',
+              'element',
             ],
             default: 'controls',
           },
@@ -81,6 +86,8 @@ export class BrowserObserveTool extends BaseBrowserTool {
             description:
               'DOM：命中置顶，未命中仍返回；AX：只返回匹配语义节点。不区分大小写。',
           },
+          elementId: { type: 'string', description: '仅 view=element：最近枚举得到的 DOM ElementId。' },
+          frameId: { type: 'number', description: '仅 view=element：与 ElementId 同一行的 FrameId。' },
           xpath: {
             type: 'string',
             description:
@@ -132,7 +139,7 @@ export class BrowserObserveTool extends BaseBrowserTool {
         return this.createErrorResponse('参数必须是对象');
       if (
         Object.keys(input).some(
-          (k) => !['view', 'regex', 'xpath', 'snapshotId', 'page'].includes(k)
+          (k) => !['view', 'regex', 'xpath', 'snapshotId', 'page', 'elementId', 'frameId'].includes(k)
         )
       )
         return this.createErrorResponse('存在未知参数');
@@ -144,9 +151,28 @@ export class BrowserObserveTool extends BaseBrowserTool {
           'inputs',
           'structure',
           'accessibility',
+          'element',
         ].includes(input.view)
       )
         return this.createErrorResponse('view 无效');
+      if (input.view === 'element') {
+        if (typeof input.elementId !== 'string' || !input.elementId.trim() || input.elementId.startsWith('ax:') || !Number.isSafeInteger(input.frameId) || input.frameId! < 0)
+          return this.createErrorResponse('element 视图必须提供枚举得到的 DOM elementId 与同一行 frameId');
+        if (['regex', 'xpath', 'snapshotId', 'page'].some(key => key in input))
+          return this.createErrorResponse('element 视图不接受过滤或分页参数');
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (typeof tab?.id !== 'number' || !tab.url || isRestrictedUrl(tab.url))
+          return this.createErrorResponse('当前页面不可读取');
+        const rows = await chrome.scripting.executeScript({
+          target: { tabId: tab.id, frameIds: [input.frameId!] },
+          world: 'ISOLATED', func: elementInspectPayload, args: [input.elementId],
+        });
+        const detail = rows[0]?.result;
+        if (!detail || detail.error) return this.createErrorResponse(detail?.error || '元素或 frame 已消失，请重新枚举');
+        return this.createSuccessResponse({ ...detail, frameId: input.frameId, tabId: tab.id });
+      }
+      if (input.elementId !== undefined || input.frameId !== undefined)
+        return this.createErrorResponse('elementId/frameId 仅用于 view=element');
       for (const key of ['regex', 'xpath', 'snapshotId'] as const) {
         if (input[key] !== undefined && typeof input[key] !== 'string')
           return this.createErrorResponse(key + ' 必须是字符串');

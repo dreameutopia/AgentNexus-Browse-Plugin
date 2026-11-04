@@ -167,6 +167,15 @@ export async function testElementInteraction(
     const getter = new BrowserObserveTool('buttons');
     const first = await getter.execute();
     check(first.success, '真实全帧采集通过交付前二次核验', first.error);
+    const frameNode = (await scan('buttons', 7))[0];
+    const detail = await getter.execute({ view: 'element', elementId: frameNode.elementId, frameId: 7 });
+    check(detail.success, '指定元素属性通过序列化荷载跨 frame 读取', detail.error);
+    eq(data(detail).frameUrl, 'https://frame.example/', '元素属性保留来源 frame URL');
+    eq(data(detail).text, 'iframe 按钮', '元素属性回传真实文字');
+    check(typeof data(detail).xpath === 'string', '元素属性回传可重采 XPath');
+    check(!(await getter.execute({ view: 'element', elementId: frameNode.elementId, frameId: 0 })).success, '错误 frame 不能读取引用');
+    check(!(await getter.execute({ view: 'element', elementId: frameNode.elementId, frameId: 7, xpath: '//button' })).success, '指定元素属性禁止混合过滤参数');
+    check(!(await getter.execute({ view: 'element', elementId: 'ax:1', frameId: 7 })).success, '指定元素属性不接受 AX 引用');
     check(
       (await getter.execute(null as any)).success,
       'null 参数按默认新查询执行'
@@ -746,6 +755,31 @@ export async function testElementInteraction(
         .success,
       '容量淘汰旧快照后明确失败'
     );
+    const inspectorDom = create('<label for="q">商品关键词</label><input id="q" placeholder="关键词"><input type="password" value="secret"><select><option value="a" selected>选项甲</option></select><div id="host"></div>');
+    frames.clear();
+    frames.set(0, inspectorDom);
+    const inputs = await scan('inputs');
+    const inputDetails = [];
+    for (const item of inputs) inputDetails.push(data(await getter.execute({ view: 'element', elementId: item.elementId, frameId: 0 })));
+    const keyword = inputDetails.find(item => item.attributes?.id === 'q');
+    eq(keyword?.labels, ['商品关键词'], '属性查询补充关联 label 线索');
+    check(inputDetails.some(item => item.attributes?.type === 'password' && item.value === undefined && !('value' in item.attributes)), '属性查询不返回密码值');
+    check(inputDetails.some(item => item.tag === 'select' && item.options?.[0]?.selected), '属性查询回传下拉选项实际状态');
+    const staleInput = inputs[0];
+    inspectorDom.window.document.getElementById('q')!.remove();
+    check(!(await getter.execute({ view: 'element', elementId: staleInput.elementId, frameId: 0 })).success, '属性查询拒绝已移除元素');
+    const inspectedShadow = inspectorDom.window.document.getElementById('host')!.attachShadow({ mode: 'open' });
+    inspectedShadow.innerHTML = '<button>展开设置</button>';
+    const shadowNode = (await scan('buttons')).find(item => item.description.includes('展开设置'))!;
+    const shadowDetail = data(await getter.execute({ view: 'element', elementId: shadowNode.elementId, frameId: 0 }));
+    check(shadowDetail.xpath === null && shadowDetail.shadow.hosts.length === 1, 'Shadow 属性查询明确作用域，不伪造文档 XPath');
+    const quotedButton = inspectorDom.window.document.createElement('button');
+    quotedButton.setAttribute('aria-label', `搜索'和"引号`);
+    quotedButton.textContent = '带引号按钮';
+    inspectorDom.window.document.body.append(quotedButton);
+    const quotedRef = (await scan('buttons')).find(item => item.description.includes('引号'))!;
+    const quotedDetail = data(await getter.execute({ view: 'element', elementId: quotedRef.elementId, frameId: 0 }));
+    check(inspectorDom.window.document.evaluate(quotedDetail.xpath, inspectorDom.window.document, null, inspectorDom.window.XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue === quotedButton, 'XPath 正确转义同时含单双引号的属性');
   } finally {
     globalThis.chrome = savedChrome;
     restore();

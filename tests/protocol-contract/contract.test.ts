@@ -23,6 +23,7 @@ import { OllamaAdapter } from '../../entrypoints/sidepanel/utils/stream/adapters
 import { GeminiAdapter } from '../../entrypoints/sidepanel/utils/stream/adapters/gemini-adapter';
 import { ClaudeAdapter } from '../../entrypoints/sidepanel/utils/stream/adapters/claude-adapter';
 import { ResponsesAdapter } from '../../entrypoints/sidepanel/utils/stream/adapters/responses-adapter';
+import { VisionGuiTool } from '../../tools/vision/gui-tool';
 import { streamClient } from '../../entrypoints/sidepanel/utils/stream/stream-client';
 import { prepareVisionRequest, clearVisionCache } from '../../entrypoints/sidepanel/utils/stream/vision';
 import { probeConnection } from '../../entrypoints/sidepanel/utils/stream/probe';
@@ -45,6 +46,7 @@ import {
   normalizeUsageFromBody,
 } from '../../entrypoints/sidepanel/utils/stream/adapters/usage-normalize';
 import { aiUsageMetrics } from '../../entrypoints/sidepanel/utils/metrics/usage-metrics-engine';
+import { testNativeCache } from './native-cache.test';
 import type {
   AdapterCapabilities,
   ProtocolAdapter,
@@ -433,6 +435,17 @@ async function main() {
 
   // ---------- OpenAI ----------
   {
+    const gui = new VisionGuiTool().openaiSchema;
+    for (const [name, adapter] of [['openai',openai],['ollama',ollama],['gemini',gemini],['claude',claude],['responses',responses]] as const) {
+      const body = adapter.buildRequestBody({model:'test',messages:systemAndUser,tools:[gui]});
+      const schema = name === 'gemini' ? body.tools[0].functionDeclarations[0].parameters
+        : name === 'claude' ? body.tools[0].input_schema
+        : name === 'responses' ? body.tools[0].parameters : body.tools[0].function.parameters;
+      eq(schema, gui.function.parameters, `${name}: preserves complete vision_gui action-discriminated schema`);
+      check(JSON.stringify(body.tools).includes('<vision_gui>'), `${name}: preserves XML action descriptions`);
+    }
+  }
+  {
     const body = openai.buildRequestBody({
       model: 'gpt-4o',
       messages: systemAndUser,
@@ -589,8 +602,10 @@ async function main() {
       temperature: 0.2,
       max_tokens: 512,
     });
-    eq(body.system, 'You are helpful', 'claude: system 顶级字段');
-    eq(body.messages[0], { role: 'user', content: 'Hi' }, 'claude: 纯文本保持字符串');
+    eq(body.system[0].text, 'You are helpful', 'claude: system 顶级字段');
+    eq(body.system[0].cache_control, { type: 'ephemeral' }, 'claude: stable system cache checkpoint');
+    eq(body.cache_control, { type: 'ephemeral' }, 'claude: automatic moving cache checkpoint');
+    eq(body.messages[0], { role: 'user', content: [{ type: 'text', text: 'Hi', cache_control: { type: 'ephemeral' } }] }, 'claude: 文本块与移动缓存断点');
     eq(body.tools[0].name, 'get_weather', 'claude: 工具 name 顶层');
     eq(body.tools[0].input_schema.type, 'object', 'claude: 工具 parameters → input_schema');
     eq(body.max_tokens, 512, 'claude: max_tokens');
@@ -630,7 +645,7 @@ async function main() {
       ],
     });
     eq(
-      multiSystem.system,
+      multiSystem.system[0].text,
       'You are helpful\n\n<conversation-memory>压缩摘要</conversation-memory>',
       'claude: 多 system 消息合并（压缩记忆不丢失）'
     );
@@ -720,7 +735,7 @@ async function main() {
     );
     eq(
       visionBody.messages[0].content[1],
-      { type: 'image', source: { type: 'url', url: 'https://example.com/a.png' } },
+      { type: 'image', source: { type: 'url', url: 'https://example.com/a.png' }, cache_control: { type: 'ephemeral' } },
       'claude: 远程 URL → url source（不再静默丢图）'
     );
   }
@@ -811,8 +826,8 @@ async function main() {
     });
     eq(
       merged.input[0],
-      { role: 'system', content: 'You are helpful\n\n<conversation-memory>压缩摘要</conversation-memory>' },
-      'responses: 连续 system 消息合并'
+      { role: 'system', content: 'You are helpful' },
+      'responses: system 消息保持原边界'
     );
   }
 
@@ -822,9 +837,9 @@ async function main() {
 
   const expectedCapabilities: Record<ProviderType, AdapterCapabilities> = {
     openai: { vision: true, remoteImageUrl: 'native', tools: true, reasoning: true },
-    ollama: { vision: true, remoteImageUrl: 'base64', tools: true, reasoning: false },
-    gemini: { vision: true, remoteImageUrl: 'base64', tools: true, reasoning: false },
-    claude: { vision: true, remoteImageUrl: 'native', tools: true, reasoning: false },
+    ollama: { vision: true, remoteImageUrl: 'base64', tools: true, reasoning: true },
+    gemini: { vision: true, remoteImageUrl: 'base64', tools: true, reasoning: true },
+    claude: { vision: true, remoteImageUrl: 'native', tools: true, reasoning: true },
     'openai-responses': { vision: true, remoteImageUrl: 'native', tools: true, reasoning: true },
   };
 
@@ -1394,7 +1409,7 @@ async function main() {
     );
     eqUsage(
       mergeUsageSafe(undefined, normalizeUsageFromBody('ollama', { prompt_eval_count: 5, eval_count: 6 })),
-      { inputTokens: 5, outputTokens: 6, cachedInputTokens: 0, totalTokens: 11 },
+      { inputTokens: 5, outputTokens: 6, totalTokens: 11 },
       'usage: 非流式 ollama 布局'
     );
     eqUsage(
@@ -1746,6 +1761,62 @@ async function main() {
   }
 
   // ============================================================
+  // Cache protocol contracts: signatures, local-only metadata and bounded
+  // compatibility fallbacks must not break an otherwise valid conversation.
+  {
+    const signed = await replay(gemini, `data: ${JSON.stringify({ candidates: [{ content: { parts: [{
+      functionCall: { name: 'get_weather', args: { city: 'Paris' } }, thoughtSignature: 'opaque-signature',
+    }] }, finishReason: 'STOP' }] })}\n\n`);
+    eq(signed.toolCalls[0]?.geminiThoughtSignature, 'opaque-signature', 'gemini: opaque function signature retained');
+    const message: UnifiedChatMessage = { role: 'assistant', content: '', tool_calls: signed.toolCalls };
+    const replayed = gemini.buildRequestBody({ model: 'g', messages: [message] });
+    eq(replayed.contents[0].parts[0].thoughtSignature, 'opaque-signature', 'gemini: signature replayed unchanged');
+    const other = openai.buildRequestBody({ model: 'o', messages: [message], metrics: { runId: 'local-only' } });
+    check(!JSON.stringify(other).includes('opaque-signature'), 'openai: Gemini-only metadata must not leak');
+    check(!JSON.stringify(other).includes('local-only'), 'protocol: diagnostic metadata stays local');
+  }
+  {
+    const originalFetch = globalThis.fetch;
+    const bodies: any[] = [];
+    try {
+      globalThis.fetch = (async (_url: any, init: any) => {
+        const body = JSON.parse(init.body); bodies.push(body);
+        const marked = body.cache_control || body.system?.some?.((part: any) => part.cache_control);
+        if (marked) return new Response(JSON.stringify({ error: { message: 'cache_control is not supported here' } }), { status: 400 });
+        return new Response(claudeSSE, { headers: { 'content-type': 'text/event-stream' } });
+      }) as typeof fetch;
+      const config: StreamRequestConfig = { model: 'claude-cache-test', messages: systemAndUser, max_tokens: 512 };
+      const options = { providerConfig: { provider: 'claude' as const, baseUrl: 'https://cache-compat.example', apiKey: 'test', model: 'claude-cache-test' }, retryCount: 0 };
+      await quiet(() => streamClient.chat(config, {}, options));
+      eq(bodies.length, 3, 'claude: reject automatic then block caching with bounded fallbacks');
+      check(!!bodies[0].cache_control, 'claude: initially enable automatic caching');
+      check(!bodies[1].cache_control && !!bodies[1].system[0].cache_control, 'claude: automatic rejection preserves block checkpoints');
+      check(!JSON.stringify(bodies[2]).includes('cache_control'), 'claude: unsupported gateway receives no cache directives');
+      await quiet(() => streamClient.chat(config, {}, options));
+      eq(bodies.length, 4, 'claude: remembered compatibility avoids repeat failed attempts');
+      check(!JSON.stringify(bodies[3]).includes('cache_control'), 'claude: remembered compatibility strips all block checkpoints');
+    } finally { globalThis.fetch = originalFetch; }
+  }
+  {
+    const originalFetch = globalThis.fetch;
+    const bodies: any[] = [];
+    try {
+      globalThis.fetch = (async (_url: any, init: any) => {
+        const body = JSON.parse(init.body); bodies.push(body);
+        if (body.prompt_cache_key) return new Response(JSON.stringify({ error: { message: 'prompt_cache_key unsupported' } }), { status: 400 });
+        return new Response(openaiSSE, { headers: { 'content-type': 'text/event-stream' } });
+      }) as typeof fetch;
+      await quiet(() => streamClient.chat({ model: 'cache-key-test', messages: systemAndUser, promptCacheKey: 'stable' }, {}, {
+        providerConfig: { provider: 'openai', baseUrl: 'https://key-compat.example/v1', apiKey: 'test', model: 'cache-key-test' }, retryCount: 0,
+      }));
+      eq(bodies.length, 2, 'openai: unsupported optional routing key does not stop the run');
+      check(!bodies[1].prompt_cache_key, 'openai: rejected routing key removed on retry');
+      eq(bodies[0].messages, bodies[1].messages, 'openai: compatibility fallback preserves all messages');
+    } finally { globalThis.fetch = originalFetch; }
+  }
+
+  await quiet(() => testNativeCache());
+
   // 汇总
   // ============================================================
   console.log(`\n协议契约测试：通过 ${passed} 项，失败 ${failures.length} 项`);

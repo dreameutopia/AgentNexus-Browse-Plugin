@@ -127,22 +127,96 @@
         />
       </div>
       <div v-if="pkgQuery" class="python-search-results">
-        <button
-          v-for="entry in searchResults"
-          :key="entry.name"
-          type="button"
-          class="python-search-item"
-          :disabled="!!busyPackage"
-          @click="install(entry.name)"
-        >
-          <span class="python-chip-name">{{ entry.name }}</span>
-          <span class="python-chip-version">{{ entry.version }}</span>
-          <span v-if="isInstalled(entry.name)" class="python-search-installed">✓</span>
-        </button>
-        <p v-if="!searchResults.length" class="config-form-hint">{{ t('sidepanel.python.pkgNotFound') }}</p>
+        <!-- 目录加载失败：区别于「无匹配」，给出重试入口 -->
+        <div v-if="catalogState === 'error'" class="python-search-empty">
+          <p class="config-form-hint">{{ t('sidepanel.python.pkgCatalogError') }}</p>
+          <button type="button" class="api-config-btn python-action-btn" @click="loadCatalog">
+            {{ t('common.retry') }}
+          </button>
+        </div>
+        <!-- 目录加载中：避免误报「没有匹配的包」 -->
+        <div v-else-if="catalogState === 'loading'" class="python-search-empty">
+          <p class="config-form-hint">{{ t('common.loading') }}</p>
+        </div>
+        <template v-else>
+          <button
+            v-for="hit in visibleHits"
+            :key="hit.entry.name"
+            type="button"
+            class="python-search-item"
+            :class="{
+              'python-search-item-installed': isInstalled(hit.entry.name),
+              'python-search-item-pending': pendingInstall?.name === hit.entry.name,
+              'python-search-item-busy': busyPackage === hit.entry.name,
+            }"
+            :disabled="!!busyPackage"
+            @click="requestInstall(hit.entry)"
+          >
+            <span class="python-chip-name">{{ hit.entry.name }}</span>
+            <!-- 别名命中提示：sklearn → scikit-learn -->
+            <span v-if="hit.matchedAlias" class="python-search-alias">{{ hit.matchedAlias }}</span>
+            <span class="python-chip-version">{{ hit.entry.version }}</span>
+            <span v-if="isInstalled(hit.entry.name)" class="python-search-installed">✓</span>
+            <span v-else-if="busyPackage === hit.entry.name" class="python-search-busy">
+              <span class="python-spinner python-spinner-sm"></span>
+            </span>
+            <span v-else class="python-search-action">
+              {{ pendingInstall?.name === hit.entry.name ? t('sidepanel.python.pkgPendingMark') : t('sidepanel.python.pkgInstallAction') }}
+            </span>
+          </button>
+          <div v-if="!searchHits.length && catalogState === 'ready'" class="python-search-empty">
+            <p class="config-form-hint">{{ t('sidepanel.python.pkgNotFound') }}</p>
+            <p class="config-form-hint python-search-tip">{{ t('sidepanel.python.pkgSearchTip') }}</p>
+          </div>
+          <div v-if="searchHits.length" class="python-search-footer">
+            <span class="config-form-hint">
+              {{ t('sidepanel.python.pkgSearchCount', { count: searchHits.length }) }}
+            </span>
+            <button
+              v-if="hiddenHitCount > 0"
+              type="button"
+              class="python-search-more"
+              @click="searchLimit += 16"
+            >
+              {{ t('sidepanel.python.pkgSearchMore', { count: hiddenHitCount }) }}
+            </button>
+          </div>
+        </template>
       </div>
 
-      <p v-if="installMessage" class="config-form-hint python-install-message">{{ installMessage }}</p>
+      <!-- 安装确认条（搜索结果 / 常用包共用） -->
+      <div v-if="pendingInstall" class="python-install-confirm">
+        <div class="python-install-confirm-info">
+          <span class="python-chip-name">{{ pendingInstall.name }}</span>
+          <span class="python-chip-version">{{ pendingInstall.version }}</span>
+          <span class="python-install-confirm-hint">
+            <template v-if="pendingDeps.length">
+              {{ t('sidepanel.python.pkgConfirmWithDeps', { deps: pendingDeps.join(', ') }) }}
+            </template>
+            <template v-else>{{ t('sidepanel.python.pkgConfirmNoDeps') }}</template>
+          </span>
+        </div>
+        <div class="python-install-confirm-actions">
+          <button
+            type="button"
+            class="api-config-btn api-config-btn-primary python-action-btn"
+            :disabled="!!busyPackage"
+            @click="confirmInstall"
+          >
+            {{ t('sidepanel.python.pkgConfirmInstall') }}
+          </button>
+          <button
+            type="button"
+            class="api-config-btn python-action-btn"
+            :disabled="!!busyPackage"
+            @click="cancelPendingInstall"
+          >
+            {{ t('common.cancel') }}
+          </button>
+        </div>
+      </div>
+
+      <p v-if="installMessage" class="config-form-hint python-install-message" :class="{ 'python-install-message-busy': !!busyPackage }">{{ installMessage }}</p>
       <p class="config-form-hint">{{ t('sidepanel.python.pkgSourceNote') }}</p>
     </div>
 
@@ -250,9 +324,15 @@ const cancelController = ref<AbortController | null>(null);
 const cacheInfo = reactive({ count: 0, bytes: 0 });
 
 const catalog = ref<PyodideCatalogEntry[]>([]);
+/** 目录生命周期：区分「加载中 / 就绪 / 失败」，避免失败被误报为「没有匹配的包」 */
+const catalogState = ref<'loading' | 'ready' | 'error'>('loading');
 const pkgQuery = ref('');
 const busyPackage = ref('');
 const installMessage = ref('');
+/** 待确认安装的包（搜索结果与常用包共用的确认条状态） */
+const pendingInstall = ref<PyodideCatalogEntry | null>(null);
+/** 搜索结果初始截断数，超出可增量展开 */
+const searchLimit = ref(8);
 
 const code = ref(
   [
@@ -332,13 +412,59 @@ const featuredEntries = computed(() => {
   ).filter((entry): entry is PyodideCatalogEntry => entry !== undefined);
 });
 
-const searchResults = computed(() => {
+/** 搜索命中：score 越小越靠前（精确 > 前缀 > 包含 > 别名），同分已安装优先 */
+interface SearchHit {
+  entry: PyodideCatalogEntry;
+  score: number;
+  /** 通过 imports 别名命中时展示（如 sklearn → scikit-learn） */
+  matchedAlias?: string;
+}
+
+const searchHits = computed<SearchHit[]>(() => {
   const query = pkgQuery.value.trim().toLowerCase();
   if (!query || catalog.value.length === 0) return [];
-  return catalog.value
-    .filter(entry => entry.name.toLowerCase().includes(query))
-    .filter(entry => entry.depends.every(dep => dep !== entry.name))
-    .slice(0, 8);
+  const hits: SearchHit[] = [];
+  for (const entry of catalog.value) {
+    // 跳过依赖自身条目（锁文件中的元包占位）
+    if (entry.depends.some(dep => dep === entry.name)) continue;
+    const name = entry.name.toLowerCase();
+    let score = -1;
+    let matchedAlias: string | undefined;
+    if (name === query) {
+      score = 0;
+    } else if (name.startsWith(query)) {
+      score = 1;
+    } else if (name.includes(query)) {
+      score = 2;
+    } else {
+      const alias = entry.imports.find(imp => imp.toLowerCase() === query);
+      if (alias) {
+        score = 3;
+        matchedAlias = alias;
+      } else if (entry.imports.some(imp => imp.toLowerCase().includes(query))) {
+        score = 4;
+        matchedAlias = entry.imports.find(imp => imp.toLowerCase().includes(query));
+      }
+    }
+    if (score >= 0) hits.push({ entry, score, matchedAlias });
+  }
+  hits.sort((a, b) => {
+    if (a.score !== b.score) return a.score - b.score;
+    const installedDiff = Number(isInstalled(b.entry.name)) - Number(isInstalled(a.entry.name));
+    if (installedDiff !== 0) return installedDiff;
+    return a.entry.name.localeCompare(b.entry.name);
+  });
+  return hits;
+});
+
+const visibleHits = computed(() => searchHits.value.slice(0, searchLimit.value));
+const hiddenHitCount = computed(() => Math.max(0, searchHits.value.length - visibleHits.value.length));
+
+/** 确认条展示：即将安装的包 + 尚未安装的依赖（帮助预判下载量） */
+const pendingDeps = computed(() => {
+  const entry = pendingInstall.value;
+  if (!entry) return [];
+  return entry.depends.filter(dep => dep !== entry.name && !isInstalled(dep));
 });
 
 // ──── 工具函数 ────
@@ -383,11 +509,14 @@ async function refreshCacheInfo(): Promise<void> {
 }
 
 async function loadCatalog(): Promise<void> {
+  catalogState.value = 'loading';
   try {
     catalog.value = await getPackageCatalog();
+    catalogState.value = 'ready';
   } catch {
-    // 目录加载失败不阻塞：常用包区隐藏，仍可搜索重试（下次水合）
+    // 目录加载失败不阻塞：显示错误态 + 重试按钮，仍可搜索（空结果会被识别为加载失败）
     catalog.value = [];
+    catalogState.value = 'error';
   }
 }
 
@@ -486,10 +615,36 @@ async function removeEnv(): Promise<void> {
 
 // ──── 包安装 / 卸载 ────
 
+/** 点击搜索结果：已安装则提示；否则进入确认（不直接下载） */
+function requestInstall(entry: PyodideCatalogEntry): void {
+  if (busyPackage.value) return;
+  if (isInstalled(entry.name)) {
+    installMessage.value = t('sidepanel.python.pkgAlreadyInstalled', {
+      name: entry.name,
+      version: entry.version,
+    });
+    return;
+  }
+  installMessage.value = '';
+  pendingInstall.value = entry;
+}
+
+function cancelPendingInstall(): void {
+  pendingInstall.value = null;
+}
+
+/** 确认条：真正执行安装 */
+async function confirmInstall(): Promise<void> {
+  const entry = pendingInstall.value;
+  if (!entry || busyPackage.value) return;
+  pendingInstall.value = null;
+  await install(entry.name);
+}
+
 async function install(name: string): Promise<void> {
   if (busyPackage.value) return;
   busyPackage.value = name;
-  installMessage.value = '';
+  installMessage.value = t('sidepanel.python.pkgInstalling', { name });
   try {
     const installed = await installPackages([name]);
     installMessage.value = installed.length
@@ -506,6 +661,12 @@ async function install(name: string): Promise<void> {
 async function togglePackage(name: string): Promise<void> {
   if (isInstalled(name)) {
     await uninstall(name);
+    return;
+  }
+  if (busyPackage.value) return;
+  const entry = catalog.value.find(e => e.name.toLowerCase() === name.toLowerCase());
+  if (entry) {
+    requestInstall(entry);
   } else {
     await install(name);
   }
@@ -566,6 +727,12 @@ onMounted(async () => {
 
 watch(openEpoch, () => {
   void hydrate();
+});
+
+// 查询变化：重置分页截断与待确认项，避免确认条指向过期搜索结果
+watch(pkgQuery, () => {
+  searchLimit.value = 8;
+  pendingInstall.value = null;
 });
 
 onUnmounted(() => {

@@ -31,20 +31,37 @@ export interface LearnModelRef {
 
 /**
  * 目标操作模式：决定产出 SKILL 交给谁用（描述风格 + 验证阶段用哪个智能体）。
- * - text   交给纯文本模型：定位以 CSS 选择器 / XPath + 元素文字为主；
- * - vision 交给视觉模型：可额外描述元素在界面中的位置区域。
+ * - text   交给纯文本模型：真实 XPath + 元素文字/属性，现场重采引用；
+ * - vision 保留文本能力，额外描述位置、外观、组件形式与界面反馈。
  */
 export type LearnTargetMode = 'text' | 'vision';
 
 /**
  * 学习策略：决定学习阶段用什么工具组去摸索。
- * - text   用 Auto Action 工具组（枚举器 + 选择器 + 页面脚本）；
- * - vision 用 Vision Action 工具组（带数字标签的截图定位）。
+ * - text   完整 DOM 枚举、指定元素属性、文本交互与页面脚本；无截图循环。
+ * - vision 在 text 基础上启用自动截图循环：
+ *     · targetMode=text ：仅追加 screenshot——截图只用于帮助理解屏幕元素，
+ *       不注入任何 vision_gui 手势工具，操作与取证一律走 DOM 文本通道；
+ *     · targetMode=vision：追加 screenshot + vision_gui 手势（+窗口管理），
+ *       按需 mark→inspect 打标核对。
  *
  * 约束：targetMode='vision' 时恒为 'vision'（给视觉模型写的技能，
  * 学习时就该看着界面摸索，没有降级到纯文本的必要）。
  */
 export type LearnStrategy = 'text' | 'vision';
+
+/**
+ * 模式 → tags 中的稳定标签（用户可见、可检索；模式的唯一持久化表达）。
+ * 单一事实源：submit_skill 提交时补标签、编排层对账草稿时纠错，
+ * 两处都引用本常量，避免文案漂移（hub 侧仅把 tags 当普通字符串展示）。
+ */
+export const SKILL_MODE_TAG: Record<LearnTargetMode, string> = {
+  text: '文本模式',
+  vision: '视觉模式',
+};
+
+/** 技能 tags 上限（与 hub 技能编辑页一致；submit_skill 与编排层对账共用） */
+export const SKILL_MAX_TAGS = 8;
 
 /** 用户配置（校验前的原始形态） */
 export interface LearnConfig {
@@ -86,7 +103,7 @@ export interface SkillDraft {
   tags: string[];
   /** SKILL.md 正文（Markdown，不含 frontmatter），≤ SKILL_BODY_MAX_CHARS */
   body: string;
-  /** 已剔除未注册工具；非空——它是技能在「/」清单中可见的依据 */
+  /** 已校验为注册工具且符合目标模式；非空——用于技能能力匹配 */
   allowedTools: string[];
   /** 目标操作模式（与 tags 中的模式标签同源；本字段供编排层选用验证智能体） */
   mode: LearnTargetMode;

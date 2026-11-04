@@ -31,18 +31,19 @@ import {
 } from '@/utils/skills/skill-types';
 import { normalizeSkillName } from '@/utils/skills/frontmatter-parser';
 import { normalizeCategory, normalizeTags } from '@/utils/agents/agent-types';
-import type { LearnTargetMode, SkillDraft } from '@/utils/learn/learn-types';
+import {
+  SKILL_MAX_TAGS,
+  SKILL_MODE_TAG,
+  type LearnTargetMode,
+  type SkillDraft,
+} from '@/utils/learn/learn-types';
+import { isVisualSkillTool } from '@/utils/learn/learn-validate';
+import { LEARN_SKILL_SECTIONS, validateLearnSkillBody } from '@/utils/learn/learn-output-contract';
 
 const TOOL_NAME = 'submit_skill';
 
-/** 模式 → tags 中的稳定标签（用户可见、可检索；模式的唯一持久化表达） */
-const MODE_TAG: Record<LearnTargetMode, string> = {
-  text: '文本模式',
-  vision: '视觉模式',
-};
-
-/** 与 hub 技能编辑页一致的标签上限（agent-types 同源常量） */
-const MAX_TAGS = 8;
+// 模式标签与标签上限的单一事实源在 learn-types（SKILL_MODE_TAG / SKILL_MAX_TAGS），
+// 编排层对账草稿时引用同一份常量，两处不会漂移。
 
 /** 成功结果：content 供模型阅读，data 供程序消费 */
 function skillSuccess(text: string, data: Record<string, unknown>): ToolResult {
@@ -138,7 +139,7 @@ export class SubmitSkillTool extends BaseTool {
           name: {
             type: 'string',
             description:
-              `技能名：全小写 kebab-case 英文（由站点域名 + 目标关键词提炼，如 boss-zhipin-apply），` +
+              `技能名必须为「平台-任务简短概述」，小写英文 kebab-case（如 pinduoduo-search-products），` +
               `≤${SKILL_NAME_MAX_CHARS} 字符，仅含 a-z 0-9 与连字符。`,
           },
           description: {
@@ -154,14 +155,14 @@ export class SubmitSkillTool extends BaseTool {
           tags: {
             type: 'array',
             items: { type: 'string' },
-            description: `中文标签，最多 ${MAX_TAGS} 个（模式标签会自动补上，无需手动添加）。`,
+            description: `中文标签，最多 ${SKILL_MAX_TAGS} 个（模式标签会自动补上，无需手动添加）。`,
           },
           body: {
             type: 'string',
             description:
               `SKILL.md 正文（Markdown，不含 frontmatter），≤${SKILL_BODY_MAX_CHARS} 字符。` +
-              '标准结构：## 目标 / ## 前置条件 / ## 工作流（编号步骤，每步写明工具调用形态与元素定位信息）/ ' +
-              '## 分支与坑点 / ## 完成判定 / ## 边界。定位信息按目标操作模式书写（见 allowedTools 与 mode 说明）。',
+              `依次包含 ${LEARN_SKILL_SECTIONS.map(title => `## ${title}`).join(' / ')}。` +
+              '完成计划按 1.、2. 编号，具体操作讲解按 ### 1.、### 2. 逐项对应；每步写动作、原因、至少两条真实目标线索（优先 XPath+文字）、操作方式、成功判据与注意/恢复。视觉模式额外写位置和外观，保留文本能力。',
           },
           allowedTools: {
             type: 'array',
@@ -174,8 +175,8 @@ export class SubmitSkillTool extends BaseTool {
             type: 'string',
             enum: ['text', 'vision'],
             description:
-              '目标操作模式：text=技能交给纯文本模型使用（定位以 CSS 选择器/XPath + 元素文字为主）；' +
-              'vision=技能交给视觉模型使用（可额外描述元素在界面中的位置区域）。',
+              '目标操作模式：text=真实 XPath + 元素文字/属性，现场获取引用并操作；' +
+              'vision=保留 XPath/文本交互，额外描述位置、外观和交互反馈。必须与本次目标模式一致。',
           },
           summary: {
             type: 'string',
@@ -222,6 +223,9 @@ export class SubmitSkillTool extends BaseTool {
           '缩短技能名，保留站点名 + 核心动作即可',
         );
       }
+      if (!name.includes('-')) {
+        return skillFailure('参数错误', 'name 缺少平台或任务概述', '使用「平台-任务简短概述」，例如 pinduoduo-search-products');
+      }
 
       // ── description ──
       operation = '校验 description';
@@ -255,10 +259,19 @@ export class SubmitSkillTool extends BaseTool {
           '精简正文：合并重复步骤、压缩示例与解释、坑点只保留会导致失败的关键项；结构小节标题保留',
         );
       }
+      const bodyIssues = validateLearnSkillBody(body);
+      if (bodyIssues.length) {
+        return skillFailure('正文结构错误', bodyIssues.join('；'), '补全完成计划与逐项对应的具体操作讲解，并保留全部必要小节；每步写清动作、原因、真实目标特征、成功判据和注意事项');
+      }
 
-      // ── allowedTools（非空 + 只保留已注册工具，未注册的显式回告）──
+      // ── allowedTools（非空，未知/学习内部/不符合目标能力的工具要求模型修正）──
       operation = '校验 allowedTools';
       const declaredTools = toStringArray(args.allowedTools, 'allowedTools');
+      const internalTools = declaredTools.filter(id => ['submit_skill', 'submit_validation'].includes(id));
+      const visualTools = declaredTools.filter(isVisualSkillTool);
+      if (internalTools.length || (mode === 'text' && visualTools.length)) {
+        return skillFailure('工具声明错误', `allowedTools 包含学习内部工具或文本模式不可依赖的视觉工具：${[...internalTools, ...(mode === 'text' ? visualTools : [])].join(', ')}`, '只声明最终技能执行所依赖的工具；视觉辅助探索使用的工具不必写进文本技能');
+      }
       if (declaredTools.length === 0) {
         return skillFailure(
           '参数错误',
@@ -271,20 +284,20 @@ export class SubmitSkillTool extends BaseTool {
       for (const toolId of declaredTools) {
         (toolRegistry.getTool(toolId) ? knownTools : unknownTools).push(toolId);
       }
-      if (knownTools.length === 0) {
+      if (unknownTools.length > 0) {
         return skillFailure(
           '参数错误',
-          `allowedTools 中没有已注册的工具: ${declaredTools.join(', ')}`,
+          `allowedTools 中有未注册的工具: ${unknownTools.join(', ')}`,
           '工具 ID 必须与注册名完全一致（可参考工具测试面板中的名称），例如 browser_interact 而不是 click',
         );
       }
 
       // ── tags（归一化 + 自动补模式标签；模式标签是模式的唯一持久化表达）──
       operation = '校验 tags';
-      const tags = normalizeTags(toStringArray(args.tags, 'tags')).slice(0, MAX_TAGS - 1);
-      const modeTag = MODE_TAG[mode];
+      const tags = normalizeTags(toStringArray(args.tags, 'tags')).filter(tag => !Object.values(SKILL_MODE_TAG).includes(tag)).slice(0, SKILL_MAX_TAGS - 1);
+      const modeTag = SKILL_MODE_TAG[mode];
       if (!tags.includes(modeTag)) tags.push(modeTag);
-      const finalTags = tags.slice(0, MAX_TAGS);
+      const finalTags = tags.slice(0, SKILL_MAX_TAGS);
 
       // ── summary（可选）──
       const rawSummary = args.summary;
@@ -308,15 +321,12 @@ export class SubmitSkillTool extends BaseTool {
         ...(summary ? { summary } : {}),
       };
 
-      const droppedNote = unknownTools.length > 0
-        ? `\n注意：以下工具 ID 未注册，已从 allowedTools 中剔除: ${unknownTools.join(', ')}（若确需保留请先确认工具名）`
-        : '';
       const renamedNote = name !== rawName
         ? `\n名称已规范化为 "${name}"（原始值 "${rawName}"）`
         : '';
 
       return skillSuccess(
-        `技能草稿已提交，学习阶段结束。${renamedNote}${droppedNote}\n\n` +
+        `技能草稿已提交，学习阶段结束。${renamedNote}\n\n` +
           `name: ${name}\ncategory: ${category}\ntags: ${finalTags.join(' ')}\n` +
           `allowed-tools: ${knownTools.join(' ')}\nmode: ${mode}\n` +
           `正文 ${body.length} 字符。后续将由你确认后写入技能库。`,

@@ -14,6 +14,7 @@
 import { BaseAdapter, type StreamAccumulator } from './base-adapter';
 import { ApiRequestError, createInBandError } from '../errors';
 import { mergeUsageSafe, normalizeOpenAIUsage } from './usage-normalize';
+import { nativeItems, setNativeItems } from './native-replay';
 import type {
   AdapterCapabilities,
   ProviderType,
@@ -40,7 +41,17 @@ export class OpenAIAdapter extends BaseAdapter {
   buildRequestBody(config: StreamRequestConfig): any {
     const body: any = {
       model: config.model,
-      messages: config.messages,
+      messages: config.messages.map(message => {
+        const native = nativeItems(message, config, 'openai');
+        const reasoning = native?.[0]?.reasoning_content;
+        return {
+          role: message.role, content: message.content,
+          ...(message.name ? { name: message.name } : {}),
+          ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
+          ...(message.tool_calls ? { tool_calls: message.tool_calls.map(({ geminiThoughtSignature: _signature, ...call }) => call) } : {}),
+          ...(message.role === 'assistant' && typeof reasoning === 'string' ? { reasoning_content: reasoning } : {}),
+        };
+      }),
       stream: true,
     };
 
@@ -155,6 +166,8 @@ export class OpenAIAdapter extends BaseAdapter {
 
       // 推理/思考内容（如 DeepSeek 的 reasoning_content）
       if (delta?.reasoning_content) {
+        const previous = acc.finalMessage.nativeReplay?.items[0]?.reasoning_content ?? '';
+        setNativeItems(acc.finalMessage, 'openai', [{ reasoning_content: previous + delta.reasoning_content }]);
         this.handleReasoningToken(delta.reasoning_content, acc, callbacks);
       }
 

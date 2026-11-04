@@ -1,18 +1,18 @@
 <template>
   <div class="params-form">
     <h3 class="section-title">参数配置</h3>
-    <div v-if="Object.keys(tool.parameters).length === 0" class="no-params">
+    <div v-if="Object.keys(activeTool.parameters).length === 0" class="no-params">
       此工具无需参数
     </div>
     <div v-else class="param-fields">
       <div
-        v-for="(param, paramName) in tool.parameters"
+        v-for="(param, paramName) in activeTool.parameters"
         :key="paramName"
         class="param-field"
       >
         <label class="param-label">
           <span class="param-name">{{ paramName }}</span>
-          <span v-if="tool.required.includes(paramName)" class="required">*</span>
+          <span v-if="activeTool.required.includes(paramName)" class="required">*</span>
           <span class="param-type">{{ param.type }}</span>
         </label>
         <div class="param-description">{{ param.description }}</div>
@@ -103,6 +103,8 @@
 
 <script setup lang="ts">
 import type { ToolDefinition, ToolParameter } from './types';
+import { resolveActionDefinition } from './types';
+import { computed } from 'vue';
 
 const props = defineProps<{
   tool: ToolDefinition;
@@ -112,8 +114,16 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [params: Record<string, any>];
 }>();
+const activeTool = computed(() => resolveActionDefinition(props.tool, props.modelValue.action));
 
 const updateParam = (paramName: string, value: any) => {
+  if (paramName === 'action' && props.tool.actionSchemas) {
+    const next: Record<string, any> = { action: value };
+    // Screenshot identity can carry across action selection; gesture fields cannot.
+    if (props.modelValue.screenshotId) next.screenshotId = props.modelValue.screenshotId;
+    emit('update:modelValue', next);
+    return;
+  }
   emit('update:modelValue', { ...props.modelValue, [paramName]: value });
 };
 </script>

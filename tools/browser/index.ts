@@ -11,7 +11,7 @@ import { toolRegistry } from '../registry';
 // 导入所有浏览器工具
 import { navigateTool, closeTabsTool, goBackOrForwardTool } from './navigation';
 import { windowTool } from './window';
-import { screenshotTool, consoleTool } from './capture';
+import { consoleTool } from './capture';
 import { 
   networkRequestTool, 
 } from './network';
@@ -57,7 +57,6 @@ function createBrowserTools() {
     windowTool,
     
     // Capture tools
-    screenshotTool,
     consoleTool,
     
     // Network tools

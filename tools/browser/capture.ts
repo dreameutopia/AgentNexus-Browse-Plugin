@@ -1,6 +1,7 @@
 /**
- * 截图和控制台工具
- * 提供截图捕获和控制台日志捕获功能
+ * 控制台工具
+ * 捕获浏览器控制台日志（原「截图工具 browser_screenshot」已下线：
+ * 视觉截图统一由 tools/vision/screenshot-tool.ts 的 screenshot 提供）
  */
 
 import { BaseBrowserTool } from '../base/browser-tool';
@@ -8,163 +9,6 @@ import { ToolMetadata } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult, createErrorResponse } from '@/common/tool-handler';
 import { TOOL_NAMES } from '@/common/constants';
-import { TOOL_MESSAGE_TYPES } from '@/common/message-types';
-
-/**
- * 截图工具 - 捕获网页截图
- */
-export class ScreenshotTool extends BaseBrowserTool {
-  name = TOOL_NAMES.BROWSER.SCREENSHOT;
-
-  metadata: ToolMetadata = {
-    name: TOOL_NAMES.BROWSER.SCREENSHOT,
-    description: '捕获网页截图（可见区域、全页面或特定元素）',
-    category: 'browser',
-    version: '1.0.0',
-    author: 'AgentNexus',
-    tags: ['browser', 'screenshot', 'capture', 'chrome']
-  };
-
-  openaiSchema: OpenAITool = {
-    type: 'function',
-    function: {
-      name: TOOL_NAMES.BROWSER.SCREENSHOT,
-      description: '捕获网页截图（可见区域、全页面或特定元素）',
-      parameters: {
-        type: 'object',
-        properties: {
-          name: {
-            type: 'string',
-            description: '截图文件名'
-          },
-          selector: {
-            type: 'string',
-            description: 'CSS 选择器，用于捕获特定元素'
-          },
-          width: {
-            type: 'number',
-            description: '截图宽度'
-          },
-          height: {
-            type: 'number',
-            description: '截图高度'
-          },
-          storeBase64: {
-            type: 'boolean',
-            description: '是否返回 base64 编码的图片数据'
-          },
-          fullPage: {
-            type: 'boolean',
-            description: '是否捕获整个页面'
-          },
-          savePng: {
-            type: 'boolean',
-            description: '是否保存为 PNG 文件'
-          },
-          maxHeight: {
-            type: 'number',
-            description: '最大捕获高度（像素）'
-          }
-        },
-        required: ['name']
-      }
-    }
-  };
-
-  async execute(args: {
-    name: string;
-    selector?: string;
-    width?: number;
-    height?: number;
-    storeBase64?: boolean;
-    fullPage?: boolean;
-    savePng?: boolean;
-    maxHeight?: number;
-  }): Promise<ToolResult> {
-    this.ensureBackgroundContext();
-
-    const {
-      name = 'screenshot',
-      selector,
-      storeBase64 = false,
-      fullPage = false,
-      savePng = true,
-    } = args;
-
-    this.log(`Starting screenshot: ${name}`);
-
-    try {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tabs[0]) {
-        return createErrorResponse('No active tab found');
-      }
-      const tab = tabs[0];
-
-      if (
-        tab.url?.startsWith('chrome://') ||
-        tab.url?.startsWith('edge://') ||
-        tab.url?.startsWith('https://chrome.google.com/webstore')
-      ) {
-        return createErrorResponse('Cannot capture special browser pages due to security restrictions.');
-      }
-
-      await this.injectContentScript(tab.id!, ['inject-scripts/vision/screenshot-helper.js']);
-      await new Promise((resolve) => setTimeout(resolve, 200));
-
-      await this.sendMessageToTab(tab.id!, {
-        action: TOOL_MESSAGE_TYPES.SCREENSHOT_PREPARE_PAGE_FOR_CAPTURE,
-        options: { fullPage },
-      });
-
-      let imageDataUrl: string;
-
-      if (fullPage) {
-        // 简化实现：仅捕获可见区域
-        imageDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-      } else if (selector) {
-        // 捕获特定元素
-        const result = await this.sendMessageToTab(tab.id!, {
-          action: TOOL_MESSAGE_TYPES.SCREENSHOT_GET_ELEMENT_DETAILS,
-          selector,
-        });
-        imageDataUrl = result.dataUrl || await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-      } else {
-        // 可见区域
-        imageDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-      }
-
-      if (storeBase64) {
-        const base64Data = imageDataUrl.replace(/^data:image\/[^;]+;base64,/, '');
-        return this.createSuccessResponse({
-          base64Data,
-          mimeType: 'image/png',
-        }, 'Screenshot captured as base64');
-      }
-
-      if (savePng) {
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const filename = `${name.replace(/[^a-z0-9_-]/gi, '_')}_${timestamp}.png`;
-
-        const downloadId = await chrome.downloads.download({
-          url: imageDataUrl,
-          filename: filename,
-          saveAs: false,
-        });
-
-        return this.createSuccessResponse({
-          downloadId,
-          filename,
-        }, `Screenshot saved as ${filename}`);
-      }
-
-      return this.createSuccessResponse({
-        dataUrl: imageDataUrl,
-      }, 'Screenshot captured successfully');
-    } catch (error) {
-      return this.createErrorResponse('Screenshot capture failed', error);
-    }
-  }
-}
 
 /**
  * 控制台工具 - 捕获浏览器控制台输出
@@ -317,5 +161,4 @@ export class ConsoleTool extends BaseBrowserTool {
 }
 
 // 导出工具实例
-export const screenshotTool = new ScreenshotTool();
 export const consoleTool = new ConsoleTool();

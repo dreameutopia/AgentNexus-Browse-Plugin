@@ -12,7 +12,7 @@ export const VISION_CAPABILITIES = {
     checks:['URL','bounded visible text','target name/enabled/editable/checked','non-password value equality'],
     statuses:['passed','failed','unknown','observed'],targetGuard:'stable enabled inspectable main-frame DOM targets; not a pixel/business guarantee',
     actionRetry:false},
-  humanTiming: 'bounded variable pauses and acceleration/deceleration; not a human identity or detection-evasion guarantee',
+  humanTiming: 'drag: straight eased segments, independent 500..1500ms held dwell at start/end unless overridden; bounded click/key/input/wheel timing',
   antiBotGuarantee: false,
   unsupported: ['operating-system dialogs/desktop','browser address bar and native menus','multi-touch/pinch gestures',
     'physical keyboard layout/IME emulation','arbitrary offscreen drawing in one gesture','guaranteed model perception or business outcome'],

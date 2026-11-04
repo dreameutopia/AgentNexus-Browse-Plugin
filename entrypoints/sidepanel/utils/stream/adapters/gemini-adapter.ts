@@ -16,6 +16,7 @@ import { BaseAdapter, type StreamAccumulator } from './base-adapter';
 import { ApiRequestError, createInBandError } from '../errors';
 import { mergeUsageSafe, normalizeGeminiUsage } from './usage-normalize';
 import { parseReplayArguments, parseReplayToolResponse } from './unified-normalize';
+import { nativeItems, setNativeItems } from './native-replay';
 import type {
   AdapterCapabilities,
   ProviderType,
@@ -34,7 +35,7 @@ export class GeminiAdapter extends BaseAdapter {
     vision: true,
     remoteImageUrl: 'base64',
     tools: true,
-    reasoning: false,
+    reasoning: true,
   };
 
   /**
@@ -63,8 +64,12 @@ export class GeminiAdapter extends BaseAdapter {
     // tool_call_id → 工具名映射：Gemini 的 functionResponse 按「名称」配对（非 id），
     // 优先取消息自带 name，缺失时回查对应 assistant.tool_calls
     const toolNameById = new Map<string, string>();
+    const nativeCallIds = new Set<string>();
     for (const msg of config.messages) {
       if (msg.role !== 'assistant') continue;
+      for (const part of nativeItems(msg, config, 'gemini') ?? []) {
+        if (typeof part.functionCall?.id === 'string') nativeCallIds.add(part.functionCall.id);
+      }
       for (const tc of msg.tool_calls ?? []) {
         if (tc.id) toolNameById.set(tc.id, tc.function.name);
       }
@@ -94,6 +99,7 @@ export class GeminiAdapter extends BaseAdapter {
         pushTurn('user', [
           {
             functionResponse: {
+              ...(msg.tool_call_id && nativeCallIds.has(msg.tool_call_id) ? { id: msg.tool_call_id } : {}),
               name,
               response: parseReplayToolResponse(msg.content),
             },
@@ -104,11 +110,14 @@ export class GeminiAdapter extends BaseAdapter {
 
       // 助手消息 → 文本 + functionCall（参数经防御性解析，永不抛错）
       if (msg.role === 'assistant') {
+        const native = nativeItems(msg, config, 'gemini');
+        if (native?.length) { pushTurn('model', native); continue; }
         const parts: any[] = [];
         const text = this.plainTextOf(msg.content);
         if (text) parts.push({ text });
         for (const tc of msg.tool_calls ?? []) {
           parts.push({
+            ...(!msg.nativeReplay && typeof tc.geminiThoughtSignature === 'string' && tc.geminiThoughtSignature ? { thoughtSignature: tc.geminiThoughtSignature } : {}),
             functionCall: {
               name: tc.function.name,
               args: parseReplayArguments(tc.function.arguments),
@@ -296,16 +305,26 @@ export class GeminiAdapter extends BaseAdapter {
       }
 
       for (const part of parts) {
+        const items = acc.finalMessage.nativeReplay?.items ?? [];
+        const previous = items[items.length - 1];
+        // Coalesce only unsigned text deltas. Signed/empty parts keep their
+        // exact boundaries, including a signature-only final streaming chunk.
+        if (typeof part.text === 'string' && !part.thoughtSignature && previous && typeof previous.text === 'string' &&
+            !previous.thoughtSignature && previous.thought === part.thought && !part.functionCall) previous.text += part.text;
+        else items.push(structuredClone(part));
+        setNativeItems(acc.finalMessage, 'gemini', items);
         // 文本内容
         if (part.text) {
-          this.handleContentToken(part.text, acc, callbacks);
+          if (part.thought === true) this.handleReasoningToken(part.text, acc, callbacks);
+          else this.handleContentToken(part.text, acc, callbacks);
         }
 
         // 函数/工具调用（回调统一在 finalizeAccumulator 流末尾补发，与其它协议同语义；
         // 流中发射会让同一调用在重试守卫/消费方两侧产生时序差异）
         if (part.functionCall) {
-          const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          const callId = typeof part.functionCall.id === 'string' ? part.functionCall.id : `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
           const toolCall: UnifiedToolCall = {
+            ...(typeof part.thoughtSignature === 'string' ? { geminiThoughtSignature: part.thoughtSignature } : {}),
             id: callId,
             type: 'function',
             function: {

@@ -365,6 +365,13 @@ check(!isImageRef(undefined), 'undefined 不是引用');
 }
 
 // ==================== 汇总 ====================
+{
+  const original: ChatMessage[] = [{ role: 'system', content: 'stable' }, { role: 'user', content: 'small request' }];
+  const r = ContextWindowGuard.protect(original, CONTEXT_THRESHOLD_MIN);
+  eq(r.truncated, false, '内部排序字段不得造成虚假的裁剪状态');
+  eq(r.originalTokens, r.finalTokens, '内部排序字段不进入 token 预算');
+  eq(r.removedMessages, 0, '小请求不移除消息');
+}
 
 if (failures.length > 0) {
   console.error(`\n通过 ${passed} 项断言，失败 ${failures.length} 项：`);

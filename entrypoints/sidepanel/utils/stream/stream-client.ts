@@ -20,6 +20,7 @@ import type {
 
 import { driverRegistry } from './driver-registry';
 import { prepareVisionRequest } from './vision';
+import { replayScope, staticReplayPrefix, inputReplayPrefix, credentialScope } from './adapters/native-replay';
 import { ApiRequestError, PermanentRequestError, isAbortError, sanitizeUrlForLog } from './errors';
 import { aiUsageMetrics, summarizeErrorForMetrics } from '../metrics/usage-metrics-engine';
 import type { TokenUsage } from './types';
@@ -32,6 +33,20 @@ import type { TokenUsage } from './types';
  * 后续请求直接去掉该参数，保证既有可用性不受 usage 统计影响。
  */
 const streamOptionsUnsupportedEndpoints = new Set<string>();
+const cacheControlModes = new Map<string, 'blocks' | 'off'>();
+const cacheKeyUnsupportedModels = new Set<string>();
+const encryptedIncludeUnsupported = new Set<string>();
+
+export function applyCacheCompatibility(body: any, mode: 'blocks' | 'off' | undefined): void {
+  if (!mode) return;
+  delete body.cache_control;
+  if (mode !== 'off') return;
+  const clear = (blocks: any) => {
+    if (Array.isArray(blocks)) for (const block of blocks) if (block && typeof block === 'object') delete block.cache_control;
+  };
+  clear(body.system); clear(body.tools);
+  for (const message of body.messages ?? []) clear(message.content);
+}
 
 /** 判定某错误是否为「端点拒绝 stream_options 参数」导致的 400 */
 function isStreamOptionsRejection(error: unknown): boolean {
@@ -79,6 +94,9 @@ export class StreamClient {
     }
 
     const maxRetries = options.retryCount ?? 0;
+    const scope = replayScope(providerConfig.provider, providerConfig.baseUrl, config.model, await credentialScope(providerConfig.apiKey));
+    const requestPrefix = staticReplayPrefix(config);
+    const inputPrefix = providerConfig.provider === 'claude' ? inputReplayPrefix({ ...config }) : undefined;
     let lastError: Error | null = null;
 
     // 流中发射守卫：一旦已向调用方发射过任何内容（token / 推理 / 工具调用），
@@ -89,6 +107,13 @@ export class StreamClient {
     let streamEmitted = false;
     const guardedCallbacks: StreamCallbacks = {
       ...callbacks,
+      onComplete: message => {
+        if (message.nativeReplay) {
+          message.nativeReplay.model = config.model; message.nativeReplay.scope = scope; message.nativeReplay.requestPrefix = requestPrefix;
+          if (inputPrefix) message.nativeReplay.inputPrefix = inputPrefix;
+        }
+        callbacks.onComplete?.(message);
+      },
       onToken: token => {
         streamEmitted = true;
         callbacks.onToken?.(token);
@@ -136,7 +161,7 @@ export class StreamClient {
           console.log(`[StreamClient] 开始请求 (最大重试: ${maxRetries})`);
         }
 
-        const result = await this.executeRequest(config, guardedCallbacks, providerConfig, options.signal);
+        const result = await this.executeRequest({ ...config, replayScope: scope }, guardedCallbacks, providerConfig, options.signal);
         return result;
       } catch (error: any) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -200,6 +225,9 @@ export class StreamClient {
 
     // 获取请求 URL
     const url = this.resolveRequestUrl(adapter, providerConfig);
+    applyCacheCompatibility(body, cacheControlModes.get(url));
+    if (cacheKeyUnsupportedModels.has(JSON.stringify([url, config.model]))) delete body.prompt_cache_key;
+    if (encryptedIncludeUnsupported.has(JSON.stringify([url, config.model]))) delete body.include;
 
     // 获取请求头
     const headers = adapter.getRequestHeaders(providerConfig.apiKey, providerConfig.customHeaders);
@@ -254,6 +282,13 @@ export class StreamClient {
       });
 
       // 用户中止：流正常返回但带 abort 标记（部分 token 已消耗，照常计入）
+      if (result.finalMessage.nativeReplay) {
+        result.finalMessage.nativeReplay.model = config.model;
+        result.finalMessage.nativeReplay.scope = config.replayScope;
+        result.finalMessage.nativeReplay.requestPrefix = staticReplayPrefix(config);
+        if (providerConfig.provider === 'claude') result.finalMessage.nativeReplay.inputPrefix = inputReplayPrefix(config);
+        if (result.usage?.reasoningTokens !== undefined) result.finalMessage.nativeReplay.reasoningTokens = result.usage.reasoningTokens;
+      }
       outcome = result.finishReason === 'abort' ? 'aborted' : 'success';
       usage = result.usage;
       return result;
@@ -290,19 +325,39 @@ export class StreamClient {
     body: any,
     signal?: AbortSignal
   ): Promise<ReadableStreamDefaultReader<Uint8Array>> {
-    try {
-      return await adapter.fetchStream(url, headers, body, signal);
-    } catch (error) {
-      if (!body?.stream_options || !isStreamOptionsRejection(error)) {
+    for (let compatibilityAttempt = 0; ; compatibilityAttempt++) {
+      try { return await adapter.fetchStream(url, headers, body, signal); }
+      catch (error) {
+        if (compatibilityAttempt >= 3) throw error;
+        if (adapter.providerType === 'openai-responses' && body.include && error instanceof ApiRequestError && error.status === 400 &&
+            /include|encrypted_content/i.test(error.rawBody || '')) {
+          encryptedIncludeUnsupported.add(JSON.stringify([url, body.model]));
+          delete body.include;
+          console.warn('[StreamClient] Endpoint rejected encrypted reasoning include; preserving returned output items without that option');
+          continue;
+        }
+        if (body.prompt_cache_key && error instanceof ApiRequestError && error.status === 400 && /prompt_cache_key/i.test(error.rawBody || '')) {
+          cacheKeyUnsupportedModels.add(JSON.stringify([url, body.model]));
+          delete body.prompt_cache_key;
+          console.warn('[StreamClient] Model rejected prompt_cache_key; retaining automatic prefix caching');
+          continue;
+        }
+        if (body?.stream_options && isStreamOptionsRejection(error)) {
+          streamOptionsUnsupportedEndpoints.add(url);
+          delete body.stream_options;
+          console.warn('[StreamClient] Endpoint rejected stream_options; retrying without it');
+          continue;
+        }
+        if (adapter.providerType === 'claude' && error instanceof ApiRequestError && error.status === 400 &&
+          /cache[_-]?control/i.test(error.rawBody || '') && cacheControlModes.get(url) !== 'off') {
+          const mode = body.cache_control ? 'blocks' : 'off';
+          cacheControlModes.set(url, mode);
+          applyCacheCompatibility(body, mode);
+          console.warn(`[StreamClient] Endpoint rejected cache_control; using ${mode} cache compatibility`);
+          continue;
+        }
         throw error;
       }
-      // 明确由 stream_options 引发的 400：降级重发（不计入失败指标，对调用方透明）
-      console.warn(
-        `[StreamClient] 端点拒绝 stream_options，去掉该参数重发 (url=${sanitizeUrlForLog(url)})`,
-      );
-      streamOptionsUnsupportedEndpoints.add(url);
-      delete body.stream_options;
-      return await adapter.fetchStream(url, headers, body, signal);
     }
   }
 

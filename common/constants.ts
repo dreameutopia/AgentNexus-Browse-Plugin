@@ -160,10 +160,7 @@ export const TOOL_NAMES = {
     
     // Content tools
     CONTENT_GET: 'browser_get_page_text',
-    
-    // Capture tools
-    SCREENSHOT: 'browser_screenshot',
-    
+
     // Bookmark tools
     BOOKMARK_CREATE: 'browser_bookmark_create',
     BOOKMARK_SEARCH: 'browser_search_bookmarks',

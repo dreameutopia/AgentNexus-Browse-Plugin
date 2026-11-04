@@ -21,7 +21,7 @@ export {
 export { skillEngine, SKILL_TOOL_IDS } from './registry/skill-engine';
 export type { ActivationRound } from './registry/skill-engine';
 // 智能体领域类型（供 UI 构建选择器/分组视图；具体读写一律经 agentEngine 门面）
-export type { AgentConfig, AgentCategoryGroup } from '@/utils/agents/agent-types';
+export type { AgentConfig, AgentCategoryGroup, AgentDisplayText } from '@/utils/agents/agent-types';
 // 头像解析（图片地址 → 可渲染 src；缺省 → 默认 emoji）
 export {
   DEFAULT_AGENT_AVATAR,
@@ -54,7 +54,7 @@ export { runtimeBuilder } from './runtime/runtime-builder';
 export type { RuntimeBuildInput } from './runtime/runtime-builder';
 // 图片库门面（UI 渲染层用 object URL 展示、用 meta 生成下载文件名；
 // 二进制与缓存细节全部封装在 image-store 内，调用方只见引用）
-export { imageStore, isImageRef, normalizeImageRefs } from './images/image-store';
+export { imageStore, isImageRef, normalizeImageRefs, SHORT_ID_PATTERN } from './images/image-store';
 export type { ImageRef } from './images/image-store';
 export {
   conversationEngine,

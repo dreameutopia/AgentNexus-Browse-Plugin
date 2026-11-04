@@ -47,11 +47,13 @@ import { LocalWriteFingerprint, subscribeStorageKey } from '../shared/storage-sy
 // 类型与纯逻辑的统一出口：外部一律从本模块导入领域类型，
 // 保持「只认识存储门面」的调用习惯，底层分层可自由演进
 export * from './agent-types';
-
 // ──── 预置智能体 ────
 
-/** 预置智能体表（声明顺序即列表展示顺序；对象冻结防止运行期被意外改写） */
-const PRESET_AGENTS: readonly AgentConfig[] = Object.freeze([
+/**
+ * 预置智能体表（声明顺序即列表展示顺序；对象冻结防止运行期被意外改写）。
+ * 对外只读：预置不可被覆盖/删除/改名，外部拿到的引用不得被改写。
+ */
+export const PRESET_AGENTS: readonly AgentConfig[] = Object.freeze([
   Object.freeze(autoActionConfig),
   Object.freeze(dataHarvesterConfig),
   Object.freeze(visionAssistantConfig),

@@ -151,13 +151,39 @@ export interface MessageTokenEstimate {
  */
 export function estimateMessageTokensDetailed(message: unknown): MessageTokenEstimate {
   const imageTokens = countImageParts(message) * IMAGE_CONTEXT_TOKENS;
+  let visible = message;
+  let reasoningTokens = 0;
+  if (message && typeof message === 'object') {
+    const { nativeReplay, toolFeedbackFor: _feedback, ...rest } = message as Record<string, any>;
+    // Native output also contains copies of visible text/tool calls, IDs and
+    // opaque signatures. Do not tokenize those transport envelopes twice.
+    if (Array.isArray(rest.tool_calls)) rest.tool_calls = rest.tool_calls.map((call: any) => {
+      if (!call || typeof call !== 'object') return call;
+      const { geminiThoughtSignature: _signature, ...ordinary } = call;
+      return ordinary;
+    });
+    visible = rest;
+    if (nativeReplay && Array.isArray(nativeReplay.items)) {
+      for (const item of nativeReplay.items) {
+        if (!item || typeof item !== 'object') continue;
+        const text = nativeReplay.provider === 'openai' ? item.reasoning_content
+          : nativeReplay.provider === 'ollama' ? item.thinking
+          : nativeReplay.provider === 'claude' && item.type === 'thinking' ? item.thinking
+          : nativeReplay.provider === 'gemini' && item.thought === true ? item.text : '';
+        if (typeof text === 'string') reasoningTokens += estimateTextTokens(text);
+      }
+      if (typeof nativeReplay.reasoningTokens === 'number' && Number.isFinite(nativeReplay.reasoningTokens) && nativeReplay.reasoningTokens >= 0) {
+        reasoningTokens = Math.max(reasoningTokens, Math.ceil(nativeReplay.reasoningTokens));
+      }
+    }
+  }
   let serialized: string;
   try {
-    serialized = JSON.stringify(stripImagePayloads(message)) ?? '';
+    serialized = JSON.stringify(stripImagePayloads(visible)) ?? '';
   } catch {
     serialized = String(message ?? '');
   }
-  const textTokens = estimateTextTokens(serialized);
+  const textTokens = estimateTextTokens(serialized) + reasoningTokens;
   return { textTokens, imageTokens, totalTokens: textTokens + imageTokens };
 }
 

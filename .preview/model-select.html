@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>模型选择器预览</title>
+    <link rel="stylesheet" href="../entrypoints/sidepanel/styles/global.css" />
+    <link rel="stylesheet" href="../entrypoints/sidepanel/styles/app.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        background: #f4f5f7;
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+      .stage {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 16px;
+        width: 380px;
+      }
+      .stage h3 {
+        font-size: 12px;
+        color: #9ca3af;
+        margin: 0 0 12px;
+        font-weight: 500;
+      }
+      .fake-input {
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 10px 12px;
+        background: #fff;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+      }
+      .fake-text {
+        color: #9ca3af;
+        font-size: 13px;
+        margin-bottom: 10px;
+      }
+      .bottom-bar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .left-actions,
+      .right-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .right-actions .icon-btn {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        background: #f3f4f6;
+      }
+      .ring {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        border: 2.5px solid #e5e7eb;
+        border-top-color: #667eea;
+      }
+      .send {
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        background: #667eea;
+      }
+      /* 相对定位演示下拉向上弹出 */
+      .model-select-wrap {
+        position: relative;
+      }
+      .model-select-dropdown {
+        display: block !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage">
+      <h3>闭合态（默认 / 悬停 / 未配置）</h3>
+      <div class="fake-input">
+        <div class="fake-text">在这里输入你的问题…</div>
+        <div class="bottom-bar">
+          <div class="left-actions">
+            <div class="model-select-wrap">
+              <button class="model-select-btn">
+                <img class="model-select-logo" src="" alt="" />
+                <span class="model-select-name">gpt-5.2-codex</span>
+                <svg class="dropdown-arrow" width="11" height="11" viewBox="0 0 24 24" fill="none">
+                  <path d="M7,10L12,15L17,10H7Z" fill="currentColor" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="right-actions">
+            <div class="ring"></div>
+            <div class="icon-btn"></div>
+            <div class="send"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <h3>展开态（向上弹出下拉）</h3>
+      <div class="fake-input">
+        <div class="fake-text">在这里输入你的问题…</div>
+        <div class="bottom-bar">
+          <div class="left-actions">
+            <div class="model-select-wrap">
+              <button class="model-select-btn is-open">
+                <img class="model-select-logo" src="" alt="" />
+                <span class="model-select-name">gpt-5.2-codex</span>
+                <svg class="dropdown-arrow" width="11" height="11" viewBox="0 0 24 24" fill="none">
+                  <path d="M7,10L12,15L17,10H7Z" fill="currentColor" />
+                </svg>
+              </button>
+              <div class="model-select-dropdown">
+                <div class="model-select-option active">
+                  <img class="model-select-option-logo" src="" alt="" />
+                  <span class="model-select-option-name">gpt-5.2-codex</span>
+                  <span class="model-select-option-channel">OpenAI</span>
+                  <span class="model-select-vision-tag">视觉</span>
+                  <svg class="model-select-check" width="14" height="14" viewBox="0 0 24 24" fill="none">
+                    <path d="M9 16.17L4.83 12L3.41 13.41L9 19L21 7L19.59 5.59L9 16.17Z" fill="currentColor" />
+                  </svg>
+                </div>
+                <div class="model-select-option">
+                  <img class="model-select-option-logo" src="" alt="" />
+                  <span class="model-select-option-name">claude-opus-5</span>
+                  <span class="model-select-option-channel">Anthropic</span>
+                  <svg class="model-select-check" style="visibility: hidden" width="14" height="14" viewBox="0 0 24 24" fill="none">
+                    <path d="M9 16.17L4.83 12L3.41 13.41L9 19L21 7L19.59 5.59L9 16.17Z" fill="currentColor" />
+                  </svg>
+                </div>
+                <div class="model-select-option">
+                  <img class="model-select-option-logo" src="" alt="" />
+                  <span class="model-select-option-name">gemini-3-pro</span>
+                  <span class="model-select-option-channel">Google</span>
+                  <span class="model-select-vision-tag">视觉</span>
+                  <svg class="model-select-check" style="visibility: hidden" width="14" height="14" viewBox="0 0 24 24" fill="none">
+                    <path d="M9 16.17L4.83 12L3.41 13.41L9 19L21 7L19.59 5.59L9 16.17Z" fill="currentColor" />
+                  </svg>
+                </div>
+                <div class="model-select-option">
+                  <img class="model-select-option-logo" src="" alt="" />
+                  <span class="model-select-option-name">deepseek-chat</span>
+                  <span class="model-select-option-channel">DeepSeek</span>
+                  <svg class="model-select-check" style="visibility: hidden" width="14" height="14" viewBox="0 0 24 24" fill="none">
+                    <path d="M9 16.17L4.83 12L3.41 13.41L9 19L21 7L19.59 5.59L9 16.17Z" fill="currentColor" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="right-actions">
+            <div class="ring"></div>
+            <div class="icon-btn"></div>
+            <div class="send"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <h3>未配置模型</h3>
+      <div class="fake-input">
+        <div class="fake-text">在这里输入你的问题…</div>
+        <div class="bottom-bar">
+          <div class="left-actions">
+            <div class="model-select-wrap">
+              <button class="model-select-btn no-model">
+                <img class="model-select-logo" src="" alt="" />
+                <span class="model-select-name">未配置模型</span>
+                <svg class="dropdown-arrow" width="11" height="11" viewBox="0 0 24 24" fill="none">
+                  <path d="M7,10L12,15L17,10H7Z" fill="currentColor" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="right-actions">
+            <div class="ring"></div>
+            <div class="icon-btn"></div>
+            <div class="send"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

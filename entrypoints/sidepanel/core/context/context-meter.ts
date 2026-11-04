@@ -50,13 +50,16 @@ function measureTools(toolIds: readonly string[]): number {
  * 与会话引擎的实际组装方式（system + history）一致；重复传入 system 会导致双重计量。
  */
 export function measureContextUsage(input: {
+  toolDefinitions?: import('@/common/openai-types').OpenAITool[];
   systemPrompt: string;
   toolIds: readonly string[];
   messages: readonly ChatMessage[];
   threshold: number;
 }): ContextUsage {
   const systemTokens = estimateTextTokens(input.systemPrompt);
-  const toolsTokens = measureTools(input.toolIds);
+  const toolsTokens = input.toolDefinitions
+    ? input.toolDefinitions.reduce((sum, tool) => sum + estimateTextTokens(JSON.stringify(tool)), 0)
+    : measureTools(input.toolIds);
   let messagesTokens = 0;
   let imageTokens = 0;
   for (const message of input.messages) {

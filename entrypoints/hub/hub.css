@@ -444,7 +444,7 @@ body {
   color: #9ca3af;
 }
 
-/* ============ 头像选择器（内置图片 + 自填 emoji；两者互斥） ============ */
+/* ============ 头像选择器（预览 + 上传图片 + emoji 卡片，三者互斥择一） ============ */
 
 .hub-avatar-picker {
   display: flex;
@@ -452,49 +452,51 @@ body {
   gap: 8px;
 }
 
-.hub-avatar-images {
+.hub-avatar-current {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  align-items: center;
+  gap: 12px;
 }
 
-/* 单个头像选项：仅描边表示选中，不加背景底板 */
-.hub-avatar-option {
-  width: 36px;
-  height: 36px;
-  padding: 0;
+/* 预览位：轻描边圆角框，头像换新 / 清除时即时反映 */
+.hub-avatar-preview {
+  width: 60px;
+  height: 60px;
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: transparent;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: border-color 0.15s;
+  border: 1px dashed #d1d5db;
+  border-radius: 12px;
+  background: #f9fafb;
+  overflow: hidden;
 }
 
-.hub-avatar-option:hover {
-  border-color: #667eea;
-}
-
-.hub-avatar-option.is-active {
-  border-color: #667eea;
-  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.18);
-}
-
-.hub-avatar-emoji-field {
+.hub-avatar-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   align-items: center;
-  gap: 8px;
 }
 
-.hub-avatar-emoji-field .hub-field-label {
-  white-space: nowrap;
+/* 上传入口：label 承载隐藏 file input，样式与普通按钮一致 */
+.hub-avatar-upload {
+  cursor: pointer;
 }
 
-.hub-avatar-emoji-field input {
-  width: 96px;
-  flex: none;
+.hub-avatar-upload input {
+  display: none;
+}
+
+.hub-avatar-clear {
+  color: #ef4444;
+}
+
+/* emoji 选中态高亮由组件内部处理；按钮侧的展开态 */
+.hub-avatar-actions .hub-btn.is-active {
+  border-color: #667eea;
+  color: #667eea;
+  background: rgba(102, 126, 234, 0.08);
 }
 
 .hub-error {

@@ -5,8 +5,8 @@ import { validateReadArgs, createVisionReadTools } from '../../tools/vision/read
 import { filterVisionAssistantTools, isVisionAssistantTool } from '../../utils/agents/vision-assistant-policy';
 import { needsVisionRefresh, takeVisionToolImage, withoutVisionImage } from '../../entrypoints/sidepanel/core/conversation/vision-feedback';
 
-assert.deepEqual(filterVisionAssistantTools(['screenshot','browser_page_exec','browser_scroll','vision_click','vision_read','vision_read']), ['screenshot','vision_read']);
-for (const id of ['browser_navigate','browser_interact','browser_inject_script','vision_keyboard','vision_hover']) assert.equal(isVisionAssistantTool(id), false);
+assert.deepEqual(filterVisionAssistantTools(['screenshot','browser_page_exec','browser_scroll','vision_gui','vision_read','vision_read']), ['screenshot','vision_read']);
+for (const id of ['browser_navigate','browser_interact','browser_inject_script','vision_gui','vision_gui']) assert.equal(isVisionAssistantTool(id), false);
 for (const tool of createVisionReadTools()) assert.equal(isVisionAssistantTool(tool.name), true);
 for (const [action, args] of [
   ['read', null], ['read', []], ['read', { screenshotId:'s',code:'document.body.click()' }],
@@ -33,8 +33,8 @@ assert.equal(imageResult.data.screenshot.includes('base64'), true, 'Extraction m
 const none = () => undefined;
 assert.equal(needsVisionRefresh(['screenshot'], [image], none), false);
 assert.equal(needsVisionRefresh(['screenshot','vision_read','plan_tool'], [image], none), false);
-assert.equal(needsVisionRefresh(['screenshot','vision_click'], [image], none), true);
-assert.equal(needsVisionRefresh(['vision_click','screenshot'], [{...image,callIndex:1}], none), false);
+assert.equal(needsVisionRefresh(['screenshot','vision_gui'], [image], none), true);
+assert.equal(needsVisionRefresh(['vision_gui','screenshot'], [{...image,callIndex:1}], none), false);
 assert.equal(needsVisionRefresh(['screenshot'], [], none), true);
 assert.equal(needsVisionRefresh(['vision_read_wait'], [], ()=>'none'), true);
 assert.equal(needsVisionRefresh(['unknown_tool'], [], none), true);
@@ -107,7 +107,7 @@ const runtime:any = { chatId:'vision-guide-test',toolPolicy:'vision-assistant',t
   limits:{maxDurationMs:60000,toolTimeoutMs:1000} };
 const handle:any = {abortController:new AbortController(),dynamicToolIds:new Set(['browser_page_exec']),record:{toolCalls:[],parts:[]},toolCallCount:0};
 const calls = (name:string,args:any={}) => [{id:'c',type:'function',function:{name,arguments:JSON.stringify(args)}}];
-for (const name of ['browser_page_exec','vision_click','unadvertised']) {
+for (const name of ['browser_page_exec','vision_gui','unadvertised']) {
   const outcome = await engine.executeToolCalls(runtime,handle,calls(name),{},()=>{},Date.now()+60000);
   assert.equal(outcome.anyFailure,true); assert.match(outcome.messages[0].content,/TOOL_NOT_ALLOWED/);
 }
@@ -154,19 +154,26 @@ const savedRequire = modelRegistry.require;
 (modelRegistry as any).require=()=>({contextThreshold:32000});
 try {
   const built = await runtimeBuilder.build({chatId:'guide-build',userInput:'解释页面',agentName:'视觉助手',
-    skillNames:dangerous.ok?[dangerous.skill.id]:[],extraToolIds:['browser_page_exec','vision_click'],priorRecords:[]});
+    skillNames:dangerous.ok?[dangerous.skill.id]:[],extraToolIds:['browser_page_exec','vision_gui'],priorRecords:[]});
   assert.equal(built.toolPolicy,'vision-assistant');
   assert.equal(built.toolIds.every(isVisionAssistantTool),true);
   assert.equal(built.activationContext.length,0);
   assert.ok(built.systemPrompt.includes('已跳过激活'));
   assert.equal(built.systemPrompt.includes('必须优先调用 browser_get_page_text'),false);
-  const action = await runtimeBuilder.build({chatId:'action-build',userInput:'执行',agentName:'Vision Action助手',skillNames:[],priorRecords:[]});
-  assert.equal(action.toolPolicy,undefined); assert.ok(action.toolIds.includes('vision_click'));
+  const action = await runtimeBuilder.build({chatId:'action-build',userInput:'执行',agentName:'视觉通用助手',skillNames:[],priorRecords:[]});
+  assert.equal(action.toolPolicy,undefined); assert.ok(action.toolIds.includes('vision_gui'));
+  assert.equal(action.systemPrompt.split('<vision-gui-tool>').length-1,1,'Built-in action prompt carries one XML GUI guide');
+  const customAction = await runtimeBuilder.build({chatId:'custom-action',userInput:'执行',agentName:null,skillNames:[],extraToolIds:['vision_gui'],priorRecords:[],agentSystemOverride:'按当前截图完成任务。'});
+  assert.equal(customAction.systemPrompt.split('<vision-gui-tool>').length-1,1,'Custom agents receive the same guide');
   const safe=setCustomSkill({name:'guide-safe-skill',files:{'SKILL.md':'---\nname: guide-safe-skill\ndescription: Safe reading\n---\nRead current page'},allowedTools:['vision_read']});
   assert.equal(safe.ok,true);
   if(safe.ok){
     const safeRuntime=await runtimeBuilder.build({chatId:'safe-guide',userInput:'解释页面',agentName:'视觉助手',skillNames:[safe.skill.id],priorRecords:[]});
     assert.equal(safeRuntime.activationContext.length,2);assert.equal(safeRuntime.toolIds.every(isVisionAssistantTool),true);
+    const unselected=await runtimeBuilder.build({chatId:'safe-guide',userInput:'解释页面',agentName:'视觉助手',skillNames:[],priorRecords:[]});
+    assert.equal(safeRuntime.systemPrompt,unselected.systemPrompt,'Selecting a listed skill must not rewrite the system prefix');
+    assert.deepEqual(safeRuntime.advertisedToolIds,unselected.advertisedToolIds,'Skill activation must not change the advertised schemas');
+    assert.ok(safeRuntime.advertisedToolIds?.every(isVisionAssistantTool));
     engine.injectSkillTools(runtime,handle,{data:{skill:safe.skill.id}});
     assert.equal(handle.dynamicToolIds.has('vision_read'),true);
   }

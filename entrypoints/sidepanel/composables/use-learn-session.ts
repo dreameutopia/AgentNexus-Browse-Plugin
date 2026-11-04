@@ -42,17 +42,21 @@ import {
 } from '@/entrypoints/sidepanel/core';
 import { modelRegistry } from '@/entrypoints/sidepanel/utils/channels';
 import { streamClient } from '@/entrypoints/sidepanel/utils/stream/stream-client';
-import { getPresetToolIds, type ToolScenario } from '@/utils/tools/tool-presets';
+import { getPresetToolIds, getSiteLearnScenario, getSiteValidateScenario, type ToolScenario } from '@/utils/tools/tool-presets';
 import {
   LEARN_LIMITS,
   LEARN_WRAP_UP_EXTRA_ITERATIONS,
   isLearnRunning,
   type LearnPhase,
+  type LearnTargetMode,
   type SkillDraft,
   type ValidationReport,
 } from '@/utils/learn/learn-types';
 import {
   validateLearnConfig,
+  asSkillDraft,
+  asValidationReport,
+  reconcileSkillDraft,
   type LearnConfigErrorCode,
   type LearnConfigField,
   type LearnModelCandidate,
@@ -142,12 +146,14 @@ const DIALOG_SETTLE_VALUE: Record<LearnDialogMode, LearnDialogChoice> = {
   noDraft: 'giveUp',
 };
 
-// ──── 视觉循环配置（与 Vision Action 预设同构） ────
+// ──── 视觉循环配置（与视觉通用助手预设同构） ────
 
 /**
  * 学习 / 验证中需要视觉时的运行配置。
- * 引擎据此在每轮开始与每次工具成功后自动截图并注入多模态消息，
- * 截图工具本身不占模型工具位（模型无法也不需要主动调用它）。
+ * 引擎据此在每轮开始与每次工具成功后自动截图并注入多模态截图消息——
+ * 自动截图不消耗模型的工具调用轮次。视觉组合的工具面仍会携带 screenshot
+ * 工具（见 tool-presets 组合口径）：截图失效时模型可主动调用它恢复观察；
+ * 坐标手势工具（vision_gui）只出现在视觉目标组合。
  */
 const LEARN_VISION_RUNTIME = {
   screenshotTool: 'screenshot' as const,
@@ -242,8 +248,10 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
   let activeRun: Promise<RunSummary> | null = null;
   /** 用户已请求终止：post-run 一律不再推进业务（清理由 requestAbort 负责） */
   let aborting = false;
-  /** 轮数上限的收尾机会只给一次 */
+  /** 轮数上限的收尾机会每次阶段运行只给一次（runPhase 起始复位） */
   let wrapUpGranted = false;
+  // 重新学习需携带验收问题；不能清空报告后重复同一份失败技能。
+  let learningFeedback: ValidationReport | null = null;
   /** 弹窗应答器 */
   let resolveDialog: ((choice: LearnDialogChoice) => void) | null = null;
   /** 运行计时器 */
@@ -425,16 +433,16 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
 
   // ──── 运行 ────
 
-  /** 场景 → 工具组（学习按策略、验证按目标模式，两者严格分离） */
+  /** 场景 → 工具组（学习按目标模式×策略、验证只按目标模式，两者严格分离） */
   function scenarioFor(kind: 'learning' | 'validating'): ToolScenario {
     const cfg = config.value!;
-    if (kind === 'learning') {
-      return cfg.strategy === 'vision' ? 'siteLearnVision' : 'siteLearnText';
-    }
-    return cfg.targetMode === 'vision' ? 'siteValidateVision' : 'siteValidateText';
+    if (kind === 'learning') return getSiteLearnScenario(cfg);
+    return getSiteValidateScenario(cfg.targetMode);
   }
 
-  /** 该阶段是否需要视觉循环（学习看策略、验证看目标模式） */
+  /** 该阶段是否需要视觉循环（学习看策略、验证看目标模式）。
+   *  文本目标 × 视觉策略同样启用：自动截图仅用于帮助理解屏幕元素，
+   *  该组合的工具面没有 vision_gui（见 tool-presets 的组合口径）。 */
   function visionFor(kind: 'learning' | 'validating'): boolean {
     const cfg = config.value!;
     return kind === 'learning' ? cfg.strategy === 'vision' : cfg.targetMode === 'vision';
@@ -443,8 +451,11 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
   /**
    * 事件观察者包装：转发给 UI 之外，捕获终止型工具的产出。
    * 按会话 id 过滤，避免把其它会话的提交误认为本阶段产出。
+   * 回执先过形态守卫（asSkillDraft / asValidationReport），学习回执再与
+   * 目标模式对账（reconcileSkillDraft）——模型可能提交与配置不一致的
+   * mode / 工具，不修正就会落下一个错误模式标签或依赖视觉工具的文本技能。
    */
-  function makeObserver(kind: 'learning' | 'validating') {
+  function makeObserver(kind: 'learning' | 'validating', targetMode: LearnTargetMode) {
     const chatId = sessionChatId.value;
     return (event: ConversationEvent): void => {
       deps.observer(event);
@@ -454,14 +465,33 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
       const data = (event.result as { data?: Record<string, unknown> } | undefined)?.data;
       if (!data) return;
       if (kind === 'learning' && data.draft) {
-        draft.value = data.draft as SkillDraft;
+        const rawDraft = asSkillDraft(data.draft);
+        const reconciled = rawDraft ? reconcileSkillDraft(rawDraft, targetMode) : null;
+        if (!reconciled) {
+          // 形态非法或剥离阶段外工具后无可用工具：按无产出处理（noDraft 分支给重试）
+          console.warn('[LearnSession] submit_skill 回执形态非法或无法对账，按无产出处理:', data.draft);
+          return;
+        }
+        if (rawDraft) {
+          const fixes: string[] = [];
+          if (rawDraft.mode !== reconciled.mode) fixes.push(`mode ${rawDraft.mode} → ${reconciled.mode}`);
+          if (rawDraft.tags.join(' ') !== reconciled.tags.join(' ')) fixes.push('tags 模式标签已纠正');
+          if (rawDraft.allowedTools.length !== reconciled.allowedTools.length) fixes.push('allowedTools 已剥离阶段外工具');
+          if (fixes.length > 0) console.warn('[LearnSession] submit_skill 回执与配置不一致，已对账修正:', fixes.join('；'));
+        }
+        draft.value = reconciled;
         // 草稿随消息回放（降级兜底）：把提交体持久化到会话补充段。
         // 暂存（chrome.storage）失败或管理中心未打开时，成果不再只活在内存里——
         // 重新打开该会话即可从消息里取回，这是「草稿暂存失败」降级承诺的兑现
         // （正常路径也写：跨页交接与回放互不影响，见 setSystemPromptSuffix 注释）
-        void transcriptEngine.setSystemPromptSuffix(chatId, JSON.stringify(data.draft));
+        void transcriptEngine.setSystemPromptSuffix(chatId, JSON.stringify(reconciled));
       } else if (kind === 'validating' && data.report) {
-        report.value = data.report as ValidationReport;
+        const parsed = asValidationReport(data.report);
+        if (!parsed) {
+          console.warn('[LearnSession] submit_validation 回执形态非法，按无产出处理:', data.report);
+          return;
+        }
+        report.value = parsed;
       }
     };
   }
@@ -486,6 +516,9 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
 
     phase.value = kind;
     toolCalls.value = 0;
+    // 每次阶段运行各自最多一次「收尾提交」机会：学习段用掉后，
+    // 验证段 / 重试运行仍应能获得自己的收尾机会（否则 60 轮撞顶直接被判无产出）
+    wrapUpGranted = false;
     startTicker();
 
     try {
@@ -495,10 +528,13 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
           kind === 'learning' ? learnKickoffMessage(cfg) : validateKickoffMessage(cfg, skillDraft!),
         agentName: null,
         skillNames: [],
+        // 学习/盲测禁用技能发现：不注入发现清单与 load_skill，防止既有技能
+        // 污染试错过程、破坏盲测，或经技能携带工具把 vision_gui 注入文本目标
+        disableSkillDiscovery: true,
         modelRef: cfg.modelRef,
         extraToolIds: [...getPresetToolIds(scenarioFor(kind))],
         agentSystemOverride:
-          kind === 'learning' ? buildLearnPrompt(cfg) : buildValidatePrompt(cfg, skillDraft!),
+          kind === 'learning' ? buildLearnPrompt(cfg, learningFeedback) : buildValidatePrompt(cfg, skillDraft!),
         // 学习/验证是长任务：覆盖默认的 20 轮 / 10 分钟
         limitsOverride: { ...LEARN_LIMITS },
         // 视觉三态：需要时启用视觉循环，不需要时显式禁用（不继承任何智能体声明）
@@ -508,7 +544,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
       });
 
       const runPromise = conversationEngine.run(runtime, {
-        observer: makeObserver(kind),
+        observer: makeObserver(kind, cfg.targetMode),
         onLimitReached: limitKind => handleLimitReached(limitKind, runtime.limits),
         // 破坏性操作审批已在工具元数据层声明（requiresConfirm），此处沿用默认通道
       });
@@ -560,6 +596,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
       }
       const choice = await askDialog({ mode: 'validationFail', report: reportValue });
       if (choice === 'relearn') {
+        learningFeedback = reportValue;
         draft.value = null;
         report.value = null;
         await runPhase('learning');
@@ -660,7 +697,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
 
     phase.value = 'learning';
     aborting = false;
-    wrapUpGranted = false;
+    learningFeedback = null;
     draft.value = null;
     report.value = null;
     toolCalls.value = 0;
@@ -716,6 +753,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     activeRun = null;
     aborting = false;
     wrapUpGranted = false;
+    learningFeedback = null;
     // 收敛在途弹窗：reset 意味着业务已被放弃/重置，仍挂在 askDialog 上的
     // await 者按该模式的收敛值结算——直接置空会让其永久悬挂（见 DIALOG_SETTLE_VALUE）。
     // 结算触发的续体是微任务，运行到时本函数同步部分已完成、draft/config 已清，

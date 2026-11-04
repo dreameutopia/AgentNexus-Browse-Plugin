@@ -23,6 +23,7 @@ export type ToolScenario =
   | 'dataHarvest'
   | 'siteLearnText'
   | 'siteLearnVision'
+  | 'siteLearnVisionForText'
   | 'siteValidateText'
   | 'siteValidateVision'
   | 'note'
@@ -112,11 +113,21 @@ const NOTE_TOOLS = [
   'note_tool',
 ] as const;
 
+/**
+ * 网络观察（CDP Network 域被动捕获）。
+ *
+ * **两个 action agent（文本通用助手 / 视觉通用助手）不携带此工具**：它们的
+ * 职责是操作页面，网络观察对「点哪里、填什么」是噪声；且该工具占用
+ * exclusiveText 互斥队列（与视觉 GUI 共用调试会话），会拖慢每一步交互。
+ * 因此它只出现在数据收割 / 网站学习 / 技能验证这些「以观察数据为目的」的
+ * 场景里，以及 hub 自定义智能体的资源工具组中。
+ */
+const NETWORK_CAPTURE_TOOL = 'browser_network_capture';
+
 /** 自动化交互（browser_get_page_text 由核心层无条件注入，此处不重复登记） */
 const AUTOMATION_TOOLS = [
   'browser_observe',
   'browser_interact',
-  'browser_network_capture',
   'browser_get_all_tabs',
   'browser_switch_tab',
   'browser_navigate',
@@ -130,73 +141,120 @@ const AUTOMATION_TOOLS = [
 ] as const;
 
 /**
- * Vision Action 基座：自动截图 + 手动恢复截图，vision_mark 按需打标。
- * 提取为常量供 visionAgent 场景与网站学习（视觉策略 / 视觉验证）共用，
- * 避免三处列表漂移。
+ * 视觉通用助手基座：自动截图 + 统一 GUI 手势 + DOM 感知。
+ * 仅供 visionAgent 场景使用；网站学习/验证有自己独立的清单（见下方
+ * 网站学习区块），两者的配置各自演进、互不影响。
  */
 const VISION_AGENT_TOOLS = [
+  'vision_gui',
+  // 视觉操作保留完整 DOM 感知/交互能力，生成的混合定位技能才能被实际执行。
+  ...AUTOMATION_TOOLS,
   'screenshot',
   'browser_window',
-  'browser_navigate',
-  'vision_click',
-  'vision_drag',
-  'vision_input',
-  'vision_hover',
-  'vision_keyboard',
-  'vision_mark',
-  'vision_inspect',
-  'vision_zoom',
-  'vision_check',
-  'generic_wait',
-  'browser_go_back_or_forward',
-  'wait_page_load',
-  'vision_scroll',
 ] as const;
 
 // ──── 网站学习（Site Learn）场景 ────
-// 学习段与验证段是同一会话的两轮运行，工具组按「学习策略 / 目标操作模式」
+// 学习段与验证段是同一会话的两轮运行，工具组按「目标操作模式 × 学习策略」
 // 选择，并且**互斥**地只带各自的终止型提交工具——两套同时注入会让模型
 // 有机会在错误的阶段调用错误的提交工具。
+//
+// ── 独立配置约定 ──
+// 本区块是学习域**自有**的工具清单：刻意不展开 AUTOMATION_TOOLS /
+// VISION_AGENT_TOOLS。文本通用助手与视觉通用助手两个智能体的配置变更
+// 不得影响网站学习/验证，反之亦然（learn-prompts 同理不 import 两个智能体
+// 的 SOP；两边靠注释交叉锚定，见 learn-prompts.ts 文末维护约定）。
+//
+// ── 组合口径 ──
+//   target=text  × strategy=text → siteLearnText         纯文本，无截图
+//   target=text  × strategy=vision → siteLearnVisionForText 文本全套 + 截图（仅辅助理解），**无 vision_gui**
+//   target=vision（策略恒 vision）→ siteLearnVision      文本全套 + vision_gui + 截图 + 窗口管理
+// 验证段只看 targetMode（技能交给谁用就用谁的执行面盲测）。
+//
 // 共同部分（核心层已无条件注入，此处不重复登记）：
 //   browser_get_page_text / plan_tool / interact。
-// 两段都带 note_tool：学习段用于逐步留痕，验证段用于记录卡点。
-
-/** 网站学习·文本策略：Auto Action 基座 + 外部记忆 + 学习提交 */
-const SITE_LEARN_TEXT_TOOLS = [
-  ...AUTOMATION_TOOLS,
-  'note_tool',
-  'submit_skill',
-] as const;
+// 四个场景都带 note_tool：学习段逐步留痕，验证段记录卡点；
+// 都带 browser_network_capture：观察页面背后数据（learn-prompts 的
+// dom-locating 块与之交叉锚定）。
 
 /**
- * 网站学习·视觉策略：Vision Action 基座 + 反查转译 + 外部记忆 + 学习提交。
- * vision_inspect 是「视觉定位 → 选择器」的转译通道：目标模式为 text 时
- * 必须靠它把看到的位置翻译成文本模型可用的 xpath/选择器。
+ * 学习/验证共用的 DOM 文本操作基座（学习域自有清单，不引用 AUTOMATION_TOOLS）。
+ * browser_get_page_text 由核心层注入，不在此列。
  */
-const SITE_LEARN_VISION_TOOLS = [
-  ...VISION_AGENT_TOOLS,
+const SITE_LEARN_DOM_TOOLS = [
+  'browser_observe',
+  'browser_interact',
+  'browser_get_all_tabs',
+  'browser_switch_tab',
+  'browser_navigate',
   'browser_get_page_info',
+  'wait_page_load',
+  'browser_go_back_or_forward',
+  'bing_search',
+  'generic_wait',
+  // 懒加载/无限滚动页面：getter 采样前先滚动触发渲染，再重新采集
+  'browser_page_exec',
+] as const;
+
+/** 网站学习·文本目标 × 文本策略：纯文本探索，无截图循环 */
+const SITE_LEARN_TEXT_TOOLS = [
+  ...SITE_LEARN_DOM_TOOLS,
+  NETWORK_CAPTURE_TOOL,
   'note_tool',
   'submit_skill',
 ] as const;
 
-/** 验证段·目标模式文本：由 Auto Action 盲测技能，提交验收结论 */
+/**
+ * 网站学习·文本目标 × 视觉策略（siteLearnVisionForText）：
+ * 文本全套 + screenshot——自动截图仅用于帮助理解屏幕元素。
+ * **不携带 vision_gui / browser_window**：文本目标的学习、操作与取证
+ * 一律走 DOM 文本通道，视觉手势工具不得出现在该组合的工具面
+ * （与 learn-prompts 的 <vision-gui-tool> 禁用分区交叉锚定）。
+ */
+const SITE_LEARN_VISION_FOR_TEXT_TOOLS = [
+  ...SITE_LEARN_TEXT_TOOLS,
+  'screenshot',
+] as const;
+
+/** 网站学习·视觉目标：文本全套 + 统一 GUI 手势 + 截图 + 窗口管理，按需打标 */
+const SITE_LEARN_VISION_TOOLS = [
+  ...SITE_LEARN_TEXT_TOOLS,
+  'vision_gui',
+  'screenshot',
+  'browser_window',
+] as const;
+
+/** 按目标与学习策略共同选择学习段场景（学习看 strategy × targetMode） */
+export function getSiteLearnScenario(config: { targetMode: 'text' | 'vision'; strategy: 'text' | 'vision' }): ToolScenario {
+  if (config.targetMode === 'vision') return 'siteLearnVision';
+  return config.strategy === 'vision' ? 'siteLearnVisionForText' : 'siteLearnText';
+}
+
+/** 验证段·目标模式文本：纯文本工具盲测技能（无截图、无 GUI），提交验收结论 */
 const SITE_VALIDATE_TEXT_TOOLS = [
-  ...AUTOMATION_TOOLS,
+  ...SITE_LEARN_DOM_TOOLS,
+  NETWORK_CAPTURE_TOOL,
   'note_tool',
   'submit_validation',
 ] as const;
 
-/** 验证段·目标模式视觉：由 Vision Action 盲测技能，提交验收结论 */
+/** 验证段·目标模式视觉：文本全套 + 统一 GUI，与产出该技能的执行面同构 */
 const SITE_VALIDATE_VISION_TOOLS = [
-  ...VISION_AGENT_TOOLS,
-  'browser_get_page_info',
+  ...SITE_LEARN_DOM_TOOLS,
+  NETWORK_CAPTURE_TOOL,
+  'vision_gui',
+  'screenshot',
+  'browser_window',
   'note_tool',
   'submit_validation',
 ] as const;
+
+/** 按目标操作模式选择验证段场景（验证只看 targetMode，与学习策略无关） */
+export function getSiteValidateScenario(targetMode: 'text' | 'vision'): ToolScenario {
+  return targetMode === 'vision' ? 'siteValidateVision' : 'siteValidateText';
+}
 
 /**
- * 数据批量采集（Auto Action 全套 + 数据引用通道）：
+ * 数据批量采集（文本通用助手全套 + 数据引用通道）：
  * 脚本抓取（page_exec saveResult）→ 暂存批次（data_ref_tool）→ xlsx 直接导出，
  * 大批量数据全程不经过模型上下文；DOM 结构明确时可用 browser_extract_data，
  * 已知 JSON 接口用 browser_network_request 直连。
@@ -204,6 +262,7 @@ const SITE_VALIDATE_VISION_TOOLS = [
  */
 const DATA_HARVEST_TOOLS = [
   ...AUTOMATION_TOOLS,
+  NETWORK_CAPTURE_TOOL,
   'browser_extract_data',
   'browser_network_request',
   'data_ref_tool',
@@ -341,20 +400,13 @@ const RESOURCE_CAPTURE_GROUP_TOOLS = [
 
 /** 统一相对坐标 GUI 工具；视觉循环外调用时须主动截图获取 screenshotId。 */
 const VISION_TOOLS_GROUP = [
+  'vision_gui',
   'screenshot',
   'vision_read',
   'vision_read_scroll',
   'vision_read_zoom',
   'vision_read_wait',
   'ocr',
-  'vision_click',
-  'vision_drag',
-  'vision_input',
-  'vision_hover',
-  'vision_keyboard',
-  'vision_mark',
-  'vision_inspect',
-  'vision_scroll',
 ] as const;
 
 /** 网络请求与控制台（HTTP 请求发送 + 控制台输出/异常捕获） */
@@ -388,16 +440,18 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
   /** 视觉助手：观察、阅读滚动、原图放大及等待重拍；运行时另施加能力上限。 */
   visionAssist: ['screenshot', 'vision_read', 'vision_read_scroll', 'vision_read_zoom', 'vision_read_wait', 'generic_wait'],
 
-  /** Vision Action：完整截图相对坐标操作；按需打标用于检查 */
+  /** 视觉通用助手：完整截图相对坐标操作；按需打标用于检查 */
   visionAgent: [...VISION_AGENT_TOOLS],
 
-  /** 网站学习·文本策略（学习段，结束信号 submit_skill） */
+  /** 网站学习·文本目标×文本策略（学习段，结束信号 submit_skill；无截图） */
   siteLearnText: [...SITE_LEARN_TEXT_TOOLS],
-  /** 网站学习·视觉策略（学习段，结束信号 submit_skill） */
+  /** 网站学习·视觉目标（学习段；文本全套 + vision_gui 手势，按需打标） */
   siteLearnVision: [...SITE_LEARN_VISION_TOOLS],
-  /** 网站学习·验证段，目标模式文本（结束信号 submit_validation） */
+  /** 网站学习·文本目标×视觉策略（学习段；文本全套 + 截图辅助理解，**无 vision_gui**） */
+  siteLearnVisionForText: [...SITE_LEARN_VISION_FOR_TEXT_TOOLS],
+  /** 网站学习·验证段，目标模式文本（结束信号 submit_validation；无截图、无 GUI） */
   siteValidateText: [...SITE_VALIDATE_TEXT_TOOLS],
-  /** 网站学习·验证段，目标模式视觉（结束信号 submit_validation） */
+  /** 网站学习·验证段，目标模式视觉（结束信号 submit_validation；文本全套 + vision_gui） */
   siteValidateVision: [...SITE_VALIDATE_VISION_TOOLS],
 
   /** 思维导图：Excalidraw 绘图 */
@@ -418,7 +472,7 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
     ...NOTE_TOOLS,
   ],
 
-  /** Auto Action：通用网页自动化 */
+  /** 文本通用助手：通用网页自动化 */
   automation: [...AUTOMATION_TOOLS],
 
   /** 数据收割机：批量数据采集与导出（脚本抓取 → dataRef 暂存 → xlsx 直出） */

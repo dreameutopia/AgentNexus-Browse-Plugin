@@ -14,6 +14,8 @@ export interface OpenAITool {
       additionalProperties?: boolean;
       properties: Record<string, any>;
       required?: string[];
+      /** Action-discriminated branches; preserved by all protocol adapters. */
+      anyOf?: Record<string, unknown>[];
     };
   };
 }

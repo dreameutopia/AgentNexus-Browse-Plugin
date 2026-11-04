@@ -23,6 +23,7 @@ import { t } from '@/utils/i18n/core';
 
 /** SSE 解析过程中的累积状态 */
 export interface StreamAccumulator {
+  nativeBlocks?: Map<number, Record<string, any>>;
   /** 最终消息 */
   finalMessage: UnifiedChatMessage;
   /** 结束原因 */
@@ -327,6 +328,7 @@ export abstract class BaseAdapter implements ProtocolAdapter {
 
       // 子类后处理
       this.finalizeAccumulator(acc, callbacks);
+      if (acc.finalMessage.nativeReplay && acc.usage?.reasoningTokens !== undefined) acc.finalMessage.nativeReplay.reasoningTokens = acc.usage.reasoningTokens;
 
       console.log(`[parseStreamResponse] 流解析完成`, {
         finishReason: acc.finishReason,
@@ -344,6 +346,7 @@ export abstract class BaseAdapter implements ProtocolAdapter {
     } catch (error) {
       console.error(`[parseStreamResponse] 流解析出错`, error);
       if (error instanceof DOMException && error.name === 'AbortError') {
+        this.finalizeInterrupted(acc, callbacks);
         // 用户中止：已产生的部分 usage（如 Claude message_start 的输入侧计数）仍然有效
         return { finalMessage: acc.finalMessage, finishReason: 'abort', usage: acc.usage };
       }
@@ -508,6 +511,39 @@ export abstract class BaseAdapter implements ProtocolAdapter {
   }
 
   // ==================== 通用文本/思考/工具回调触发器 ====================
+
+  /** Keep completed native blocks and visible partial text, but never invent a
+   * successful/complete tool invocation from a truncated argument stream. */
+  private finalizeInterrupted(acc: StreamAccumulator, callbacks: StreamCallbacks): void {
+    const native = acc.finalMessage.nativeReplay;
+    const completedCalls = native?.provider === 'claude'
+      ? new Set(native.items.filter(b => b?.type === 'tool_use').map(b => b.id))
+      : native?.provider === 'openai-responses'
+        ? new Set(native.items.filter(b => b?.type === 'function_call').map(b => b.call_id)) : undefined;
+    for (const [index, call] of acc.toolCallChunks) {
+      let complete = !!call.name && !!call.id && (!completedCalls || completedCalls.has(call.id));
+      try { JSON.parse(call.arguments || '{}'); } catch { complete = false; }
+      if (!complete) {
+        acc.toolCallChunks.delete(index);
+        if (call.name || call.arguments) acc.finalMessage.content += `\n[Interrupted tool call, not executed: ${call.name} ${call.arguments}]`;
+      }
+    }
+    const calls = assembleToolCalls(acc.toolCallChunks);
+    if (calls.length) acc.finalMessage.tool_calls = calls;
+    if (native?.provider === 'claude' || native?.provider === 'openai-responses') {
+      native.items = native.items.filter(Boolean);
+      const seen = native.provider === 'claude'
+        ? native.items.filter(b => b.type === 'text').map(b => b.text ?? '').join('')
+        : native.items.filter(b => b.type === 'message').flatMap(b => b.content ?? []).map(p => p.text ?? p.refusal ?? '').join('');
+      const text = typeof acc.finalMessage.content === 'string' ? acc.finalMessage.content : '';
+      if (text.startsWith(seen) && text.length > seen.length) {
+        const tail = text.slice(seen.length);
+        native.items.push(native.provider === 'claude' ? { type: 'text', text: tail }
+          : { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: tail, annotations: [] }] });
+      }
+    }
+    this.finalizeAccumulator(acc, callbacks);
+  }
 
   /** 处理普通文本 token */
   protected handleContentToken(

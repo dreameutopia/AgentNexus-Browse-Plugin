@@ -4,7 +4,9 @@ import { toViewport, relativePoint, motionPath, pngDimensions, verifyScreenshotG
 import { annotationPayload, focusedEditablePayload } from '../../tools/vision/dom-inspection';
 import { checkPagePayload } from '../../tools/vision/check-payload';
 import { planCrop,registerView,mapViewPoint,registerTargetGuard } from '../../tools/vision/observation-model';
-import { validateCheckArgs, VisionCheckTool } from '../../tools/vision/observation-tools';
+import { validateCheckArgs } from '../../tools/vision/observation-actions';
+import { VisionGuiTool, validateVisionGuiArgs } from '../../tools/vision/gui-tool';
+import { GuiError } from '../../tools/vision/gui-errors';
 import { takeVisionToolImage,needsVisionRefresh } from '../../entrypoints/sidepanel/core/conversation/vision-feedback';
 
 const v = { width: 1440, height: 900, pageX: 0, pageY: 0, scale: 1 };
@@ -65,9 +67,9 @@ assert.throws(()=>planCrop({width:100,height:100},{x:999,y:0,width:2,height:1}),
 assert.ok(planCrop({width:10000,height:10000},{x:0,y:0,width:1000,height:1000},4).outputWidth<=2048);
 const fakeImage={success:true,data:{screenshot:'data:image/png;base64,cG5n',text:'not a real viewport',screenshotId:'s'}};
 assert.equal(takeVisionToolImage(fakeImage,0,'browser_page_exec'),null);
-const zoomImage=takeVisionToolImage(fakeImage,0,'vision_zoom')!;
+const zoomImage=takeVisionToolImage(fakeImage,0,'vision_gui',{action:'zoom'})!;
 assert.equal(zoomImage.kind,'region');
-assert.equal(needsVisionRefresh(['vision_zoom'],[zoomImage],()=> 'none'),false);
+assert.equal(needsVisionRefresh([{function:{name:'vision_gui',arguments:'{"action":"zoom"}'}}],[zoomImage],()=> 'none'),false);
 for(const args of [null,{screenshotId:'s',expect:{enabled:'true'}},{screenshotId:'s',expect:{valueEquals:'x'}},{screenshotId:'s',point:{x:1,y:2},expect:{script:'alert(1)'}},{screenshotId:'s',timeoutMs:Infinity}]) assert.throws(()=>validateCheckArgs(args));
 
 // Host/CDP contract: real orchestration with mocked browser transport, no synthetic DOM fallback.
@@ -120,8 +122,23 @@ const scripts: string[] = [];
   },
 };
 const originalTimer = globalThis.setTimeout;
-(globalThis as any).setTimeout = (fn: () => void, ms: number) => ms < 3001 ? originalTimer(fn, 0) : originalTimer(fn, ms);
-const { executeGui, captureGuiScreenshot } = await import('../../tools/vision/gui-driver');
+const gestureDelays: {eventCount:number;ms:number}[] = [];
+let onGestureDelay: ((ms:number)=>void) | undefined;
+(globalThis as any).setTimeout = (fn: () => void, ms: number) => {
+  if(ms < 3001) { gestureDelays.push({eventCount:events.length,ms}); onGestureDelay?.(ms); }
+  return ms < 3001 ? originalTimer(fn, 0) : originalTimer(fn, ms);
+};
+const { captureGuiScreenshot } = await import('../../tools/vision/gui-driver');
+const gui = new VisionGuiTool();
+// Exercise the public dispatcher for every existing gesture regression, preserving diagnostics.
+async function executeGui(action: string, parameters: any, signal?: AbortSignal): Promise<any> {
+  const result = await gui.execute({action,...parameters},{signal});
+  if (!result.success) {
+    const d=result.data!.diagnostic;
+    throw new GuiError(d.code,d.message,d.details,d.recovery);
+  }
+  return result.data;
+}
 const { resolveKeys } = await import('../../tools/vision/key-definitions');
 assert.equal(resolveKeys(['F12'])[0].windowsVirtualKeyCode,123);
 assert.equal(resolveKeys(['!'])[0].key,'Shift');
@@ -143,11 +160,72 @@ const { cdpSession } = await import('../../tools/browser/cdp-session');
 const snap = () => captureGuiScreenshot();
 let s = await snap();
 const point = { x: 250, y: 500 };
+// Native crop rendering is covered by browser-probe; here exercise dispatcher,
+// image-only transport and parent identity without requiring Node canvas APIs.
+const cropGlobals = { canvas: globalThis.OffscreenCanvas, bitmap: globalThis.createImageBitmap };
+(globalThis as any).createImageBitmap = async () => ({ close() {} });
+(globalThis as any).OffscreenCanvas = class {
+  constructor(public width:number,public height:number) {}
+  getContext() { return { drawImage() {}, imageSmoothingEnabled:false }; }
+  async convertToBlob() { return new Blob([Buffer.from(pngHeader(this.width,this.height),'base64')],{type:'image/png'}); }
+};
+try {
+  const zoom = await gui.execute({action:'zoom',screenshotId:s.screenshotId,region:{x:200,y:100,width:400,height:200},scale:2});
+  assert.equal(zoom.success,true);
+  assert.equal(zoom.data!.screenshotId,s.screenshotId);
+  assert.ok(zoom.data!.viewId);
+  assert.equal(zoom.data!.imageKind,'region');
+  assert.equal(JSON.stringify(zoom.content).includes('base64'),false);
+  const hover=await gui.execute({action:'hover',screenshotId:s.screenshotId,viewId:zoom.data!.viewId,point:{x:500,y:500},durationMs:200});
+  assert.equal(hover.success,true,'zoom preserves actionable parent screenshot');
+  assert.equal(hover.data!.coordinateDiagnostics.lastCssPoint.x,576);
+} finally {
+  globalThis.OffscreenCanvas=cropGlobals.canvas;
+  globalThis.createImageBitmap=cropGlobals.bitmap;
+}
+s = await snap();
 await executeGui('click', { screenshotId: s.screenshotId, point, button: 'right', count: 3 });
 const presses = events.filter(e => e.p?.type === 'mousePressed');
 assert.deepEqual(presses.map(e => e.p.clickCount), [1, 2, 3]);
 assert.ok(presses.every(e => e.p.x === 360 && e.p.y === 450 && e.p.button === 'right'));
 await assert.rejects(executeGui('click', { screenshotId: s.screenshotId, point }), /expired/i);
+// Inspect actual dispatch order and scheduled dwell, without real multi-second sleeps.
+for (const explicit of [false,true]) {
+  s=await snap();
+  const eventStart=events.length, delayStart=gestureDelays.length;
+  const from={x:100,y:200}, to={x:850,y:800};
+  await executeGui('drag',{screenshotId:s.screenshotId,from,to,durationMs:400,...(explicit?{holdBeforeMs:0,holdAfterMs:75}:{})});
+  const press=events.findIndex((e,i)=>i>=eventStart && e.p?.type==='mousePressed');
+  const release=events.findIndex((e,i)=>i>=eventStart && e.p?.type==='mouseReleased');
+  const atStart=gestureDelays.slice(delayStart).filter(d=>d.eventCount===press+1);
+  const lastMove=events.findLastIndex((e,i)=>i>press && i<release && e.p?.type==='mouseMoved');
+  const atEnd=gestureDelays.slice(delayStart).filter(d=>d.eventCount===lastMove+1);
+  assert.equal(atStart.length,1); assert.equal(atEnd.length,1);
+  if(explicit) { assert.equal(atStart[0].ms,0);assert.equal(atEnd[0].ms,75); }
+  else for(const dwell of [atStart[0],atEnd[0]]) assert.ok(dwell.ms>=500 && dwell.ms<=1500,'Default held dwell is 0.5–1.5s');
+  const moves=events.slice(press+1,release).filter(e=>e.p?.type==='mouseMoved' && e.p.buttons===1).map(e=>e.p);
+  const a=toViewport(from,s.viewport), b=toViewport(to,s.viewport);
+  for(const pos of moves) assert.ok(Math.abs((pos.x-a.x)*(b.y-a.y)-(pos.y-a.y)*(b.x-a.x))<1e-6,'Default drag stays on the straight segment');
+  assert.deepEqual({x:moves.at(-1).x,y:moves.at(-1).y},b);
+  const distances=moves.map((pos,i)=>Math.hypot(pos.x-(i?moves[i-1].x:a.x),pos.y-(i?moves[i-1].y:a.y))).filter(d=>d>0);
+  assert.ok(distances[0]<distances[Math.floor(distances.length/2)] && distances.at(-1)!<distances[Math.floor(distances.length/2)],'Movement accelerates then decelerates');
+}
+for(const phase of ['start','end']) {
+  s=await snap(); const cancellation=new AbortController(), before=events.length;
+  onGestureDelay=ms=>{
+    const last=events.at(-1)?.p;
+    if(ms>=500 && ms<=1500 && (phase==='start'?last?.type==='mousePressed':last?.type==='mouseMoved' && last.buttons===1)) {
+      onGestureDelay=undefined;
+      originalTimer(()=>cancellation.abort(),0);
+    }
+  };
+  try {
+    await assert.rejects(executeGui('drag',{screenshotId:s.screenshotId,from:point,to:{x:700,y:700},...(phase==='end'?{holdBeforeMs:0}:{})},cancellation.signal), (e:any)=>e.code==='CANCELLED');
+    assert.equal(events.slice(before).filter(e=>e.p?.type==='mousePressed').length,1);
+    assert.equal(events.slice(before).filter(e=>e.p?.type==='mouseReleased').length,1,'Cancellation during either dwell releases held mouse exactly once');
+    assert.equal(events.at(-1)?.p.type,'mouseReleased');
+  } finally { onGestureDelay=undefined; }
+}
 s = await snap(); loader = 'doc2';
 await assert.rejects(executeGui('hover', { screenshotId: s.screenshotId, point }), /reloaded/i);
 s = await snap(); pageY = 50;
@@ -195,8 +273,8 @@ const competing = await Promise.allSettled([
 ]);
 assert.deepEqual(competing.map(r => r.status), ['fulfilled', 'rejected']);
 await assert.rejects(executeGui('keyboard', { screenshotId:s.screenshotId, keys:['constructor'] }), /Unsupported key/);
-await assert.rejects(executeGui('click', { screenshotId:s.screenshotId, point, clear:true } as any), /Unexpected parameters/);
-await assert.rejects(executeGui('unknown' as any, { screenshotId:s.screenshotId }), /Unsupported GUI action/);
+await assert.rejects(executeGui('click', { screenshotId:s.screenshotId, point, clear:true } as any), /Unexpected parameter/);
+await assert.rejects(executeGui('unknown' as any, { screenshotId:s.screenshotId }), /supported action/);
 s = await snap();
 let chordStart=events.length;
 await executeGui('keyboard',{screenshotId:s.screenshotId,keys:['Ctrl','ShiftRight','a']});
@@ -232,8 +310,7 @@ stealFocus = false; focusOkay = true;
 const { cancelGuiRequest, withGuiCancellation } = await import('../../tools/vision/gui-cancellation');
 cancelGuiRequest('early');
 assert.equal(await withGuiCancellation('early', async signal => signal?.aborted),true);
-const { GuiTool } = await import('../../tools/vision/gui-tools');
-const failure = await new GuiTool('click').execute({ screenshotId:'invalid',point:{x:NaN,y:5} });
+const failure = await gui.execute({ action:'click', screenshotId:'invalid',point:{x:NaN,y:5} });
 assert.equal(failure.data.diagnostic.code,'INVALID_ARGUMENT');
 assert.equal(failure.data.diagnostic.retryAutomatically,false);
 s = await snap(); failMove = true; failMouseRelease = true;
@@ -253,7 +330,7 @@ await handler.handleVisionAction({ correlationId:'bad-request',payload:{ action:
 assert.equal(responses.at(-1).payload.success,false);
 assert.equal(responses.at(-1).payload.data.diagnostic.code,'INVALID_ARGUMENT');
 s = await snap();
-const checkResult=await new VisionCheckTool().execute({screenshotId:s.screenshotId,point:{x:250,y:500},expect:{enabled:true},stableMs:0,timeoutMs:50});
+const checkResult=await gui.execute({action:'check',screenshotId:s.screenshotId,point:{x:250,y:500},expect:{enabled:true},stableMs:0,timeoutMs:50});
 assert.equal(checkResult.success,true); assert.equal(checkResult.data.status,'passed');
 const guardId=registerTargetGuard(s.screenshotId,{x:250,y:500},observedSignature);
 observedSignature='target-v2';
@@ -267,7 +344,7 @@ assert.equal(viewAction.coordinateDiagnostics.lastCssPoint.x,576);
 assert.equal(viewAction.coordinateDiagnostics.lastCssPoint.y,180);
 s=await snap();
 const mappedView=registerView(s.screenshotId,{x:200,y:100,width:400,height:200});
-const mappedCheck=await new VisionCheckTool().execute({screenshotId:s.screenshotId,viewId:mappedView,point:{x:500,y:500},stableMs:0});
+const mappedCheck=await gui.execute({action:'check',screenshotId:s.screenshotId,viewId:mappedView,point:{x:500,y:500},stableMs:0});
 assert.deepEqual(mappedCheck.data.actionPoint,{x:400,y:200});
 s = await snap();
 await executeGui('click',{screenshotId:s.screenshotId,point,button:'middle',modifiers:['Shift']});

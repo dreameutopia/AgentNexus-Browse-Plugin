@@ -31,6 +31,7 @@ import { t } from '@/utils/i18n';
 import type { ExtendedChatMessage, MessageFeedback } from '../../types/chat';
 import { installDiagramRenderer, processDiagrams } from '../../utils/chat/diagram-renderer';
 import { installChartRenderer, processCharts } from '../../utils/chat/chart-renderer';
+import { installAgentImageRenderer, processAgentImages } from '../../utils/chat/agent-image-renderer';
 import MessageItem from './MessageItem.vue';
 import './chat-message-list.css';
 
@@ -184,6 +185,7 @@ const scheduleDiagramScan = () => {
     if (messagesContainer.value) {
       processDiagrams(messagesContainer.value);
       processCharts(messagesContainer.value);
+      processAgentImages(messagesContainer.value);
     }
   }, 300);
 };
@@ -191,9 +193,11 @@ const scheduleDiagramScan = () => {
 onMounted(() => {
   installDiagramRenderer();
   installChartRenderer();
+  installAgentImageRenderer();
   if (messagesContainer.value) {
     processDiagrams(messagesContainer.value);
     processCharts(messagesContainer.value);
+    processAgentImages(messagesContainer.value);
     diagramObserver = new MutationObserver(scheduleDiagramScan);
     // attributes + data-streaming 过滤：流结束时 Vue 移除该属性属于 attribute
     // 变更（无 childList 变化），不监听则最后一条消息的图表会漏渲染

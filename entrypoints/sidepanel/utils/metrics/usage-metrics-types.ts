@@ -19,6 +19,7 @@ export type UsageOutcome = 'success' | 'failed' | 'aborted';
 /** 计数聚合（全局与每模型共用同一形状，字段语义见 UsageMetricsData） */
 export interface UsageCounters {
   cacheHitRequests: number;
+  cacheObservedRequests: number;
   /** Continuation requests only, excluding cold starts and unreported usage. */
   continuationInputTokens: number;
   continuationCachedTokens: number;
@@ -49,6 +50,7 @@ export interface UsageCounters {
 
 /** 每模型聚合（存储键：`${provider}::${model}`） */
 export interface ModelUsageMetrics extends UsageCounters {
+  requestKind?: UsageRequestKind;
   channelId?: string;
   modelId?: string;
   channelLabel?: string;
@@ -105,7 +107,7 @@ export interface UsageMetricsSnapshot {
 }
 
 /** 计数请求入参（引擎唯一的写入 API） */
-export interface UsageRecordInput extends importContext {
+export interface UsageRecordInput extends UsageRequestContext {
   provider: string;
   model: string;
   kind: UsageRequestKind;
@@ -116,7 +118,7 @@ export interface UsageRecordInput extends importContext {
   errorSummary?: string;
 }
 
-type importContext = Omit<import('../stream/types').RequestMetricsContext, 'kind'>;
+type UsageRequestContext = Omit<import('../stream/types').RequestMetricsContext, 'kind'>;
 export interface UsageRequestDetail extends UsageRecordInput {
   at: number;
 }
@@ -125,6 +127,7 @@ export interface UsageRequestDetail extends UsageRecordInput {
 export function createEmptyCounters(): UsageCounters {
   return {
     cacheHitRequests: 0,
+    cacheObservedRequests: 0,
     continuationInputTokens: 0,
     continuationCachedTokens: 0,
     continuationCacheRequests: 0,

@@ -16,6 +16,7 @@
     "compile": "vue-tsc --noEmit",
     "test:contract": "node tests/protocol-contract/run.mjs",
     "test:engine": "node tests/config-engine/run.mjs",
+    "test:backup": "node tests/backup/run.mjs",
     "test:channels": "node tests/channels/run.mjs",
     "test:tools": "node tests/tools/run.mjs",
     "test:text-browser": "node tests/tools/text-browser-probe.mjs",

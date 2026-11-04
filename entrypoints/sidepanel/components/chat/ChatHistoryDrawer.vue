@@ -110,6 +110,9 @@ import {
 } from '../../core';
 import { showConfirm } from '../../composables/use-app-dialog';
 import { findDuplicateSkillNames, type SkillRecord } from '@/utils/skills/skill-types';
+import { useAgentDisplay } from '@/common/use-agent-display';
+
+const { displayNameOf } = useAgentDisplay();
 
 const props = defineProps<{
   visible: boolean;
@@ -145,11 +148,12 @@ const formatRelativeTime = (timestamp: number): string => {
 /**
  * 智能体徽标显示名：优先按稳定 ID 解析当前名称（智能体在 hub 改名后徽标跟随更新），
  * ID 失配（智能体已被删除）时退回会话落库时的名称——历史记录展示当时的使用事实。
+ * 名称按当前语言渲染（预置智能体切换语言后徽标随之切换）。
  */
 const agentDisplayName = (session: ChatSessionMeta): string => {
   if (!session.agentName && !session.agentId) return '';
   const agent = agentEngine.resolveRef(session.agentId, session.agentName);
-  return agent ? agent.name : session.agentName;
+  return agent ? displayNameOf(agent) : session.agentName;
 };
 
 /**

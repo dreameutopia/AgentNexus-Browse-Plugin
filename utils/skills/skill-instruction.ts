@@ -1,3 +1,4 @@
+import { migrateVisionToolPrompt } from '../tools/vision-tool-migration';
 /**
  * 技能指令装配（L2 正文的唯一实现）
  *
@@ -57,7 +58,7 @@ export function skillLoadSuccessMessage(result: SkillInstructionResult): string 
  * 转义——指令只进 tool 消息，不再嵌入 system prompt 的分区结构。
  */
 export function buildSkillInstruction(skill: SkillRecord): SkillInstructionResult {
-  const body = skill.body.trim();
+  const body = migrateVisionToolPrompt(skill.body.trim());
   const truncated = body.length > SKILL_BODY_MAX_CHARS;
   const modelId = modelSkillIdOf(skill);
 

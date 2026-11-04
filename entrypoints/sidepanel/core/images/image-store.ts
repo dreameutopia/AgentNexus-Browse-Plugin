@@ -4,12 +4,16 @@
  * 职责：
  *   1. 内容寻址入库：data URL → 字节 → SHA-256 → 独立图片库（image-database）。
  *      同一内容恒得同一 hash，重复截图 / 同图多引用全库仅存一份（去重）；
- *   2. 引用解析：消息层只持有 hash 引用（imageRefs），本引擎负责
- *      hash → data URL（模型上下文用）与 hash → object URL（UI 展示用）的解析，
+ *   2. 短 id 分配：每条记录带一个 8 位资源短 id（插件内唯一，由存储层的
+ *      唯一索引兜底），回答里用短 id 引用截图——模型可读、用户看得懂，
+ *      且不把 64 位哈希塞进对话。同 hash 复用既有短 id（已发出的引用不能失效）；
+ *   3. 引用解析：消息层只持有 hash 引用（imageRefs），本引擎负责
+ *      hash → data URL（模型上下文用）、hash → object URL（UI 展示用）与
+ *      短 id → hash/图片（回答内截图引用）的解析，
  *      上下文引擎与渲染层因此永远不接触二进制存储细节；
- *   3. 生命周期：按引用回收（由会话删除引擎判定「不再被任何消息引用」后调用
+ *   4. 生命周期：按引用回收（由会话删除引擎判定「不再被任何消息引用」后调用
  *      deleteByHashes），同步撤销两层内存缓存与 object URL；
- *   4. 防御性：任意输入不抛错（坏 data URL → null 并告警）、缓存有界（LRU）、
+ *   5. 防御性：任意输入不抛错（坏 data URL → null 并告警）、缓存有界（LRU）、
  *      加密上下文缺失时回退 FNV-1a（去重键仍稳定，仅弱化抗碰撞性——
  *      本哈希只做去重与引用键，不承担安全职责）。
  *
@@ -34,11 +38,53 @@ const DATA_URL_CACHE_MAX = 128;
 /** object URL 缓存容量（LRU；驱逐即 revoke，防 Blob URL 泄漏） */
 const OBJECT_URL_CACHE_MAX = 128;
 
+/** 短 id 映射缓存容量（LRU；hash ↔ shortId 双向映射） */
+const SHORT_ID_CACHE_MAX = 256;
+
 /** data URL 解析（仅接受 base64 形态——截图与附件恒为 base64） */
 const DATA_URL_PATTERN = /^data:([^;,]+)?;base64,([A-Za-z0-9+/=\s]+)$/;
 
 /** 引用形态：内容哈希 hex（SHA-256 = 64 位；FNV 回退 = 32 位，见 hashBytes） */
 const IMAGE_REF_PATTERN = /^[0-9a-f]{32,64}$/;
+
+// ==================== 短 id（回答中引用截图） ====================
+
+/**
+ * 短 id 字母表：32 个字符（Crockford base32 去掉易混的 I/L/O/U）。
+ * 8 位 × 5 bit = 40 bit 熵；唯一性另由存储层的唯一索引兜底。
+ */
+const SHORT_ID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
+/** 短 id 长度（8 位；回答里写 <agent-image id="xxxxxxxx" />） */
+export const SHORT_ID_LENGTH = 8;
+/** 短 id 分配的最大重试次数（唯一索引冲突时换候选重试） */
+const SHORT_ID_MAX_ATTEMPTS = 8;
+/** 短 id 形态（渲染层据此判定引用是否合法） */
+export const SHORT_ID_PATTERN = /^[0-9a-z]{8}$/;
+
+/** 生成候选短 id（crypto 优先；不可用时退回 Math.random） */
+function randomShortId(): string {
+  let out = '';
+  const globalCrypto = typeof crypto !== 'undefined' ? crypto : undefined;
+  if (globalCrypto?.getRandomValues) {
+    const bytes = new Uint8Array(SHORT_ID_LENGTH);
+    globalCrypto.getRandomValues(bytes);
+    for (const byte of bytes) out += SHORT_ID_ALPHABET[byte % 32];
+    return out;
+  }
+  for (let index = 0; index < SHORT_ID_LENGTH; index++) {
+    out += SHORT_ID_ALPHABET[Math.floor(Math.random() * 32)];
+  }
+  return out;
+}
+
+/** 判定是否为唯一索引冲突（写短 id 时可能被拒绝的唯一原因） */
+function isUniqueConstraintError(error: unknown): boolean {
+  if (!error) return false;
+  const name = (error as { name?: unknown }).name;
+  if (name === 'ConstraintError') return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /ConstraintError/i.test(message);
+}
 
 // ==================== 纯函数（引用归一 / 形态判定） ====================
 
@@ -137,11 +183,20 @@ class ImageStore {
   private readonly dataUrlCache = new Map<string, string>();
   /** hash → blob: URL（LRU；驱逐即 revoke） */
   private readonly objectUrlCache = new Map<string, string>();
+  /** hash → shortId（LRU；避免每次写入都回读库取短 id） */
+  private readonly shortIdCache = new Map<string, string>();
+  /** shortId → hash（LRU；回答渲染时按短 id 反查图片） */
+  private readonly shortIdHashCache = new Map<string, string>();
 
-  // ──── 入库（内容寻址 + 去重） ────
+  // ──── 入库（内容寻址 + 去重 + 短 id 分配） ────
 
   /**
    * 写入一张图片（data URL → 字节 → 内容哈希 → 独立图片库）。
+   *
+   * 短 id：每条记录都带一个 8 位短 id（插件内唯一），回答里用它引用截图。
+   * 同 hash 重复写入沿用既有短 id（不换 id——已发出去的引用必须继续有效）；
+   * 新记录分配短 id 时若与既有记录冲突（唯一索引拒绝），换候选重试。
+   *
    * @returns 内容哈希引用；输入非法 / 存储失败返回 null（调用方降级为无图，不阻断主流程）
    */
   async putFromDataUrl(dataUrl: string): Promise<ImageRef | null> {
@@ -152,15 +207,13 @@ class ImageStore {
     }
     try {
       const hash = await hashBytes(parsed.bytes);
-      const record: StoredImage = {
+      const record = await this.writeWithShortId({
         hash,
         blob: new Blob([parsed.bytes.slice()], { type: parsed.mime }),
         mime: parsed.mime,
         byteSize: parsed.bytes.length,
         createdAt: Date.now(),
-      };
-      // 幂等：同内容重复写入覆盖为同一条（内容寻址下 no-op），并刷新缓存
-      await imageDatabase.put(record);
+      });
       this.dataUrlCache.set(hash, dataUrl);
       this.touchLru(this.dataUrlCache, hash, DATA_URL_CACHE_MAX);
       return hash;
@@ -168,6 +221,49 @@ class ImageStore {
       console.warn('[ImageStore] 图片入库失败（降级为无引用）:', error);
       return null;
     }
+  }
+
+  /**
+   * 写入记录并落定短 id：
+   *   1) 同 hash 已有记录 → 沿用其短 id（已发出去的引用必须继续有效，
+   *      换 id 会让历史回答里的 <agent-image id="..."> 失效）；
+   *   2) 新记录 → 分配 8 位短 id；唯一索引冲突（撞车）时换候选重试。
+   *
+   * 冲突重试仍失败则抛错：宁可让本次入库整体失败（调用方降级为无图），
+   * 也不写入一条没有短 id、无法被引用的记录。
+   */
+  private async writeWithShortId(base: StoredImage): Promise<StoredImage> {
+    const cached = this.shortIdCache.get(base.hash);
+    const existing = cached ? null : await imageDatabase.get(base.hash).catch(() => null);
+    const reusable = cached ?? existing?.shortId;
+    if (reusable) {
+      const record: StoredImage = { ...base, shortId: reusable };
+      await imageDatabase.put(record);
+      this.shortIdCache.set(base.hash, reusable);
+      this.shortIdHashCache.set(reusable, base.hash);
+      this.touchLru(this.shortIdCache, base.hash, SHORT_ID_CACHE_MAX);
+      this.touchLru(this.shortIdHashCache, reusable, SHORT_ID_CACHE_MAX);
+      return record;
+    }
+    let lastError: unknown;
+    for (let attempt = 0; attempt < SHORT_ID_MAX_ATTEMPTS; attempt++) {
+      const candidate = randomShortId();
+      const record: StoredImage = { ...base, shortId: candidate };
+      try {
+        await imageDatabase.put(record);
+        this.shortIdCache.set(base.hash, candidate);
+        this.shortIdHashCache.set(candidate, base.hash);
+        this.touchLru(this.shortIdCache, base.hash, SHORT_ID_CACHE_MAX);
+        this.touchLru(this.shortIdHashCache, candidate, SHORT_ID_CACHE_MAX);
+        return record;
+      } catch (error) {
+        if (!isUniqueConstraintError(error)) throw error;
+        lastError = error;
+      }
+    }
+    throw new Error(
+      `短 id 分配失败（${SHORT_ID_MAX_ATTEMPTS} 次冲突后放弃）: ${String(lastError)}`,
+    );
   }
 
   /** 批量写入（保序去重；单张失败不影响其余） */
@@ -185,6 +281,14 @@ class ImageStore {
   }
 
   // ──── 解析（模型上下文用 data URL） ────
+
+  /** Reuse a successfully persisted image during UI/protocol dual bookkeeping. */
+  findRefByDataUrl(dataUrl: string): ImageRef | null {
+    for (const [ref, cached] of this.dataUrlCache) {
+      if (cached === dataUrl) return ref;
+    }
+    return null;
+  }
 
   /** 同步读缓存（未命中返回 null；上下文派生的同步快照路径用） */
   peekDataUrl(ref: ImageRef): string | null {
@@ -274,6 +378,56 @@ class ImageStore {
     }
   }
 
+  // ──── 短 id（回答中引用截图） ────
+
+  /** 取图片的短 id（不存在 / 未分配返回 null） */
+  async getShortId(ref: ImageRef): Promise<string | null> {
+    if (!isImageRef(ref)) return null;
+    const cached = this.shortIdCache.get(ref);
+    if (cached) return cached;
+    try {
+      const record = await imageDatabase.get(ref);
+      if (!record?.shortId) return null;
+      this.shortIdCache.set(ref, record.shortId);
+      this.shortIdHashCache.set(record.shortId, ref);
+      this.touchLru(this.shortIdCache, ref, SHORT_ID_CACHE_MAX);
+      this.touchLru(this.shortIdHashCache, record.shortId, SHORT_ID_CACHE_MAX);
+      return record.shortId;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 短 id → 内容哈希（缓存未命中回退查库） */
+  async resolveShortId(shortId: string): Promise<ImageRef | null> {
+    if (!shortId) return null;
+    const cached = this.shortIdHashCache.get(shortId);
+    if (cached) return cached;
+    try {
+      const record = await imageDatabase.getByShortId(shortId);
+      if (!record) return null;
+      this.shortIdHashCache.set(shortId, record.hash);
+      this.shortIdCache.set(record.hash, shortId);
+      this.touchLru(this.shortIdHashCache, shortId, SHORT_ID_CACHE_MAX);
+      this.touchLru(this.shortIdCache, record.hash, SHORT_ID_CACHE_MAX);
+      return record.hash;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 按短 id 读取 object URL（UI 展示用；不存在返回 null） */
+  async getObjectUrlByShortId(shortId: string): Promise<string | null> {
+    const ref = await this.resolveShortId(shortId);
+    return ref ? this.getObjectUrl(ref) : null;
+  }
+
+  /** 按短 id 读取 data URL（模型上下文用；不存在返回 null） */
+  async getDataUrlByShortId(shortId: string): Promise<string | null> {
+    const ref = await this.resolveShortId(shortId);
+    return ref ? this.getDataUrl(ref) : null;
+  }
+
   /**
    * 图片创建时间（毫秒时间戳；孤儿回收的宽限期判定用）。
    * 不存在 / 读取失败一律返回 null——调用方据此保守跳过：宁可漏删一张留待
@@ -309,6 +463,11 @@ class ImageStore {
     }
     for (const ref of unique) {
       this.dataUrlCache.delete(ref);
+      const shortId = this.shortIdCache.get(ref);
+      if (shortId !== undefined) {
+        this.shortIdCache.delete(ref);
+        this.shortIdHashCache.delete(shortId);
+      }
       const objectUrl = this.objectUrlCache.get(ref);
       if (objectUrl !== undefined) {
         URL.revokeObjectURL(objectUrl);
@@ -336,6 +495,8 @@ class ImageStore {
       console.warn('[ImageStore] 清空图片库失败:', error);
     }
     this.dataUrlCache.clear();
+    this.shortIdCache.clear();
+    this.shortIdHashCache.clear();
     for (const url of this.objectUrlCache.values()) {
       URL.revokeObjectURL(url);
     }

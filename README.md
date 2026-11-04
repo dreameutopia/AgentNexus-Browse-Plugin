@@ -42,7 +42,7 @@ Native streaming adapters for **OpenAI, OpenAI Responses, Claude, Gemini, and Ol
 A custom context engine (context metering, transcript engine, context-window guard) automatically trims and compresses history, while the chat database persists conversations — long sessions stay within limits and remain resumable.
 
 ### 🤖 Agent System
-7 preset agents: Deep Search, Auto Action, Vision Assistant, Vision Action, Search Agent, Bilibili Agent, and Mindmap Assistant. Custom agents (model, prompt, toolset, skill mounting) can be created in the management hub.
+8 preset agents: Deep Search, General Text Assistant, Vision Assistant, General Vision Assistant, Search Agent, Data Harvester, Bilibili Agent, and Mindmap Assistant. Their names, descriptions, categories and tags follow the interface language. Custom agents (model, prompt, toolset, skill mounting) can be created in the management hub.
 
 ### 📚 Skill System
 Skill loading and resource reading tools, with 3 built-in skills: Bilibili video summary, web research report, and XLSX creator; skills support import/export and availability management (see "Skill Design" below for the design rationale).
@@ -101,7 +101,7 @@ The three built-in skills (`skills/web-research-report`, `skills/bilibili-video-
 ## 📦 Implementation Stage
 
 ### ✅ Implemented
-- Complete toolset (17 categories, 70+ tools) with 7 preset agents
+- Complete toolset (17 categories, 70+ tools) with 8 preset agents
 - WebSocket communication and tool scheduling with the AgentNexus main program
 - Official API access for OpenAI / OpenAI Responses / Claude / Gemini / Ollama (with contract tests)
 - Standalone usage: agent engine, context engine, and conversation persistence
@@ -202,8 +202,8 @@ If you wish to use this project in proprietary software or commercial products t
 </p>
 
 
-### Vision Action GUI automation
+### General Vision Assistant GUI automation
 
 Vision Assistant explains the current page and guides the user: bounded visible DOM reads, component scrolling in four directions, original-image crops, and readiness refreshes. The user performs clicks, typing, and submissions. Runtime checks prevent skills and extra tools from granting execution capabilities; arbitrary JavaScript is excluded. See [Vision Assistant design and boundaries](tools/vision/VISION_ASSISTANT.md).
 
-Vision Action 使用 0–1000 的视口相对坐标和 CDP 输入，支持点击、拖拽、滚动、输入、悬停、键盘与按需 DOM 打标分析。厂商协议、工具参数、支持范围与迁移说明见 [视觉驱动说明](tools/vision/README.md)。
+视觉通用助手 使用 0–1000 的视口相对坐标和 CDP 输入，支持点击、拖拽、滚动、输入、悬停、键盘与按需 DOM 打标分析。厂商协议、工具参数、支持范围与迁移说明见 [视觉驱动说明](tools/vision/README.md)。

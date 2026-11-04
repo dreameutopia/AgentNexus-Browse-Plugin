@@ -22,7 +22,7 @@ import { ContextWindowGuard, type ContextGuardResult } from '../../utils/ai/cont
 import { contextCompactor } from './compactor';
 import { unescapeXmlText } from '../../utils/xml-entities';
 import { imageStore, normalizeImageRefs } from '../images/image-store';
-import { readProtocolHistory } from './protocol-history';
+import { readProtocolHistory, hasProtocolCheckpoint } from './protocol-history';
 import type { ChatMessageRecord } from '../types';
 import type { ToolCallUI } from '../../types/chat';
 
@@ -36,7 +36,7 @@ const API_ERROR_BLOCK_PATTERN = /<api-error\b[^>]*>([\s\S]*?)<\/api-error>/g;
  * 后续正文里模仿卡片格式。但「上一轮请求失败」这一事实必须如实保留——
  * 否则模型会误以为上次已正常完成，基于不存在的回复继续任务。
  */
-function toModelFacingContent(content: string): string {
+export function toModelFacingContent(content: string): string {
   if (!content.includes('<api-error')) return content;
   return content.replace(API_ERROR_BLOCK_PATTERN, block => {
     const summary = block.match(/<summary>([\s\S]*?)<\/summary>/);
@@ -55,9 +55,9 @@ class ContextEngine {  /**
    * 防御：空内容且无图片引用的记录被跳过——部分服务端会拒绝空 content 消息，
    * 这类记录（如中止时的空助手占位）对语义无贡献，剔除后请求更健壮。
    *
-   * 图片：user 记录的 imageRefs 经 imageStore 同步解析（依赖记录加载点预载）
-   * 还原为多模态 content；assistant 记录的图片引用（vision 自动截图）**不回注**
-   * 模型上下文——它们仅供 UI 查看，且每轮开始都会拍新截图（旧标签已失效）。
+   * 新记录优先重放 modelMessages（附件、时间戳、截图和工具轮次原样保留）。
+   * 历史截图仅是过去状态的证据，执行层仍要求最新有效截图。
+   * 无协议快照的旧记录沿用下方重建路径，不虚构无法恢复的中间轮次。
    *
    * @param options.summary 会话压缩摘要（存在时以系统级记忆消息置于最前，
    *   该消息经窗口守卫按 system 优先保护，永不因超限被裁剪）
@@ -71,13 +71,14 @@ class ContextEngine {  /**
 
     if (options?.summary) {
       messages.push(
-        contextCompactor.buildSummaryMessage(options.summary, options.compactedAt ?? Date.now()),
+        contextCompactor.buildSummaryMessage(options.summary, options.compactedAt ?? 0),
       );
     }
 
     for (const record of sorted) {
       const exact = readProtocolHistory(record);
       if (exact !== undefined) {
+        if (hasProtocolCheckpoint(record)) messages.length = 0;
         messages.push(...exact);
         continue;
       }
@@ -188,11 +189,11 @@ class ContextEngine {  /**
    * 阈值缺省时由 ContextWindowGuard 按共享默认值兜底（不回读全局配置）。
    */
   protect(messages: ChatMessage[], thresholdTokens?: number): ContextGuardResult {
-    const result = ContextWindowGuard.protect(messages, thresholdTokens);
+    const result = ContextWindowGuard.protect(messages, thresholdTokens, { preserveToolContent: true });
     if (result.truncated) {
       console.warn(
-        `[ContextEngine] 上下文超限裁剪: ${result.originalTokens} → ${result.finalTokens} token，` +
-          `移除 ${result.removedMessages} 条消息`,
+        `[ContextEngine] 完整上下文超限: ${result.originalTokens} token；` +
+          `裁剪方案将移除 ${result.removedMessages} 条消息。运行引擎应压缩或停止，不发送删减历史的请求。`,
       );
     }
     return result;

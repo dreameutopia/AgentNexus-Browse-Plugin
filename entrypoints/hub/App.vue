@@ -88,6 +88,25 @@ const activeSection = ref<HubSection>('agents');
 const skillManagerRef = ref<InstanceType<typeof SkillManager> | null>(null);
 
 /**
+ * 分区深链（hub.html#backup 等）：命中即切到对应分区并清 hash。
+ * 让侧边栏 / 外部入口能直达某个分区（例如「查看存储占用」→ 直接落到备份分区），
+ * 免去用户自己在导航里找。
+ */
+const SECTION_HASHES: Readonly<Record<string, HubSection>> = {
+  '#agents': 'agents',
+  '#skills': 'skills',
+  '#backup': 'backup',
+};
+
+function consumeSectionHash(): boolean {
+  const target = SECTION_HASHES[window.location.hash];
+  if (!target) return false;
+  activeSection.value = target;
+  window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  return true;
+}
+
+/**
  * 解析草稿深链：命中则切到技能分区并清 hash，返回是否命中。
  * 无 hash 的常规打开不产生信号——交付信号唯一，避免用户普通打开管理中心
  * 被无关事件打断（草稿消费的防残留见 learn-draft-store 三重防线）。
@@ -100,6 +119,11 @@ function consumeDraftHash(): boolean {
 }
 
 onMounted(() => {
+  // 分区深链优先（用户明确指定了要看哪个分区）
+  if (consumeSectionHash()) {
+    window.addEventListener('hashchange', onHashChange);
+    return;
+  }
   // 挂载即消费（hash 决定提示口径：深链承诺了草稿，缺失/过期要明确告知）
   const viaHash = consumeDraftHash();
   void skillManagerRef.value?.consumeLearnDraft(viaHash);
@@ -107,6 +131,8 @@ onMounted(() => {
 });
 
 function onHashChange(): void {
+  // 分区深链：标签已开着时 sidepanel 经 tabs.update 送达，也能命中
+  if (consumeSectionHash()) return;
   // 标签已开着时 sidepanel 经 tabs.update 送达深链：命中才消费
   if (consumeDraftHash()) {
     void skillManagerRef.value?.consumeLearnDraft(true);

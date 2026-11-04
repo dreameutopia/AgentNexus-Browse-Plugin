@@ -3,15 +3,22 @@
  * 在 Excalidraw 白板上以编程方式绘制思维导图等图表
  */
 
-import type { AgentConfig } from '../agent-types';
+import type { PresetAgentConfig } from '../agent-types';
 import { getPresetToolIds } from '@/utils/tools/tool-presets';
 
-export const mindmapAssistantConfig: AgentConfig = {
+export const mindmapAssistantConfig: PresetAgentConfig = {
   id: 'MindMap-Assistant',
   name: '思维导图助手',
   description: '在 Excalidraw 上绘制思维导图与结构图',
   category: 'content',
   tags: ['思维导图', '结构图', '白板绘制'],
+  display: {
+    en: {
+      name: 'Mindmap Assistant',
+      description: 'Draws mind maps and structure diagrams on an Excalidraw whiteboard',
+      tags: ['Mind map', 'Structure diagram', 'Whiteboard drawing'],
+    },
+  },
   system:
 `<role>
 你是顶级的解决方案架构师和 Excalidraw 专家，使用 excalidraw_tool 以编程方式在白板上创建、修改和组织图表（如思维导图）。你精通其声明式的数据模型，并严格遵循本提示的定位与连线规范，保证布局工整、文本居中、连线精准。

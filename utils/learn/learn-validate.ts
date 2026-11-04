@@ -1,9 +1,13 @@
 /**
- * 网站学习配置校验（纯逻辑层：无 I/O、无全局状态、无 Vue 依赖）
+ * 网站学习配置校验与回执对账（纯逻辑层：无 I/O、无全局状态、无 Vue 依赖）
  *
- * 职责边界：只回答「这份配置能不能开始学习」以及「模型清单该怎么过滤」，
- * 不做任何副作用（不弹提示、不清选择、不写存储）——这些由 UI 层消费本层
- * 的结果后自行执行。这样校验规则可被单测穷举，UI 换形态也不影响规则。
+ * 职责边界：
+ *   1. 回答「这份配置能不能开始学习」以及「模型清单该怎么过滤」；
+ *   2. 对账 submit_skill / submit_validation 的回执——工具层校验不了
+ *      「与本次配置的一致性」（mode 是否等于 targetMode、allowedTools 是否
+ *      混入阶段外面板），编排层捕获回执时用本层纯函数收口；
+ * 不做任何副作用（不弹提示、不清选择、不写存储）——这些由 UI / 编排层
+ * 消费本层的结果后自行执行。这样规则可被单测穷举，上层换形态也不影响规则。
  *
  * 三条联动规则（与产品约定一一对应）：
  *   1. 目标操作模式为 vision 时，学习策略强制收敛为 vision（没有切换余地）；
@@ -14,13 +18,17 @@
  *      （见 shouldClearModelOnStrategyChange）。
  */
 
-import type {
-  LearnConfig,
-  LearnConfigInput,
-  LearnModelRef,
-  LearnStrategy,
-  LearnTargetMode,
-  ValidatedLearnConfig,
+import {
+  SKILL_MAX_TAGS,
+  SKILL_MODE_TAG,
+  type LearnConfig,
+  type LearnConfigInput,
+  type LearnModelRef,
+  type LearnStrategy,
+  type LearnTargetMode,
+  type SkillDraft,
+  type ValidatedLearnConfig,
+  type ValidationReport,
 } from './learn-types';
 
 /** 学习目标字符上限（超长会让首轮请求吃掉大量上下文预算） */
@@ -219,3 +227,85 @@ export const LEARN_ERROR_KEYS: Record<LearnConfigErrorCode, string> = {
   'model-unavailable': 'sidepanel.learn.errModelUnavailable',
   'model-no-vision': 'sidepanel.learn.errModelNoVision',
 };
+
+// ──── 回执对账（submit_skill / submit_validation 的返回体防御） ────
+// 工具层已做参数级校验，但工具无法感知本次学习的配置。编排层在事件流里
+// 捕获回执时调用本组纯函数：形态（能不能信）与语义（和配置是否一致）
+// 都在这里收口，修正项由调用方记日志，便于回溯模型偏差。
+
+/**
+ * 视觉能力工具 ID（文本模式技能不得依赖；与 submit_skill 的拒绝口径同源）。
+ * 含截图与 OCR：文本执行面没有这些能力，写进 allowedTools 会让技能
+ * 在目标智能体上匹配到不存在的工具。
+ */
+export function isVisualSkillTool(toolId: string): boolean {
+  return toolId.startsWith('vision_') || toolId === 'screenshot' || toolId === 'ocr';
+}
+
+/** 学习内部工具（提交/验收的终止信号，绝不属于任何技能的执行能力） */
+function isLearnInternalTool(toolId: string): boolean {
+  return toolId === 'submit_skill' || toolId === 'submit_validation';
+}
+
+/**
+ * 运行期形态守卫：非对象 / 关键字段缺失或类型不符的回执一律拒绝
+ * （宁可走「无产出」分支并记日志，也不带着坏对象前进）。
+ * 成功路径的回执由本域工具构造，正常不会触发；此守卫针对的是
+ * 事件流里 `data.draft` / `data.report` 这类「任何成功工具都可能携带」
+ * 的弱类型出口。
+ */
+export function asSkillDraft(value: unknown): SkillDraft | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const draft = value as Partial<SkillDraft>;
+  if (typeof draft.name !== 'string' || !draft.name) return null;
+  if (typeof draft.description !== 'string' || typeof draft.category !== 'string') return null;
+  if (typeof draft.body !== 'string' || !draft.body) return null;
+  if (draft.mode !== 'text' && draft.mode !== 'vision') return null;
+  if (!Array.isArray(draft.allowedTools) || !draft.allowedTools.every(id => typeof id === 'string')) return null;
+  if (!Array.isArray(draft.tags) || !draft.tags.every(tag => typeof tag === 'string')) return null;
+  return draft as SkillDraft;
+}
+
+/** 同 asSkillDraft：验收报告的形态守卫（passed 必须是布尔、issues 必须是字符串数组） */
+export function asValidationReport(value: unknown): ValidationReport | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const report = value as Partial<ValidationReport>;
+  if (typeof report.passed !== 'boolean') return null;
+  if (!Array.isArray(report.issues)) return null;
+  return {
+    passed: report.passed,
+    issues: report.issues.filter((issue): issue is string => typeof issue === 'string'),
+    ...(typeof report.score === 'number' && Number.isFinite(report.score) ? { score: report.score } : {}),
+    ...(typeof report.summary === 'string' ? { summary: report.summary } : {}),
+  };
+}
+
+/**
+ * 草稿与目标操作模式对账（防御「模型提交的 mode / 工具与配置不一致」）：
+ * - mode ≠ targetMode：就地纠正，并同步纠正 tags 中的模式标签
+ *   （否则文本目标可能落下一个带「视觉模式」标签、可声明视觉工具的技能）；
+ * - 文本目标混入视觉工具 / 学习内部工具：剥离；
+ * - 剥离后 allowedTools 为空：返回 null（技能不可执行，按无产出处理）；
+ * - tags 超上限或缺正确模式标签：补齐并截断。
+ * 修正项由调用方 console.warn 记录。入参应先经 asSkillDraft 形态守卫。
+ */
+export function reconcileSkillDraft(draft: SkillDraft, targetMode: LearnTargetMode): SkillDraft | null {
+  const correctTag = SKILL_MODE_TAG[targetMode];
+  const allModeTags = Object.values(SKILL_MODE_TAG);
+  const hasWrongTag = draft.tags.some(tag => allModeTags.includes(tag) && tag !== correctTag);
+  const needsTagFix = draft.mode !== targetMode || hasWrongTag || !draft.tags.includes(correctTag);
+
+  let tags = draft.tags;
+  if (needsTagFix) {
+    tags = [...draft.tags.filter(tag => !allModeTags.includes(tag)), correctTag];
+    if (tags.length > SKILL_MAX_TAGS) tags = tags.slice(-SKILL_MAX_TAGS);
+  }
+
+  let allowedTools = [...new Set(draft.allowedTools)];
+  const disallowed = (id: string): boolean =>
+    isLearnInternalTool(id) || (targetMode === 'text' && isVisualSkillTool(id));
+  allowedTools = allowedTools.filter(id => !disallowed(id));
+  if (allowedTools.length === 0) return null;
+
+  return { ...draft, mode: targetMode, tags, allowedTools };
+}

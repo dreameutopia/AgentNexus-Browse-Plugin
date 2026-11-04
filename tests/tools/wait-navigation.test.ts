@@ -51,7 +51,7 @@ const visual=new ConversationEngine({executeTool:async()=>{order.push('capture')
 visual.interruptibleDelay=async(ms:number)=>{assert.equal(ms,3000);order.push('delay');};
 const imageWrite=imageStore.putFromDataUrl;imageStore.putFromDataUrl=async()=>null;
 const visualRuntime:any={chatId:'settle',vision:{screenshotTool:'screenshot',screenshotArgs:{},reScreenshotAfterTools:true}};
-const actionCall={id:'a',type:'function',function:{name:'vision_click',arguments:'{}'}};
+const actionCall={id:'a',type:'function',function:{name:'vision_gui',arguments:'{"action":"click"}'}};
 try {
   await visual.buildVisionContinuationMessage(visualRuntime,[actionCall],[{role:'tool',content:'{"success":true}'}],[],new AbortController().signal);
   assert.deepEqual(order,['delay','capture']);
@@ -59,9 +59,9 @@ try {
   const batchEngine=new ConversationEngine({executeTool:async(name:string)=>{order.push(name);return name==='screenshot'?shot:{success:true,data:{text:'clicked'}};},requiresApproval:()=>false} as any) as any;
   batchEngine.interruptibleDelay=async(ms:number)=>{assert.equal(ms,3000);order.push('delay');};
   const batchHandle:any={abortController:new AbortController(),dynamicToolIds:new Set(),record:{toolCalls:[],parts:[]},toolCallCount:0};
-  await batchEngine.executeToolCalls({...visualRuntime,toolIds:['vision_click','screenshot'],limits:{maxDurationMs:10000,toolTimeoutMs:1000}},batchHandle,
+  await batchEngine.executeToolCalls({...visualRuntime,toolIds:['vision_gui','screenshot'],limits:{maxDurationMs:10000,toolTimeoutMs:1000}},batchHandle,
     [actionCall,{id:'s',type:'function',function:{name:'screenshot',arguments:'{}'}}],{},()=>{},Date.now()+10000);
-  assert.deepEqual(order,['vision_click','delay','screenshot'],'Explicit screenshot in the same batch must also respect the 3s gap');
+  assert.deepEqual(order,['vision_gui','delay','screenshot'],'Explicit screenshot in the same batch must also respect the 3s gap');
   assert.equal(batchHandle.captureGapPending,false);
   order.length=0;const cancel=new AbortController();visual.interruptibleDelay=async()=>{order.push('delay');cancel.abort();};
   assert.equal(await visual.buildVisionContinuationMessage(visualRuntime,[actionCall],[{role:'tool',content:'{"success":true}'}],[],cancel.signal),null);

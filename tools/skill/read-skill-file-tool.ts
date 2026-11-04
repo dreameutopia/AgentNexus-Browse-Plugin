@@ -1,3 +1,4 @@
+import { migrateVisionToolPrompt } from '@/utils/tools/vision-tool-migration';
 /**
  * read_skill_file 工具（渐进式披露第 3 层：按需资源加载）
  *
@@ -64,7 +65,8 @@ export class ReadSkillFileTool extends BaseTool {
     }
 
     // 白名单精确匹配：files 的键即该技能目录的全部合法路径
-    const content = skill.files[path];
+    const source = skill.files[path];
+    const content = source !== undefined && /\.md$/i.test(path) ? migrateVisionToolPrompt(source) : source;
     if (content === undefined) {
       const pathPreview = path.length > 120 ? `${path.slice(0, 120)}…` : path;
       const available = Object.keys(skill.files).join(', ');

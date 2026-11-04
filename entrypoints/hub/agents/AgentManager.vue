@@ -31,17 +31,17 @@
           <div class="hub-card-head">
             <!-- 智能体头像：图片或 emoji，无背景色 -->
             <div class="hub-card-title">
-              <AgentAvatar class="hub-card-avatar" :avatar="agent.avatar" :size="26" :label="agent.name" />
-              <span class="hub-card-name" :title="agent.name">{{ agent.name }}</span>
+              <AgentAvatar class="hub-card-avatar" :avatar="agent.avatar" :size="26" :label="displayOf(agent).name" />
+              <span class="hub-card-name" :title="displayOf(agent).name">{{ displayOf(agent).name }}</span>
             </div>
             <span class="hub-badge" :class="isPreset(agent) ? 'hub-badge-preset' : 'hub-badge-custom'">
               {{ isPreset(agent) ? t('hub.preset') : t('hub.custom') }}
             </span>
           </div>
-          <p class="hub-card-desc" :title="agent.description">{{ agent.description }}</p>
+          <p class="hub-card-desc" :title="displayOf(agent).description">{{ displayOf(agent).description }}</p>
           <div class="hub-card-taxonomy">
             <span class="hub-badge hub-badge-category">{{ categoryLabel(agent.category) }}</span>
-            <span v-for="tag in agent.tags" :key="tag" class="hub-badge hub-badge-tag">{{ tag }}</span>
+            <span v-for="tag in displayOf(agent).tags" :key="tag" class="hub-badge hub-badge-tag">{{ tag }}</span>
           </div>
           <div class="hub-card-meta">
             <span class="hub-card-tools">{{ t('hub.toolCount', { count: agent.tools.length }) }}</span>
@@ -67,8 +67,49 @@
       </div>
 
       <div class="hub-editor-split">
-        <!-- 左列：名称 / 描述 / 分类 / 标签 / 系统提示词 -->
+        <!-- 左列：头像 / 名称 / 描述 / 分类 / 标签 / 系统提示词 -->
         <div class="hub-editor-col">
+          <!-- 头像：上传图片（智能裁剪 + 压缩至 1MB 内）或点选 emoji 卡片；置于名称上方 -->
+          <div class="hub-field">
+            <span class="hub-field-label">{{ t('hub.fieldAvatar') }}</span>
+            <div class="hub-avatar-picker">
+              <div class="hub-avatar-current">
+                <span class="hub-avatar-preview">
+                  <AgentAvatar :avatar="form.avatar" :size="52" :label="form.name" />
+                </span>
+                <div class="hub-avatar-actions">
+                  <label class="hub-btn hub-avatar-upload" :title="t('hub.fieldAvatarHint')">
+                    {{ t('hub.avatarUpload') }}
+                    <input type="file" accept="image/*" hidden @change="onAvatarFileChange" />
+                  </label>
+                  <button
+                    type="button"
+                    class="hub-btn"
+                    :class="{ 'is-active': showEmojiPicker }"
+                    @click="showEmojiPicker = !showEmojiPicker"
+                  >
+                    {{ t('hub.avatarChooseEmoji') }}
+                  </button>
+                  <button
+                    v-if="form.avatar"
+                    type="button"
+                    class="hub-btn hub-avatar-clear"
+                    @click="clearAvatar"
+                  >
+                    {{ t('hub.avatarClear') }}
+                  </button>
+                </div>
+              </div>
+              <EmojiPicker
+                v-if="showEmojiPicker"
+                :selected="form.avatar?.type === 'emoji' ? form.avatar.value : ''"
+                @select="onEmojiPicked"
+              />
+              <p class="hub-hint">{{ t('hub.fieldAvatarHint') }}</p>
+              <p v-if="avatarError" class="hub-error">{{ avatarError }}</p>
+            </div>
+          </div>
+
           <label class="hub-field" :class="{ 'is-invalid': nameInvalid }">
             <span class="hub-field-label">{{ t('hub.fieldName') }}<span class="hub-required" aria-hidden="true">*</span></span>
             <input v-model.trim="form.name" type="text" :maxlength="AGENT_NAME_MAX_CHARS" :placeholder="t('hub.fieldNamePlaceholder')" />
@@ -99,37 +140,6 @@
           <div class="hub-field">
             <span class="hub-field-label">{{ t('hub.fieldTags') }}</span>
             <TagInput v-model="form.tags" />
-          </div>
-
-          <!-- 头像：内置图片任选其一，或自填 emoji（预置 / 自定义 / 导入三类智能体同构） -->
-          <div class="hub-field">
-            <span class="hub-field-label">{{ t('hub.fieldAvatar') }}</span>
-            <div class="hub-avatar-picker">
-              <div class="hub-avatar-images">
-                <button
-                  v-for="option in builtinAvatars"
-                  :key="option.id"
-                  type="button"
-                  class="hub-avatar-option"
-                  :class="{ 'is-active': isBuiltinAvatarSelected(option.src) }"
-                  :title="option.id"
-                  @click="selectBuiltinAvatar(option.src)"
-                >
-                  <AgentAvatar :avatar="{ type: 'image', src: option.src }" :size="26" />
-                </button>
-              </div>
-              <label class="hub-avatar-emoji-field">
-                <span class="hub-field-label">{{ t('hub.fieldAvatarEmoji') }}</span>
-                <input
-                  v-model.trim="form.avatarEmoji"
-                  type="text"
-                  :maxlength="AGENT_AVATAR_EMOJI_MAX_CHARS"
-                  :placeholder="t('hub.fieldAvatarEmojiPlaceholder')"
-                  @input="syncAvatarFromEmoji"
-                />
-              </label>
-              <p class="hub-hint">{{ t('hub.fieldAvatarHint') }}</p>
-            </div>
           </div>
 
           <label class="hub-field" :class="{ 'is-invalid': systemInvalid }">
@@ -237,7 +247,7 @@
 <script setup lang="ts">
 /**
  * 智能体管理：预置（只读展示）+ 自定义（新建/编辑/删除）。
- * 编辑器为左右布局：左列名称/描述/分类/标签/系统提示词，右列工具组（上限 30 个工具）与视觉声明。
+ * 编辑器为左右布局：左列头像/名称/描述/分类/标签/系统提示词，右列工具组（上限 30 个工具）与视觉声明。
  * 采样参数（temperature / maxTokens）与流式开关已移除——统一取用户全局 API 配置，流式恒开。
  * 写入经 utils/agents/agent-store（chrome.storage 权威源），跨上下文实时同步到 sidepanel。
  */
@@ -245,15 +255,22 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { t, type MessageKey } from '@/utils/i18n';
 // 智能体头像展示（图片或 emoji，无背景色）：预置 / 自定义 / 导入三类智能体共用
 import AgentAvatar from '@/common/AgentAvatar.vue';
+// 智能体展示文案随界面语言切换（预置智能体的多语言文案；自定义智能体沿用其自填文案）
+import { useAgentDisplay } from '@/common/use-agent-display';
 import CategorySelect from '../components/CategorySelect.vue';
 import TagInput from '../components/TagInput.vue';
+// 头像 emoji 选择卡片（全量清单网格，取代原预置图片选择）
+import EmojiPicker from '../components/EmojiPicker.vue';
+// 头像上传处理：智能裁剪 + 自动压缩到 1MB 内，返回可持久化的 data URL
 import {
-  AGENT_AVATAR_EMOJI_MAX_CHARS,
+  AVATAR_ERR_NOT_IMAGE,
+  processAvatarImage,
+} from '@/utils/agents/avatar-image';
+import {
   AGENT_CATEGORY_UNCATEGORIZED,
   AGENT_DESCRIPTION_MAX_CHARS,
   AGENT_NAME_MAX_CHARS,
   AGENT_SKILLS_MAX_COUNT,
-  BUILTIN_AGENT_AVATARS,
   BUILTIN_AGENT_CATEGORIES,
   CATEGORY_CUSTOM_VALUE,
   categoryLabelOf,
@@ -329,6 +346,9 @@ const refreshList = () => {
 
 const isPreset = (agent: AgentConfig) => isPresetAgent(agent.id);
 
+// 智能体展示文案（随界面语言切换；编辑表单仍用规范名 agent.name 作为存储键）
+const { displayOf } = useAgentDisplay();
+
 /** 分类显示名：内置分类走 i18n，自定义分类原样展示 id；未分类显示为「通用」 */
 const categoryLabel = (categoryId: string): string => categoryLabelOf(categoryId, id => t(id as MessageKey));
 
@@ -357,10 +377,12 @@ const filteredAgents = computed(() => {
     const agentCategory = agent.category || AGENT_CATEGORY_UNCATEGORIZED;
     if (category && agentCategory !== category) return false;
     if (!query) return true;
+    // 匹配用当前语言的展示文案——用户看到什么就搜得到什么
+    const { name, description, tags } = displayOf(agent);
     return (
-      agent.name.toLowerCase().includes(query) ||
-      agent.description.toLowerCase().includes(query) ||
-      agent.tags.some(tag => tag.toLowerCase().includes(query))
+      name.toLowerCase().includes(query) ||
+      description.toLowerCase().includes(query) ||
+      tags.some(tag => tag.toLowerCase().includes(query))
     );
   });
 });
@@ -441,37 +463,48 @@ const form = reactive({
   skills: [] as string[],
   /** 头像（图片或 emoji）；未选择时为 undefined，由 UI 回退默认 emoji */
   avatar: undefined as AgentConfig['avatar'],
-  /** emoji 头像输入框的原始文本（与 form.avatar 同步，便于编辑与清空） */
-  avatarEmoji: '',
   visionEnabled: false,
   screenshotTool: 'screenshot' as const,
   reScreenshotAfterTools: true,
 });
 
-/** 内置头像图片清单（供选择器展示；与预置智能体共用同一批资源） */
-const builtinAvatars = BUILTIN_AGENT_AVATARS;
+/** emoji 选择卡片是否展开（与上传通道并列的第二条头像来源） */
+const showEmojiPicker = ref(false);
+/** 头像处理失败的可读文案（空串 = 无错误） */
+const avatarError = ref('');
 
-/** 选中内置头像图片：清空 emoji 输入，两种形态互斥（头像只有一种形态） */
-function selectBuiltinAvatar(src: string): void {
-  form.avatar = { type: 'image', src };
-  form.avatarEmoji = '';
+/** 从 emoji 卡片点选：写入 emoji 形态头像（与图片形态互斥） */
+function onEmojiPicked(emoji: string): void {
+  form.avatar = { type: 'emoji', value: emoji };
+  avatarError.value = '';
 }
 
-/** 某个内置头像是否为当前选中的图片形态（供选项高亮判断） */
-function isBuiltinAvatarSelected(src: string): boolean {
-  return form.avatar?.type === 'image' && form.avatar.src === src;
+/** 清除头像：回到无头像状态（UI 回退默认 emoji） */
+function clearAvatar(): void {
+  form.avatar = undefined;
+  avatarError.value = '';
 }
 
-/** emoji 输入变化时同步头像形态：图片形态被 emoji 取代 */
-function syncAvatarFromEmoji(): void {
-  const value = form.avatarEmoji.trim();
-  if (!value) {
-    // 输入被清空 → 无头像（UI 回退默认 emoji），不保留此前的图片
-    form.avatar = undefined;
-    return;
+/**
+ * 上传图片：经 processAvatarImage 智能裁剪 + 压缩到 1MB 内后写入 data URL。
+ * 处理前清空 input.value，保证同一文件重复选择也能触发 change。
+ */
+async function onAvatarFileChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  avatarError.value = '';
+  try {
+    const dataUrl = await processAvatarImage(file);
+    form.avatar = { type: 'image', src: dataUrl };
+    showEmojiPicker.value = false;
+  } catch (error) {
+    avatarError.value =
+      error instanceof Error && error.message === AVATAR_ERR_NOT_IMAGE
+        ? t('hub.avatarUploadInvalid')
+        : t('hub.avatarUploadFailed');
   }
-  const normalized = normalizeAvatar({ type: 'emoji', value });
-  form.avatar = normalized ?? { type: 'emoji', value };
 }
 
 const extraTools = computed(() => form.extraToolIds);
@@ -542,13 +575,14 @@ function resetForm(): void {
   form.extraToolIds = [];
   form.skills = [];
   form.avatar = undefined;
-  form.avatarEmoji = '';
   form.visionEnabled = false;
   form.screenshotTool = 'screenshot';
   form.reScreenshotAfterTools = true;
   errorMessage.value = '';
   showLimitHint.value = false;
   attempted.value = false;
+  showEmojiPicker.value = false;
+  avatarError.value = '';
 }
 
 function startCreate(): void {
@@ -585,9 +619,8 @@ function startEdit(agent: AgentConfig): void {
   form.visionEnabled = !!agent.vision;
   form.screenshotTool = agent.vision?.screenshotTool ?? 'screenshot';
   form.reScreenshotAfterTools = agent.vision?.reScreenshotAfterTools ?? true;
-  // 头像回填：图片形态保留原地址，emoji 形态回填输入框文本（两种形态互斥）
+  // 头像回填：图片（含历史预置图片与上传的 data URL）或 emoji 形态原样保留
   form.avatar = agent.avatar;
-  form.avatarEmoji = agent.avatar?.type === 'emoji' ? agent.avatar.value : '';
   // 非内置分类（历史自定义分类）归入「自定义创建」态并回填名称，
   // 让选择器显示原分类名而不是空白项
   const category = agent.category || '';

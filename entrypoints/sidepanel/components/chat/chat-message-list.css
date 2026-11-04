@@ -287,46 +287,134 @@
   font-style: italic;
 }
 
-/* Markdown 表格样式 - 外层滚动容器 */
-.message-content .table-scroll-wrapper {
-  display: block;
-  overflow-x: auto;
+/* Markdown 表格样式 - 工具栏（复制 / 导出 xlsx） */
+.message-content .table-block,
+.reasoning-content .table-block {
   margin: 14px 0;
   border: 1px solid #d1d5db;
   border-radius: 6px;
+  overflow: hidden;
+}
+
+/* 工具栏：左侧标题，右侧动作按钮（SVG 图标） */
+.message-content .table-header,
+.reasoning-content .table-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 6px 5px 10px;
+  background: #f1f5f9;
+  border-bottom: 1px solid #d1d5db;
+  font-size: 12px;
+  color: #57606a;
+}
+
+.message-content .table-title,
+.reasoning-content .table-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
+.message-content .table-actions,
+.reasoning-content .table-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.message-content .table-action-btn,
+.reasoning-content .table-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #57606a;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.message-content .table-action-btn:hover,
+.reasoning-content .table-action-btn:hover {
+  background: #e2e8f0;
+  border-color: #cbd5e1;
+  color: #1f2937;
+}
+
+/* 动作反馈：done = 成功（绿），error = 失败（红） */
+.message-content .table-action-btn.done,
+.reasoning-content .table-action-btn.done {
+  color: #1a7f37;
+}
+
+.message-content .table-action-btn.error,
+.reasoning-content .table-action-btn.error {
+  color: #cf222e;
+}
+
+.message-content .table-action-btn.is-busy,
+.reasoning-content .table-action-btn.is-busy {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+/* Markdown 表格样式 - 横向滚动容器（外框由 .table-block 提供） */
+.message-content .table-scroll-wrapper,
+.reasoning-content .table-scroll-wrapper {
+  display: block;
+  overflow-x: auto;
+  margin: 0;
   -webkit-overflow-scrolling: touch;
 }
 
-.message-content table {
+.message-content table,
+.reasoning-content table {
   min-width: 100%;
   border-collapse: collapse;
   font-size: 13px;
   margin: 0;
 }
 
-.message-content thead {
+.message-content thead,
+.reasoning-content thead {
   background: #f1f5f9;
 }
 
 .message-content th,
-.message-content td {
+.message-content td,
+.reasoning-content th,
+.reasoning-content td {
   border: 1px solid #d1d5db;
   padding: 8px 12px;
   text-align: left;
   white-space: nowrap;
 }
 
-.message-content th {
+.message-content th,
+.reasoning-content th {
   font-weight: 600;
   color: #1f2937;
   background: #f1f5f9;
 }
 
-.message-content tbody tr:nth-child(even) {
+.message-content tbody tr:nth-child(even),
+.reasoning-content tbody tr:nth-child(even) {
   background: #f9fafb;
 }
 
-.message-content tbody tr:hover {
+.message-content tbody tr:hover,
+.reasoning-content tbody tr:hover {
   background: #f1f5f9;
 }
 
@@ -1476,6 +1564,57 @@
 .chart-block[data-chart-state='error'] .chart-body {
   display: block;
   animation: none;
+}
+
+/* ==================== 回答内截图引用（<agent-image id="..." />） ====================
+   结构契约见 markdown-renderer.buildAgentImageCard / agent-image-renderer.ts：
+   .agent-image-card[data-agent-image-id][data-agent-image-state]
+     └─ .agent-image-body（占位文本 → 异步注入 <img> + .agent-image-caption）
+   状态机：pending → loading → done | missing | error。
+   图片本体来自图片库（与 vision loop 自动截图同一处存储），按短 id 反查。 */
+
+.agent-image-card {
+  margin: 12px 0;
+  border: 1px solid #e1e4e8;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.agent-image-card .agent-image-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+}
+
+.agent-image-card .agent-image-body img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+  background: #f6f8fa;
+  cursor: zoom-in;
+}
+
+.agent-image-card .agent-image-caption {
+  font-size: 11px;
+  color: #57606a;
+  text-align: center;
+  word-break: break-all;
+}
+
+.agent-image-card .agent-image-placeholder,
+.agent-image-card .agent-image-missing {
+  display: block;
+  padding: 18px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: #8b949e;
+}
+
+.agent-image-card .agent-image-missing {
+  color: #b3564e;
 }
 
 /* ==================== 统计卡片（KPI 卡片组） ====================

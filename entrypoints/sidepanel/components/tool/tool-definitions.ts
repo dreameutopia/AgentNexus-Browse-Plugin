@@ -2,13 +2,27 @@ import { PageExecTool } from '@/tools/browser/page-exec-tool';
 import { BrowserObserveTool } from '@/tools/browser/observe';
 import { BrowserInteractTool } from '@/tools/browser/interact';
 import { NetworkObserverTool } from '@/tools/browser/network-observer';
-import { createGuiTools } from '@/tools/vision/gui-tools';
+import { VisionGuiTool } from '@/tools/vision/gui-tool';
 import { createVisionReadTools } from '@/tools/vision/read-tools';
-import { createVisionObservationTools } from '@/tools/vision/observation-tools';
 /**
  * 工具分类与工具定义数据
  */
-import type { ToolCategory } from './types';
+import type { ToolCategory, ToolDefinition } from './types';
+
+function visionGuiDefinition(): ToolDefinition {
+  const tool = new VisionGuiTool();
+  const schema = tool.openaiSchema.function.parameters;
+  const actionSchemas = Object.fromEntries(schema.anyOf!.map(branch => {
+    const b = branch as { properties: Record<string, any>; required: string[] };
+    const action = b.properties.action.enum[0];
+    return [action, {
+      parameters: { ...b.properties, action: schema.properties.action },
+      required: b.required,
+    }];
+  }));
+  return { name: tool.name, description: tool.metadata.description, category: tool.metadata.category,
+    version: tool.metadata.version, parameters: schema.properties, required: schema.required ?? [], actionSchemas };
+}
 
 export const categories: ToolCategory[] = [
   {
@@ -443,40 +457,6 @@ export const categories: ToolCategory[] = [
           }
         },
         required: []
-      },
-      {
-        name: 'browser_screenshot',
-        description: '捕获网页截图（可见区域、全页面或特定元素）',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {
-          name: {
-            type: 'string',
-            description: '截图文件名',
-            placeholder: 'screenshot'
-          },
-          selector: {
-            type: 'string',
-            description: 'CSS选择器，用于捕获特定元素',
-            placeholder: '#content'
-          },
-          fullPage: {
-            type: 'boolean',
-            description: '是否捕获整个页面',
-            default: false
-          },
-          savePng: {
-            type: 'boolean',
-            description: '是否保存为PNG文件',
-            default: true
-          },
-          storeBase64: {
-            type: 'boolean',
-            description: '是否返回base64编码的图片数据',
-            default: false
-          }
-        },
-        required: ['name']
       },
       {
         name: 'browser_scroll',
@@ -1176,9 +1156,8 @@ export const categories: ToolCategory[] = [
     icon: '👁️',
     tools: [
       { name: 'screenshot', description: '截图：action 保留调试会话用于操作；observe 不附加调试器，仅用于观察', category: 'vision', version: '3.1.0', parameters: { mode: { type: 'string', enum: ['action','observe'], default: 'action', description: '观察模式不可用于 GUI 输入' } }, required: [] },
-      ...createGuiTools().map(tool => ({ name: tool.name, description: tool.metadata.description, category: 'vision', version: '3.0.0', parameters: tool.openaiSchema.function.parameters.properties, required: tool.openaiSchema.function.parameters.required || [] })),
+      visionGuiDefinition(),
       ...createVisionReadTools().map(tool => ({ name: tool.name, description: tool.metadata.description, category: 'vision', version: '1.0.0', parameters: tool.openaiSchema.function.parameters.properties, required: tool.openaiSchema.function.parameters.required || [] })),
-      ...createVisionObservationTools().map(tool => ({name:tool.name,description:tool.metadata.description,category:'vision',version:'1.0.0',parameters:tool.openaiSchema.function.parameters.properties,required:tool.openaiSchema.function.parameters.required||[]})),
       { name: 'ocr', description: 'OCR 文字识别', category: 'vision', version: '1.0.0', parameters: { selector: { type: 'string', description: '可选图片选择器' } }, required: [] },
     ]
   },

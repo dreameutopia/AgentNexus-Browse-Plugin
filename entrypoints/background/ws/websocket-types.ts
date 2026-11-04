@@ -113,8 +113,8 @@ export interface FileSendErrorPayload {
  */
 export type VisionActionPayload =
   | { action: 'screenshot'; parameters?: Record<string, never> }
-  | { action: 'zoom'; parameters: import('@/tools/vision/observation-tools').ZoomArgs }
-  | { action: 'check'; parameters: import('@/tools/vision/observation-tools').CheckArgs }
+  | { action: 'zoom'; parameters: import('@/tools/vision/observation-actions').ZoomArgs }
+  | { action: 'check'; parameters: import('@/tools/vision/observation-actions').CheckArgs }
   | { action: import('@/tools/vision/gui-driver').GuiAction; parameters: import('@/tools/vision/gui-driver').GuiParameters };
 
 /**

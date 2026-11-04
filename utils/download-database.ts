@@ -1,10 +1,16 @@
 // utils/download-database.ts
 
-const DB_NAME = 'CapturedFileDB';
-const STORE_NAME = 'files';
+/** 数据库名（导出供备份 / 存储统计引擎定位同一份数据，避免键名漂移） */
+export const CAPTURED_FILES_DB_NAME = 'CapturedFileDB';
+/** 捕获文件表名（导出供备份引擎定位） */
+export const CAPTURED_FILES_STORE = 'files';
+
+const DB_NAME = CAPTURED_FILES_DB_NAME;
+const STORE_NAME = CAPTURED_FILES_STORE;
 const DB_VERSION = 1;
 
-interface CapturedFileRecord {
+/** 捕获文件记录（导出供备份引擎复用其形状） */
+export interface CapturedFileRecord {
   id: string;
   filename: string;
   sourcePageUrl: string;
@@ -23,7 +29,7 @@ class DownloadDatabase {
 
       request.onerror = () => reject(new Error('Failed to open IndexedDB.'));
       request.onsuccess = () => resolve(request.result);
-      
+
       request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
@@ -33,6 +39,9 @@ class DownloadDatabase {
         }
       };
     });
+    // 模块加载即 open：若此处失败会产生「未处理的 Promise 拒绝」噪音。
+    // 挂一个空 catch 消除噪音，真正的调用方 await 时仍会收到原始错误。
+    void this.dbPromise.catch(() => undefined);
   }
 
   /**
@@ -120,6 +129,43 @@ class DownloadDatabase {
         const clearRequest = store.clear();
         clearRequest.onsuccess = () => resolve(count);
         clearRequest.onerror = () => reject(new Error('Failed to clear object store.'));
+    });
+  }
+  /**
+   * 全部捕获文件（含 Blob 本体；备份 / 存储统计用）。
+   * 读取失败抛错——绝不返回空数组冒充「没有捕获文件」。
+   */
+  public async getAllFiles(): Promise<CapturedFileRecord[]> {
+    const db = await this.dbPromise;
+    return new Promise<CapturedFileRecord[]>((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readonly');
+      const request = transaction.objectStore(STORE_NAME).getAll();
+      request.onsuccess = () => {
+        const result = request.result as CapturedFileRecord[] | undefined;
+        resolve(Array.isArray(result) ? result : []);
+      };
+      request.onerror = () => reject(new Error('Failed to read all files from IndexedDB.'));
+    });
+  }
+
+  /**
+   * 原子恢复：单事务内清空表并写入给定记录（保留原始 id / 时间戳）。
+   *
+   * 事务失败即整体不落库（备份契约的分区原子性硬要求）；整表替换语义。
+   */
+  public async restoreFiles(files: readonly CapturedFileRecord[]): Promise<void> {
+    const db = await this.dbPromise;
+    return new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(STORE_NAME, 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      const clearRequest = store.clear();
+      clearRequest.onsuccess = () => {
+        for (const file of files) store.put(file);
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(new Error('Failed to restore captured files.'));
+      transaction.onabort = () =>
+        reject(transaction.error ?? new Error('Restore transaction aborted.'));
     });
   }
 }

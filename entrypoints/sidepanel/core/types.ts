@@ -106,6 +106,10 @@ export interface ChatMessageRecord {
   /** Exact model-facing rounds, independent of aggregated UI text/tool cards.
    * Images use storage-only content references; old records use legacy replay. */
   modelMessages?: ChatMessage[];
+  /** Effective history after an explicit compaction. Original rounds stay above. */
+  modelContext?: ChatMessage[];
+  /** Current unfinished stream, checkpointed alongside the UI for crash recovery. */
+  modelPartial?: ChatMessage;
   id: string;
   chatId: string;
   /** 会话内单调递增序号，用于排序与分页 */
@@ -122,8 +126,8 @@ export interface ChatMessageRecord {
    * 关联图片（内容哈希 SHA-256 hex；图片本体存于独立图片库，见 core/images）。
    * 语义按角色区分：
    *   - user：本轮上传的图片（跨轮次派生上下文时解析回 data URL 重发给模型）；
-   *   - assistant：vision 循环的自动截图（仅供 UI 查看/放大/下载，
-   *     不回注模型上下文——每轮开始都会拍新截图，旧截图标签已失效）。
+   *   - assistant：vision 循环的自动截图（UI 查看/放大/下载）；新记录通过
+   *     modelMessages 精确重放截图位置，旧截图不授权新的坐标操作。
    * 缺省 = 无图片。写入前经 normalizeImageRefs 收敛（去重/上限/形态校验）。
    */
   imageRefs?: string[];
@@ -203,8 +207,8 @@ export interface ConversationRuntime {
   userImages: string[];
   /**
    * 本轮附件文本块（已格式化的完整文本，含文件名标记）。
-   * 仅拼入发给模型的用户消息，转录只存 userInput（用户可见摘要由
-   * 调用方写入 userInput），空串 = 无文本附件。
+   * 拼入本轮模型用户消息并随 modelMessages 保留；用户可见正文仅存 userInput。
+   * 空串 = 无文本附件。
    */
   attachmentPrompt: string;
   /** AI 面初始上下文（历史派生，不含本轮用户消息与 system） */
@@ -212,8 +216,8 @@ export interface ConversationRuntime {
   /**
    * 合成激活轮：用户用 / 预选技能时，系统代发的一轮 load_skill 调用
    * （assistant tool_calls + tool 结果，见 skillEngine.buildActivationRound）。
-   * 会话引擎把它追加在本轮用户消息之后——只进模型上下文，不落转录，
-   * 因此 UI 不显示这轮「凭空出现」的工具调用。未预选技能时为空数组。
+   * 会话引擎把它追加在本轮用户消息之后并保存在 modelMessages，
+   * UI 不显示这轮「凭空出现」的工具调用。未预选技能时为空数组。
    */
   activationContext: ChatMessage[];
   /**

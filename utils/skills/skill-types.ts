@@ -1,3 +1,4 @@
+import { migrateVisionToolId } from '../tools/vision-tool-migration';
 /**
  * 技能（Skill）类型定义
  *
@@ -121,7 +122,7 @@ export function normalizeAllowedToolList(values: readonly unknown[]): string[] {
   const result: string[] = [];
   for (const raw of values) {
     if (typeof raw !== 'string') continue;
-    const toolId = raw.trim();
+    const toolId = migrateVisionToolId(raw.trim());
     if (!toolId || seen.has(toolId)) continue;
     seen.add(toolId);
     result.push(toolId);

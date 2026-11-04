@@ -35,15 +35,18 @@ import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
 import { renderFileCards, installFileCardHandler } from './file-card';
 import { installCodeCopyHandler } from './code-copy';
+import { installTableActionHandler } from './table-actions';
 import { escapeHtml } from './html-escape';
 import { unescapeXmlText } from '../xml-entities';
 import { buildStatCardBlock } from './stat-card';
 import { RICH_OUTPUT_ECHARTS_LANGS, RICH_OUTPUT_STAT_CARD_LANGS } from './rich-output-prompt';
+import { SHORT_ID_PATTERN } from '../../core/images/image-store';
 import { t } from '@/utils/i18n/core';
 
-// 文件下载委托 + 代码复制委托（均为幂等安装）；本模块只在 DOM 上下文被使用
+// 文件下载委托 + 代码复制委托 + 表格工具栏委托（均为幂等安装）；本模块只在 DOM 上下文被使用
 installFileCardHandler();
 installCodeCopyHandler();
+installTableActionHandler();
 
 // ==================== 通用工具 ====================
 
@@ -210,6 +213,73 @@ function extractLatex(source: string, suffix: string): { text: string; formulas:
   return { text, formulas };
 }
 
+// ==================== 回答内截图引用（agent-image） ====================
+
+/**
+ * 回答里引用已存档截图的标签：`<agent-image id="8位短id" alt="可选说明" />`
+ *
+ * 语义：模型在最终回答中写出该标签，渲染层把它还原成图片卡片
+ * （图片本体在图片库里，渲染时按短 id 反查 object URL）。
+ * id 形如 `a1b2c3d4`：8 位小写字母数字，由图片库分配、插件内唯一。
+ *
+ * 与 <api-error> / <think> 同样的处理顺序：**解析前摘出、解析后回填**
+ * （markdown-it 关闭了原始 HTML，标签若留在正文里会被转义成文本）。
+ * 代码块里的同名标签是字面量，不摘出、不还原。
+ */
+const AGENT_IMAGE_PATTERN = /<agent-image\b(?:"[^"]*"|'[^']*'|[^>"'])*(\/?)>/g;
+const AGENT_IMAGE_ID_PATTERN = /\bid\s*=\s*"([^"]*)"/;
+const AGENT_IMAGE_ALT_PATTERN = /\balt\s*=\s*"([^"]*)"/;
+
+/** 回答内截图引用（id + 可选说明） */
+interface AgentImageRef {
+  id: string;
+  alt: string;
+}
+
+/**
+ * 摘出回答中的截图引用标签，替换为纯文本占位符。
+ * 非法 id（不是 8 位短 id）保持原样：宁可让模型看到自己写的原文，
+ * 也不把无法解析的引用渲染成空卡片。
+ */
+function extractAgentImages(source: string, suffix: string): { text: string; refs: AgentImageRef[] } {
+  const refs: AgentImageRef[] = [];
+  const text = splitByCodeSegments(source)
+    .map(segment => {
+      if (segment.code) return segment.text;
+      return segment.text.replace(AGENT_IMAGE_PATTERN, (match, _slash: string, offset: number, whole: string) => {
+        // 属性串从原文切片（标签头之后、边界 > 之前，去掉可选自闭合 /）。
+        // 不能用捕获组：alt 属外部数据可能含 >，惰性捕获会在其内部截断，
+        // 导致 alt 抽成空串并让原始 HTML 泄漏进正文。
+        const closeAt = offset + match.lastIndexOf('>');
+        const attrs = whole.slice(offset + '<agent-image'.length, closeAt).replace(/\/$/, '');
+        const id = AGENT_IMAGE_ID_PATTERN.exec(attrs)?.[1]?.trim() ?? '';
+        if (!SHORT_ID_PATTERN.test(id)) return match;
+        const alt = AGENT_IMAGE_ALT_PATTERN.exec(attrs)?.[1]?.trim() ?? '';
+        refs.push({ id, alt });
+        return `ANAGENTIMG${refs.length - 1}END${suffix}`;
+      });
+    })
+    .join('');
+  return { text, refs };
+}
+
+// ==================== 表格工具栏图标 ====================
+
+/** 表格标识图标（工具栏左侧） */
+const TABLE_ICON_SVG =
+  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/></svg>';
+
+/** 复制按钮图标 */
+const COPY_ICON_SVG =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+
+/** 导出按钮图标（下载） */
+const DOWNLOAD_ICON_SVG =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>';
+
 // ==================== MarkdownIt 实例 ====================
 
 /** 渲染选项接口 */
@@ -374,7 +444,12 @@ export class MarkdownRenderer {
         rendered = rendered.replace(/<think>([\s\S]*)$/, `ANTHINK${thinkBlocks.length - 1}END${suffix}`);
       }
 
-      // ── 3. 摘出 LaTeX 公式（在 Markdown 解析前完成，保证公式里的 < > & 不被转义）──
+      // ── 3. 摘出 <agent-image> 截图引用（回答里引用已存档截图）──
+      // 必须在 Markdown 解析前：markdown-it 关闭原始 HTML，标签留在正文会被转义成文本
+      const agentImages = extractAgentImages(rendered, suffix);
+      rendered = agentImages.text;
+
+      // ── 4. 摘出 LaTeX 公式（在 Markdown 解析前完成，保证公式里的 < > & 不被转义）──
       let formulas: string[] = [];
       if (enableLatex) {
         const extracted = extractLatex(rendered, suffix);
@@ -382,34 +457,39 @@ export class MarkdownRenderer {
         formulas = extracted.formulas;
       }
 
-      // ── 4. Markdown 解析 ──
+      // ── 5. Markdown 解析 ──
       if (enableMarkdown) {
         rendered = this.md.render(rendered);
       } else {
         rendered = escapeHtml(rendered);
       }
 
-      // ── 5. 回填 LaTeX 公式（KaTeX 产物为可信 HTML）──
+      // ── 6. 回填 LaTeX 公式（KaTeX 产物为可信 HTML）──
       if (formulas.length > 0) {
         formulas.forEach((formula, index) => {
           rendered = rendered.split(`ANLATEX${index}END${suffix}`).join(formula);
         });
       }
 
-      // ── 6. 表格包裹滚动容器，防止撑破消息宽度 ──
-      rendered = rendered.replace(/<table>/g, '<div class="table-scroll-wrapper"><table>');
-      rendered = rendered.replace(/<\/table>/g, '</table></div>');
+      // ── 7. 表格包裹：工具栏（复制 / 导出 xlsx）+ 横向滚动容器 ──
+      rendered = this.wrapTables(rendered);
 
-      // ── 7. 文件标记 → 可下载文件卡片 ──
+      // ── 8. 文件标记 → 可下载文件卡片 ──
       rendered = renderFileCards(rendered);
 
-      // ── 8. 回填 <think> 推理段（内容转义：模型内容不得产生可执行标记）──
+      // ── 9. 回填 <agent-image> 截图引用卡片（可信 HTML，图片本体异步注入）──
+      agentImages.refs.forEach((ref, index) => {
+        const token = `ANAGENTIMG${index}END${suffix}`;
+        rendered = this.restoreToken(rendered, token, this.buildAgentImageCard(ref));
+      });
+
+      // ── 10. 回填 <think> 推理段（内容转义：模型内容不得产生可执行标记）──
       thinkBlocks.forEach((content, index) => {
         const token = `ANTHINK${index}END${suffix}`;
         rendered = this.restoreToken(rendered, token, `<think>${escapeHtml(content)}</think>`);
       });
 
-      // ── 9. 回填 <api-error> 错误卡片 ──
+      // ── 11. 回填 <api-error> 错误卡片 ──
       apiErrorBlocks.forEach((block, index) => {
         const token = `ANAPIERR${index}END${suffix}`;
         rendered = this.restoreToken(rendered, token, this.buildApiErrorCard(block));
@@ -423,6 +503,53 @@ export class MarkdownRenderer {
       console.warn('Markdown render error:', error);
       return escapeHtml(content ?? '');
     }
+  }
+
+  /**
+   * 表格 → 工具栏 + 滚动容器。
+   *
+   * DOM 契约（table-actions.ts 依赖）：
+   *   <div class="table-block">
+   *     <div class="table-header">
+   *       <span class="table-title">…图标 + 标题…</span>
+   *       <span class="table-actions">
+   *         <button class="table-action-btn table-copy-btn" title aria-label>…复制图标…</button>
+   *         <button class="table-action-btn table-export-btn" title aria-label>…下载图标…</button>
+   *       </span>
+   *     </div>
+   *     <div class="table-scroll-wrapper"><table>…</table></div>
+   *   </div>
+   *
+   * 表格本身不改变内容，仅套一层容器：横向滚动仍由 .table-scroll-wrapper 承担，
+   * 工具栏提供「复制为 Markdown」与「导出 xlsx」两个动作（均走 document 级委托）。
+   */
+  private wrapTables(html: string): string {
+    if (!html.includes('<table>')) return html;
+    const header = this.buildTableHeader();
+    return html
+      .replace(
+        /<table>/g,
+        `<div class="table-block">${header}<div class="table-scroll-wrapper"><table>`,
+      )
+      .replace(/<\/table>/g, '</table></div></div>');
+  }
+
+  /** 表格工具栏 HTML（右侧排列复制 / 导出按钮，均为 SVG 图标） */
+  private buildTableHeader(): string {
+    const label = t('sidepanel.chat.tableLabel');
+    const copyLabel = t('sidepanel.chat.tableCopyLabel');
+    const exportLabel = t('sidepanel.chat.tableExportLabel');
+    return (
+      `<div class="table-header">` +
+      `<span class="table-title">${TABLE_ICON_SVG}${escapeHtml(label)}</span>` +
+      `<span class="table-actions">` +
+      `<button type="button" class="table-action-btn table-copy-btn"` +
+      ` title="${escapeHtml(copyLabel)}" aria-label="${escapeHtml(copyLabel)}">${COPY_ICON_SVG}</button>` +
+      `<button type="button" class="table-action-btn table-export-btn"` +
+      ` title="${escapeHtml(exportLabel)}" aria-label="${escapeHtml(exportLabel)}">${DOWNLOAD_ICON_SVG}</button>` +
+      `</span>` +
+      `</div>`
+    );
   }
 
   /**
@@ -518,6 +645,30 @@ export class MarkdownRenderer {
       return html.split(paragraphToken).join(replacement);
     }
     return html.split(token).join(replacement);
+  }
+
+  /**
+   * `<agent-image id="..." />` → 截图引用卡片骨架。
+   *
+   * DOM 契约（agent-image-renderer.ts 依赖）：
+   *   <div class="agent-image-card" data-agent-image-id="8位短id"
+   *        data-agent-image-alt="说明" data-agent-image-state="pending|loading|done|missing">
+   *     <div class="agent-image-body">…图片本体由渲染器异步注入…</div>
+   *   </div>
+   *
+   * 骨架本身不含任何图片数据：短 id → 图片的解析是异步的（图片库读取），
+   * 由渲染层在 v-html 注入后完成。所有展示文本一律转义——
+   * alt 来自模型输出，属外部数据。
+   */
+  private buildAgentImageCard(ref: AgentImageRef): string {
+    const alt = ref.alt || t('sidepanel.chat.agentImageDefaultAlt');
+    return (
+      `<div class="agent-image-card" data-agent-image-id="${escapeHtml(ref.id)}"` +
+      ` data-agent-image-alt="${escapeHtml(alt)}" data-agent-image-state="pending">` +
+      `<div class="agent-image-body">` +
+      `<span class="agent-image-placeholder">${escapeHtml(t('sidepanel.chat.agentImageLoading'))}</span>` +
+      `</div></div>`
+    );
   }
 
   /**

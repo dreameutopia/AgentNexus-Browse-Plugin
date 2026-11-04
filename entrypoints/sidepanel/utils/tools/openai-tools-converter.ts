@@ -96,7 +96,9 @@ export class OpenAIToolsConverter {
       if (actionList.includes(record.action)) return true;
     }
 
-    return requiresConfirmApproval(metadata.requiresConfirm, args);
+    const confirmApplies = !metadata.requiresConfirmActions ||
+      !!record && typeof record.action === 'string' && metadata.requiresConfirmActions.includes(record.action);
+    return requiresConfirmApproval(metadata.requiresConfirm && confirmApplies, args);
   }
 
   /**

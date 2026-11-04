@@ -31,7 +31,8 @@ export type { Note, NoteKind, NoteSource };
 
 export const NOTES_DB_NAME = 'AgentNexusNotesDB';
 export const NOTES_DB_VERSION = 2;
-const NOTES_STORE = 'notes';
+/** 笔记表名（导出供备份引擎定位） */
+export const NOTES_STORE = 'notes';
 
 /** 保留分类 ID：显示时经 i18n 映射，其余分类字符串原样展示（用户自定义/站点名） */
 export const CATEGORY_INBOX = 'inbox';
@@ -796,6 +797,53 @@ class NotesDatabase {
         }
         notes.push(cursor.value as Note);
         cursor.continue();
+      };
+    });
+  }
+
+  /**
+   * 全部笔记（备份 / 存储统计用；不受 listNotes 分页限制）。
+   * 读取失败抛错（NotesDatabaseError）——绝不返回空数组冒充「没有笔记」。
+   */
+  async listAllNotes(): Promise<Note[]> {
+    return this.runTx<Note[]>('listAllNotes', 'readonly', (store, setResult) => {
+      const request = store.getAll();
+      request.onsuccess = () => {
+        const result = request.result as Note[] | undefined;
+        setResult(Array.isArray(result) ? result : []);
+      };
+    });
+  }
+
+  /**
+   * 原子恢复：单事务内清空笔记表并写入给定记录（保留原始 id / 时间戳）。
+   *
+   * 事务失败即整体不落库（备份契约的分区原子性硬要求）；整表替换语义。
+   * 写入前逐条做形状校验——脏数据宁可让整次导入失败，也不写进库里。
+   */
+  async restoreNotes(notes: readonly Note[]): Promise<void> {
+    const prepared: Note[] = notes.map(note => {
+      if (!note || typeof note !== 'object') {
+        throw new NotesParamError('notes', '存在非对象条目');
+      }
+      if (!isNoteId(note.id)) {
+        throw new NotesParamError('notes.id', `非法的笔记 ID: ${previewValue(note.id)}`);
+      }
+      if (typeof note.content !== 'string' || typeof note.title !== 'string') {
+        throw new NotesParamError('notes', '存在缺少 content / title 的条目');
+      }
+      return {
+        ...note,
+        tags: normalizeTags(note.tags) ?? [],
+        text: typeof note.text === 'string' ? note.text : extractNoteText(note.content),
+      };
+    });
+
+    await this.runTx<void>('restoreNotes', 'readwrite', (store, setResult) => {
+      const request = store.clear();
+      request.onsuccess = () => {
+        for (const note of prepared) store.put(note);
+        setResult();
       };
     });
   }

@@ -31,7 +31,7 @@ export const DEFAULT_AGENT_SYSTEM_PROMPT = `你是一个浏览器自动化助手
 
 /**
  * 新会话的默认智能体 ID（用户未显式选择智能体时，首条消息发送前自动选中）。
- * 取 Auto Action：其工具集为「元素定位 + 导航 + 点击输入」的通用网页操作组合，
+ * 取文本通用助手（Auto-Action）：其工具集为「元素定位 + 导航 + 点击输入」的通用网页操作组合，
  * 覆盖面最广，作为无选择时的兜底不会像 vision / deep-search 那样带有强场景假设。
  */
 export const DEFAULT_SESSION_AGENT_ID = 'Auto-Action';
@@ -116,7 +116,7 @@ class AgentEngine {
   getDefaultSessionAgent(): AgentConfig | null {
     const byId = this.getById(DEFAULT_SESSION_AGENT_ID);
     if (byId) return byId;
-    const fallback = this.get('Auto Action助手');
+    const fallback = this.get('文本通用助手');
     if (fallback) {
       console.warn('[AgentEngine] 默认智能体 ID 未命中，已按名称回落解析');
       return fallback;

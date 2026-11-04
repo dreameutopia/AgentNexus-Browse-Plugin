@@ -39,6 +39,7 @@ import {
   type Locale,
   type MessageKey,
 } from './core';
+import { NON_DEFAULT_LOCALES, type NonDefaultLocale } from './locales';
 
 // 类型安全：让 vue-i18n 的 t/$t 只接受 zh-CN 目录里真实存在的 key（含嵌套点路径）
 declare module 'vue-i18n' {
@@ -127,5 +128,6 @@ export function installI18n(app: App): void {
 }
 
 export { SUPPORTED_LOCALES, DEFAULT_LOCALE, getLocale, setLocale, subscribeLocale };
-export type { Locale, MessageKey };
+export { NON_DEFAULT_LOCALES };
+export type { Locale, MessageKey, NonDefaultLocale };
 export { initLocale, applyDomI18n } from './core';

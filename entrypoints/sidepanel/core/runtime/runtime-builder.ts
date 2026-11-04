@@ -22,6 +22,8 @@ import { INTERACT_SYSTEM_PROMPT_SECTION } from '@/tools/interact/interact-prompt
 import { PLAN_SYSTEM_PROMPT_SECTION } from '@/tools/plan/plan-prompt';
 import { CORE_SESSION_TOOL_IDS } from '@/utils/tools/tool-presets';
 import { filterVisionAssistantTools, isVisionAssistantTool } from '@/utils/agents/vision-assistant-policy';
+import { VISION_ACTION_SOP } from '@/utils/agents/vision-action-sop';
+import { migrateVisionToolId, migrateVisionToolPrompt } from '@/utils/tools/vision-tool-migration';
 import { toolRegistry } from '@/tools/registry';
 import { RICH_OUTPUT_SYSTEM_PROMPT_SECTION } from '../../utils/chat/rich-output-prompt';
 import type {
@@ -61,6 +63,19 @@ export interface RuntimeBuildInput {
    * 覆盖的只是「智能体指令」这一个分区。
    */
   agentSystemOverride?: string;
+  /**
+   * 禁用技能发现（动态装配场景专用，如网站学习的两个阶段）。
+   *
+   * true：不解析可用技能清单——发现分区不注入、load_skill/read_skill_file
+   * 承载工具不注入、技能携带的工具（如 vision_gui）不参与 offersGui 判定。
+   * 目的：
+   *   - 学习不得被既有技能污染（照抄技能而不是试错探索）；
+   *   - 盲测验证不得借助技能清单获取技能正文之外的知识；
+   *   - 封死「技能携带视觉工具混入文本目标学习」的注入路径。
+   * 缺省 false = 既有行为（无智能体回落全部启用技能），其它调用方不受影响。
+   * 与 skillNames 独立：本标志只关发现清单；调用方仍须自行传空 skillNames。
+   */
+  disableSkillDiscovery?: boolean;
   /**
    * 循环限制覆盖（学习等长任务的高上限）。
    * 与既有「按 vision 取默认 + 应用设置」的基线做浅合并：只覆盖给出的字段，
@@ -118,7 +133,7 @@ function finalizeToolIds(toolIds: readonly string[]): string[] {
   const unknown: string[] = [];
   for (const raw of toolIds) {
     if (typeof raw !== 'string') continue;
-    const toolId = raw.trim();
+    const toolId = migrateVisionToolId(raw.trim());
     if (!toolId || seen.has(toolId)) continue;
     seen.add(toolId);
     if (!registered.has(toolId)) {
@@ -162,14 +177,18 @@ class RuntimeBuilder {
     // 按站点动态注入的搜索工具）——「工具在哪技能在哪」对核心工具与动态工具同样
     // 成立。漏掉核心工具会让 allowed-tools 含核心工具的技能在任何智能体下都
     // 匹配失败（技能可用性第三通道依赖此口径）
+    // disableSkillDiscovery=true（学习/盲测）：可用技能恒为空，发现分区、
+    // 技能承载工具与技能携带的 GUI 能力一并关闭（见 RuntimeBuildInput 注释）
     const sessionToolIds = [
       ...CORE_SESSION_TOOL_IDS,
       ...agentToolIds,
       ...(input.extraToolIds ?? []),
     ];
-    const availableSkills = skillEngine.resolveAvailableSkills(agent,
-      isVisionGuide ? filterVisionAssistantTools(sessionToolIds) : sessionToolIds)
-      .filter(skill => !isVisionGuide || skill.allowedTools.every(isVisionAssistantTool));
+    const availableSkills = input.disableSkillDiscovery
+      ? []
+      : skillEngine.resolveAvailableSkills(agent,
+          isVisionGuide ? filterVisionAssistantTools(sessionToolIds) : sessionToolIds)
+        .filter(skill => !isVisionGuide || skill.allowedTools.every(isVisionAssistantTool));
 
     // ── 系统提示词（XML 分区） ──
     // 注意：不在此拼入「当前时间」——时间戳逐轮变化会使 system 前缀失配、
@@ -195,10 +214,19 @@ class RuntimeBuilder {
     // 围栏块，由侧边栏可信渲染管线消费（沙箱隔离 + JSON-only，见
     // utils/chat/rich-output-prompt.ts 的安全模型说明）
     sections.push(RICH_OUTPUT_SYSTEM_PROMPT_SECTION);
-    sections.push('<history-and-tools>\n历史截图仅是过去状态的证据；GUI 操作必须使用最新有效截图，截图失效时重新获取，不得重用旧坐标。工具目录预先包含可用技能的工具，不代表已经授权执行：先 load_skill 激活对应技能，再使用该技能新增的工具。不得因目录中存在工具就跳过加载或扩大权限。\n</history-and-tools>');
+    // 固定分区，但技能相关句子按 disableSkillDiscovery 分叉：
+    // 学习/盲测会话既无发现清单也无 load_skill，保留「先 load_skill 再用其
+    // 工具」的指令会让模型去找一个不存在的入口（死链指令），并给盲测留下
+    // 「可以借助技能」的歧义——禁用时改为显式声明本会话不提供技能目录。
+    sections.push(
+      '<history-and-tools>\n历史截图仅是过去状态的证据；GUI 操作必须使用最新有效截图，截图失效时重新获取，不得重用旧坐标。' +
+        (input.disableSkillDiscovery
+          ? '本会话不提供技能目录与 load_skill：不得加载、引用或假定任何既有技能，只依据本会话指令与工具完成任务。\n</history-and-tools>'
+          : '工具目录预先包含可用技能的工具，不代表已经授权执行：先 load_skill 激活对应技能，再使用该技能新增的工具。不得因目录中存在工具就跳过加载或扩大权限。\n</history-and-tools>'),
+    );
     // 智能体指令分区：动态装配方（网站学习等）经 agentSystemOverride 整体替换，
     // 否则取所选智能体指令，再兜底默认指令
-    const agentSystem = input.agentSystemOverride?.trim() || agent?.system || DEFAULT_AGENT_SYSTEM_PROMPT;
+    const agentSystem = migrateVisionToolPrompt(input.agentSystemOverride?.trim() || agent?.system || DEFAULT_AGENT_SYSTEM_PROMPT);
     sections.push(`<agent-instructions>\n${agentSystem}\n</agent-instructions>`);
     if (input.systemPromptSuffix?.trim()) {
       sections.push(
@@ -211,13 +239,19 @@ class RuntimeBuilder {
     const selectedSkillNames = input.skillNames.filter(name => !isVisionGuide ||
       skillEngine.get(name)?.allowedTools.every(isVisionAssistantTool));
     if (isVisionGuide && selectedSkillNames.length !== input.skillNames.length) {
-      sections.push('<capability-boundary>\n本轮所选技能中存在不可用或超出观察范围的技能，已跳过激活。不要声称已运行这些技能；若用户目标依赖代操作，说明原因并建议切换 Vision Action / Auto Action 或数据收割机。\n</capability-boundary>');
+      sections.push('<capability-boundary>\n本轮所选技能中存在不可用或超出观察范围的技能，已跳过激活。不要声称已运行这些技能；若用户目标依赖代操作，说明原因并建议切换视觉通用助手 / 文本通用助手 或数据收割机。\n</capability-boundary>');
     }
     const activation = skillEngine.buildActivationRound(selectedSkillNames);
     const discovery = skillEngine.buildDiscoverySection(
-      [...availableSkills].sort((a, b) => a.id.localeCompare(b.id)), [],
+      [...availableSkills].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0), [],
     );
     if (discovery) sections.push(discovery);
+
+    // Include once for custom agents and skill-discovered GUI capabilities too.
+    // Built-in action/learning prompts already carry the identical XML section.
+    const offersGui = [...sessionToolIds, ...activation.toolIds, ...availableSkills.flatMap(skill => skill.allowedTools)]
+      .some(id => migrateVisionToolId(id) === 'vision_gui');
+    if (!isVisionGuide && offersGui && !agentSystem.includes('<vision-gui-tool>')) sections.push(VISION_ACTION_SOP);
 
     const systemPrompt = sections.join('\n\n');
 

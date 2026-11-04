@@ -57,14 +57,14 @@ registerAllTools()                      (tools/index.ts)
 
 - 新一代工具统一 **`browser_` 前缀 + snake_case**：`browser_navigate`、`browser_get_page_text`。
 - 例外（保持既有调用方兼容）：`page-source`、`getPageMarkdown`、`task-submit`、`task-result`、`formFiller`、`semantic_compressor`、`interact`。
-- **`screenshot` 与 `browser_screenshot` 是两个不同工具**：前者是 `tools/vision/` 的视觉截图，后者是 `tools/browser/capture.ts` 的浏览器截图；预设与 Agent 提示词里引用时不要混用。
+- **`browser_screenshot` 已下线**：视觉截图统一由 `screenshot`（`tools/vision/screenshot-tool.ts`）提供，预设与 Agent 提示词里不要混用两个名字。
 - 有些名字只是**消息类型别名**，不是注册工具：`browser_go_back` / `browser_go_forward`（映射到 `browser_go_back_or_forward`）。脚本求值统一为 `browser_page_exec`。
 - `browser_refresh`、`browser_set_zoom` **没有注册工具**，只在 `tools-manager-listener.ts` 内联处理——仅当调用方直接发 `{ type: 'browser_refresh' }` 消息时可用，`CALL_TOOL` 通道不可达。
 - 分类（`metadata.category`）是**运行期分组**（`toolRegistry.getStats()` / `getByCategory()`），
   与磁盘目录不必一一对应（如 `browser_interact` 属 `browser`、`python_run` 属 `code`）；
   文档表格按运行期分类记录，由测试强制对齐。
 
-## 三、分类清单（截至本次核对，共 114 个）
+## 三、分类清单（截至本次核对，共 104 个）
 
 | 分类 | 数量 | 工具名 |
 | --- | --- | --- |
@@ -72,7 +72,7 @@ registerAllTools()                      (tools/index.ts)
 | automation | 9 | `ai_action`、`ai_locate`、`check_restricted_url`、`extract_data`、`file_upload_getter`、`file_uploader`、`formFiller`、`get_downloads_status`、`xiaozhi_config` |
 | base | 3 | `page-source`、`task-result`、`task-submit` |
 | bilibili | 2 | `bilibili_jump_tool`、`bilibili_subtitle_tool` |
-| browser | 29 | `browser_bookmark_create`、`browser_bookmark_delete`、`browser_clean_page`、`browser_close_tab`、`browser_close_tabs`、`browser_console`、`browser_create_tab`、`browser_extract_data`、`browser_get_all_tabs`、`browser_get_page_html`、`browser_get_page_info`、`browser_get_page_text`、`browser_go_back_or_forward`、`browser_interact`、`browser_navigate`、`browser_network_capture`、`browser_network_request`、`browser_observe`、`browser_page_exec`、`browser_screenshot`、`browser_scroll`、`browser_search_bookmarks`、`browser_search_history`、`browser_send_command_to_inject_script`、`browser_switch_tab`、`browser_vector_search`、`browser_wait_for_element`、`browser_web_fetcher`、`browser_window` |
+| browser | 28 | `browser_bookmark_create`、`browser_bookmark_delete`、`browser_clean_page`、`browser_close_tab`、`browser_close_tabs`、`browser_console`、`browser_create_tab`、`browser_extract_data`、`browser_get_all_tabs`、`browser_get_page_html`、`browser_get_page_info`、`browser_get_page_text`、`browser_go_back_or_forward`、`browser_interact`、`browser_navigate`、`browser_network_capture`、`browser_network_request`、`browser_observe`、`browser_page_exec`、`browser_scroll`、`browser_search_bookmarks`、`browser_search_history`、`browser_send_command_to_inject_script`、`browser_switch_tab`、`browser_vector_search`、`browser_wait_for_element`、`browser_web_fetcher`、`browser_window` |
 | code | 2 | `mermaid_renderer`、`python_run` |
 | common | 2 | `generic_wait`、`wait_page_load` |
 | data | 1 | `data_ref_tool` |
@@ -88,7 +88,7 @@ registerAllTools()                      (tools/index.ts)
 | search | 9 | `baidu_search`、`bilibili_search`、`bing_search`、`cnki_search`、`csdn_search`、`github_search`、`mooc_search`、`xiaohongshu_search`、`zhihu_search` |
 | skill | 2 | `load_skill`、`read_skill_file` |
 | text-processing | 1 | `semantic_compressor` |
-| vision | 16 | `ocr`、`screenshot`、`vision_check`、`vision_click`、`vision_drag`、`vision_hover`、`vision_input`、`vision_inspect`、`vision_keyboard`、`vision_mark`、`vision_read`、`vision_read_scroll`、`vision_read_wait`、`vision_read_zoom`、`vision_scroll`、`vision_zoom` |
+| vision | 7 | `ocr`、`screenshot`、`vision_gui`、`vision_read`、`vision_read_scroll`、`vision_read_wait`、`vision_read_zoom` |
 
 ## 四、消费方
 

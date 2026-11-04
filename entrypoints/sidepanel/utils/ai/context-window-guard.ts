@@ -62,13 +62,13 @@ const NUL_CHAR = String.fromCharCode(0);
 export class ContextWindowGuard {
   static readonly TOOL_CONTENT_LIMIT = TOOL_CONTENT_LIMIT;
 
-  static protect(messages: ChatMessage[], threshold?: number): ContextGuardResult {
+  static protect(messages: ChatMessage[], threshold?: number, options: { preserveToolContent?: boolean } = {}): ContextGuardResult {
     const safeThreshold = this.resolveThreshold(threshold);
-    const normalizedMessages = messages.map((message, index) => this.normalizeMessage(message, index));
+    const normalizedMessages = messages.map((message, index) => this.normalizeMessage(message, index, options.preserveToolContent));
     const originalTokens = this.totalTokens(normalizedMessages);
     const toolContentsTrimmed = messages.reduce((count, message) => {
       // 技能类工具不做传输层截断（见 SKILL_CONTEXT_TOOL_NAMES），不应计入「已截断」
-      if (message.role !== 'tool' || SKILL_CONTEXT_TOOL_NAMES.has(message.name ?? '')) {
+      if (options.preserveToolContent || message.role !== 'tool' || SKILL_CONTEXT_TOOL_NAMES.has(message.name ?? '')) {
         return count;
       }
 
@@ -118,7 +118,7 @@ export class ContextWindowGuard {
       originalTokens,
       finalTokens,
       threshold: safeThreshold,
-      truncated: finalTokens < originalTokens,
+      truncated: retainedNonSystemMessages.length < nonSystemMessages.length,
       removedMessages: normalizedMessages.length - finalMessages.length,
       toolContentsTrimmed,
     };
@@ -138,11 +138,12 @@ export class ContextWindowGuard {
     return Math.max(CONTEXT_THRESHOLD_MIN, Math.floor(threshold as number));
   }
 
-  private static normalizeMessage(message: ChatMessage, index: number): NormalizedMessage {
+  private static normalizeMessage(message: ChatMessage, index: number, preserveToolContent = false): NormalizedMessage {
     return {
       ...message,
+      ...(message.nativeReplay ? { nativeReplay: structuredClone(message.nativeReplay) } : {}),
       __normalizedIndex: index,
-      content: this.normalizeContent(message),
+      content: this.normalizeContent(message, preserveToolContent),
       tool_calls: message.tool_calls?.map(toolCall => ({
         ...toolCall,
         function: {
@@ -155,10 +156,10 @@ export class ContextWindowGuard {
     };
   }
 
-  private static normalizeContent(message: ChatMessage): ChatMessage['content'] {
+  private static normalizeContent(message: ChatMessage, preserveToolContent = false): ChatMessage['content'] {
     const { role, content } = message;
     // 技能类工具的结果按需注入且体量已受设计上限约束，不做传输层截断
-    const trimmable = role === 'tool' && !SKILL_CONTEXT_TOOL_NAMES.has(message.name ?? '');
+    const trimmable = !preserveToolContent && role === 'tool' && !SKILL_CONTEXT_TOOL_NAMES.has(message.name ?? '');
     if (typeof content === 'string') {
       const sanitized = this.sanitizeText(content);
       return trimmable ? this.trimToolContent(sanitized) : sanitized;
@@ -216,9 +217,7 @@ export class ContextWindowGuard {
     }
 
     const groups = this.buildAtomicGroups(messages);
-    const groupTokens = groups.map(group =>
-      group.reduce((total, index) => total + estimateMessageTokens(messages[index]), 0),
-    );
+    const groupTokens = groups.map(group => this.totalTokens(group.map(index => messages[index])));
 
     const retainedIndices = new Set<number>();
     let usedTokens = 0;
@@ -366,7 +365,10 @@ export class ContextWindowGuard {
   }
 
   private static totalTokens(messages: Pick<ChatMessage, 'role' | 'content' | 'name' | 'tool_calls' | 'tool_call_id'>[]): number {
-    return messages.reduce((total, message) => total + estimateMessageTokens(message), 0);
+    return messages.reduce((total, message) => {
+      const { __normalizedIndex: _index, ...wireMessage } = message as NormalizedMessage;
+      return total + estimateMessageTokens(wireMessage);
+    }, 0);
   }
 
   /** JSON 序列化为文本（失败回落 String）；仅用于 tool 内容的传输层截断判定 */

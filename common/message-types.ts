@@ -15,18 +15,10 @@ export const CONTENT_MESSAGE_TYPES = {
   NETWORK_CAPTURE_PING: 'network_capture_ping',
   CLICK_HELPER_PING: 'click_helper_ping',
   FILL_HELPER_PING: 'fill_helper_ping',
-  SCREENSHOT_HELPER_PING: 'screenshot_helper_ping',
 } as const;
 
 // Tool action message types (for chrome.runtime.sendMessage)
 export const TOOL_MESSAGE_TYPES = {
-  // Screenshot related
-  SCREENSHOT_PREPARE_PAGE_FOR_CAPTURE: 'preparePageForCapture',
-  SCREENSHOT_GET_PAGE_DETAILS: 'getPageDetails',
-  SCREENSHOT_GET_ELEMENT_DETAILS: 'getElementDetails',
-  SCREENSHOT_SCROLL_PAGE: 'scrollPage',
-  SCREENSHOT_RESET_PAGE_AFTER_CAPTURE: 'resetPageAfterCapture',
-
   // Web content fetching
   WEB_FETCHER_GET_HTML_CONTENT: 'getHtmlContent',
   WEB_FETCHER_GET_TEXT_CONTENT: 'getTextContent',
@@ -45,13 +37,6 @@ export type ToolMessageType = (typeof TOOL_MESSAGE_TYPES)[keyof typeof TOOL_MESS
 
 // Legacy enum for backward compatibility (will be deprecated)
 export enum SendMessageType {
-  // Screenshot related message types
-  ScreenshotPreparePageForCapture = 'preparePageForCapture',
-  ScreenshotGetPageDetails = 'getPageDetails',
-  ScreenshotGetElementDetails = 'getElementDetails',
-  ScreenshotScrollPage = 'scrollPage',
-  ScreenshotResetPageAfterCapture = 'resetPageAfterCapture',
-
   // Web content fetching related message types
   WebFetcherGetHtmlContent = 'getHtmlContent',
   WebFetcherGetTextContent = 'getTextContent',

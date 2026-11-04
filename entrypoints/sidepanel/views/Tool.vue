@@ -39,7 +39,7 @@
           :navigation-test-result="navigationTestResult"
           :download-test-info="downloadTestInfo"
           :format-result="formatResult"
-          @update:tool-params="Object.assign(toolParams, $event)"
+          @update:tool-params="updateToolParams"
           @execute="executeTool"
           @clear-params="clearParams"
           @run-navigation-test="runNavigationTest"
@@ -84,6 +84,10 @@ const {
   formatResult,
   copyResult
 } = useToolExecution();
+const updateToolParams = (params: Record<string, any>) => {
+  for (const key of Object.keys(toolParams)) delete toolParams[key];
+  Object.assign(toolParams, params);
+};
 
 // 导航测试
 const {
