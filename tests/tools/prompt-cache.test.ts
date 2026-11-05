@@ -66,6 +66,42 @@ try {
   const result = await engine.run(runtime, {});
   assert.equal(result.status, 'done');
   assert.equal(sent.length, 2);
+  // Exercise the actual model loop: each user grant is exact and can be repeated,
+  // including after a time boundary; waiting for the chooser does not exhaust it.
+  const budgetRecordStart = records.length;
+  for (const firstReason of ['max-iterations', 'max-duration'] as const) {
+    const savedNow = Date.now;
+    let clock = 1000, requests = 0;
+    const boundaries: number[] = [];
+    Date.now = () => clock;
+    const budgetRuntime = { ...runtime, chatId: `budget-${firstReason}`, activationContext: [], initialContext: [], vision: null,
+      toolIds: ['note_tool'], advertisedToolIds: ['note_tool'],
+      limits: { ...runtime.limits, maxIterations: firstReason === 'max-iterations' ? 1 : 100, maxDurationMs: 100 } };
+    const budgetEngine = new ConversationEngine({
+      sendStream: async (history: ChatMessage[], callbacks: any) => {
+        requests++;
+        if (requests > 1) assert.ok(JSON.stringify(history).includes('sample-evidence-1'), '追加预算保留同一运行的证据');
+        const call = { id: `budget-call-${requests}`, type: 'function', function: { name: 'note_tool', arguments: '{}' } };
+        callbacks.onToolCall?.(call);
+        return { finalMessage: { role: 'assistant', content: '', tool_calls: [call] }, finishReason: 'tool_calls' };
+      }, executeTool: async () => {
+        if (firstReason === 'max-duration') clock += 200;
+        return { success: true, data: { evidence: `sample-evidence-${requests}` } };
+      }, requiresApproval: () => false,
+    } as any);
+    try {
+      await budgetEngine.run(budgetRuntime, { resetBudgetOnContinue: true, onLimitReached: async reason => {
+        boundaries.push(requests);
+        if (boundaries.length === 1) assert.equal(reason, firstReason);
+        if (boundaries.length >= 3) return false;
+        clock += 600000; // user spends ten minutes deciding
+        budgetRuntime.limits.maxIterations = 1;
+        return true;
+      } });
+      assert.deepEqual(boundaries, [1, 2, 3], '每次额外1轮恰好执行1次模型请求，之后再次询问');
+    } finally { Date.now = savedNow; }
+  }
+  records.splice(budgetRecordStart);
   assert.deepEqual(sent[1].slice(0, sent[0].length), sent[0], 'within-run history must remain append-only');
   assert.equal(options[1].metrics.prefixChanged, false);
   assert.ok(sent[1].some(m => m.role === 'tool' && (m.content as string).includes('END_EVIDENCE')), 'tools exceeding 8KB must reach the model intact when the window fits');

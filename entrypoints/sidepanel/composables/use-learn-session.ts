@@ -24,8 +24,8 @@
  * 终止路径：运行中 requestAbort() → 弹确认 → abort 引擎 → 等运行退出 →
  *          删除会话（草稿一并作废）→ reset()。**中止即整体丢弃**。
  *
- * 依赖注入：只向调用方索取 5 件事（事件观察者 / 系统提示条 / 进入聊天态 /
- * 切换会话 / 打开管理中心），其余全部直接使用核心引擎单例——引擎本身即
+ * 依赖注入：UI 事件、运行状态、会话切换、用户询问与管理中心跳转由调用方提供，
+ * 其余直接使用核心引擎单例——引擎本身即
  * 全局唯一，二次注入只会制造「两个入口各持一份状态」的分裂。
  */
 
@@ -40,13 +40,14 @@ import {
   type ChatMessageRecord,
   type ConversationEvent,
   type RunSummary,
+  type ToolApprovalRequest,
 } from '@/entrypoints/sidepanel/core';
 import { modelRegistry } from '@/entrypoints/sidepanel/utils/channels';
 import { streamClient } from '@/entrypoints/sidepanel/utils/stream/stream-client';
 import { getPresetToolIds, getSiteLearnScenario, getSiteValidateScenario, type ToolScenario } from '@/utils/tools/tool-presets';
 import {
   LEARN_LIMITS,
-  LEARN_WRAP_UP_EXTRA_ITERATIONS,
+  LEARN_DEFAULT_EXTENSION_ITERATIONS,
   isLearnRunning,
   learnDraftHash,
   type LearnConfigInput,
@@ -64,6 +65,9 @@ import {
   asValidationReport,
   asLearnFailureReport,
   reconcileSkillDraft,
+  applyValidationRevision,
+  stageRunLimits,
+  isPositiveSafeInteger,
   type LearnConfigErrorCode,
   type LearnConfigField,
   type LearnModelCandidate,
@@ -78,6 +82,7 @@ import {
   forceValidateMessage,
 } from '@/utils/learn/learn-prompts';
 import { clearLearnDraft, saveLearnDraft } from '@/utils/learn/learn-draft-store';
+import { validationToolIds } from '@/utils/learn/learn-tool-policy';
 
 // ──── 弹窗视图模型 ────
 
@@ -95,7 +100,7 @@ export type LearnDialogMode =
   | 'start'
   /** 运行中终止确认（进度卡片） */
   | 'stop'
-  /** 达到轮数上限：是否再给几轮收尾提交 */
+  /** 每次触限都明确选择继续、总结或经二次确认丢弃。 */
   | 'limitWrapUp'
   /** 验证未通过：重新学习 / 仍要创建 */
   | 'validationFail'
@@ -109,8 +114,8 @@ export type LearnDialogMode =
 /** 弹窗视图（组件按 mode 分支渲染；payload 随模式确定） */
 export type LearnDialogView =
   | { mode: 'start'; config: ValidatedLearnConfig; modelLabel: string }
-  | { mode: 'stop'; phase: 'learning' | 'validating'; elapsedMs: number; toolCalls: number }
-  | { mode: 'limitWrapUp'; iterations: number }
+  | { mode: 'stop'; phase: 'learning' | 'validating'; elapsedMs: number; toolCalls: number; fromLimit?: boolean }
+  | { mode: 'limitWrapUp'; phase: 'learning' | 'validating'; reason: 'max-iterations' | 'max-duration' | 'tool-failures'; iterations: number; minutes: number; extraIterations: number }
   | { mode: 'validationFail'; report: ValidationReport }
   | { mode: 'learnFailed'; report: LearnFailureReport; stage: 'learning' | 'validating' }
   | { mode: 'failure'; title: string; message: string }
@@ -120,8 +125,9 @@ export type LearnDialogView =
 export type LearnDialogChoice =
   | 'confirm'
   | 'cancel'
-  | 'wrapUp'
-  | 'stop'
+  | 'extend'
+  | 'summarize'
+  | 'discard'
   | 'relearn'
   | 'create'
   | 'retry'
@@ -132,7 +138,7 @@ export type LearnDialogChoice =
 const DIALOG_CHOICES: Record<LearnDialogMode, readonly LearnDialogChoice[]> = {
   start: ['confirm', 'cancel'],
   stop: ['confirm', 'cancel'],
-  limitWrapUp: ['wrapUp', 'stop'],
+  limitWrapUp: ['extend', 'summarize', 'discard'],
   validationFail: ['relearn', 'create'],
   learnFailed: ['relearn', 'create', 'giveUp'],
   failure: ['ok'],
@@ -170,7 +176,7 @@ function allowedChoices(view: LearnDialogView): readonly LearnDialogChoice[] {
 const DIALOG_SETTLE_VALUE: Record<LearnDialogMode, LearnDialogChoice> = {
   start: 'cancel',
   stop: 'cancel',
-  limitWrapUp: 'stop',
+  limitWrapUp: 'cancel',
   validationFail: 'create',
   learnFailed: 'giveUp',
   failure: 'ok',
@@ -250,6 +256,12 @@ export interface LearnSessionDeps {
   showChat: () => void;
   /** 把 UI 焦点切到指定会话（学习会话创建后） */
   setActiveChat: (chatId: string) => void;
+  /** 本地学习引擎的运行生命周期（不经过普通发送入口和后台 onSettled） */
+  setResponding: (chatId: string, responding: boolean) => void;
+  /** 与普通会话共用工具审批 UI，返回用户真实选择。 */
+  requestToolApproval: (request: ToolApprovalRequest) => Promise<boolean>;
+  /** 运行退出/终止时收敛本会话挂起的审批及 interact 询问。 */
+  dismissQuestions: (chatId: string) => void;
   /** 打开管理中心（跳 hub，携带深链 hash）；返回是否成功打开（失败由编排层降级提示） */
   openHub: (hash: string) => boolean | Promise<boolean>;
   /**
@@ -281,6 +293,7 @@ export interface LearnSessionApi {
   formEpoch: ReadonlyRef<number>;
   /** 草稿暂存失败的降级说明是否待展示（收尾阶段置位，用户确认后清除） */
   degradedNotice: ReadonlyRef<boolean>;
+  recovery: ReadonlyRef<{ chatId: string; draft: SkillDraft } | null>;
   /** 关闭降级说明弹窗 */
   dismissDegradedNotice: () => void;
 
@@ -294,7 +307,7 @@ export interface LearnSessionApi {
   /** 终止运行（弹确认 → abort → 清理） */
   requestAbort: () => Promise<void>;
   /** 响应弹窗选择 */
-  answerDialog: (choice: LearnDialogChoice) => void;
+  answerDialog: (choice: LearnDialogChoice, extraIterations?: number) => void;
   /** 中止 / 整体丢弃的清理入口（会话被删除等外部触发时调用）：
    *  先 abort 等本轮 run 干净退出（转录仍在）→ 再级联删除 → 清草稿与状态。
    *  与 requestAbort 的确认后路径同源，只是不弹终止确认 */
@@ -355,7 +368,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
    */
   let runEndedByUser = false;
   /** 轮数上限的收尾机会每次阶段运行只给一次（runPhase 起始复位） */
-  let wrapUpGranted = false;
+  let limitAction: 'summarize' | 'discard' | null = null;
   // 重新学习需携带上一轮的反馈（盲测问题清单 或 学习失败报告）；
   // 不能清空报告后重复同一份失败技能。
   let learningFeedback: LearnFeedback | null = null;
@@ -400,7 +413,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
    * @returns 选择是否被接受；非法选择被忽略且弹窗保持打开——
    *          用户必须从合法选项中做出选择，绝不因错发事件推进流程。
    */
-  function answerDialog(choice: LearnDialogChoice): boolean {
+  function answerDialog(choice: LearnDialogChoice, extraIterations?: number): boolean {
     const resolver = resolveDialog;
     const current = dialog.value;
     if (!resolver || !current) return false;
@@ -408,6 +421,10 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     if (!allowed.includes(choice)) {
       console.warn('[LearnSession] 非法弹窗选择被忽略:', current.mode, choice);
       return false;
+    }
+    if (current.mode === 'limitWrapUp' && choice === 'extend') {
+      if (!isPositiveSafeInteger(extraIterations)) return false;
+      current.extraIterations = extraIterations;
     }
     resolveDialog = null;
     dialog.value = null;
@@ -509,6 +526,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     aborting = true;
     terminating = true;
     try {
+      deps.dismissQuestions(chatId);
       conversationEngine.abort(chatId);
       if (activeRun) await activeRun.catch(() => undefined);
       activeRun = null;
@@ -517,8 +535,9 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
       console.error('[LearnSession] 终止清理失败:', error);
     } finally {
       // 中止即整体丢弃：草稿、报告、会话一并作废
-      await clearLearnDraft();
-      await reset({ keepConfig: false });
+      try { await clearLearnDraft(chatId); }
+      catch (error) { console.warn('[LearnSession] 成果清理失败，已保留备份:', error); }
+      finally { await reset({ keepConfig: false }); }
     }
   }
 
@@ -588,11 +607,20 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
    */
   function makeObserver(kind: 'learning' | 'validating', targetMode: LearnTargetMode) {
     const chatId = sessionChatId.value;
+    const calls = new Map<string, string>();
     return (event: ConversationEvent): void => {
       deps.observer(event);
-      if (event.chatId !== chatId) return;
-      if (event.type === 'tool-call') toolCalls.value += 1;
+      if (event.chatId !== chatId || phase.value !== kind || aborting || terminating) return;
+      if (event.type === 'tool-call') {
+        toolCalls.value += 1;
+        calls.set(event.call.id, event.call.name);
+      }
       if (event.type !== 'tool-result' || event.status !== 'success') return;
+      // Page data may contain draft/report-shaped objects; only the stage's terminal tool owns them.
+      const expected = kind === 'learning' ? 'submit_skill' : 'submit_validation';
+      if (calls.get(event.callId) !== expected) return;
+      calls.delete(event.callId);
+      if (kind === 'learning' ? draft.value || failure.value : report.value) return;
       const data = (event.result as { data?: Record<string, unknown> } | undefined)?.data;
       if (!data) return;
       if (kind === 'learning' && data.draft) {
@@ -615,7 +643,8 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
         // 暂存（chrome.storage）失败或管理中心未打开时，成果不再只活在内存里——
         // 重新打开该会话即可从消息里取回，这是「草稿暂存失败」降级承诺的兑现
         // （正常路径也写：跨页交接与回放互不影响，见 setSystemPromptSuffix 注释）
-        void transcriptEngine.setSystemPromptSuffix(chatId, JSON.stringify(reconciled));
+        void transcriptEngine.setSystemPromptSuffix(chatId, JSON.stringify(reconciled))
+          .catch(error => console.warn('[LearnSession] 草稿回放存储失败:', error));
       } else if (kind === 'learning' && data.failure) {
         // 失败终态：模型以 status=failed/blocked 提交，原因已定位。
         // 形态非法按无产出处理（走强制收尾轮，模型还有机会重提一次）。
@@ -630,6 +659,12 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
         if (!parsed) {
           console.warn('[LearnSession] submit_validation 回执形态非法，按无产出处理:', data.report);
           return;
+        }
+        if (parsed.revision) {
+          if (!draft.value) return;
+          draft.value = applyValidationRevision(draft.value, parsed);
+          void transcriptEngine.setSystemPromptSuffix(chatId, JSON.stringify(draft.value))
+            .catch(error => console.warn('[LearnSession] 修订草稿回放存储失败:', error));
         }
         report.value = parsed;
       }
@@ -646,8 +681,8 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
    *   1. 首轮消息换成「立即交终态」的纠正指令；
    *   2. **携带本次探索的历史**——冷启动的收尾轮会从头再摸索一遍，
    *      很可能再次空手而归；带上自己的探索痕迹，模型才能把已知的
-   *      线索直接写成草稿或失败报告。验证段例外：盲测语义优先，
-   *      永远不带历史。
+   *      线索直接写成草稿或失败报告。验证段只携带本次验证产生的记录，
+   *      不携带学习段或先前尝试的历史。
    * 收尾轮另有更紧的轮数预算（只用于收尾，不允许再展开探索）。
    */
   async function runEngineOnce(
@@ -663,13 +698,16 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     const chatId = sessionChatId.value;
     const skillDraft = draft.value;
     const forceSubmit = options?.forceSubmit === true;
+    limitAction = null;
 
     // 装配与运行包在同一个 promise 里：**activeRun 必须在装配开始时就占位**。
     // 否则用户在装配阶段（runtimeBuilder.build 是异步的）点终止，终止逻辑
     // 看不到任何在跑的运行，会直接删掉会话；随后装配完成、运行照常启动，
     // 在已被删除的会话上写出一批孤儿记录。
     const runPromise = (async (): Promise<RunSummary> => {
-      const runtime = await runtimeBuilder.build({
+      deps.setResponding(chatId, true);
+      const stageTools = kind === 'validating' ? validationToolIds(skillDraft!) : [...getPresetToolIds(scenarioFor(kind))];
+      const built = await runtimeBuilder.build({
         chatId,
         userInput:
           kind === 'learning'
@@ -685,22 +723,29 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
         // 污染试错过程、破坏盲测，或经技能携带工具把 vision_gui 注入文本目标
         disableSkillDiscovery: true,
         modelRef: cfg.modelRef,
-        extraToolIds: [...getPresetToolIds(scenarioFor(kind))],
+        extraToolIds: stageTools,
         agentSystemOverride:
           kind === 'learning' ? buildLearnPrompt(cfg, learningFeedback) : buildValidatePrompt(cfg, skillDraft!),
         // 学习/验证是长任务：覆盖默认的 20 轮 / 10 分钟；收尾轮再收紧一档
         limitsOverride: forceSubmit
           ? { ...LEARN_LIMITS, ...LEARN_FORCE_SUBMIT_LIMITS }
-          : { ...LEARN_LIMITS },
+          : stageRunLimits(cfg, kind),
         // 视觉三态：需要时启用视觉循环，不需要时显式禁用（不继承任何智能体声明）
         visionOverride: visionFor(kind) ? LEARN_VISION_RUNTIME : null,
-        // 盲测：验证段永不携带前序历史；学习段仅收尾轮携带本次探索痕迹
-        priorRecords: kind === 'validating' ? [] : options?.priorRecords ?? [],
+        // 首轮冷启动；收尾轮仅带本阶段、本次尝试的证据，防止无证据判通过。
+        priorRecords: options?.priorRecords ?? [],
         // 压缩摘要（收尾轮带上，模型才看得见被压缩掉的早期探索）
         ...(options?.contextSummary
           ? { contextSummary: options.contextSummary, contextSummaryAt: options.contextSummaryAt }
           : {}),
       });
+      // The null-agent fallback may add default tools. Remove them as well from
+      // both advertised schemas and execution policy so they cannot mask missing dependencies.
+      const ceiling = new Set(stageTools);
+      const runtime = kind === 'validating' ? { ...built,
+        toolIds: built.toolIds.filter(id => ceiling.has(id)),
+        advertisedToolIds: (built.advertisedToolIds ?? built.toolIds).filter(id => ceiling.has(id)),
+      } : built;
 
       // 装配期间用户可能已请求终止：此时绝不能再启动运行（会话即将被删除，
       // 启动只会写出孤儿记录）。以异常退出，交由调用方按「已终止」收敛。
@@ -710,8 +755,9 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
 
       return conversationEngine.run(runtime, {
         observer: makeObserver(kind, cfg.targetMode),
-        onLimitReached: limitKind => handleLimitReached(limitKind, runtime.limits),
-        // 破坏性操作审批已在工具元数据层声明（requiresConfirm），此处沿用默认通道
+        onLimitReached: limitKind => handleLimitReached(limitKind, runtime.limits, kind),
+        resetBudgetOnContinue: true,
+        onToolApproval: request => deps.requestToolApproval(request),
       });
     })();
 
@@ -720,15 +766,16 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
       return await runPromise;
     } finally {
       activeRun = null;
+      deps.dismissQuestions(chatId);
+      deps.setResponding(chatId, false);
     }
   }
 
   /**
    * 跑一个阶段（学习或验证）。
    *
-   * 历史口径：验证段**始终**以空历史起底——它是盲测，模型只能看到技能正文，
-   * 不能记得自己当初怎么摸索的，否则验证失去意义；学习段首次运行也是冷启动，
-   * 只有「强制收尾轮」例外（那一轮必须带着本次探索的痕迹，否则模型无从收尾）。
+   * 历史口径：每阶段首次运行冷启动，验证不带学习痕迹。
+   * 强制收尾轮仅携带本次、同阶段的记录和新摘要，保证答复与复核证据不丢失。
    * 转录始终连续记录，历史可回溯。
    *
    * **终态强制**：终态工具（submit_skill / submit_validation）必须被调用。
@@ -754,29 +801,31 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     }
 
     phase.value = kind;
+    if (kind === 'validating') report.value = null;
 
     // 本阶段开始前的记录基线：强制收尾轮只携带**本次尝试**产生的记录，
     // 不把上一轮学习的痕迹带进来（与「重新学习」冷启动的口径一致）。
     const baselineIds = new Set<string>();
-    if (kind === 'learning') {
+    let baselineSummary = '';
+    let baselineReady = false;
+    {
       try {
         const before = await transcriptEngine.getEffectiveContext(chatId);
+        baselineSummary = before.summary;
         for (const record of before.records) baselineIds.add(record.id);
+        baselineReady = true;
       } catch (error) {
         console.warn('[LearnSession] 读取收尾轮基线失败，按无历史处理:', error);
       }
     }
 
-    // 最多两轮：第一轮正常学习，第二轮是强制收尾轮。
-    // 补跑仍属同一阶段，故计时与工具调用计数延续，不重置。
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const forceSubmit = attempt > 0;
+    // Normal completion without a terminal submission gets the existing recovery pass.
+    // Budget guards instead wait for an explicit choice; only 'summarize' switches passes.
+    let forceSubmit = false;
+    while (true) {
       forceSubmitting.value = forceSubmit;
       if (!forceSubmit) {
         toolCalls.value = 0;
-        // 每次阶段运行各自最多一次「收尾提交」机会：学习段用掉后，
-        // 验证段 / 重试运行仍应能获得自己的收尾机会（否则 60 轮撞顶直接被判无产出）
-        wrapUpGranted = false;
         // 用户决定标记按阶段复位：新阶段开始时用户尚未表达任何停止意图
         runEndedByUser = false;
         startTicker();
@@ -785,9 +834,9 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
       let summary: RunSummary;
       try {
         // 收尾轮带上本次探索的痕迹：模型据此直接写草稿/失败报告，
-        // 而不是冷启动再摸索一遍（验证段是盲测，永远不带历史）
-        const carry = forceSubmit && kind === 'learning'
-          ? await collectCurrentAttemptContext(chatId, baselineIds)
+        // 而不是冷启动后丢失已核对的结果；验证仅带本次验证的证据。
+        const carry = forceSubmit && baselineReady
+          ? await collectCurrentAttemptContext(chatId, baselineIds, baselineSummary)
           : null;
         summary = await runEngineOnce(kind, {
           forceSubmit,
@@ -808,6 +857,11 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
       // 用户已请求终止：清理由 requestAbort 统一负责，这里绝不推进业务
       if (aborting || terminating) {
         stopTicker();
+        return;
+      }
+      if (phase.value !== kind || sessionChatId.value !== chatId) return;
+      if (limitAction === 'discard') {
+        await cleanupSessionImpl();
         return;
       }
 
@@ -843,6 +897,10 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
         await handleValidationOutcome();
         return;
       }
+      if (limitAction === 'summarize') {
+        forceSubmit = true;
+        continue;
+      }
 
       // ── 未交终态 ──
       if (!forceSubmit) {
@@ -855,6 +913,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
         }
         // 补一轮收尾轮：不打断用户，只在状态条上给一句提示
         deps.notify(deps.t('sidepanel.learn.forceSubmitNotice'));
+        forceSubmit = true;
         continue;
       }
       // 补跑后仍未交：确定性的失败原因（不是「可能是没调用」这种猜测）
@@ -970,13 +1029,14 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
   async function collectCurrentAttemptContext(
     chatId: string,
     baselineIds: ReadonlySet<string>,
+    baselineSummary: string,
   ): Promise<{ records: ChatMessageRecord[]; summary: string; compactedAt: number }> {
     try {
       const ctx = await transcriptEngine.getEffectiveContext(chatId);
       const fresh = ctx.records.filter(record => !baselineIds.has(record.id));
       return {
         records: fresh.slice(-LEARN_FORCE_SUBMIT_HISTORY),
-        summary: ctx.summary,
+        summary: ctx.summary === baselineSummary ? '' : ctx.summary,
         compactedAt: ctx.compactedAt,
       };
     } catch (error) {
@@ -985,26 +1045,41 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     }
   }
 
-  /** 轮数上限：给一次「收尾提交」机会；其余守卫一律停止（继续只会重复撞墙） */
+  /** Explicit choices on every budget boundary; never turn an extension into forced submission. */
   async function handleLimitReached(
     kind: 'max-iterations' | 'max-duration' | 'tool-failures',
-    limits: { maxIterations: number },
+    limits: { maxIterations: number; maxDurationMs: number },
+    stage: 'learning' | 'validating',
   ): Promise<boolean> {
-    if (kind !== 'max-iterations' || wrapUpGranted) return false;
-    const choice = await askDialog({
-      mode: 'limitWrapUp',
-      iterations: limits.maxIterations,
-    });
-    if (choice !== 'wrapUp') {
-      // 「直接结束」是用户的明确决定：置位后编排层不再补跑收尾轮
-      if (choice === 'stop') runEndedByUser = true;
-      return false;
+    while (!aborting && !terminating && phase.value === stage) {
+      const view: Extract<LearnDialogView, { mode: 'limitWrapUp' }> = {
+        mode: 'limitWrapUp', phase: stage, reason: kind,
+        iterations: limits.maxIterations, minutes: limits.maxDurationMs / 60_000,
+        extraIterations: LEARN_DEFAULT_EXTENSION_ITERATIONS,
+      };
+      const choice = await askDialog(view);
+      if (aborting || terminating || phase.value !== stage) return false;
+      if (choice === 'extend') {
+        if (!isPositiveSafeInteger(view.extraIterations)) continue;
+        limits.maxIterations = view.extraIterations;
+        return true;
+      }
+      if (choice === 'summarize') {
+        limitAction = 'summarize';
+        return false;
+      }
+      if (choice !== 'discard') return false;
+      const confirmed = await askDialog({ mode: 'stop', phase: stage, elapsedMs: elapsedMs.value, toolCalls: toolCalls.value, fromLimit: true });
+      if (aborting || terminating || phase.value !== stage) return false;
+      if (confirmed === 'confirm') {
+        // Cleanup must happen AFTER runEngineOnce settles; awaiting activeRun here deadlocks.
+        limitAction = 'discard';
+        runEndedByUser = true;
+        return false;
+      }
+      // Cancelling discard returns to the budget choices without resuming the engine.
     }
-    wrapUpGranted = true;
-    // 关键：guardIterations 在「继续」时会归零，故这里必须写**相对值**——
-    // 写「现值 + N」会放出几十轮。压成 N 即「再给约 N 轮」。
-    limits.maxIterations = LEARN_WRAP_UP_EXTRA_ITERATIONS;
-    return true;
+    return false;
   }
 
   /**
@@ -1059,23 +1134,21 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     stopTicker();
     forceSubmitting.value = false;
 
-    // 暂存失败不阻断收尾：hub 侧 takeLearnDraft 将得到 none，按「草稿不存在」
-    // 打开空表单。此时成果只能靠会话详情（草稿随消息回放）承载，故除系统提示外
-    // 再弹一次非阻断说明——阻断会把 drafting 卡死，而恢复路径（重跑学习）
-    // 并不依赖此刻的弹窗
-    const saved = await saveLearnDraft(skillDraft);
-    if (!saved) {
+    // 会话回放与独立交接副本分别落盘；交接失败保留内存下载/重试入口，不打开空表单。
+    try { await transcriptEngine.setSystemPromptSuffix(sessionChatId.value, JSON.stringify(skillDraft)); }
+    catch (error) { console.warn('[LearnSession] 会话恢复副本写入失败，将继续保存独立交接副本:', error); }
+    const saved = await saveLearnDraft(skillDraft, sessionChatId.value);
+    if (!saved.ok) {
       deps.notify(deps.t('sidepanel.learn.draftSaveDegraded'));
       degradedNotice.value = true;
+      phase.value = 'done';
+      return;
     }
 
-    // 跳转失败（标签页创建被拒等）：草稿仍在 storage（TTL 10 分钟内有效），
-    // 明确告知手动打开管理中心即可继续，绝不静默吞掉失败。
-    // 深链带一次性 nonce：hub 标签已停在同一个 #new-skill 上时，
-    // URL 完全相同不会产生 hashchange，草稿就滞留不被消费（见 learnDraftHash）。
+    // 导航失败不影响持久成果；手动打开管理中心或重试均使用同一交接记录。
     let opened = false;
     try {
-      opened = await deps.openHub(learnDraftHash());
+      opened = await deps.openHub(learnDraftHash(saved.id));
     } catch (error) {
       console.error('[LearnSession] 跳转管理中心失败:', error);
     }
@@ -1136,8 +1209,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
    * **终止入口必须始终可用**：原实现「在场有弹窗就让位」会锁死用户——
    * 模型撞轮数上限弹出收尾弹窗时，用户既不能继续也不能终止，只能干等。
    * 现在终止是最高优先级的用户意图：
-   *   1. 若在场的是运行中弹窗（收尾守卫），先按收敛值结算它——引擎随即停下，
-   *      且用户「不再给轮子」的意图被记入 runEndedByUser；
+   *   1. 若预算选择在场，复用其丢弃确认；取消时仍停在预算选择。
    *   2. 弹终止确认（顶替在场的弹窗）；
    *   3. 确认 → 整体清理（删会话、清草稿）；取消 → 收场（给一个确定结论），
    *      不让状态机停在「运行已停但无人接管」的中间态。
@@ -1146,14 +1218,18 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     if (!isLearnRunningFlag.value) return;
     // 终止确认自身已在场：忽略重复触发（避免叠加同一语义的弹窗）
     if (dialog.value?.mode === 'stop') return;
+    // The guard already pauses the engine. Keep it pending through discard confirmation;
+    // cancelling must return to the same choices, without ending the run.
+    if (dialog.value?.mode === 'limitWrapUp') {
+      answerDialog('discard');
+      return;
+    }
 
     terminating = true;
     // 结算在场的运行中弹窗（收尾守卫），让引擎尽快停下来
     if (dialog.value) {
       const supersededView = dialog.value;
       settleDialog(settleValueFor(supersededView));
-      // 收敛值里的 'stop' 表示「不再给轮子」：记入用户决定，编排层不再补跑收尾轮
-      if (supersededView.mode === 'limitWrapUp') runEndedByUser = true;
       // 等引擎退出，避免「弹窗已关但运行还在跑」的重叠态
       if (activeRun) await activeRun.catch(() => undefined);
     }
@@ -1172,7 +1248,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     // 取消终止：运行已停（收尾弹窗被结算所致），必须给一个确定的收场，
     // 否则状态机会停在「没有运行也没有结论」的悬空态。
     terminating = false;
-    if (!isLearnRunningFlag.value) {
+    if (!activeRun && isLearnRunningFlag.value) {
       await handleLearnFailure(buildMissingOutcomeFailure(kind), kind);
     }
   }
@@ -1185,7 +1261,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     aborting = false;
     terminating = false;
     runEndedByUser = false;
-    wrapUpGranted = false;
+    limitAction = null;
     forceSubmitting.value = false;
     learningFeedback = null;
     // 收敛在途弹窗：reset 意味着业务已被放弃/重置，仍挂在 askDialog 上的
@@ -1210,9 +1286,9 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
 
   // ──── 弹窗动作分发 ────
 
-  function handleDialogChoice(choice: LearnDialogChoice): void {
+  function handleDialogChoice(choice: LearnDialogChoice, extraIterations?: number): void {
     const mode = dialog.value?.mode;
-    const accepted = answerDialog(choice);
+    const accepted = answerDialog(choice, extraIterations);
     // 非法选择被 answerDialog 挡下（弹窗保持打开），此处绝不推进
     if (!accepted || mode !== 'start') return;
     // 「开始」在应答后推进（先关弹窗再跑，避免弹窗与运行态叠加）
@@ -1238,6 +1314,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     isForceSubmitting: forceSubmitting as ReadonlyRef<boolean>,
     formEpoch,
     degradedNotice: degradedNotice as ReadonlyRef<boolean>,
+    recovery: computed(() => phase.value === 'done' && draft.value ? { chatId: sessionChatId.value, draft: draft.value } : null),
     modelCandidates,
 
     openModal,

@@ -129,7 +129,7 @@ export class InteractTool extends BaseTool {
   metadata: ToolMetadata = {
     name: 'interact',
     description:
-      '向用户提问或请求授权：弹出询问窗口，用户可点选预设选项或输入自定义答复。敏感操作（账号密码/支付/隐私等）必须先经本工具授权；指代不明、需求歧义或方案分歧时优先经本工具征询（宁问勿猜）。',
+      '向用户提问、澄清需求或请求手动处理：弹出询问窗口，等待预设选项或自定义答复。支持 confirm 的操作通过工具自身审批，不重复询问。',
     category: 'interact',
     version: '1.0.0',
     author: 'AgentNexus',
@@ -141,7 +141,7 @@ export class InteractTool extends BaseTool {
     function: {
       name: 'interact',
       description:
-        '向用户提问或请求授权（界面会弹出询问窗口，等待用户点选选项或输入自定义答复）。适用场景：1) 敏感操作授权——输入账号/密码/验证码/支付信息、下单/付款/退款、隐私数据访问、删除数据、发布或发送内容等，必须先调用本工具获得用户明确同意（此时 sensitive=true）；2) 歧义与分歧征询（任务全程适用，宁问勿猜）——指代不明（这个/它等无法唯一确定对象）、需求存在多种合理理解、或实现方案有多种选择且影响结果时，开始执行前与执行过程中新发现均应询问，不要替用户做主。注意：提供 options 时用户仍可能给出选项之外的自定义答复；同一问题不要重复询问。',
+        '向用户提问、请求补充信息或手动处理，界面弹窗等待选项或自定义答复。用于关键需求歧义、缺少必要信息或需要用户亲自登录/完成验证码；后者 sensitive=true，只请用户在网站中处理，不索取明文密码、验证码或密钥。支持 confirm 的执行工具按其统一说明传 confirm=true，由审批回调请求同一操作的授权，不先调用 interact 重复询问。搜索、筛选、导航、读取公开 API 等普通操作不需要授权询问。提供 options 时用户仍可自定义答复；同一问题不重复询问，拒绝或未答复后停止依赖该答复的操作。',
       parameters: {
         type: 'object',
         properties: {
@@ -174,7 +174,7 @@ export class InteractTool extends BaseTool {
           },
           sensitive: {
             type: 'boolean',
-            description: '是否为敏感操作授权（账号密码/支付/隐私/不可逆操作时为 true，界面将呈现警示样式）',
+            description: '问题是否涉及资金、凭据、账号安全或隐私；true 仅改变询问警示样式，不替代执行工具的 confirm 审批。',
           },
         },
         required: ['question'],

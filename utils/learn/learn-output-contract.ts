@@ -6,6 +6,8 @@ export const LEARN_SKILL_SECTIONS = [
 /** Check structure without pretending to verify the semantic truth of model output. */
 export function validateLearnSkillBody(body: string): string[] {
   const issues: string[] = [];
+  if (/\banx:\d+:[a-f\d-]+:\d+\b|\bax:\d+:axs:/i.test(body))
+    issues.push('正文不得保存运行期 DOM/AX 引用；改写为可重新采集的定位方式');
   if (/^\s*---\s*\n/.test(body)) issues.push('body 不应包含 frontmatter');
   // Ignore fenced examples: quoted sample headings cannot satisfy the contract.
   const structuralBody = body.replace(/^(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\1[ \t]*$/gm, '');

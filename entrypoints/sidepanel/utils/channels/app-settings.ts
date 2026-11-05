@@ -14,6 +14,7 @@
  */
 
 import { getEngine } from '../config/engine';
+import { isInitialEmptyState } from '../config/kv-store';
 import {
   cloneAppSettings,
   DEFAULT_APP_SETTINGS,
@@ -65,7 +66,9 @@ class AppSettingsStore {
       this.loaded = true;
       if (state.data && state.source !== 'primary') {
         console.warn(`[AppSettingsStore] 应用设置已从 ${state.source} 副本恢复:`, state.issues);
-      } else if (state.issues.length) {
+      } else if (state.issues.length && !isInitialEmptyState(state.issues)) {
+        // 「从未配置过」的空态不算告警（否则每次启动都刷一条噪声，
+        // 把真正的损坏告警淹没）；其余一律照实告警
         console.warn('[AppSettingsStore] 应用设置读取告警:', state.issues);
       }
     })();

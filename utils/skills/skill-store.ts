@@ -6,7 +6,9 @@ import { pluginSkills, onPluginsChange } from '@/utils/plugins/catalog';
  *   - 预置技能：项目根 skills/ 目录，构建期由 import.meta.glob 以原样字符串打包
  *   - 自定义技能：chrome.storage.local 权威源 + localStorage 同步缓存
  *     （localStorage 会被「清除浏览数据」抹掉 → chrome.storage 是恢复源；
- *      与 utils/agents/agent-store.ts 的持久化模式完全同构）
+ *      与 utils/agents/agent-store.ts 的持久化模式完全同构。
+ *      多文件技能的载荷（files，可含数 MB 文本）同键存储——localStorage
+ *      镜像超过安全上限自动跳过，chrome.storage（unlimitedStorage）无此顾虑）
  *   - 预置技能的启停覆盖：独立 overrides key 持久化（默认启用）
  *
  * 身份模型（v2，详见 skill-types.ts）：
@@ -147,6 +149,15 @@ function buildSkillRecord(
 /** 自定义技能存储 key（chrome.storage 权威 + localStorage 缓存共用） */
 const CUSTOM_SKILLS_STORAGE_KEY = 'agentNexusCustomSkills';
 
+/**
+ * localStorage 镜像的安全上限（字符）。localStorage 总配额约 5MB，且与
+ * 其它域数据共享；多文件技能（导入上限 10M 字符）轻松超配额——超过该值时
+ * 跳过镜像只写权威源，避免每次保存都触发 QuotaExceededError。chrome.storage
+ * （unlimitedStorage）才是恢复源，镜像缺失只影响「chrome 意外清空且无备份」
+ * 这一边缘场景的兜底，属可接受的降级。
+ */
+const LOCAL_MIRROR_MAX_CHARS = 4 * 1024 * 1024;
+
 /** 预置技能启停覆盖 key（按 id 记录被显式停用的预置 → false；默认启用） */
 const PRESET_TOGGLE_STORAGE_KEY = 'agentNexusSkillPresetToggles';
 
@@ -168,6 +179,86 @@ function reindexNames(): void {
 /** 本上下文写入指纹 × 2（自定义技能 / 预置启停覆盖，onChanged 自事件跳过） */
 const skillsFingerprint = new LocalWriteFingerprint();
 const togglesFingerprint = new LocalWriteFingerprint();
+
+/**
+ * chrome.storage 写入队列与落盘确认。
+ *
+ * 自定义技能含多文件载荷（可达数 MB），写入是重操作：串行排队防止乱序
+ * 覆盖（toggle 开关 + 编辑保存连击），失败被记录而非吞掉——导入与编辑
+ * 保存后调用 flushSkillStoreWrites() 等待落盘并上报失败，杜绝
+ * 「界面提示已保存、重启后技能消失」的静默丢失。
+ */
+let customSkillsWriteTail: Promise<void> = Promise.resolve();
+let lastCustomSkillsWriteError: unknown = null;
+
+/** 等待排队中的 chrome.storage 写入完成；失败时返回可读错误（成功后错误状态复位） */
+export async function flushSkillStoreWrites(): Promise<{ ok: boolean; error?: string }> {
+  await customSkillsWriteTail;
+  if (lastCustomSkillsWriteError !== null) {
+    const error = lastCustomSkillsWriteError;
+    const message =
+      error instanceof Error ? error.message : error !== undefined ? String(error) : '未知错误';
+    return { ok: false, error: message };
+  }
+  return { ok: true };
+}
+
+// ──── 写入原子性（导入的快照 / 回滚） ────
+
+/**
+ * 拍下当前自定义技能的深拷贝快照（导入等批量写入前的回滚点）。
+ *
+ * 背景：commitImportCandidates 先写内存表再排队持久化，落盘失败时内存表
+ * 已包含新技能——列表会「显示已导入」而持久层没有，用户关页即丢、重试还会
+ * 产生同名重复。写入方在批量提交前拍快照，flush 失败时回滚，保证
+ * 「列表所见 = 持久层所存」。
+ */
+export function snapshotCustomSkills(): unknown[] {
+  const items = Array.from(skillMap.values())
+    .filter(s => s.source === 'custom')
+    .map(serializeSkill);
+  // 深拷贝隔离：回滚 rebuild 会逐条重建记录，快照绝不能与内存表共享引用
+  return typeof structuredClone === 'function'
+    ? structuredClone(items)
+    : JSON.parse(JSON.stringify(items)) as unknown[];
+}
+
+/**
+ * 回滚到快照（整体替换内存表并重新排队持久化；快照非法时保持现状并告警）。
+ *
+ * 破坏性前置校验：rebuildCustomSkills 是「清空后重建」的权威替换语义——
+ * 对被污染的快照（非数组 / 含不可恢复条目）直接重建等于清空用户技能。
+ * 回滚点只可能来自 snapshotCustomSkills 的序列化产物，任何不可恢复条目
+ * 都意味着快照本身被篡改或代码缺陷：宁可放弃回滚（保持现状 + 显式告警），
+ * 绝不用一次「成功的回滚」毁掉全部数据。空数组是合法回滚点（导入前就没有
+ * 自定义技能），照常执行。
+ */
+export function rollbackCustomSkills(snapshot: unknown): void {
+  try {
+    if (!Array.isArray(snapshot)) {
+      console.warn('[SkillStore] 回滚快照形态非法（非数组），已忽略回滚请求');
+      return;
+    }
+    if (snapshot.length > 0) {
+      // 试解全部条目（deserializeSkill 无副作用，不落内存表）：允许重复解析的
+      // 一次性开销，换取「绝不清空」的确定性
+      const validCount = snapshot.filter(item => deserializeSkill(item) !== null).length;
+      if (validCount !== snapshot.length) {
+        console.warn(
+          `[SkillStore] 回滚快照含 ${snapshot.length - validCount} 条不可恢复记录，疑似被污染，已忽略回滚请求`,
+        );
+        return;
+      }
+    }
+    rebuildCustomSkills(snapshot);
+    persistCustomSkills();
+    console.warn('[SkillStore] 自定义技能已回滚到导入前的快照');
+  } catch (error) {
+    // 回滚本身失败是最坏路径：内存表可能处于中间态，保持现状并显式告警，
+    // 绝不再抛出（调用方已在展示错误，叠加异常只会掩盖根因）
+    console.error('[SkillStore] 回滚自定义技能失败（内存表保持当前状态）:', error);
+  }
+}
 
 // ──── 变更通知 ────
 
@@ -302,8 +393,9 @@ function persistCustomSkills(): void {
     .map(serializeSkill);
   skillsFingerprint.mark(customSkills);
   const payload = JSON.stringify(customSkills);
+  // localStorage 同步缓存：超过安全上限（多文件技能）跳过——权威源不受影响
   try {
-    if (typeof localStorage !== 'undefined') {
+    if (typeof localStorage !== 'undefined' && payload.length <= LOCAL_MIRROR_MAX_CHARS) {
       localStorage.setItem(CUSTOM_SKILLS_STORAGE_KEY, payload);
     }
   } catch (error) {
@@ -311,12 +403,19 @@ function persistCustomSkills(): void {
   }
   try {
     if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-      void chrome.storage.local
-        .set({ [CUSTOM_SKILLS_STORAGE_KEY]: customSkills })
-        .catch(error => console.warn('[SkillStore] 写入 chrome.storage 失败:', error));
+      // 串行排队写权威源；失败记录在案，由 flushSkillStoreWrites 向调用方上报
+      customSkillsWriteTail = customSkillsWriteTail.then(async () => {
+        try {
+          await chrome.storage.local.set({ [CUSTOM_SKILLS_STORAGE_KEY]: customSkills });
+          lastCustomSkillsWriteError = null;
+        } catch (error) {
+          lastCustomSkillsWriteError = error;
+          console.error('[SkillStore] 写入 chrome.storage 失败（数据仍在本上下文内存，保存方应上报并重试）:', error);
+        }
+      });
     }
   } catch (error) {
-    console.warn('[SkillStore] chrome.storage 不可用，本次仅写入 localStorage:', error);
+    console.warn('[SkillStore] chrome.storage 不可用，本次仅写入内存/localStorage:', error);
   }
   notifyChange();
 }
@@ -386,10 +485,13 @@ function rebuildCustomSkills(items: unknown): number {
   reindexNames();
   try {
     if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(
-        CUSTOM_SKILLS_STORAGE_KEY,
-        JSON.stringify(Array.from(skillMap.values()).filter(s => s.source === 'custom').map(serializeSkill)),
+      // 与 persistCustomSkills 同一安全上限：重建期间的缓存回写同样不能撑爆配额
+      const snapshot = JSON.stringify(
+        Array.from(skillMap.values()).filter(s => s.source === 'custom').map(serializeSkill),
       );
+      if (snapshot.length <= LOCAL_MIRROR_MAX_CHARS) {
+        localStorage.setItem(CUSTOM_SKILLS_STORAGE_KEY, snapshot);
+      }
     }
   } catch {
     /* 缓存失败不影响内存态 */

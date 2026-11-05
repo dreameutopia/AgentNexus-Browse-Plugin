@@ -2,8 +2,7 @@
  * submit_validation —— 网站学习验证阶段的终止型提交工具
  *
  * 与 submit_skill 同构（terminal 终止型 + 结构化校验 + 可控失败回传），
- * 但职责是**验收**：验证阶段由目标操作模式对应的执行智能体（文本通用助手 /
- * 视觉通用助手）按技能指引盲测一遍，本工具承接其结论并结束该阶段。
+ * 职责是独立抽样验收与有证据的通用修订；完整替换正文经过结构守卫后由编排应用。
  *
  * 结果去向由编排层决定：
  *   - passed=true  → 进入技能落盘（跳转管理中心预填）；
@@ -19,6 +18,8 @@ import { ToolResult } from '@/common/tool-handler';
 import { ToolMetadata } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import type { ValidationReport } from '@/utils/learn/learn-types';
+import { parseValidationRevision } from '@/utils/learn/learn-validate';
+import { SKILL_BODY_MAX_CHARS } from '@/utils/skills/skill-types';
 
 const TOOL_NAME = 'submit_validation';
 
@@ -61,27 +62,12 @@ function asArgs(raw: unknown): Record<string, unknown> {
   );
 }
 
-/** 问题清单清洗：丢弃非字符串、去首尾空白、逐条截断、去空、限条数 */
-function normalizeIssues(value: unknown): { issues: string[]; truncated: number } {
-  if (value === undefined || value === null) return { issues: [], truncated: 0 };
-  if (!Array.isArray(value)) {
-    throw new Error(`issues 必须是字符串数组，实际收到: ${typeof value}`);
-  }
-  const issues: string[] = [];
-  let truncated = 0;
-  for (const item of value) {
-    if (typeof item !== 'string') continue;
-    const trimmed = item.trim();
-    if (!trimmed) continue;
-    if (issues.length >= ISSUE_MAX_COUNT) break;
-    if (trimmed.length > ISSUE_MAX_CHARS) {
-      issues.push(`${trimmed.slice(0, ISSUE_MAX_CHARS)}…`);
-      truncated += 1;
-    } else {
-      issues.push(trimmed);
-    }
-  }
-  return { issues, truncated };
+/** Reject malformed evidence/problems instead of silently losing their meaning. */
+function stringList(value: unknown, field: string, maxCount: number): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > maxCount || value.some(item => typeof item !== 'string' || !item.trim() || item.length > ISSUE_MAX_CHARS))
+    throw new Error(`${field} 必须为最多 ${maxCount} 条非空字符串，每条不超过 ${ISSUE_MAX_CHARS} 字符；请保留关键事实后重试`);
+  return value.map(item => item.trim());
 }
 
 export class SubmitValidationTool extends BaseTool {
@@ -91,7 +77,7 @@ export class SubmitValidationTool extends BaseTool {
     name: TOOL_NAME,
     description: '提交技能验证结论并结束当前验证阶段',
     category: 'learn',
-    version: '1.0.0',
+    version: '1.1.0',
     author: 'AgentNexus',
     tags: ['learn', 'validation', 'submit', 'terminal'],
     // 终止型：成功执行即结束本轮运行（见文件头说明）
@@ -104,33 +90,54 @@ export class SubmitValidationTool extends BaseTool {
       name: TOOL_NAME,
       description:
         '提交对给定技能的验证结论并结束验证阶段。这是验证阶段唯一的结束方式——' +
-        '必须在完整按技能指引执行过目标任务之后调用。参数不合法会返回可读错误且**不会**' +
+        '先从起点按技能完成端到端抽样核验；批量任务用 2–3 条有差异的样本检查通用性，不执行整批，不重复发送/投递。' +
+        '通过必须附实际 evidence（修订时可沿用 revision.evidence），且 issues 为空；定位错误、缺参、依赖缺失或未复核差异属于未解决问题，不能借环境额外能力绕过后当作原稿通过。纯可选建议放 suggestions，评分可省略。' +
+        '发现问题可做针对当前任务的通用修订：默认路径与特殊条件分开写，受影响步骤重新验证通过后，passed=true 并通过 revision 提交完整替换正文、修改原因及实际证据；不得扩大任务或工具权限。未验证的修改不提交 revision，保留问题并传 passed=false。参数不合法会返回可读错误且**不会**' +
         '结束验证，请按错误提示修正后重新提交。',
       parameters: {
         type: 'object',
+        additionalProperties: false,
         properties: {
           passed: {
             type: 'boolean',
             description:
-              '技能是否有效：true=严格按技能步骤成功完成了目标任务；' +
+              '技能是否在声明范围内可复用：true=原文或修订后的流程已通过端到端及差异样本核验；' +
               'false=存在关键步骤无法完成（定位失败 / 顺序错误 / 遗漏分支 / 坑点未提示）。',
           },
           issues: {
-            type: 'array',
-            items: { type: 'string' },
+            type: 'array', maxItems: ISSUE_MAX_COUNT,
+            items: { type: 'string', minLength: 1, maxLength: ISSUE_MAX_CHARS },
             description:
               `问题清单（每条一行，≤${ISSUE_MAX_CHARS} 字符，最多 ${ISSUE_MAX_COUNT} 条），` +
               '写清「哪一步 + 期望什么 + 实际发生什么」，供决策与后续修订使用。' +
               'passed=false 时必填且不能为空（没有清单的「不通过」无法支撑决策）；' +
-              'passed=true 时可省略或传空数组（要提改进建议时才填）。',
+              'passed=true 时必须省略或为空数组；已修复的问题写入 revision.summary/evidence，不影响正确性的建议放 suggestions。',
+          },
+          suggestions: {
+            type: 'array', maxItems: 6, items: { type: 'string', maxLength: ISSUE_MAX_CHARS },
+            description: '可选，最多6条不影响执行正确性的改进建议。不得用建议掩盖未修复的步骤、定位、参数或工具依赖问题。',
+          },
+          evidence: {
+            type: 'array', minItems: 1, maxItems: 6, items: { type: 'string', maxLength: ISSUE_MAX_CHARS },
+            description: 'passed=true 时必填（有 revision 时可省略并沿用 revision.evidence）：简述实际样本/差异状态、关键步骤与业务回执、未覆盖范围；不得仅写“成功”。已有写操作可只读核对，不为凑证据额外发送。',
           },
           score: {
             type: 'number',
-            description: '可选：0-100 的完成度评分（定位命中率与步骤可执行性的综合），通过与否仍以 passed 为准。',
+            description: '可选：0-100 的可复用性评分（定位、步骤可执行性与差异样本复核的综合），不是整批完成比例，通过与否仍以 passed 为准。',
           },
           summary: {
             type: 'string',
             description: '可选：一句话验证结论（按技能执行的总体感受、最薄弱的环节）。',
+          },
+          revision: {
+            type: 'object', additionalProperties: false,
+            description: '可选，仅 passed=true 且修订后重新验证通过时提供。仅替换正文，保留原技能名称、任务范围、模式和 allowedTools；未修改则省略。',
+            properties: {
+              body: { type: 'string', maxLength: SKILL_BODY_MAX_CHARS, description: '完整 Markdown 正文，不含 frontmatter；保留目标、前置条件、完成计划、具体操作讲解、分支与坑点、完成判定、边界七节及对应编号。参数化通用步骤，说明特殊情况的识别条件与处理路径，标明未验证范围。' },
+              summary: { type: 'string', maxLength: 500, description: '修改了什么、为什么是当前任务可复用的修正。' },
+              evidence: { type: 'array', minItems: 1, maxItems: 6, items: { type: 'string', maxLength: 500 }, description: '实际复核的样本差异、受影响步骤、观察到的结果和覆盖限制；不可用假设冒充证据。' },
+            },
+            required: ['body', 'summary', 'evidence'],
           },
         },
         // 只把 passed 列为必填：issues 的「不通过时必填」由工具层按 passed 分支校验。
@@ -145,6 +152,8 @@ export class SubmitValidationTool extends BaseTool {
     let operation = '参数校验';
     try {
       const args = asArgs(rawArgs);
+      if (Object.keys(args).some(key => !['passed', 'issues', 'suggestions', 'evidence', 'score', 'summary', 'revision'].includes(key)))
+        throw new Error('存在未知参数；修订仅通过 revision 提交');
 
       // ── passed：严格布尔（字符串 "true" 不接受——静默强转会把失败判成通过）──
       operation = '校验 passed';
@@ -157,9 +166,11 @@ export class SubmitValidationTool extends BaseTool {
       }
       const passed = args.passed;
 
-      // ── issues：清洗 + 不通过时硬校验非空 ──
+      // ── Unresolved problems and optional suggestions have distinct meanings. ──
       operation = '校验 issues';
-      const { issues, truncated } = normalizeIssues(args.issues);
+      const issues = stringList(args.issues, 'issues', ISSUE_MAX_COUNT);
+      const suggestions = stringList(args.suggestions, 'suggestions', 6);
+      if (passed && issues.length) throw new Error('passed=true 不允许未解决的 issues；修复并复核后提交 revision，或 passed=false。纯可选建议使用 suggestions');
       if (!passed && issues.length === 0) {
         return validationFailure(
           '参数错误',
@@ -192,24 +203,34 @@ export class SubmitValidationTool extends BaseTool {
         );
       }
       const summary = typeof rawSummary === 'string' ? rawSummary.trim() : '';
+      operation = '校验修订与复核证据';
+      if (args.revision !== undefined && !passed)
+        throw new Error('revision 仅在修改后的流程已重新验证通过、passed=true 时接受；未证实的修改请记入 issues，原草稿会保留');
+      const revision = args.revision === undefined ? undefined : parseValidationRevision(args.revision);
+      const evidence = args.evidence === undefined ? revision?.evidence ?? [] : stringList(args.evidence, 'evidence', 6);
+      if (passed && !evidence.length) throw new Error('passed=true 必须提供实际 evidence；修订可沿用 revision.evidence。没有复核证据时请继续核验或 passed=false 说明缺口');
 
       const report: ValidationReport = {
         passed,
         issues,
+        ...(suggestions.length ? { suggestions } : {}),
+        ...(evidence.length ? { evidence } : {}),
         ...(score !== undefined ? { score } : {}),
         ...(summary ? { summary } : {}),
+        ...(revision ? { revision } : {}),
       };
 
-      const truncatedNote = truncated > 0 ? `\n注意：${truncated} 条问题超长已截断至 ${ISSUE_MAX_CHARS} 字符。` : '';
       const head = passed
-        ? `验证通过：按技能指引成功完成目标任务（${issues.length > 0 ? `另有 ${issues.length} 条改进建议` : '无遗留问题'}）。`
+        ? `验证通过：${revision ? '修订后的' : '原'}技能已完成抽样复核（无未解决问题）。`
         : `验证未通过：发现 ${issues.length} 个问题。`;
       const issueList = issues.length > 0
         ? `\n\n问题清单：\n${issues.map((issue, index) => `${index + 1}. ${issue}`).join('\n')}`
         : '';
+      const suggestionList = suggestions.length ? `\n\n可选建议：\n${suggestions.map((item, index) => `${index + 1}. ${item}`).join('\n')}` : '';
+      const evidenceList = evidence.length ? `\n\n复核证据与覆盖范围：\n${evidence.map((item, index) => `${index + 1}. ${item}`).join('\n')}` : '';
 
       return validationSuccess(
-        `${head}${truncatedNote}${issueList}\n\n验证阶段结束，等待处理结论。`,
+        `${head}${issueList}${suggestionList}${evidenceList}\n\n验证阶段结束，等待处理结论。`,
         { report },
       );
     } catch (error) {
@@ -218,7 +239,7 @@ export class SubmitValidationTool extends BaseTool {
       return validationFailure(
         '参数错误',
         reason,
-        '核对参数形态后重试：passed 为布尔值，issues 为字符串数组',
+        '按具体错误修正后重试：issues 只写未解决问题；通过须有实际 evidence，修订须已复核。无证据或有未解决问题则 passed=false',
       );
     }
   }

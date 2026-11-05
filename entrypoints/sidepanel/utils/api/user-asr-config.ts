@@ -16,6 +16,7 @@
  */
 
 import { getEngine } from '../config/engine';
+import { isInitialEmptyState } from '../config/kv-store';
 import { t, type MessageKey } from '@/utils/i18n/core';
 
 // ==================== 配置接口 ====================
@@ -189,7 +190,9 @@ export class AsrConfigManager {
       this.config = normalizeAsrConfig(state.data);
       if (state.data && state.source !== 'primary') {
         console.warn(`[AsrConfig] 配置已从 ${state.source} 副本恢复:`, state.issues);
-      } else if (state.issues.length) {
+      } else if (state.issues.length && !isInitialEmptyState(state.issues)) {
+        // 「从未配置过」的空态不算告警（否则每次启动都刷一条噪声，
+        // 把真正的损坏告警淹没）；其余一律照实告警
         console.warn('[AsrConfig] 配置读取告警:', state.issues);
       }
       this.loaded = true;

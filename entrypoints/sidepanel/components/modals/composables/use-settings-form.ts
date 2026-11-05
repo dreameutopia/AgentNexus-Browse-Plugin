@@ -41,6 +41,7 @@ import {
   type AppSettings,
   type ChannelConfig,
   type ChannelLiveness,
+  type ChannelState,
   type ModelRef,
 } from '../../../utils/channels';
 import {
@@ -48,6 +49,10 @@ import {
   fetchModelList,
   ModelListError,
 } from '../../../utils/api/provider-endpoint';
+// 配置引擎门面（前像读取 / 分区回滚：跨域保存的原子性保障）。
+// 直引 engine 模块而非 utils/config 桶文件：桶里还挂着备份/导入导出整套模块，
+// 设置表单只需要引擎门面，不该为此把无关模块拉进依赖图。
+import { getEngine } from '../../../utils/config/engine';
 // 端点活性问题的展示层映射（结构化事实 → 可读文案；与运行期判定同源）
 import { livenessIssueText } from '../../../utils/ui/liveness-message';
 import { probeConnection } from '../../../utils/stream/probe';
@@ -136,6 +141,8 @@ export interface SettingsFormApi {
   channelLiveness: ComputedRef<ChannelLiveness>;
   /** 可以发起连通性测试 */
   canTest: ComputedRef<boolean>;
+  /** 连通性测试按钮的提示（不可用时给出具体原因） */
+  testBtnTitle: ComputedRef<string>;
   fetchBtnTitle: ComputedRef<string>;
   modelInputPlaceholder: ComputedRef<string>;
   /** 实际请求地址预览（委托适配器计算，与真实请求同源） */
@@ -243,6 +250,22 @@ export function createSettingsForm(options: { onSaved: () => void }): SettingsFo
     const issue = channelLiveness.value.issues[0];
     if (!issue) return t('sidepanel.apiConfig.fetchModelsHint');
     return livenessIssueText(issue);
+  });
+
+  /**
+   * 连通性测试按钮的提示文案。
+   * 不可用时给出**具体**原因（缺地址 / 地址非法 / 缺密钥 / 尚无模型），
+   * 而不是笼统的「请先填写」——按钮被禁用时，提示就是用户唯一的诊断入口。
+   */
+  const testBtnTitle = computed(() => {
+    const channel = selectedChannel.value;
+    if (!channel) return t('sidepanel.apiConfig.testHintFill');
+    if (!channelLiveness.value.ok) {
+      const issue = channelLiveness.value.issues[0];
+      return issue ? livenessIssueText(issue) : t('sidepanel.apiConfig.testHintFill');
+    }
+    if (!canTest.value) return t('sidepanel.apiConfig.testHintFill');
+    return t('sidepanel.apiConfig.testHintSelect');
   });
 
   const modelInputPlaceholder = computed(() => {
@@ -612,6 +635,93 @@ export function createSettingsForm(options: { onSaved: () => void }): SettingsFo
 
   // ==================== 保存 ====================
 
+  /**
+   * 读取某配置域的当前持久化态（前像）。
+   * 读失败不阻断保存流程——前像只服务于回滚，没有前像意味着「失败后无法回滚」，
+   * 但绝不因为「读不到前像」就拒绝写入（那会让一次存储抖动卡死用户配置）。
+   */
+  async function readSectionSnapshot(id: 'channels' | 'appSettings'): Promise<unknown | null> {
+    try {
+      const snapshot = await getEngine().readSection(id);
+      return snapshot?.data ?? null;
+    } catch (error) {
+      console.warn('[SettingsForm] 读取配置前像失败（本次保存失败将无法回滚）:', error);
+      return null;
+    }
+  }
+
+  /**
+   * 把某配置域回滚到给定前像。
+   * 前像为 null 表示「写入前该域本就没有数据」→ 清空而非写入空对象。
+   * 回滚本身失败只记录日志：原始错误已在界面上呈现，此处不叠加第二条噪声。
+   */
+  async function rollbackSection(id: 'channels' | 'appSettings', before: unknown | null): Promise<void> {
+    try {
+      if (before === null) {
+        await getEngine().clearSection(id);
+      } else {
+        await getEngine().writeSection(id, before);
+      }
+    } catch (error) {
+      console.error('[SettingsForm] 配置回滚写入失败:', error);
+    }
+    // 无论回滚写入是否成功，store 的内存态都必须与持久化层重新对齐
+    // （回滚写的是持久化层，store 的内存态仍旧是失败前的那份）
+    try {
+      await channelStore.load();
+      await appSettingsStore.load();
+    } catch (error) {
+      console.error('[SettingsForm] 配置回滚后重新载入失败:', error);
+    }
+  }
+
+  /**
+   * 事务性保存两份配置域（渠道 + 应用设置）。
+   *
+   * 引擎的写入粒度是「单个域」，跨域没有事务：任一份失败都会留下
+   * 「一半新一半旧」的持久化态（渠道改了但设置没改，或反之）——
+   * 用户看到的是「保存了但只生效一半」，极难自查。
+   *
+   * 因此写入前先留一份渠道域的前像，第二份写失败时把渠道回滚，
+   * 让「保存」要么整体生效、要么整体不生效。
+   * （与备份恢复的「预像 + 回滚」同一套手法，见 utils/backup/engine.ts。）
+   */
+  async function persistConfig(
+    channelState: ChannelState,
+    settings: AppSettings,
+  ): Promise<{ ok: boolean; errors: string[] }> {
+    const channelsBefore = await readSectionSnapshot('channels');
+    // 即将尝试写入渠道域（校验失败走下面的 return，届时改回 false）
+    let channelsTouched = false;
+
+    try {
+      channelsTouched = true;
+      const channelResult = await channelStore.save(channelState);
+      if (!channelResult.ok) {
+        // 校验失败：尚未发生任何写入，无需回滚
+        channelsTouched = false;
+        return { ok: false, errors: channelResult.errors };
+      }
+
+      const settingsResult = await appSettingsStore.save(settings);
+      if (!settingsResult.ok) {
+        // 应用设置写失败 → 回滚渠道，避免留下半应用状态
+        await rollbackSection('channels', channelsBefore);
+        return { ok: false, errors: settingsResult.errors };
+      }
+      return { ok: true, errors: [] };
+    } catch (error) {
+      // 写入过程抛错（读回校验未过 / 存储不可用 / 配额超限）：
+      // 渠道域可能已落盘且内容不可信 → 回滚到前像
+      if (channelsTouched) {
+        await rollbackSection('channels', channelsBefore);
+      }
+      const reason = error instanceof Error ? error.message : String(error);
+      console.error('[SettingsForm] 配置保存失败:', error);
+      return { ok: false, errors: [`${t('sidepanel.apiConfig.saveFailed')}（${reason}）`] };
+    }
+  }
+
   async function handleSave(): Promise<void> {
     testResult.value = null;
     validationErrors.value = [];
@@ -637,14 +747,9 @@ export function createSettingsForm(options: { onSaved: () => void }): SettingsFo
 
     isSaving.value = true;
     try {
-      const channelResult = await channelStore.save(channelState);
-      if (!channelResult.ok) {
-        validationErrors.value = channelResult.errors;
-        return;
-      }
-      const settingsResult = await appSettingsStore.save(settings);
-      if (!settingsResult.ok) {
-        validationErrors.value = settingsResult.errors;
+      const outcome = await persistConfig(channelState, settings);
+      if (!outcome.ok) {
+        validationErrors.value = outcome.errors;
         return;
       }
       // 默认模型引用自愈：草稿默认指向的模型若已不可用（跨上下文并发删除等极端时序），
@@ -654,12 +759,6 @@ export function createSettingsForm(options: { onSaved: () => void }): SettingsFo
       channels.value = channelStore.getAll();
       settingsDraft.value = appSettingsStore.get();
       options.onSaved();
-    } catch (error) {
-      // 引擎写入失败（读回校验未过 / 存储不可用）：附上技术原因便于分析，
-      // 同时保留可读的用户提示，绝不静默
-      const reason = error instanceof Error ? error.message : String(error);
-      validationErrors.value = [`${t('sidepanel.apiConfig.saveFailed')}（${reason}）`];
-      console.error('[SettingsForm] 配置保存失败:', error);
     } finally {
       isSaving.value = false;
     }
@@ -689,6 +788,7 @@ export function createSettingsForm(options: { onSaved: () => void }): SettingsFo
     channelRequiresApiKey,
     channelLiveness,
     canTest,
+    testBtnTitle,
     fetchBtnTitle,
     modelInputPlaceholder,
     actualRequestUrl,

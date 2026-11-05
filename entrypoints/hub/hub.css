@@ -1,8 +1,65 @@
 /**
  * 管理中心（Hub）样式
- * 壳（头部/侧导航/内容容器）复用设置弹窗的 settings-modal.css（api-config-* 类）；
- * 本文件只保留页面容器覆写与各管理器（智能体/技能）自身的卡片、编辑器样式。
+ * 壳（头部/侧导航/内容容器）复用设置弹窗的 settings-modal.css（api-config-* 类），
+ * 本文件承载页面级覆写与各管理器（智能体/技能/插件）自身的卡片、编辑器样式。
+ *
+ * 设计语言：向插件侧边栏对齐 + Apple 液态玻璃（Liquid Glass）材质。
+ *   - 中性色一律走下方镜像 token（值取自 entrypoints/sidepanel/styles/app.css
+ *     顶部的 surface/ink 组与 styles/global.css 的字体/强调色组）。侧边栏共享
+ *     样式文件不可改动，故在此镜像同一组值——调整设计时两处需同步。
+ *   - 玻璃材质 = 半透明白面 + backdrop-filter(blur + saturate) + 内侧顶部高光
+ *     （specular）+ 分层柔影；画布铺一层取自 sidepanel 品牌渐变
+ *     （#667eea → #764ba2 → #f093fb）的低饱和极光，让玻璃有可折射的内容。
+ *   - 交互运动统一走弹性缓动 --ease-spring（cubic-bezier(0.32, 0.72, 0, 1)），
+ *     并在 prefers-reduced-motion 下整体关闭。
+ *   - 所有表单控件（输入框 / 复选框 / 开关 / 选择框）均为自定义外观：
+ *     输入框走玻璃内嵌件；复选框 .hub-check、开关 .hub-switch（HubSwitch 组件）、
+ *     选择框 HubSelect / CategorySelect 为自绘下拉。
  */
+
+:root {
+  /* ── 镜像 sidepanel styles/app.css 的 surface / ink token ── */
+  --surface-canvas: #faf9f7;
+  --surface-card: #ffffff;
+  --surface-soft: #f3f1ed;
+  --surface-hover: #eeece7;
+  --line-soft: #e4e2de;
+  --line-strong: #d8d4cc;
+  --ink-primary: #292824;
+  --ink-secondary: #787671;
+  --ink-muted: #9b9790;
+  --focus-ring: #a5a09a;
+  /* 强调色与语义色：与 sidepanel global.css 同源 */
+  --primary-color: #667eea;
+  --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  --error-color: #ef4444;
+  --success-color: #10b981;
+  --warning-color: #f59e0b;
+  /* ink 系阴影与焦点光环（对齐 sidepanel .input-container 手法） */
+  --shadow-hairline: 0 1px 3px rgb(41 40 36 / 4%);
+  --shadow-hover: 0 4px 12px rgb(41 40 36 / 10%);
+  --ring-ink: 0 0 0 3px rgb(41 40 36 / 4%);
+  /* ── 液态玻璃材质 ── */
+  /* 常规玻璃面：列表卡片、分组卡、输入框等大量平铺件 */
+  --glass-tint: rgba(255, 255, 255, 0.55);
+  /* 强化玻璃面：编辑器、浮层等需要更高可读性的面 */
+  --glass-tint-strong: rgba(255, 255, 255, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.78);
+  --glass-blur: blur(18px) saturate(165%);
+  --glass-blur-strong: blur(30px) saturate(180%);
+  /* 玻璃内侧高光：顶部一条亮边 + 底部一条暗边，构成「厚玻璃」的体积感 */
+  --glass-inset: inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    inset 0 -1px 0 rgba(41, 40 36 / 3%);
+  --glass-shadow: 0 2px 6px rgb(41 40 36 / 4%), 0 12px 32px rgb(41 40 36 / 9%);
+  --glass-shadow-lift: 0 4px 10px rgb(41 40 36 / 6%),
+    0 20px 48px rgb(41 40 36 / 14%);
+  /* 品牌色焦点光环（表单控件聚焦） */
+  --ring-primary: 0 0 0 3.5px rgba(102, 126, 234, 0.16);
+  /* ── 运动 ── */
+  --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --radius-glass: 16px;
+}
 
 * {
   box-sizing: border-box;
@@ -15,11 +72,20 @@ body {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
-    'Microsoft YaHei', sans-serif;
-  background: #f4f6fb;
-  color: #1f2937;
+  /* 字体栈与 sidepanel styles/global.css 的 :root 对齐 */
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  color: var(--ink-primary, #292824);
   font-size: 14px;
+  /* 极光画布：取 sidepanel 品牌渐变三色（靛紫/紫/粉）做低饱和大光斑，
+     铺在暖纸底色上——玻璃材质由此获得可折射的色彩层。
+     background-attachment: fixed 使光斑不随内容滚动。 */
+  background:
+    radial-gradient(1100px 780px at -8% 22%, rgba(102, 126, 234, 0.16), transparent 62%),
+    radial-gradient(1000px 720px at 88% -12%, rgba(240, 147, 251, 0.13), transparent 60%),
+    radial-gradient(1200px 900px at 52% 118%, rgba(118, 75, 162, 0.12), transparent 62%),
+    var(--surface-canvas, #faf9f7);
+  background-attachment: fixed;
 }
 
 #app {
@@ -32,19 +98,114 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  /* 四周留隙压至约 1%：中心卡片占满视口总宽高的 95% 以上 */
+  /* 四周留隙压至约 1%：中心卡片占满视口总宽高的 95% 以上，边缘露出极光画布 */
   padding: 8px 10px;
 }
 
-/* ──── 壳卡片覆写 ──── */
+/* ──── 壳卡片覆写：整壳改为一块大液态玻璃 ──── */
 
-/* 复用 .api-config-modal 卡片样式；覆写为页面级尺寸（双类特异性，不受加载顺序影响）。
- * 基类为 width:95% / height:85vh，此处进一步拉满为 100% 页面级尺寸。 */
+/* 复用 .api-config-modal 布局骨架；覆写为页面级尺寸 + 玻璃材质（双类特异性，
+   不受加载顺序影响）。原基类为白底，此处半透明 + 背后极光透出。 */
 .api-config-modal.hub-shell {
   width: 100%;
   max-width: none;
   height: 100%;
   max-height: none;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.62),
+    rgba(255, 255, 255, 0.46)
+  );
+  backdrop-filter: var(--glass-blur-strong);
+  -webkit-backdrop-filter: var(--glass-blur-strong);
+  border: 1px solid var(--glass-border);
+  border-radius: 20px;
+  box-shadow: var(--glass-inset), 0 24px 64px rgb(41 40 36 / 16%);
+}
+
+/* 头部：玻璃通栏，暖色发丝线分隔 */
+.hub-shell .api-config-header {
+  background: rgba(255, 255, 255, 0.34);
+  border-bottom: 1px solid rgba(41 40 36 / 6%);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+}
+
+.hub-shell .api-config-title {
+  color: var(--ink-primary, #292824);
+  letter-spacing: -0.01em;
+}
+
+/* 语言切换：玻璃药丸分段（沿用基类结构，仅换材质） */
+.hub-shell .api-config-locale {
+  background: rgba(255, 255, 255, 0.5);
+  border-color: transparent;
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  box-shadow: var(--glass-inset), 0 1px 4px rgb(41 40 36 / 6%);
+}
+
+.hub-shell .api-config-locale-btn {
+  color: var(--ink-secondary, #787671);
+}
+
+.hub-shell .api-config-locale-btn.active {
+  background: #ffffff;
+  color: var(--ink-primary, #292824);
+  box-shadow: 0 1px 3px rgb(41 40 36 / 12%), inset 0 1px 0 #ffffff;
+}
+
+/* 侧导航：去掉基类的冷灰渐变，改为透明轨道 + 玻璃胶囊项 */
+.hub-shell .api-config-nav {
+  background: transparent;
+  border-right: 1px solid rgba(41 40 36 / 6%);
+}
+
+.hub-shell .api-nav-item {
+  color: var(--ink-secondary, #787671);
+  background: transparent;
+  border: 1px solid transparent;
+  transition: all 0.22s var(--ease-spring);
+}
+
+.hub-shell .api-nav-item:hover {
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--ink-primary, #292824);
+}
+
+.hub-shell .api-nav-item.active {
+  background: rgba(255, 255, 255, 0.86);
+  border-color: rgba(102, 126, 234, 0.35);
+  color: #4f46e5;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 3px 12px rgba(102, 126, 234, 0.16);
+}
+
+/* 内容主体：透明（让壳玻璃透出极光），并补上页面级内边距
+   （settings-forms.css 的 .api-config-body padding 不被 hub 引入） */
+.hub-shell .api-config-body {
+  padding: 16px 20px 20px;
+}
+
+/* 壳内滚动条：细而透明，玻璃风格 */
+.hub-shell ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.hub-shell ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.hub-shell ::-webkit-scrollbar-thumb {
+  background: rgba(41 40 36 / 18%);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+.hub-shell ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(41 40 36 / 32%);
 }
 
 /* ──── 列表 ──── */
@@ -53,12 +214,20 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   margin-bottom: 14px;
 }
 
 .hub-list-count {
-  color: #6b7280;
+  color: var(--ink-secondary, #787671);
   font-size: 13px;
+}
+
+/* 列表工具栏右侧动作组（导入 + 新建） */
+.hub-list-actions {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
 }
 
 .hub-cards {
@@ -67,23 +236,30 @@ body {
   gap: 12px;
 }
 
+/* 卡片：液态玻璃面。hover 上浮 + 影子展开（弹性缓动），顶部内高光常驻 */
 .hub-card {
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
+  background: var(--glass-tint);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-glass);
   padding: 14px 16px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  transition: box-shadow 0.15s, border-color 0.15s;
+  box-shadow: var(--glass-inset), var(--glass-shadow);
+  transition: transform 0.35s var(--ease-spring),
+    box-shadow 0.35s var(--ease-spring), border-color 0.2s ease;
 }
 
 .hub-card:hover {
-  box-shadow: 0 4px 16px rgba(102, 126, 234, 0.1);
+  transform: translateY(-3px);
+  border-color: #ffffff;
+  box-shadow: var(--glass-inset), var(--glass-shadow-lift);
 }
 
 .hub-card.is-disabled {
-  opacity: 0.6;
+  opacity: 0.62;
 }
 
 .hub-card-head {
@@ -119,7 +295,7 @@ body {
 .hub-card-desc {
   margin: 0;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--ink-secondary, #787671);
   line-height: 1.5;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -138,12 +314,12 @@ body {
 
 .hub-card-tools {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--ink-muted, #9b9790);
 }
 
 .hub-card-readonly {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--ink-muted, #9b9790);
   margin-left: auto;
 }
 
@@ -151,32 +327,36 @@ body {
   margin-left: auto;
   display: inline-flex;
   gap: 4px;
+  align-items: center;
 }
 
+/* 徽章：玻璃药丸（色相保留语义，透明度适配玻璃面） */
 .hub-badge {
   flex-shrink: 0;
   font-size: 10px;
-  border-radius: 6px;
-  padding: 1px 6px;
+  border-radius: 999px;
+  padding: 1.5px 8px;
   border: 1px solid transparent;
+  backdrop-filter: blur(6px) saturate(130%);
+  -webkit-backdrop-filter: blur(6px) saturate(130%);
 }
 
 .hub-badge-preset {
-  color: #667eea;
-  background: rgba(102, 126, 234, 0.1);
-  border-color: #667eea;
+  color: #4f46e5;
+  background: rgba(102, 126, 234, 0.12);
+  border-color: rgba(102, 126, 234, 0.32);
 }
 
 .hub-badge-custom {
-  color: #0d9488;
-  background: rgba(16, 185, 129, 0.1);
-  border-color: #10b981;
+  color: #047857;
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.32);
 }
 
 .hub-badge-vision {
-  color: #d97706;
-  background: rgba(245, 158, 11, 0.12);
-  border-color: #f59e0b;
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.14);
+  border-color: rgba(245, 158, 11, 0.38);
 }
 
 /* 分类与标签徽章 */
@@ -189,14 +369,14 @@ body {
 
 .hub-badge-category {
   color: #0369a1;
-  background: rgba(14, 165, 233, 0.1);
-  border-color: #0ea5e9;
+  background: rgba(14, 165, 233, 0.12);
+  border-color: rgba(14, 165, 233, 0.32);
 }
 
 .hub-badge-tag {
-  color: #6b7280;
-  background: #f3f4f6;
-  border-color: #e5e7eb;
+  color: var(--ink-secondary, #787671);
+  background: rgba(255, 255, 255, 0.5);
+  border-color: rgba(41 40 36 / 8%);
 }
 
 /* 列表筛选（关键词 + 分类） */
@@ -207,29 +387,52 @@ body {
   flex-wrap: wrap;
 }
 
+/* 带图标的搜索输入容器 */
+.hub-search {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.hub-search__icon {
+  position: absolute;
+  left: 10px;
+  width: 14px;
+  height: 14px;
+  color: var(--ink-muted, #9b9790);
+  pointer-events: none;
+  transition: color 0.18s ease;
+}
+
+.hub-search:focus-within .hub-search__icon {
+  color: var(--primary-color, #667eea);
+}
+
 .hub-list-search {
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  padding: 7px 12px;
+  border: 1px solid rgba(41 40 36 / 10%);
+  border-radius: 10px;
+  padding: 7px 12px 7px 32px;
   font-size: 13px;
+  font-family: inherit;
   outline: none;
   width: 220px;
-  transition: border-color 0.15s;
+  color: var(--ink-primary, #292824);
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 1px 2px rgba(41 40 36 / 4%);
+  backdrop-filter: blur(8px) saturate(140%);
+  -webkit-backdrop-filter: blur(8px) saturate(140%);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease,
+    background 0.18s ease;
 }
 
-.hub-list-category {
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  padding: 7px 10px;
-  font-size: 13px;
-  outline: none;
-  background: #ffffff;
-  max-width: 180px;
+.hub-list-search::placeholder {
+  color: var(--ink-muted, #9b9790);
 }
 
-.hub-list-search:focus,
-.hub-list-category:focus {
-  border-color: #667eea;
+.hub-list-search:focus {
+  border-color: rgba(102, 126, 234, 0.55);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: var(--ring-primary);
 }
 
 .hub-list-error {
@@ -237,9 +440,9 @@ body {
 }
 
 .hub-empty {
-  color: #9ca3af;
+  color: var(--ink-muted, #9b9790);
   font-size: 13px;
-  padding: 28px 0;
+  padding: 36px 0;
   text-align: center;
 }
 
@@ -255,22 +458,24 @@ body {
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  color: #374151;
-  background: #f3f4f6;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  padding: 2px 4px 2px 8px;
+  color: var(--ink-primary, #292824);
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(41 40 36 / 8%);
+  border-radius: 999px;
+  padding: 2px 4px 2px 9px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
 
 .hub-tag-remove {
   border: none;
   background: none;
-  color: #9ca3af;
+  color: var(--ink-muted, #9b9790);
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
   padding: 0 4px;
-  border-radius: 4px;
+  border-radius: 6px;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .hub-tag-remove:hover {
@@ -278,14 +483,17 @@ body {
   background: rgba(239, 68, 68, 0.1);
 }
 
+/* 行内文字操作按钮（编辑 / 删除 / 导出） */
 .hub-op {
   border: none;
   background: none;
   color: #667eea;
   font-size: 12px;
+  font-family: inherit;
   cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 3px 8px;
+  border-radius: 7px;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
 .hub-op:hover {
@@ -300,16 +508,50 @@ body {
   background: rgba(239, 68, 68, 0.1);
 }
 
+/* 图标操作按钮（复制标识等：只见图标不见原文） */
+.hub-icon-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-muted, #9b9790);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, transform 0.15s var(--ease-spring);
+}
+
+.hub-icon-btn:hover {
+  color: var(--primary-color, #667eea);
+  background: rgba(102, 126, 234, 0.1);
+}
+
+.hub-icon-btn:active {
+  transform: scale(0.9);
+}
+
+.hub-icon-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
 /* ──── 编辑器 ──── */
 
 .hub-editor {
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
+  background: var(--glass-tint-strong);
+  backdrop-filter: var(--glass-blur-strong);
+  -webkit-backdrop-filter: var(--glass-blur-strong);
+  border: 1px solid var(--glass-border);
+  border-radius: 18px;
   padding: 20px 24px;
   display: flex;
   flex-direction: column;
   gap: 16px;
+  box-shadow: var(--glass-inset), var(--glass-shadow);
+  animation: hubPanelIn 0.34s var(--ease-out) both;
 }
 
 .hub-editor-head {
@@ -321,6 +563,7 @@ body {
 .hub-editor-head h2 {
   margin: 0;
   font-size: 16px;
+  letter-spacing: -0.01em;
 }
 
 /* ──── 编辑器左右布局：左列基础信息，右列工具组与视觉声明 ──── */
@@ -332,6 +575,17 @@ body {
   align-items: start;
 }
 
+/* 技能编辑器双模式各自的列宽：
+   简单模式左窄右宽（元信息表单 / 大段提示词正文）；
+   高级模式左宽右窄（SKILL.md 原文 / 实时校验 + 资源文件面板） */
+.hub-editor-split--skill-simple {
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+}
+
+.hub-editor-split--skill-advanced {
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+}
+
 .hub-editor-col {
   display: flex;
   flex-direction: column;
@@ -339,9 +593,36 @@ body {
   min-width: 0;
 }
 
+/* 技能编辑器：两列等高拉伸（提示词 / SKILL.md 原文随视口填满列高） */
+.hub-editor-split--skill-simple,
+.hub-editor-split--skill-advanced {
+  align-items: stretch;
+}
+
+/* 模式切换行：分段控件 + 说明文字 */
+.hub-editor-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+/* 列内占满剩余高度的字段（编辑器主体），内部输入域随之填满 */
+.hub-field--grow {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.hub-field--fill {
+  flex: 1 1 auto;
+  min-height: 220px;
+}
+
 /* 窄窗口（或浏览器侧栏拖窄）时回退为单列堆叠 */
 @media (max-width: 860px) {
-  .hub-editor-split {
+  .hub-editor-split,
+  .hub-editor-split--skill-simple,
+  .hub-editor-split--skill-advanced {
     grid-template-columns: 1fr;
   }
 }
@@ -363,7 +644,7 @@ body {
 
 .hub-groups-count {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--ink-secondary, #787671);
 }
 
 .hub-field {
@@ -378,7 +659,7 @@ body {
 .hub-field-label {
   font-size: 13px;
   font-weight: 600;
-  color: #374151;
+  color: var(--ink-primary, #292824);
 }
 
 /* ──── 必填标注与保存前校验高亮 ──── */
@@ -393,40 +674,57 @@ body {
 /* 保存尝试后仍未填的必填项：红框 + 浅红底提示，填写后随校验自动消除 */
 .hub-field.is-invalid input,
 .hub-field.is-invalid textarea {
-  border-color: #ef4444;
-  background: #fef2f2;
+  border-color: rgba(239, 68, 68, 0.65);
+  background: rgba(254, 242, 242, 0.85);
 }
 
 .hub-field.is-invalid input:focus,
 .hub-field.is-invalid textarea:focus {
   border-color: #dc2626;
+  box-shadow: 0 0 0 3.5px rgba(239, 68, 68, 0.14);
 }
 
 /* 工具组必选校验：滚动区整体以虚线红框高亮（内部是复选框组，不适配单输入框样式） */
 .hub-groups-scroll.is-invalid {
-  border: 1px dashed #ef4444;
-  border-radius: 10px;
-  background: #fef2f2;
+  border: 1.5px dashed rgba(239, 68, 68, 0.55);
+  border-radius: 12px;
+  background: rgba(254, 242, 242, 0.6);
 }
 
+/* ──── 自定义输入框（玻璃内嵌件） ────
+   覆盖编辑器内全部原生输入控件；选择框已由 HubSelect / CategorySelect 自绘 */
+
 .hub-field input[type='text'],
+.hub-field input[type='search'],
 .hub-field input[type='number'],
-.hub-field select,
-.hub-field textarea {
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
+.hub-field textarea,
+.hub-input {
+  border: 1px solid rgba(41 40 36 / 10%);
+  border-radius: 10px;
   padding: 8px 12px;
   font-size: 13px;
   font-family: inherit;
   outline: none;
-  transition: border-color 0.15s;
   width: 100%;
+  color: var(--ink-primary, #292824);
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 1px 2px rgba(41 40 36 / 4%);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease,
+    background 0.18s ease;
+}
+
+.hub-field input::placeholder,
+.hub-field textarea::placeholder,
+.hub-input::placeholder {
+  color: var(--ink-muted, #9b9790);
 }
 
 .hub-field input:focus,
-.hub-field select:focus,
-.hub-field textarea:focus {
-  border-color: #667eea;
+.hub-field textarea:focus,
+.hub-input:focus {
+  border-color: rgba(102, 126, 234, 0.55);
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: var(--ring-primary), inset 0 1px 2px rgba(41 40 36 / 3%);
 }
 
 .hub-field textarea {
@@ -441,10 +739,211 @@ body {
 
 .hub-hint {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--ink-muted, #9b9790);
 }
 
-/* ============ 头像选择器（预览 + 上传图片 + emoji 卡片，三者互斥择一） ============ */
+.hub-error {
+  color: #ef4444;
+  font-size: 12px;
+}
+
+/* ──── 自定义复选框（品牌渐变填充 + 弹性勾入动画） ──── */
+
+.hub-check {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  margin: 0;
+  border: 1.5px solid rgba(41 40 36 / 26%);
+  border-radius: 5.5px;
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow: inset 0 1px 2px rgba(41 40 36 / 5%);
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+/* 勾：双边旋转法，checked 时弹性放大进入 */
+.hub-check::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 2px;
+  width: 4.5px;
+  height: 9px;
+  border: solid #ffffff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg) scale(0);
+  transition: transform 0.18s var(--ease-spring);
+}
+
+.hub-check:hover:not(:disabled) {
+  border-color: rgba(102, 126, 234, 0.6);
+}
+
+.hub-check:checked {
+  background: var(--primary-gradient);
+  border-color: transparent;
+  box-shadow: 0 2px 6px rgba(102, 126, 234, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.hub-check:checked::after {
+  transform: rotate(45deg) scale(1);
+}
+
+.hub-check:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.28);
+}
+
+.hub-check:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ──── 自定义开关（iOS 形态：玻璃轨道 + 弹性滑块，按下微展宽） ──── */
+/* 由 HubSwitch 组件渲染：label.hub-switch > input + .hub-switch__track + 文案 */
+
+.hub-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.hub-switch__input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.hub-switch__track {
+  position: relative;
+  width: 40px;
+  height: 23px;
+  flex: none;
+  border-radius: 999px;
+  background: rgba(41 40 36 / 16%);
+  box-shadow: inset 0 1px 2px rgba(41 40 36 / 14%),
+    inset 0 0 0 1px rgba(41 40 36 / 4%);
+  transition: background 0.24s var(--ease-spring),
+    box-shadow 0.24s var(--ease-spring);
+}
+
+.hub-switch__track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #ffffff, #f6f5f3);
+  box-shadow: 0 2px 5px rgba(41 40 36 / 28%), 0 0 0 0.5px rgba(41 40 36 / 6%);
+  transition: transform 0.26s var(--ease-spring), width 0.18s var(--ease-spring);
+}
+
+.hub-switch__input:checked + .hub-switch__track {
+  background: var(--primary-gradient);
+  box-shadow: inset 0 1px 1px rgba(41 40 36 / 14%),
+    0 1px 6px rgba(102, 126, 234, 0.35);
+}
+
+.hub-switch__input:checked + .hub-switch__track::after {
+  transform: translateX(17px);
+}
+
+/* 按住时滑块微展宽（Apple 开关的「拖拽蓄力」手感） */
+.hub-switch__input:active:not(:disabled) + .hub-switch__track::after {
+  width: 23px;
+}
+
+.hub-switch__input:checked:active:not(:disabled) + .hub-switch__track::after {
+  transform: translateX(13px);
+}
+
+.hub-switch__input:focus-visible + .hub-switch__track {
+  box-shadow: inset 0 1px 2px rgba(41 40 36 / 14%), 0 0 0 3px rgba(102, 126, 234, 0.28);
+}
+
+.hub-switch__label {
+  font-size: 13px;
+  color: var(--ink-primary, #292824);
+}
+
+.hub-switch.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 卡片行内的紧凑开关（技能启停） */
+.hub-switch-inline {
+  margin: 0;
+}
+
+/* ──── 分段控件（玻璃轨道 + 滑动指示块；HubSegmented 组件渲染） ──── */
+
+.hub-seg {
+  position: relative;
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.45);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 2px 8px rgba(41 40 36 / 6%);
+}
+
+.hub-seg__thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  border-radius: 9px;
+  background: linear-gradient(180deg, #ffffff, #fdfcfa);
+  box-shadow: 0 2px 8px rgba(41 40 36 / 16%), inset 0 1px 0 #ffffff;
+  transition: transform 0.32s var(--ease-spring);
+  will-change: transform;
+}
+
+.hub-seg__btn {
+  position: relative;
+  z-index: 1;
+  border: none;
+  background: none;
+  padding: 6px 18px;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--ink-secondary, #787671);
+  cursor: pointer;
+  border-radius: 9px;
+  white-space: nowrap;
+  transition: color 0.22s ease;
+}
+
+.hub-seg__btn:hover:not(.is-active) {
+  color: var(--ink-primary, #292824);
+}
+
+.hub-seg__btn.is-active {
+  color: #4f46e5;
+}
+
+.hub-seg__btn:focus-visible {
+  outline: none;
+}
+
+/* ──── 头像选择器（预览 + 上传图片 + emoji 卡片，三者互斥择一） ──── */
 
 .hub-avatar-picker {
   display: flex;
@@ -458,7 +957,7 @@ body {
   gap: 12px;
 }
 
-/* 预览位：轻描边圆角框，头像换新 / 清除时即时反映 */
+/* 预览位：玻璃圆角框，头像换新 / 清除时即时反映 */
 .hub-avatar-preview {
   width: 60px;
   height: 60px;
@@ -466,9 +965,10 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px dashed #d1d5db;
-  border-radius: 12px;
-  background: #f9fafb;
+  border: 1px dashed rgba(41 40 36 / 20%);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.45);
+  box-shadow: var(--glass-inset);
   overflow: hidden;
 }
 
@@ -494,29 +994,24 @@ body {
 
 /* emoji 选中态高亮由组件内部处理；按钮侧的展开态 */
 .hub-avatar-actions .hub-btn.is-active {
-  border-color: #667eea;
-  color: #667eea;
-  background: rgba(102, 126, 234, 0.08);
-}
-
-.hub-error {
-  color: #ef4444;
-  font-size: 12px;
+  border-color: rgba(102, 126, 234, 0.55);
+  color: #4f46e5;
+  background: rgba(102, 126, 234, 0.1);
 }
 
 /* 网站学习成果待导入提示（编辑中收到交付信号时挂起，编辑结束自动接手） */
 .hub-draft-pending {
   margin: 0 0 10px;
   padding: 8px 12px;
-  border-radius: 8px;
-  background: rgba(245, 158, 11, 0.1);
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.12);
   border: 1px solid rgba(245, 158, 11, 0.4);
   font-size: 12px;
   line-height: 1.6;
   color: #92400e;
 }
 
-/* 工具组 */
+/* ──── 工具组（玻璃小卡，选中态品牌色染层） ──── */
 
 .hub-groups {
   display: grid;
@@ -528,31 +1023,44 @@ body {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
   padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.5);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: border-color 0.18s ease, background 0.18s ease,
+    box-shadow 0.18s ease, transform 0.25s var(--ease-spring);
 }
 
-.hub-group:hover {
-  border-color: #c7d2fe;
+.hub-group:hover:not(.locked) {
+  border-color: rgba(102, 126, 234, 0.45);
+  transform: translateY(-1px);
 }
 
 .hub-group.checked {
-  border-color: #667eea;
-  background: rgba(102, 126, 234, 0.05);
+  border-color: rgba(102, 126, 234, 0.6);
+  background: rgba(102, 126, 234, 0.1);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    0 2px 8px rgba(102, 126, 234, 0.12);
 }
 
 /* Python 计算组锁定态：环境未就绪，仅展示与引导 */
 .hub-group.locked {
   cursor: not-allowed;
   opacity: 0.75;
-  background: repeating-linear-gradient(-45deg, #fafafa, #fafafa 6px, #f3f4f6 6px, #f3f4f6 12px);
+  /* 斜纹两色需保持可辨：soft 与 hover 均为暖中性但明度有差 */
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(243, 241, 237, 0.75),
+    rgba(243, 241, 237, 0.75) 6px,
+    rgba(238, 236, 231, 0.75) 6px,
+    rgba(238, 236, 231, 0.75) 12px
+  );
 }
 
 .hub-group.locked:hover {
-  border-color: #e5e7eb;
+  border-color: var(--glass-border);
 }
 
 .hub-group-lock {
@@ -563,11 +1071,6 @@ body {
   color: #b45309;
 }
 
-.hub-group input {
-  margin-top: 2px;
-  accent-color: #667eea;
-}
-
 .hub-group-name {
   font-size: 13px;
   font-weight: 600;
@@ -576,9 +1079,19 @@ body {
 
 .hub-group-desc {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--ink-muted, #9b9790);
   display: block;
   margin-top: 2px;
+}
+
+/* 关联技能列表中的停用技能（可勾选但视觉弱化 + 说明性底色） */
+.hub-group.is-disabled-skill {
+  background: rgba(243, 241, 237, 0.6);
+  border-style: dashed;
+}
+
+.hub-group.is-disabled-skill .hub-group-name {
+  color: var(--ink-muted, #9b9790);
 }
 
 /* 行内字段与开关 */
@@ -596,63 +1109,78 @@ body {
   font-size: 13px;
 }
 
-.hub-inline-field input,
-.hub-inline-field select {
-  width: 130px;
-}
-
-.hub-vision-tool select {
-  width: 220px;
-}
-
-.hub-switch-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.hub-switch-row input {
-  accent-color: #667eea;
-}
-
-.hub-switch-inline {
-  margin: 0;
-}
-
-/* ──── 按钮 ──── */
+/* ──── 按钮：默认玻璃次级，主操作品牌渐变 + 顶部光泽 ──── */
 
 .hub-btn {
-  border: 1px solid #d1d5db;
-  background: #ffffff;
-  color: #374151;
-  border-radius: 8px;
+  border: 1px solid rgba(41 40 36 / 12%);
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  color: var(--ink-primary, #292824);
+  border-radius: 10px;
   padding: 7px 16px;
   font-size: 13px;
+  font-family: inherit;
+  font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 1px 3px rgba(41 40 36 / 6%);
+  transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease,
+    transform 0.25s var(--ease-spring), box-shadow 0.25s var(--ease-spring);
 }
 
-.hub-btn:hover {
-  border-color: #667eea;
-  color: #667eea;
+.hub-btn:hover:not(:disabled) {
+  border-color: rgba(102, 126, 234, 0.55);
+  color: #4f46e5;
+  background: rgba(255, 255, 255, 0.85);
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 4px 12px rgba(41 40 36 / 10%);
+}
+
+.hub-btn:active:not(:disabled) {
+  transform: translateY(0) scale(0.98);
+}
+
+.hub-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.28);
+}
+
+.hub-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .hub-btn-primary {
-  background: #667eea;
-  border-color: #667eea;
+  background: var(--primary-gradient);
+  border-color: transparent;
   color: #ffffff;
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    0 2px 10px rgba(102, 126, 234, 0.38);
 }
 
-.hub-btn-primary:hover {
-  background: #5a6fd8;
+.hub-btn-primary:hover:not(:disabled) {
+  background: var(--primary-gradient);
+  border-color: transparent;
   color: #ffffff;
+  filter: brightness(1.07);
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.36),
+    0 5px 16px rgba(102, 126, 234, 0.45);
+}
+
+.hub-btn-primary:active:not(:disabled) {
+  transform: translateY(0) scale(0.98);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 2px 8px rgba(102, 126, 234, 0.35);
 }
 
 .hub-btn-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 .hub-editor-footer {
@@ -660,7 +1188,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border-top: 1px solid #f3f4f6;
+  border-top: 1px solid rgba(41 40 36 / 7%);
   padding-top: 14px;
 }
 
@@ -670,36 +1198,31 @@ body {
   margin-left: auto;
 }
 
-/* ==================== 技能管理：双模式编辑器 / 导入导出 / 模型标识 ==================== */
-
-/* 列表工具栏右侧动作组（导入 + 新建） */
-.hub-list-actions {
-  display: inline-flex;
-  gap: 8px;
-  align-items: center;
-}
+/* ==================== 技能管理：双模式编辑器 / 导入导出 ==================== */
 
 /* 隐藏的导入文件选择器（仅作为触发载体，不占据布局） */
 .hub-file-hidden {
   display: none;
 }
 
-/* 导入结果反馈块（成功=中性蓝灰，失败=红色调；15 秒后由脚本清除） */
+/* 导入结果反馈块（成功=中性，失败=红色调；15 秒后由脚本清除） */
 .hub-import-feedback {
   margin: 0 0 12px;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: 12px;
   font-size: 12px;
   line-height: 1.7;
-  border: 1px solid #e5e7eb;
-  background: #f9fafb;
+  border: 1px solid rgba(41 40 36 / 8%);
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
   max-height: 160px;
   overflow-y: auto;
 }
 
 .hub-import-feedback.error {
-  border-color: #fecaca;
-  background: #fef2f2;
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(254, 242, 242, 0.75);
   color: #b91c1c;
 }
 
@@ -707,53 +1230,101 @@ body {
   margin: 0;
 }
 
-/* 模型标识 chip（name-id，点击复制） */
-.hub-model-id {
-  display: inline-block;
-  margin: 4px 0 2px;
-  padding: 2px 8px;
-  border: 1px dashed #d1d5db;
-  border-radius: 999px;
-  background: #f9fafb;
-  color: #6b7280;
-  font-size: 11px;
-  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
-  cursor: copy;
-  transition: border-color 0.15s, color 0.15s;
+/* ──── 高级模式实时校验面板（右列常驻：状态头 + 逐条问题） ──── */
+
+.hub-validation {
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-inset), 0 8px 24px rgba(41 40 36 / 7%);
 }
 
-.hub-model-id:hover {
-  border-color: #667eea;
-  color: #667eea;
+.hub-validation.is-ok {
+  border-color: rgba(16, 185, 129, 0.4);
+  background: rgba(236, 253, 245, 0.6);
 }
 
-/* 编辑模式切换（分段控件形态） */
-.hub-mode-switch {
-  display: inline-flex;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  overflow: hidden;
-  margin-bottom: 6px;
+.hub-validation.is-error {
+  border-color: rgba(239, 68, 68, 0.38);
+  background: rgba(255, 250, 250, 0.62);
 }
 
-.hub-mode-btn {
-  padding: 6px 16px;
-  font-size: 12.5px;
+.hub-validation-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
   font-weight: 600;
-  border: none;
-  background: #ffffff;
-  color: #6b7280;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  color: var(--ink-primary, #292824);
 }
 
-.hub-mode-btn + .hub-mode-btn {
-  border-left: 1px solid #e5e7eb;
+.hub-validation-head svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
 }
 
-.hub-mode-btn.active {
-  background: #667eea;
-  color: #ffffff;
+.hub-validation.is-ok .hub-validation-head svg {
+  color: var(--success-color, #10b981);
+}
+
+.hub-validation.is-error .hub-validation-head svg {
+  color: var(--error-color, #ef4444);
+}
+
+.hub-validation-count {
+  margin-left: auto;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #b91c1c;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.hub-validation-ok-text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #047857;
+}
+
+.hub-validation-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hub-validation-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #b91c1c;
+  animation: hubIssueIn 0.26s var(--ease-out) both;
+}
+
+.hub-validation-item svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  margin-top: 2.5px;
 }
 
 /* 高级模式原文编辑器（更高行距 + 等宽，区别于简单模式正文） */
@@ -761,28 +1332,115 @@ body {
   line-height: 1.65;
   white-space: pre;
   overflow-x: auto;
+  min-height: 320px;
 }
 
-/* 高级模式实时校验问题列表 */
-.hub-raw-issues {
-  margin: 6px 0 0;
-  padding: 8px 12px 8px 26px;
-  border-radius: 8px;
-  border: 1px solid #fecaca;
-  background: #fef2f2;
-  color: #b91c1c;
+/* ==================== 资源文件管理（文件夹式技能） ==================== */
+
+/* 简单模式下的资源文件提示横幅（信息级，非错误） */
+.hub-notice {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(41 40 36 / 8%);
+  background: rgba(255, 255, 255, 0.5);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
   font-size: 12px;
-  line-height: 1.8;
+  line-height: 1.7;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-/* 关联技能列表中的停用技能（可勾选但视觉弱化 + 说明性底色） */
-.hub-group.is-disabled-skill {
-  background: #fafafa;
-  border-style: dashed;
+.hub-notice > p {
+  margin: 0;
+  color: var(--ink-primary, #292824);
 }
 
-.hub-group.is-disabled-skill .hub-group-name {
-  color: #9ca3af;
+/* 资源路径胶囊（提示横幅内只读展示） */
+.hub-resource-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 资源文件列表（高级模式）：玻璃卡内分行 */
+.hub-resource-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(41 40 36 / 8%);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.hub-resource-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  transition: background 0.15s ease;
+}
+
+.hub-resource-item + .hub-resource-item {
+  border-top: 1px solid rgba(41 40 36 / 6%);
+}
+
+.hub-resource-item:hover {
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.hub-resource-item.is-active {
+  background: rgba(102, 126, 234, 0.1);
+}
+
+/* 路径即按钮：点击进入编辑 */
+.hub-resource-path {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  padding: 2px 4px;
+  text-align: left;
+  color: var(--ink-primary, #292824);
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 6px;
+}
+
+.hub-resource-path:hover {
+  text-decoration: underline;
+}
+
+.hub-resource-size {
+  color: var(--ink-muted, #9b9790);
+  white-space: nowrap;
+}
+
+.hub-resource-ops {
+  display: inline-flex;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+/* 单文件编辑面板（新建 / 编辑 / 重命名共用） */
+.hub-resource-editor {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid rgba(102, 126, 234, 0.3);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: var(--glass-inset);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: hubPanelIn 0.28s var(--ease-out) both;
 }
 
 /* ==================== 自定义分类选择器（智能体 / 技能编辑器共用） ==================== */
@@ -805,27 +1463,30 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
+  border: 1px solid rgba(41 40 36 / 10%);
+  border-radius: 10px;
   padding: 8px 12px;
   font-size: 13px;
   font-family: inherit;
-  color: #374151;
-  background: #ffffff;
+  color: var(--ink-primary, #292824);
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 1px 2px rgba(41 40 36 / 4%);
   outline: none;
   cursor: pointer;
   text-align: left;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease,
+    background 0.18s ease;
 }
 
 .cat-select-trigger:hover {
-  border-color: #c7d2fe;
+  border-color: rgba(102, 126, 234, 0.45);
 }
 
 .cat-select.is-open .cat-select-trigger,
 .cat-select-trigger:focus-visible {
-  border-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.14);
+  border-color: rgba(102, 126, 234, 0.55);
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: var(--ring-primary);
 }
 
 /* 新分类名称输入框：视觉与 .hub-field 内输入框一致，仅负责行内伸缩 */
@@ -843,15 +1504,15 @@ body {
 }
 
 .cat-select-value.is-placeholder {
-  color: #9ca3af;
+  color: var(--ink-muted, #9b9790);
 }
 
 .cat-select-chevron {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
-  color: #9ca3af;
-  transition: transform 0.15s;
+  color: var(--ink-muted, #9b9790);
+  transition: transform 0.22s var(--ease-spring);
 }
 
 .cat-select.is-open .cat-select-chevron {
@@ -864,35 +1525,40 @@ body {
   height: 8px;
   flex-shrink: 0;
   border-radius: 50%;
-  background: #d1d5db;
+  background: var(--line-strong, #d8d4cc);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.55);
 }
 
-/* 下拉面板 */
+/* 下拉面板：强化玻璃浮层 */
 .cat-select-pop {
   position: absolute;
   z-index: 40;
   top: calc(100% + 6px);
   left: 0;
   right: 0;
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: var(--glass-blur-strong);
+  -webkit-backdrop-filter: var(--glass-blur-strong);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 14px;
+  box-shadow: var(--glass-inset), 0 16px 40px rgba(41 40 36 / 15%);
   padding: 6px;
   max-height: 300px;
   overflow-y: auto;
+  animation: hubPopIn 0.18s var(--ease-out) both;
+  transform-origin: top center;
 }
 
 .cat-select-section-label {
   font-size: 11px;
   font-weight: 600;
-  color: #9ca3af;
+  color: var(--ink-muted, #9b9790);
   padding: 6px 10px 2px;
 }
 
 .cat-select-divider {
   height: 1px;
-  background: #f3f4f6;
+  background: rgba(41 40 36 / 7%);
   margin: 4px 6px;
 }
 
@@ -904,21 +1570,21 @@ body {
   border: none;
   background: none;
   padding: 7px 10px;
-  border-radius: 8px;
+  border-radius: 9px;
   font-size: 13px;
   font-family: inherit;
-  color: #374151;
+  color: var(--ink-primary, #292824);
   cursor: pointer;
   text-align: left;
-  transition: background 0.12s;
+  transition: background 0.13s ease, color 0.13s ease;
 }
 
 .cat-select-option:hover {
-  background: #f3f6ff;
+  background: rgba(41 40 36 / 5%);
 }
 
 .cat-select-option.is-selected {
-  background: rgba(102, 126, 234, 0.1);
+  background: rgba(102, 126, 234, 0.12);
   color: #4f46e5;
   font-weight: 600;
 }
@@ -950,14 +1616,150 @@ body {
 }
 
 .cat-select-create:hover {
-  background: rgba(102, 126, 234, 0.08);
+  background: rgba(102, 126, 234, 0.09);
 }
 
 /* 校验失败：触发器与名称输入框同步红框（与 .hub-field.is-invalid 同视觉） */
 .cat-select.is-invalid .cat-select-trigger,
 .cat-select.is-invalid .cat-select-custom {
-  border-color: #ef4444;
-  background: #fef2f2;
+  border-color: rgba(239, 68, 68, 0.65);
+  background: rgba(254, 242, 242, 0.85);
+}
+
+/* ==================== 通用自绘选择框（HubSelect：触发器 + 玻璃浮层） ==================== */
+
+.hub-select {
+  position: relative;
+  display: inline-flex;
+}
+
+.hub-select__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  border: 1px solid rgba(41 40 36 / 10%);
+  border-radius: 10px;
+  padding: 7px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--ink-primary, #292824);
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 1px 2px rgba(41 40 36 / 4%);
+  cursor: pointer;
+  text-align: left;
+  outline: none;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease,
+    background 0.18s ease;
+}
+
+.hub-select__trigger:hover:not(:disabled) {
+  border-color: rgba(102, 126, 234, 0.45);
+}
+
+.hub-select.is-open .hub-select__trigger,
+.hub-select__trigger:focus-visible {
+  border-color: rgba(102, 126, 234, 0.55);
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: var(--ring-primary);
+}
+
+.hub-select__trigger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.hub-select__value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hub-select__value.is-placeholder {
+  color: var(--ink-muted, #9b9790);
+}
+
+.hub-select__chevron {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--ink-muted, #9b9790);
+  transition: transform 0.22s var(--ease-spring);
+}
+
+.hub-select.is-open .hub-select__chevron {
+  transform: rotate(180deg);
+}
+
+.hub-select__pop {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  right: 0;
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: var(--glass-blur-strong);
+  -webkit-backdrop-filter: var(--glass-blur-strong);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 14px;
+  box-shadow: var(--glass-inset), 0 16px 40px rgba(41 40 36 / 15%);
+  padding: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+  transform-origin: top center;
+  animation: hubPopIn 0.18s var(--ease-out) both;
+}
+
+.hub-select__option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 7px 10px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--ink-primary, #292824);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.13s ease, color 0.13s ease;
+}
+
+.hub-select__option:hover,
+.hub-select__option.is-highlight {
+  background: rgba(41 40 36 / 5%);
+}
+
+.hub-select__option.is-selected {
+  background: rgba(102, 126, 234, 0.12);
+  color: #4f46e5;
+  font-weight: 600;
+}
+
+.hub-select__option-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hub-select__check {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: #667eea;
+}
+
+.hub-select__empty {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--ink-muted, #9b9790);
 }
 
 /* ==================== 标签输入（chips + 草稿框，智能体 / 技能共用） ==================== */
@@ -966,4 +1768,101 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* ==================== 学习成果接收条（外壳常驻） ==================== */
+
+.hub-handoff {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 12px 18px 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(245, 158, 11, 0.38);
+  border-radius: 14px;
+  background: rgba(255, 251, 235, 0.55);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  box-shadow: var(--glass-inset), 0 6px 20px rgba(41 40 36 / 6%);
+  color: var(--ink-primary, #292824);
+}
+
+.hub-handoff p {
+  margin: 5px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-secondary, #787671);
+}
+
+.hub-handoff .hub-handoff__warning {
+  color: var(--warning-color, #f59e0b);
+}
+
+.hub-handoff .hub-handoff__error {
+  color: var(--error-color, #ef4444);
+}
+
+.hub-handoff__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+/* ──── 动画 ──── */
+
+/* 面板 / 编辑器进场：轻微上浮淡入 */
+@keyframes hubPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 浮层进场：缩放 + 上浮（transform-origin 由具体组件指定） */
+@keyframes hubPopIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 校验问题逐条进场（配合 style 上的递增 delay 做级联） */
+@keyframes hubIssueIn {
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* 列表视图进场与编辑器一致（列表 ↔ 编辑切换时的双向动效） */
+.hub-list-view {
+  animation: hubPanelIn 0.3s var(--ease-out) both;
+}
+
+/* 弱动效偏好：关闭装饰性动画与位移，保留颜色过渡 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

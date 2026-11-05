@@ -39,6 +39,8 @@ export interface SkillImportCandidate {
   name: string;
   /** 相对路径 → 文本（键含 'SKILL.md'） */
   files: Record<string, string>;
+  /** 全部文件的 UTF-8 字节总量（解析器产出；手工构造的候选缺省视为 0，不做预警） */
+  bytes?: number;
 }
 
 /** 跳过项（source 供错误文案回显） */
@@ -53,8 +55,34 @@ export interface SkillImportSkip {
     | 'file-too-large'
     | 'total-too-large'
     | 'skill-limit'
+    | 'oversize'         // 超过导入预警阈值且用户在确认弹窗中选择不导入
     | 'store-reject';    // 存储层拒绝（结构不完整等）
 }
+
+/** 计算一组文件的 UTF-8 字节总量（导入预警与反馈文案的口径；非字符串项跳过） */
+export function sumSkillFilesBytes(files: Record<string, string>): number {
+  let total = 0;
+  for (const content of Object.values(files ?? {})) {
+    if (typeof content !== 'string') continue;
+    total += sharedTextEncoder().encode(content).length;
+  }
+  return total;
+}
+
+/** 共享 TextEncoder 实例（多技能大包导入时避免逐文件重建编码器；环境无此 API 时按字符数近似） */
+const sharedTextEncoder = (() => {
+  let instance: TextEncoder | null = null;
+  return (): { encode(text: string): { length: number } } => {
+    if (instance) return instance;
+    if (typeof TextEncoder !== 'undefined') {
+      instance = new TextEncoder();
+      return instance;
+    }
+    // 无 TextEncoder 环境（测试垫片 / 极老运行时）：1 字符 ≈ 1 字节的保守近似，
+    // 仅影响预警文案的展示精度，不影响任何硬性判定
+    return { encode: (text: string) => ({ length: text.length }) };
+  };
+})();
 
 export interface SkillImportReport {
   /** 成功写入的技能（同名照常入库：同名合法，id 由存储层随机生成，绝不覆盖既有技能） */
@@ -228,7 +256,8 @@ function groupCandidates(entries: Array<{ path: string; content: string }>, fall
       skipped.push({ source: name, reason: 'total-too-large' });
       continue;
     }
-    candidates.push({ name, files: Object.fromEntries(files) });
+    const fileRecord = Object.fromEntries(files);
+    candidates.push({ name, files: fileRecord, bytes: sumSkillFilesBytes(fileRecord) });
   }
 
   return { candidates, skipped };
@@ -275,6 +304,14 @@ export function parseSkillMdText(text: string, fallbackName: string): {
   candidate: SkillImportCandidate | null;
   skip?: SkillImportSkip;
 } {
+  // 输入防御：非字符串（调用方编程错误 / 测试桩）按「没有可导入的文件」降级；
+  // 超限与 zip 路径同一口径：整文件直导没有「丢弃部分文件」可言，整体跳过
+  if (typeof text !== 'string') {
+    return { candidate: null, skip: { source: fallbackName, reason: 'no-skill-md' } };
+  }
+  if (text.length > SKILL_IMPORT_MAX_FILE_CHARS) {
+    return { candidate: null, skip: { source: fallbackName, reason: 'file-too-large' } };
+  }
   const { data, body } = parseFrontmatter(text);
   const name = normalizeSkillName((data['name'] || fallbackName).trim());
   if (!name || name.length > SKILL_NAME_MAX_CHARS) {
@@ -286,7 +323,8 @@ export function parseSkillMdText(text: string, fallbackName: string): {
   if (!body.trim()) {
     return { candidate: null, skip: { source: name, reason: 'empty-body' } };
   }
-  return { candidate: { name, files: { 'SKILL.md': text } } };
+  const files = { 'SKILL.md': text };
+  return { candidate: { name, files, bytes: sumSkillFilesBytes(files) } };
 }
 
 /**
@@ -295,6 +333,10 @@ export function parseSkillMdText(text: string, fallbackName: string): {
  * 不做名称去重 / 重命名：同名技能是常态，落库名与原名恒等，冲突只可能发生在
  * id 层——由存储层在非保留区间内随机取号 + 写前占用确认解决，既有技能
  * （含预置同名）永远不会被覆盖或改名。
+ *
+ * 注意：本函数只写内存表并排队持久化；写入方（导入 UI）在调用后必须
+ * await flushSkillStoreWrites() 确认落盘，失败时用 snapshotCustomSkills /
+ * rollbackCustomSkills 回滚，保证「列表所见 = 持久层所存」。
  */
 export function commitImportCandidates(candidates: readonly SkillImportCandidate[]): SkillImportReport {
   const report: SkillImportReport = { imported: [], skipped: [], droppedFiles: [] };
@@ -312,16 +354,7 @@ export function commitImportCandidates(candidates: readonly SkillImportCandidate
   return report;
 }
 
-// ──── 导入入口（解析 + 写入一体化） ────
-
-/** 导入 zip 字节流：解析 → 校验 → 写入存储，返回逐条报告 */
-export function importSkillsFromZipBytes(bytes: Uint8Array, fallbackTopName = 'imported-skill'): SkillImportReport {
-  const { candidates, skipped, droppedFiles } = parseSkillZipBytes(bytes, fallbackTopName);
-  const report = commitImportCandidates(candidates);
-  report.skipped.unshift(...skipped);
-  report.droppedFiles.push(...droppedFiles);
-  return report;
-}
+// ──── 导入入口 ────
 
 /** 导入单个 SKILL.md 文本 */
 export function importSkillFromMdText(text: string, fallbackName: string): SkillImportReport {

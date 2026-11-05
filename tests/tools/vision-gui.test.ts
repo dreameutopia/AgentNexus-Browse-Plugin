@@ -94,7 +94,7 @@ for (const action of VISION_GUI_ACTIONS) {
     OpenAIToolsConverter.requiresApproval("vision_gui", {
       action,
       confirm: true,
-      description: "删除",
+      description: "删除重要数据",
     }),
     ["click", "drag", "input", "keyboard", "scroll"].includes(action),
     `${action} preserves semantic approval`,
@@ -102,7 +102,7 @@ for (const action of VISION_GUI_ACTIONS) {
   assert.equal(
     OpenAIToolsConverter.requiresApproval("vision_gui", {
       action,
-      description: "删除",
+      description: "删除重要数据",
     }),
     ["click", "drag", "input", "keyboard", "scroll"].includes(action),
     `${action} preserves keyword fallback`,

@@ -14,6 +14,7 @@ import { resolveAX, invalidateAXPages } from './text-accessibility';
 import { resolveKeys } from '../vision/key-definitions';
 import { needsPrimaryModifier, resolveTextKeys } from './text-keys';
 import { cdpSession } from './cdp-session';
+import { CONFIRM_GUIDANCE, CONFIRM_PARAMETER_DESCRIPTION } from '../confirmation-policy';
 
 interface Params {
   action: 'click' | 'fill' | 'focus' | 'keys' | 'type' | 'scroll';
@@ -50,7 +51,7 @@ export class BrowserInteractTool extends BaseBrowserTool {
     function: {
       name: this.name,
       description:
-        '操作 browser_observe 返回的引用。click/fill 是 DOM 操作；focus/keys/type 使用实际焦点与浏览器输入，不接受坐标。type 仅限已聚焦编辑器，不自动进入表格编辑模式。keys 是一个组合键，Enter/F2/Tab 可切换编辑状态；操作后使用返回的 focus 引用或重新观察。scroll 按 CSS 像素滚动指定容器，省略 elementId 滚动指定 frame 的文档。DOM 引用必须提供 FrameId；AX 引用自带路由，只支持 focus/keys/type。description 必填；不可逆操作 confirm=true。成功只表示派发或回读，需检查业务结果。',
+        '操作 browser_observe 返回的引用。click/fill 是 DOM 操作；focus/keys/type 使用实际焦点与浏览器输入，不接受坐标。type 仅限已聚焦编辑器，不自动进入表格编辑模式。keys 是一个组合键，Enter/F2/Tab 可切换编辑状态；操作后使用返回的 focus 引用或重新观察。scroll 按 CSS 像素滚动指定容器；省略 elementId 时滚动指定 frame 的文档，仍必须提供从当前观察确定的 frameId，不能猜为0。DOM 引用必须提供 FrameId；AX 引用自带路由，只支持 focus/keys/type。本工具没有 hover，不可用 click 冒充悬停。description 必填。成功只表示派发或回读，需检查业务结果。错误 outcome=not_dispatched 表示交互未派发，按错误修正；unknown 表示可能部分生效，先核对现状，不重放发送/提交。' + CONFIRM_GUIDANCE,
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -62,7 +63,7 @@ export class BrowserInteractTool extends BaseBrowserTool {
           },
           frameId: {
             type: 'number',
-            description: 'DOM 引用同一行的 FrameId；AX 引用省略',
+            description: 'DOM 引用同一行的 FrameId；无 elementId 的文档 scroll 也必填，从当前观察确定；AX 引用省略',
           },
           value: {
             type: 'string',
@@ -95,7 +96,7 @@ export class BrowserInteractTool extends BaseBrowserTool {
           },
           confirm: {
             type: 'boolean',
-            description: '不可逆操作传true进入现有审批流程',
+            description: CONFIRM_PARAMETER_DESCRIPTION,
           },
         },
         required: ['action', 'description'],
@@ -105,6 +106,8 @@ export class BrowserInteractTool extends BaseBrowserTool {
 
   async execute(input: Params, context?: ToolExecutionContext) {
     this.ensureBackgroundContext();
+    let validated = false;
+    let dispatched = false;
     try {
       if (
         !input ||
@@ -141,13 +144,19 @@ export class BrowserInteractTool extends BaseBrowserTool {
         if (!(input.deltaX || input.deltaY))
           throw new Error('scroll 至少有一个非零滚动量');
       }
-      const parsedKeys =
+      const ax = typeof input.elementId === 'string' && input.elementId.startsWith('ax:');
+      const match = typeof input.elementId === 'string' ? /^anx:(\d+):[a-f0-9-]+:\d+$/.exec(input.elementId) : null;
+      if (!ax && (!Number.isSafeInteger(input.frameId) || input.frameId! < 0))
+        throw new Error('DOM 操作必须提供观察结果的 FrameId（文档 scroll 也必填）');
+      if (!ax && !(input.action === 'scroll' && input.elementId === undefined) && !match)
+        throw new Error('INVALID_ELEMENT_ID：请原样使用观察结果引用');
+      if (ax && input.frameId !== undefined) throw new Error('AX 引用自带路由，请省略 frameId');
+      if (ax && !['focus', 'keys', 'type'].includes(input.action)) throw new Error('AX 引用仅支持 focus/keys/type；DOM 操作请重采 DOM 引用');
+      let parsedKeys =
         input.action === 'keys'
           ? resolveTextKeys(
               input.keys,
-              needsPrimaryModifier(input.keys)
-                ? (await boundedText(chrome.runtime.getPlatformInfo(), '读取平台按键映射')).os
-                : undefined
+              needsPrimaryModifier(input.keys) ? 'win' : undefined // syntax check only; resolve actual platform below
             )
           : [];
       if (
@@ -155,6 +164,9 @@ export class BrowserInteractTool extends BaseBrowserTool {
         parsedKeys.filter((k) => !k.modifier).length !== 1
       )
         throw new Error('keys 必须且只能包含一个主键');
+      validated = true;
+      if (input.action === 'keys' && needsPrimaryModifier(input.keys))
+        parsedKeys = resolveTextKeys(input.keys, (await boundedText(chrome.runtime.getPlatformInfo(), '读取平台按键映射')).os);
       const p = structuredClone(input);
       return await withGuiCancellation(
         context?.requestId,
@@ -162,28 +174,8 @@ export class BrowserInteractTool extends BaseBrowserTool {
           exclusiveText(async () => {
             if (signal?.aborted) throw new Error('CANCELLED：操作尚未开始');
             const tab = await textTab();
-            const ax =
-              typeof p.elementId === 'string' && p.elementId.startsWith('ax:');
-            const match =
-              typeof p.elementId === 'string'
-                ? /^anx:(\d+):[a-f0-9-]+:\d+$/.exec(p.elementId)
-                : null;
-            if (!ax && (!Number.isSafeInteger(p.frameId) || p.frameId! < 0))
-              throw new Error('DOM 操作必须提供观察结果的 FrameId');
-            if (
-              !ax &&
-              !(p.action === 'scroll' && p.elementId === undefined) &&
-              !match
-            )
-              throw new Error('INVALID_ELEMENT_ID：请原样使用观察结果引用');
             if (match && Number(match[1]) !== tab.id)
               throw new Error('WRONG_TAB：切回来源标签页或重新观察');
-            if (ax && p.frameId !== undefined)
-              throw new Error('AX 引用自带路由，请省略 frameId');
-            if (ax && !['focus', 'keys', 'type'].includes(p.action))
-              throw new Error(
-                'AX 引用仅支持 focus/keys/type；DOM 操作请重采 DOM 引用'
-              );
             invalidateAXPages(tab.id);
             await this.focus(tab.id, true);
             const deadline = Date.now() + 20_000;
@@ -200,6 +192,7 @@ export class BrowserInteractTool extends BaseBrowserTool {
               phase: Parameters<typeof textTargetPayload>[0]
             ) => {
               await check();
+              if (phase === 'scroll' || phase === 'focus') dispatched = true;
               const results = await boundedText(
                 chrome.scripting.executeScript({
                   target: { tabId: tab.id, frameIds: [p.frameId!] },
@@ -217,7 +210,8 @@ export class BrowserInteractTool extends BaseBrowserTool {
               const result = results[0]?.result;
               if (results.length !== 1 || !result || result.error)
                 throw new Error(
-                  result?.error || 'STALE_ELEMENT：frame 无结果，请重采'
+                  result?.error ||
+                    'INJECTION_NO_RESULT：目标 frame 未返回注入结果，无法确认是否执行；请先观察现状。重新采集元素不能修复注入故障。'
                 );
               return result;
             };
@@ -225,19 +219,23 @@ export class BrowserInteractTool extends BaseBrowserTool {
               return this.createSuccessResponse(await dom('scroll'));
             if (p.action === 'click' || p.action === 'fill') {
               await check();
+              dispatched = true;
               const results = await boundedText(
                 chrome.scripting.executeScript({
                   target: { tabId: tab.id, frameIds: [p.frameId!] },
                   world: 'ISOLATED',
                   func: domActionPayload,
-                  args: [p.action, p.elementId!, p.value],
+                  // Chrome injection args use JSON serialization; undefined is
+                  // rejected even though structuredClone accepts it.
+                  args: [p.action, p.elementId!, p.value ?? ''],
                 }),
                 'DOM 交互'
               );
               const result = results[0]?.result;
               if (results.length !== 1 || !result?.success || result.error)
                 throw new Error(
-                  result?.error || 'STALE_ELEMENT：frame 无结果，请重采'
+                  result?.error ||
+                    'INJECTION_NO_RESULT：目标 frame 未返回注入结果，无法确认是否执行；请先观察现状。重新采集元素不能修复注入故障。'
                 );
               return this.createSuccessResponse(
                 {
@@ -285,6 +283,7 @@ export class BrowserInteractTool extends BaseBrowserTool {
             };
             if (ax) {
               const target = await resolveAX(p.elementId!);
+              dispatched = true;
               await textCommand(tab.id, 'DOM.focus', {
                 backendNodeId: target.backendNodeId,
               });
@@ -395,10 +394,11 @@ export class BrowserInteractTool extends BaseBrowserTool {
         context?.signal
       );
     } catch (error) {
-      return this.createErrorResponse(
-        '纯文本交互失败；结果可能部分生效，请先观察现状，不自动重试',
-        error
-      );
+      const result = this.createErrorResponse(
+        dispatched ? '纯文本交互失败；结果可能部分生效，请先观察现状，不自动重试'
+          : validated ? '交互未派发；请按错误处理前置条件后再操作'
+            : 'INVALID_ARGUMENT：交互未派发；修正参数后重试，无需仅因参数错误重新观察', error);
+      return { ...result, data: { outcome: dispatched ? 'unknown' : 'not_dispatched', errorKind: !validated ? 'INVALID_ARGUMENT' : dispatched ? 'EXECUTION_UNCERTAIN' : 'PRECONDITION_FAILED' } };
     }
   }
   private async focus(tabId: number, invalidate = false) {

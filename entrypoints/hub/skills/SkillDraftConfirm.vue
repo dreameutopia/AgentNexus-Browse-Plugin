@@ -75,15 +75,18 @@ function modeLabel(): string {
 </template>
 
 <style scoped>
-/* 浅色主题与 hub 页面一致（body 底色 #f4f6fb、正文 #1f2937）；
+/* 玻璃确认卡（品牌靛蓝染层；中性色走 hub.css :root 的镜像 token）
    变量带回退，设置弹窗变量不可用时仍是完整可读的卡片 */
 .draft-card {
   margin: 0 0 14px;
   padding: 14px 16px;
-  border-radius: 10px;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  border-radius: 14px;
+  background: rgba(239, 246, 255, 0.6);
+  border: 1px solid rgba(147, 197, 253, 0.5);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  box-shadow: var(--glass-inset, inset 0 1px 0 rgba(255, 255, 255, 0.92)),
+    0 8px 24px rgba(41 40 36 / 6%);
 }
 
 .draft-card__head {
@@ -100,8 +103,8 @@ function modeLabel(): string {
   width: 28px;
   height: 28px;
   flex: 0 0 auto;
-  border-radius: 8px;
-  background: rgba(59, 130, 246, 0.15);
+  border-radius: 9px;
+  background: rgba(59, 130, 246, 0.16);
   font-size: 14px;
 }
 
@@ -113,14 +116,14 @@ function modeLabel(): string {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
-  color: #1f2937;
+  color: var(--ink-primary, #292824);
 }
 
 .draft-card__intro {
   margin: 4px 0 0;
   font-size: 12.5px;
   line-height: 1.6;
-  color: #4b5563;
+  color: var(--ink-secondary, #787671);
 }
 
 .draft-card__meta {
@@ -129,9 +132,9 @@ function modeLabel(): string {
   gap: 6px;
   margin: 0 0 12px;
   padding: 10px 12px;
-  border-radius: 8px;
-  background: #ffffff;
-  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(147, 197, 253, 0.4);
 }
 
 .draft-card__row {
@@ -143,20 +146,20 @@ function modeLabel(): string {
 }
 
 .draft-card__row dt {
-  color: #6b7280;
+  color: var(--ink-secondary, #787671);
 }
 
 .draft-card__row dd {
   margin: 0;
-  color: #1f2937;
+  color: var(--ink-primary, #292824);
   word-break: break-word;
 }
 
 .draft-card__code {
   padding: 1px 6px;
-  border-radius: 5px;
-  background: #f3f4f6;
-  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(41 40 36 / 8%);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
 }

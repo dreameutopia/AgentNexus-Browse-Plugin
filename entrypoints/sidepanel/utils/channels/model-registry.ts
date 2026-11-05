@@ -148,6 +148,10 @@ function buildEndpoint(
 /** 可用性问题 → 解析失败原因（单一映射点，两套枚举保持对齐） */
 function issueToFailure(issue: LivenessIssue): ModelResolveFailure {
   switch (issue.code) {
+    // blockerIssue 专属 code：一个渠道都没有 = 未配置（解析链带上具体渠道，
+    // 实际到不了这条分支；列入只为穷尽枚举，保持两套对齐的编译期保证）
+    case 'no-channels':
+      return 'unconfigured';
     case 'channel-disabled':
       return 'channel-disabled';
     case 'driver-unknown':

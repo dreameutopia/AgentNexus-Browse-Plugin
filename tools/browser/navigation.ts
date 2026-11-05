@@ -70,7 +70,7 @@ export class NavigateTool extends BaseBrowserTool {
     type: 'function',
     function: {
       name: TOOL_NAMES.BROWSER.NAVIGATE,
-      description: '仅在现有浏览器窗口内打开 URL。默认 newTab=true 新建标签页；同 URL 标签可复用。newTab=false 使用当前标签页。绝不新建窗口，无可用窗口时返回错误。',
+      description: '仅在现有浏览器窗口内打开 URL。默认 newTab=true，新建或复用相同完整URL标签；路径/查询大小写、尾斜杠与hash均可能有业务含义，不忽略。newTab=false 只导航当前标签，不切换到另一个同URL标签；没有当前标签时在现有窗口新建。refresh=true 刷新当前标签。返回实际 tabId、navigationAction 和加载状态，后续用业务反馈确认成功。绝不新建窗口，无可用窗口时返回错误。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -103,25 +103,15 @@ export class NavigateTool extends BaseBrowserTool {
   };
 
   /**
-   * 标准化 URL 用于比较
-   * 移除尾随斜杠、hash 和部分查询参数的影响
+   * URL parser normalizes scheme/host without erasing application routing state.
    */
   private normalizeUrlForComparison(url: string | undefined): string {
     if (!url) return '';
     
     try {
-      const urlObj = new URL(url);
-      // 移除 hash
-      urlObj.hash = '';
-      // 移除尾随斜杠
-      let normalized = urlObj.href;
-      if (normalized.endsWith('/')) {
-        normalized = normalized.slice(0, -1);
-      }
-      return normalized.toLowerCase();
+      return new URL(url).href;
     } catch {
-      // 如果 URL 解析失败，直接返回小写版本
-      return url.toLowerCase().replace(/\/$/, '');
+      return url;
     }
   }
 
@@ -319,14 +309,11 @@ export class NavigateTool extends BaseBrowserTool {
         return createErrorResponse('URL parameter is required when refresh is not true');
       }
 
-      // 检查是否已经有相同 URL 的标签页打开
+      // Explicit current-tab navigation must never activate another matching tab.
+      if (!newTab) return await this.navigateInCurrentOrNewTab(url, waitForLoad, timeout, startTime);
       const existingTab = await this.findExistingTabWithUrl(url);
-      if (existingTab) {
-        return await this.activateExistingTab(existingTab, waitForLoad, timeout);
-      }
-
-      if (newTab) return await this.createNewTabWithUrl(url, waitForLoad, timeout);
-      return await this.navigateInCurrentOrNewTab(url, waitForLoad, timeout, startTime);
+      if (existingTab) return await this.activateExistingTab(existingTab, waitForLoad, timeout);
+      return await this.createNewTabWithUrl(url, waitForLoad, timeout);
     } catch (error) {
       this.log(`Navigation failed: ${error}`, 'error');
       return this.createErrorResponse('Failed to navigate', error);
@@ -357,10 +344,12 @@ export class NavigateTool extends BaseBrowserTool {
     const updatedTab = await chrome.tabs.get(activeTab.id);
 
     return this.createSuccessResponse({
+      navigationAction: 'refreshed',
+      loadStatus: waitForLoad ? 'complete' : 'not_waited',
       tabId: updatedTab.id,
       windowId: updatedTab.windowId,
       url: updatedTab.url,
-    }, 'Successfully refreshed current tab and load complete');
+    }, waitForLoad ? 'Successfully refreshed current tab and load complete' : 'Refresh dispatched; load not awaited');
   }
 
   /**
@@ -410,6 +399,8 @@ export class NavigateTool extends BaseBrowserTool {
     const updatedTab = await chrome.tabs.get(tab.id);
 
     return this.createSuccessResponse({
+      navigationAction: 'reused',
+      loadStatus: waitForLoad ? 'complete' : 'not_waited',
       tabId: updatedTab.id,
       windowId: updatedTab.windowId,
       url: updatedTab.url,
@@ -449,6 +440,7 @@ export class NavigateTool extends BaseBrowserTool {
     currentUrl?: string
   ): Promise<ToolResult> {
     this.log(`Navigating tab ${tabId} to: ${targetUrl}, current URL: ${currentUrl || 'unknown'}`);
+    const startedAt = Date.now();
 
     // 记录导航前的 URL
     const originalUrl = currentUrl || (await chrome.tabs.get(tabId)).url || '';
@@ -465,6 +457,8 @@ export class NavigateTool extends BaseBrowserTool {
 
       const tab = await chrome.tabs.get(tabId);
       return this.createSuccessResponse({
+        navigationAction: 'unchanged',
+        loadStatus: waitForLoad ? 'complete' : 'not_waited',
         tabId: tab.id,
         windowId: tab.windowId,
         url: tab.url,
@@ -479,6 +473,8 @@ export class NavigateTool extends BaseBrowserTool {
       // 不等待加载，直接返回
       const tab = await chrome.tabs.get(tabId);
       return this.createSuccessResponse({
+        navigationAction: 'navigated',
+        loadStatus: 'not_waited',
         tabId: tab.id,
         windowId: tab.windowId,
         url: tab.url,
@@ -501,6 +497,8 @@ export class NavigateTool extends BaseBrowserTool {
       try {
         const tab = await chrome.tabs.get(tabId);
         return this.createSuccessResponse({
+          navigationAction: 'navigated',
+          loadStatus: 'unknown',
           tabId: tab.id,
           windowId: tab.windowId,
           url: tab.url,
@@ -514,22 +512,22 @@ export class NavigateTool extends BaseBrowserTool {
     this.log(`URL changed successfully to: ${urlChangeResult.currentUrl}`);
 
     // URL 已变化，现在等待页面加载完成
-    const remainingTimeout = timeout - (Date.now() - Date.now());
-    
-    try {
-      await this.waitForPageLoad(tabId, Math.max(5000, remainingTimeout));
-    } catch (loadError) {
-      this.log(`Page load timeout, but navigation succeeded: ${loadError}`, 'warn');
-      // 即使加载超时，导航本身是成功的
+    const remainingTimeout = Math.max(0, timeout - (Date.now() - startedAt));
+    let loadStatus = 'timeout';
+    if (remainingTimeout > 0) {
+      try { await this.waitForPageLoad(tabId, remainingTimeout); loadStatus = 'complete'; }
+      catch (loadError) { this.log(`Page load timeout after URL changed: ${loadError}`, 'warn'); }
     }
 
     const finalTab = await chrome.tabs.get(tabId);
 
     return this.createSuccessResponse({
+      navigationAction: 'navigated',
+      loadStatus,
       tabId: finalTab.id,
       windowId: finalTab.windowId,
       url: finalTab.url,
-    }, 'Navigated to URL in current tab and load complete');
+    }, loadStatus === 'complete' ? 'Navigated to URL in current tab and load complete' : 'URL changed; page load unconfirmed, verify current page state');
   }
 
   /**
@@ -555,10 +553,13 @@ export class NavigateTool extends BaseBrowserTool {
       return createErrorResponse('Failed to create new tab');
     }
 
+    let loadStatus = 'not_waited';
     if (waitForLoad) {
       try {
         await this.waitForPageLoad(newTab.id, timeout);
+        loadStatus = 'complete';
       } catch (waitError) {
+        loadStatus = 'timeout';
         this.log(`Wait for load failed: ${waitError}`, 'warn');
       }
     }
@@ -568,6 +569,8 @@ export class NavigateTool extends BaseBrowserTool {
     const finalTab = await chrome.tabs.get(newTab.id);
 
     return this.createSuccessResponse({
+      navigationAction: 'created',
+      loadStatus,
       tabId: finalTab.id,
       windowId: windowId,
       url: finalTab.url,

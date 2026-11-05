@@ -28,8 +28,10 @@ export async function testElementInteraction(
   const allDoms: JSDOM[] = [];
   let tabId = 11;
   let scanCount = 0;
+  let browserAccessCount = 0;
   let tabUrlOverride: string | undefined;
   let injectionError = false;
+  let actionInjectionError = false;
   let incomplete = false;
   let beforeValidation: (() => void) | undefined;
   const create = (
@@ -112,17 +114,22 @@ export async function testElementInteraction(
       ...savedChrome,
       tabs: {
         ...savedChrome.tabs,
-        query: async () => [
-          {
-            id: tabId,
-            url: tabUrlOverride ?? frames.get(0)!.window.location.href,
-          },
-        ],
+        query: async () => {
+          browserAccessCount++;
+          return [
+            {
+              id: tabId,
+              url: tabUrlOverride ?? frames.get(0)!.window.location.href,
+            },
+          ];
+        },
       },
       scripting: {
         ...savedChrome.scripting,
         executeScript: async (options: any) => {
+          browserAccessCount++;
           if (injectionError) throw new Error('frame navigating');
+          if (actionInjectionError && options.func.name === 'domActionPayload') throw new Error('action response timed out');
           if (incomplete) return [{ frameId: 0, result: undefined }];
           if (options.func.name === 'elementScanPayload') scanCount++;
           if (
@@ -165,11 +172,67 @@ export async function testElementInteraction(
       create('<button>iframe 按钮</button>', 'https://frame.example/')
     );
     const getter = new BrowserObserveTool('buttons');
+    for (const args of [
+      { action: 'scroll', deltaY: 800, description: '滚动文档' },
+      { action: 'click', elementId: 'anx:11:test:1', description: '点目标' },
+      { action: 'click', elementId: 'not-a-reference', frameId: 0, description: '点目标' },
+    ]) {
+      const accesses = browserAccessCount;
+      const rejected = await interact.execute(args as any);
+      eq(rejected.data?.outcome, 'not_dispatched', '参数拒绝明确告知未派发');
+      eq(rejected.data?.errorKind, 'INVALID_ARGUMENT', '参数拒绝可直接修正');
+      eq(browserAccessCount, accesses, '参数错误不访问浏览器，不制造焦点或页面副作用');
+      check(!rejected.error?.includes('可能部分生效'), '未派发错误不误导模型重复观察');
+    }
+    const actionRef = (await scan('buttons'))[0].elementId;
+    actionInjectionError = true;
+    const uncertain = await click.execute({ elementId: actionRef, frameId: 0, description: '打开目标' });
+    actionInjectionError = false;
+    eq(uncertain.data?.outcome, 'unknown', '动作注入后的超时仍保守标记效果未知');
+    check(uncertain.error?.includes('可能部分生效') === true, '不允许对效果未知的操作盲目重试');
+    const schema = getter.openaiSchema.function.parameters;
+    const [enumeration, element] = schema.anyOf! as Array<{
+      properties: Record<string, any>; required?: string[]; additionalProperties: boolean;
+    }>;
+    check(!enumeration.properties.elementId && !enumeration.properties.frameId && enumeration.additionalProperties === false,
+      '枚举 schema 分支禁止节点与 frame 参数');
+    eq(element.required, ['view', 'elementId', 'frameId'], '详情 schema 要求显式 view 和完整 DOM 引用');
+    eq(Object.keys(element.properties), ['view', 'elementId', 'frameId'], '详情 schema 不暴露过滤和分页参数');
+    check(element.additionalProperties === false, '详情 schema 禁止混入其它参数');
+    eq(schema.properties.frameId.type, 'integer', 'FrameId schema 与运行时整数约束一致');
+    eq(schema.properties.frameId.minimum, 0, 'FrameId schema 允许主文档 0');
+    check(!('default' in schema.properties.page) && !('default' in schema.properties.view),
+      '不通过 schema 默认值给节点详情补 page 或给快照续读补 view');
+    for (const view of [undefined, ...enumeration.properties.view.enum] as const) {
+      for (const reference of [{ frameId: 0 }, { frameId: 7 }, { frameId: null }, { elementId: '' }, { elementId: 'anx:11:document:1' }, { elementId: null, frameId: null }]) {
+        const before = browserAccessCount;
+        const invalid = await getter.execute({ ...(view ? { view } : {}), regex: '编辑', ...reference } as any);
+        check(!invalid.success && invalid.error?.includes('INVALID_ARGUMENT') === true && invalid.error.includes('删除这些字段'),
+          `${view ?? '默认'} 枚举拒绝 ${JSON.stringify(reference)} 并给出删除字段的修复指引`);
+        eq(browserAccessCount, before, '错误组合在访问浏览器前被拦截');
+      }
+    }
     const first = await getter.execute();
     check(first.success, '真实全帧采集通过交付前二次核验', first.error);
     const frameNode = (await scan('buttons', 7))[0];
     const detail = await getter.execute({ view: 'element', elementId: frameNode.elementId, frameId: 7 });
     check(detail.success, '指定元素属性通过序列化荷载跨 frame 读取', detail.error);
+    const mainNode = (await scan('buttons', 0))[0];
+    check((await getter.execute({ view: 'element', elementId: mainNode.elementId, frameId: 0 })).success,
+      '节点详情接受显式 frameId=0');
+    for (const extra of [{ regex: '' }, { xpath: '' }, { page: 1 }, { snapshotId: '' }]) {
+      const before = browserAccessCount;
+      const invalid = await getter.execute({ view: 'element', elementId: mainNode.elementId, frameId: 0, ...extra });
+      check(!invalid.success && invalid.error?.includes(Object.keys(extra)[0]) === true && invalid.error.includes('仅保留 view、elementId、frameId'),
+        '节点详情拒绝多余字段并提供最小重试参数');
+      eq(browserAccessCount, before, '详情参数混用在访问浏览器前被拦截');
+    }
+    for (const frameId of [undefined, null, -1, 0.5]) {
+      const before = browserAccessCount;
+      check(!(await getter.execute({ view: 'element', elementId: mainNode.elementId, frameId } as any)).success,
+        `节点详情拒绝缺失或无效 FrameId: ${frameId}`);
+      eq(browserAccessCount, before, '不猜测节点所属 frame');
+    }
     eq(data(detail).frameUrl, 'https://frame.example/', '元素属性保留来源 frame URL');
     eq(data(detail).text, 'iframe 按钮', '元素属性回传真实文字');
     check(typeof data(detail).xpath === 'string', '元素属性回传可重采 XPath');
@@ -207,6 +270,9 @@ export async function testElementInteraction(
       snapshotId: data(first).snapshotId,
       page: 2,
     });
+    check(first.success && second.success, '默认枚举和省略 view 的快照续读继续正常工作');
+    check(data(first).hint.includes('枚举不传 elementId/frameId') && !data(first).hint.includes('操作时原样传'),
+      '枚举返回提示不再泛化引用参数要求');
     const third = await getter.execute({
       snapshotId: data(first).snapshotId,
       page: 3,

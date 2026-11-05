@@ -41,10 +41,9 @@ export interface ToolMetadata {
    * 适用于「是否破坏性取决于模型意图」的 click / fill 类工具——它们既不能
    * 整工具审批（每次点击都弹窗会淹没用户），也没有 action 字段可条件判定。
    * 声明后命中任一条件即要求用户批准（缺省拒绝，安全侧）：
-   *   (a) 模型显式传 confirm=true（工具 schema 与 prompt 约定：发送 / 提交 /
-   *       购买 / 支付 / 删除等不可逆操作必须传）；
-   *   (b) 可定位文本字段（selector / description / text / xpath / target）
-   *       命中破坏性关键词（中文高精度词表），作为模型漏传 confirm 的兜底。
+   *   (a) 模型按工具说明的统一资金/敏感操作策略传 confirm=true；
+   *   (b) 意图字段命中明确资金/凭据/隐私等风险，作为模型漏传的兜底。
+   *       不以普通提交/发送或 CSS/XPath 名称触发审批。
    * 判定实现见 tools/confirm-guard.ts。
    */
   requiresConfirm?: boolean;

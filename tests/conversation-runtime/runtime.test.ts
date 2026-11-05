@@ -364,6 +364,24 @@ await startup.abortAndWait('startup');
 await startupTask;
 startup.detach();
 readyDelay = null;
+// A panel reopening shares browser-session storage. A browser restart creates
+// an empty session store, regardless of the previous persistent selection.
+let browserSession: Record<string, unknown> = {};
+(globalThis as any).chrome.storage = {
+  session: {
+    get: async (key: string) => ({ [key]: browserSession[key] }),
+    set: async (value: Record<string, unknown>) => { Object.assign(browserSession, value); },
+  },
+};
+const { readActiveChat, rememberActiveChat } = await import('../../entrypoints/sidepanel/core/conversation/active-session');
+assert.equal(await readActiveChat(), '');
+await rememberActiveChat('same-browser-chat');
+assert.equal(await readActiveChat(), 'same-browser-chat', 'Reopening the panel restores its chat');
+browserSession = {};
+assert.equal(await readActiveChat(), '', 'Restarting the browser opens the welcome page');
+await rememberActiveChat('another-chat');
+await rememberActiveChat('');
+assert.equal(await readActiveChat(), '', 'Creating a new chat keeps the welcome selection on panel reopen');
 console.log(
   "[conversation-runtime] Close/reopen, hidden streaming, hydration races, approval restoration and stop passed.",
 );

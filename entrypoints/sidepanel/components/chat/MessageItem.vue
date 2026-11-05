@@ -44,8 +44,9 @@
         />
       </template>
 
-      <!-- ════ 结束态分组渲染：末段正文之前的内容（推理/工具/中间文本）
-           收入可折叠「前奏」容器，正文主体始终直接可见 ════ -->
+      <!-- ════ 结束态分组渲染：全部过程内容（推理/工具/截图/中间文本，含正文
+           之后残留的过程片段）收入可折叠「前奏」容器，正文主体与终态注记始终
+           直接可见；无正文的中止/异常记录由折叠条单独承载 ════ -->
       <template v-else>
         <div
           v-if="groups.prelude.length > 0 || legacyReasoningVisible"
@@ -119,7 +120,8 @@
           @toggle-tool-call-expansion="forwardToolToggle"
           @toggle-reasoning-collapse="forwardReasoningToggle"
         />
-        <!-- 正文之后的残余片段（如中止前最后的工具调用）：不折叠，保持原样 -->
+        <!-- 正文之后的终态注记（守卫停止 / 截断说明等 notice）：恒保持可见，
+             不被前奏折叠遮蔽；中止前的过程残留已随规则并入前奏折叠 -->
         <MessageParts
           v-if="groups.tail.length > 0"
           :parts="groups.tail"
@@ -268,6 +270,7 @@ import { computed, onBeforeUnmount, ref } from 'vue';
 import { t } from '@/utils/i18n';
 import type { ExtendedChatMessage, IndexedMessagePart, MessageFeedback } from '../../types/chat';
 import { markdownRenderer } from '../../utils/chat/markdown-renderer';
+import { groupAnswerParts, type AnswerGrouping } from '../../utils/chat/part-grouping';
 import { formatDuration } from '../../utils/chat/duration';
 import { openNoteDetail } from '../../utils/chat/note-nav';
 import { message as toast } from '../../utils/chat/message';
@@ -333,47 +336,25 @@ const indexedVisibleParts = computed<IndexedMessagePart[]>(() => {
   return result;
 });
 
-interface AnswerGroups {
-  /** 末段正文之前的片段（推理 / 工具调用 / 中间过渡文本 / 系统注记） */
-  prelude: IndexedMessagePart[];
-  /** 末段正文（最后一个含内容的文本片段） */
-  final: IndexedMessagePart | null;
-  /** 正文之后的残余片段（如中止前最后一批工具调用） */
-  tail: IndexedMessagePart[];
-  hasReasoning: boolean;
-  toolCount: number;
-}
-
-/** 按末段正文切分消息片段（结束态分组的依据） */
-const groups = computed<AnswerGroups>(() => {
-  const indexed = indexedVisibleParts.value;
-  let lastTextPos = -1;
-  for (let i = indexed.length - 1; i >= 0; i--) {
-    if (indexed[i].part.type === 'text') {
-      lastTextPos = i;
-      break;
-    }
-  }
-  const hasReasoning =
-    !!props.message.reasoning_content?.trim() || indexed.some(it => it.part.type === 'reasoning');
-  const toolCount =
-    props.message.toolCalls?.length ?? indexed.filter(it => it.part.type === 'tool').length;
-  if (lastTextPos === -1) {
-    return { prelude: [], final: null, tail: indexed, hasReasoning, toolCount };
-  }
-  return {
-    prelude: indexed.slice(0, lastTextPos),
-    final: indexed[lastTextPos],
-    tail: indexed.slice(lastTextPos + 1),
-    hasReasoning,
-    toolCount,
-  };
-});
-
-/** 兼容旧记录：仅有 reasoning_content、无 reasoning 类型 parts */
+/** 兼容旧记录：仅有 reasoning_content、无 reasoning 类型 parts（先于 groups 定义，供其读取） */
 const legacyReasoningVisible = computed(
   () =>
     !!(props.message.reasoning_content && !(props.message.parts && props.message.parts.some(p => p.type === 'reasoning'))),
+);
+
+/**
+ * 结束态分组（规则实体见 utils/chat/part-grouping 的 groupAnswerParts）：
+ * 以最后一个文本片段为锚点（末段正文），其余全部过程片段——含锚点之后
+ * 残留的工具调用 / 思考 / 截图（中止、异常、学习模式收尾轮的典型形态）——
+ * 一律收入前奏折叠；notice（终态注记）保持可见。
+ * 任何终态（正常结束 / 用户中止 / 异常 / 学习收尾）走同一条规则：
+ * 折叠条之下只允许锚点正文与终态注记，不存在「折叠了但下面还有过程内容」。
+ */
+const groups = computed<AnswerGrouping>(() =>
+  groupAnswerParts(indexedVisibleParts.value, {
+    legacyReasoningText: !!props.message.reasoning_content?.trim(),
+    totalToolCalls: props.message.toolCalls?.length,
+  }),
 );
 
 /** 末段正文片段（单元素数组；无正文时为空数组，供模板直接绑定） */
@@ -384,12 +365,14 @@ const finalPartList = computed<IndexedMessagePart[]>(() => {
 
 /**
  * 是否启用「前奏折叠」分组渲染：
- * 助手消息 + 已结束 + 存在末段正文 + 正文之前确有可折叠内容。
- * 其余情形（用户消息 / 直播态 / 纯文本回答 / 无正文记录）走原有顺序渲染。
+ * 助手消息 + 已结束 + 前奏确有可折叠内容（或存在旧版 reasoning_content）。
+ * **不要求存在末段正文**：被中止/异常收尾的运行可能没有任何文本输出
+ * （如中止于纯工具轮），此时前奏收纳全部过程内容，折叠条单独成立——
+ * 任何终态都必须完整折叠过程，不再依赖「有正文」这个正常结束才满足的前提。
+ * 其余情形（用户消息 / 直播态 / 纯文本回答）走原有顺序渲染。
  */
 const usePreludeCollapse = computed(() => {
   if (props.message.role !== 'assistant' || props.isLive) return false;
-  if (!groups.value.final) return false;
   return groups.value.prelude.length > 0 || legacyReasoningVisible.value;
 });
 

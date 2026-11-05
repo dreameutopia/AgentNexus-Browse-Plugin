@@ -41,6 +41,8 @@ import { measureContextUsage, COMPACTION_RUNTIME_RATIO } from '../context/contex
 import { imageStore } from '../images/image-store';
 import { toApiErrorBlock } from '../../utils/stream/errors';
 import { INTERACTIVE_TOOL_NAMES } from '@/tools/interact/interact-prompt';
+import { ensurePlansHydrated, getPlan } from '@/utils/plan/plan-store';
+import { buildPlanReminder, needsPlanReminder } from './plan-reminder';
 import { toolRegistry } from '@/tools/registry';
 import { skillEngine } from '../registry/skill-engine';
 import { filterVisionAssistantTools, isVisionAssistantTool } from '@/utils/agents/vision-assistant-policy';
@@ -122,6 +124,8 @@ export interface RunOptions {
    * 缺省行为：终止并在回复末尾追加停止说明。
    */
   onLimitReached?: (kind: GuardKind, info: { iterations?: number; minutes?: number; consecutiveFailures?: number }) => Promise<boolean>;
+  /** Local staged workflows grant a fresh, explicitly chosen budget window on continue. */
+  resetBudgetOnContinue?: boolean;
   /**
    * 工具审批通道：声明 requiresApproval 的工具在执行前经此回调请求用户放行，
    * 返回 true 才执行。缺省（未提供回调）一律拒绝——安全侧默认：
@@ -190,6 +194,8 @@ interface RunHandle {
    * 触发延续确认。
    */
   consecutiveFailedRounds: number;
+  /** 最近一次计划状态提醒注入所在轮次（0 = 尚未注入）：提醒频率间隔判定输入 */
+  lastReminderRound: number;
 }
 
 /** 流式期间快照落库间隔 */
@@ -405,6 +411,11 @@ export class ConversationEngine {
           imageRef: initialScreenshotRef,
         });
       }
+      // plan-store 幂等水合：引擎与 plan_tool 在 worker 执行，worker 冷启动后
+      // 内存无既有计划（无 localStorage 缓存可读）——不水合会让本轮 plan_tool
+      // 把持久化的计划误判为不存在（add 自动建立分支整体覆盖旧状态）。
+      // restorePlansFromStorage 全路径 catch，水合失败不阻断运行。
+      await ensurePlansHydrated();
       handle = {
         abortController,
         startedAt,
@@ -430,6 +441,7 @@ export class ConversationEngine {
         pluginBindings: runtime.pluginBindings,
         consecutiveFailedRounds: 0,
         stopAfterRound: false,
+        lastReminderRound: 0,
       };
       this.pendingAborts.delete(runtime.chatId);
       this.runs.set(runtime.chatId, handle);
@@ -499,8 +511,14 @@ export class ConversationEngine {
             shouldContinue = false;
             break;
           }
-          if (limitKind === 'max-iterations') guardIterations = 0;
-          if (limitKind === 'max-duration') guardStartMs = Date.now();
+          if (options.resetBudgetOnContinue) {
+            // This iteration has not requested the model yet; count it as the first of N.
+            guardIterations = 1;
+            guardStartMs = Date.now();
+          } else {
+            if (limitKind === 'max-iterations') guardIterations = 0;
+            if (limitKind === 'max-duration') guardStartMs = Date.now();
+          }
         }
 
         // 确认等待期间用户点停止（settleGuard(false) 已按停止收敛；此处兜底
@@ -699,7 +717,7 @@ export class ConversationEngine {
         // 时长上限在串行执行期间被触及：剩余调用已以「未执行」错误收尾，
         // 跳过本轮后处理，交循环顶部的时长守卫向用户确认（确认继续则下一轮
         // 重新发起调用；放弃则以停止说明收尾）
-        if (Date.now() > toolDeadlineMs) {
+        if (Date.now() > toolDeadlineMs + toolOutcome.waitedMs) {
           continue;
         }
 
@@ -728,9 +746,33 @@ export class ConversationEngine {
               break;
             }
             handle.consecutiveFailedRounds = 0;
+            if (options.resetBudgetOnContinue) {
+              guardIterations = 0;
+              guardStartMs = Date.now();
+            }
           }
         } else {
           handle.consecutiveFailedRounds = 0;
+        }
+
+        // ── 计划状态提醒：模型连续工作但未维护计划时，把计划状态重新呈现到
+        //    上下文尾部（just-in-time + recency；判定与文案见 plan-reminder.ts）。
+        //    合成 user 消息与 vision 续拍同构（push history + 持久化），尾部追加
+        //    不动任何前缀消息，不破坏上下文缓存；与 plan_tool 同一内存实例，
+        //    读到的即最新状态 ──
+        const planItems = getPlan(runtime.chatId);
+        if (needsPlanReminder({
+          items: planItems,
+          roundCalls: toolCalls,
+          iteration: totalIterations,
+          lastReminderRound: handle.lastReminderRound,
+        })) {
+          const planReminder = buildPlanReminder(planItems);
+          if (planReminder) {
+            handle.lastReminderRound = totalIterations;
+            handle.history.push(planReminder);
+            await this.appendModelMessages(handle, [planReminder]);
+          }
         }
 
         // 工具执行完成后按需等待页面加载（中止信号可提前打断等待）。
@@ -1121,7 +1163,9 @@ export class ConversationEngine {
             results.push(
               this.settleSkippedToolCall(
                 runtime, handle, emit, toolCall, toolName,
-                `工具 ${toolName} 的调用未获用户批准（已拒绝执行）。如确需该操作，请向用户说明原因并由用户手动执行；或改用其它方式完成任务。`,
+                options.onToolApproval
+                  ? `APPROVAL_NOT_GRANTED：工具 ${toolName} 未获批准（用户拒绝或等待超时），未执行。停止该操作并说明原因，不得换工具、按键或脚本绕过；可继续不依赖该授权的工作。`
+                  : `APPROVAL_UNAVAILABLE：工具 ${toolName} 需要审批，但当前运行未接入用户审批回调，未执行。这不是用户拒绝；请报告审批通道问题，不得绕过。`,
                 Date.now() - startedAt,
               ),
             );
@@ -1287,7 +1331,7 @@ export class ConversationEngine {
           this.settleSkippedToolCall(runtime, handle, emit, toolCall, toolName, message, executionTimeMs),
         );
       } finally {
-        if (toolName === GENERIC_WAIT_TOOL_ID) waitedMs += Date.now() - startedAt;
+        if (toolName === GENERIC_WAIT_TOOL_ID || INTERACTIVE_TOOL_NAMES.has(toolName)) waitedMs += Date.now() - startedAt;
       }
     }
 
@@ -1657,8 +1701,12 @@ export class ConversationEngine {
       const errorText = `\n\n${error}`;
       this.appendToPart(handle.record, 'text', errorText);
       handle.record.content += errorText;
-      collapseReasoningParts(handle.record);
     }
+    // 终态统一收起推理片段：任何收尾形态（done / aborted / error）下，
+    // 未被用户手动展开过的思考过程都应以收起态定稿——流式期间可能从未
+    // 到达过「正文/工具触发自动收起」的时点（如中止于纯思考阶段），
+    // 不在此收起会让历史重载后的推理片段保持全展开
+    collapseReasoningParts(handle.record);
     handle.record.usage = {
       iterations,
       durationMs: Date.now() - handle.startedAt,

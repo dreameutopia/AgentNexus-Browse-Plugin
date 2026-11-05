@@ -43,3 +43,11 @@ try{
 }finally{app.unmount();dom.window.close();}
 const usage = spawnSync(process.execPath, [path.resolve('tests/chat-ui/usage.test.mjs')], { stdio: 'inherit' });
 assert.equal(usage.status, 0, 'Usage statistics UI regression');
+const learn = spawnSync(process.execPath, [path.resolve('tests/chat-ui/learn-session.test.mjs')], { stdio: 'inherit' });
+assert.equal(learn.status, 0, 'Learning/validation chat UI regression');
+const questions = spawnSync(process.execPath, [path.resolve('tests/chat-ui/questions.test.mjs')], { stdio: 'inherit' });
+assert.equal(questions.status, 0, 'Shared user question callback regression');
+const limits = spawnSync(process.execPath, [path.resolve('tests/chat-ui/learn-limits.test.mjs')], { stdio: 'inherit' });
+assert.equal(limits.status, 0, 'Learning/validation budget choices regression');
+const handoff = spawnSync(process.execPath, [path.resolve('tests/chat-ui/learn-handoff.test.mjs')], { stdio: 'inherit' });
+assert.equal(handoff.status, 0, 'Learning result durable handoff regression');

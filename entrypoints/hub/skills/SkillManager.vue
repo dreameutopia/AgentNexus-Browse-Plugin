@@ -6,7 +6,7 @@
         <span class="hub-list-count">{{ t('hub.skillCount', { count: skills.length }) }}</span>
         <div class="hub-list-actions">
           <button type="button" class="hub-btn" @click="triggerImport">{{ t('hub.importSkill') }}</button>
-          <button type="button" class="hub-btn hub-btn-primary" @click="startCreate">
+          <button type="button" class="hub-btn hub-btn-primary" :disabled="acceptingDraft" @click="startCreate">
             {{ t('hub.newSkill') }}
           </button>
         </div>
@@ -39,13 +39,6 @@
               {{ skill.source === 'preset' ? t('hub.preset') : t('hub.custom') }}
             </span>
           </div>
-          <!-- 模型标识（name-id）：对模型暴露的唯一名称，点击复制 -->
-          <button
-            type="button"
-            class="hub-model-id"
-            :title="t('hub.modelIdHint')"
-            @click="copyModelId(skill)"
-          >{{ modelSkillIdOf(skill) }}</button>
           <p v-if="skill.plugin" class="hub-hint">{{ skill.plugin.displayName }} · {{ skill.plugin.version }} · {{ skill.plugin.publisher }}</p>
           <p class="hub-card-desc" :title="skill.description">{{ skill.description }}</p>
           <!-- 分类与标签（与智能体卡片同一套徽章与分类规范） -->
@@ -57,16 +50,29 @@
             <span v-if="skill.allowedTools.length > 0" class="hub-card-tools">
               {{ t('hub.allowedToolsCount', { count: skill.allowedTools.length }) }}
             </span>
-            <label class="hub-switch-row hub-switch-inline" @click.stop>
-              <input
-                type="checkbox"
-                :checked="skill.enabled"
-                :disabled="skill.source === 'plugin'"
-                @change="toggleEnabled(skill)"
-              />
-              <span>{{ skill.enabled ? t('hub.enabled') : t('hub.disabled') }}</span>
-            </label>
+            <span v-if="resourceCountOf(skill) > 0" class="hub-card-tools">
+              {{ t('hub.resourceFileCount', { count: resourceCountOf(skill) }) }}
+            </span>
+            <HubSwitch
+              class="hub-switch-inline"
+              :model-value="skill.enabled"
+              :disabled="skill.source === 'plugin'"
+              @update:model-value="toggleEnabled(skill)"
+            >{{ skill.enabled ? t('hub.enabled') : t('hub.disabled') }}</HubSwitch>
             <span class="hub-card-ops">
+              <!-- 模型标识不再直接展示原文：保留一键复制（对话/工具调用中的唯一名称） -->
+              <button
+                type="button"
+                class="hub-icon-btn"
+                :title="t('hub.modelIdHint')"
+                :aria-label="t('common.copy')"
+                @click="copyModelId(skill)"
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <rect x="5.5" y="5.5" width="8" height="8" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.5" />
+                  <path d="M10.5 5.5V3.9a1.4 1.4 0 0 0-1.4-1.4H3.9a1.4 1.4 0 0 0-1.4 1.4v5.2a1.4 1.4 0 0 0 1.4 1.4h1.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                </svg>
+              </button>
               <button type="button" class="hub-op" @click="exportSkill(skill)">{{ t('hub.exportSkill') }}</button>
               <template v-if="skill.source === 'custom'">
                 <button type="button" class="hub-op" @click="startEdit(skill)">{{ t('hub.edit') }}</button>
@@ -79,10 +85,10 @@
     </div>
 
     <!-- 编辑视图：简单模式（表单字段）与高级模式（完整 SKILL.md） -->
-    <form v-else class="hub-editor" @submit.prevent="save">
+    <form v-else class="hub-editor" :inert="saving" :aria-busy="saving" @submit.prevent="save">
       <div class="hub-editor-head">
         <h2>{{ editingExisting ? t('hub.editSkill') : t('hub.newSkill') }}</h2>
-        <button type="button" class="hub-btn" @click="cancelEdit">{{ t('hub.backToList') }}</button>
+        <button type="button" class="hub-btn" :disabled="saving" @click="cancelEdit">{{ t('hub.backToList') }}</button>
       </div>
 
       <!-- 网站学习成果确认卡（预填后内联展示；确认→直接保存，微调→关卡留在表单） -->
@@ -94,95 +100,209 @@
         @edit="draftCard = null"
       />
 
-      <!-- 交付信号在编辑中到达：挂起提示（编辑结束自动接手，见 cancelEdit） -->
-      <p v-if="pendingDraftImport" class="hub-hint hub-draft-pending">
-        {{ t('hub.learnDraftPending') }}
-      </p>
-
       <!-- 模式切换（带确认语义：切换会把当前内容转换为目标形态） -->
-      <div class="hub-mode-switch" role="group">
-        <button
-          type="button"
-          class="hub-mode-btn"
-          :class="{ active: editorMode === 'simple' }"
-          @click="switchMode('simple')"
-        >{{ t('hub.modeSimple') }}</button>
-        <button
-          type="button"
-          class="hub-mode-btn"
-          :class="{ active: editorMode === 'advanced' }"
-          @click="switchMode('advanced')"
-        >{{ t('hub.modeAdvanced') }}</button>
+      <div class="hub-editor-mode">
+        <HubSegmented
+          :model-value="editorMode"
+          :options="modeOptions"
+          :aria-label="t('hub.modeSimple')"
+          @update:model-value="onModeChange"
+        />
+        <p class="hub-hint">{{ editorMode === 'simple' ? t('hub.modeSimpleHint') : t('hub.modeAdvancedHint') }}</p>
       </div>
-      <p class="hub-hint">{{ editorMode === 'simple' ? t('hub.modeSimpleHint') : t('hub.modeAdvancedHint') }}</p>
 
-      <!-- 简单模式：name / description / category / tags / prompt 五字段，提交必成功 -->
-      <template v-if="editorMode === 'simple'">
-        <label class="hub-field">
-          <span class="hub-field-label">{{ t('hub.fieldSkillName') }}</span>
-          <input
-            v-model.trim="form.name"
-            type="text"
-            required
-            maxlength="64"
-            :placeholder="t('hub.fieldSkillNamePlaceholder')"
-            @input="form.name = form.name.toLowerCase()"
-          />
-          <span class="hub-hint">{{ nameHint }}</span>
-        </label>
+      <!-- 左右布局：简单模式左列元信息 / 右列提示词；高级模式左列 SKILL.md 原文 / 右列实时校验与资源文件 -->
+      <div
+        class="hub-editor-split"
+        :class="editorMode === 'simple' ? 'hub-editor-split--skill-simple' : 'hub-editor-split--skill-advanced'"
+      >
+        <!-- 简单模式：name / description / category / tags / prompt 五字段，提交必成功 -->
+        <template v-if="editorMode === 'simple'">
+          <div class="hub-editor-col">
+            <!-- 多文件技能防御性提示：简单模式不触碰资源文件，保存绝不丢文件 -->
+            <div v-if="resourceFileCount > 0" class="hub-notice">
+              <p>{{ t('hub.resourceFilesNotice', { count: resourceFileCount }) }}</p>
+              <div class="hub-resource-chips">
+                <span
+                  v-for="(content, path) in resourceFiles"
+                  :key="path"
+                  class="hub-badge hub-badge-tag"
+                  :title="t('hub.resourceFileChars', { count: content.length })"
+                >{{ path }}</span>
+              </div>
+              <p class="hub-hint">{{ t('hub.resourceFilesSimpleHint') }}</p>
+            </div>
 
-        <label class="hub-field">
-          <span class="hub-field-label">{{ t('hub.fieldDescription') }}</span>
-          <input v-model.trim="form.description" type="text" required maxlength="1024" :placeholder="t('hub.fieldSkillDescriptionPlaceholder')" />
-        </label>
+            <label class="hub-field">
+              <span class="hub-field-label">{{ t('hub.fieldSkillName') }}</span>
+              <input
+                v-model.trim="form.name"
+                type="text"
+                required
+                maxlength="64"
+                :placeholder="t('hub.fieldSkillNamePlaceholder')"
+                @input="form.name = form.name.toLowerCase()"
+              />
+              <span class="hub-hint">{{ nameHint }}</span>
+            </label>
 
-        <!-- 分类（必选）：与智能体同一套分类规范；选择「新建自定义分类」时
-             新分类名称输入框与选择器同行，保存前经 normalizeCategory 归一化 -->
-        <div class="hub-field">
-          <span class="hub-field-label">
-            {{ t('hub.fieldCategory') }}<span class="hub-required" aria-hidden="true">*</span>
-          </span>
-          <CategorySelect v-model="form.category" v-model:custom="form.customCategory" />
-          <span class="hub-hint">{{ t('hub.fieldSkillCategoryHint') }}</span>
-        </div>
+            <label class="hub-field">
+              <span class="hub-field-label">{{ t('hub.fieldDescription') }}</span>
+              <input v-model.trim="form.description" type="text" required maxlength="1024" :placeholder="t('hub.fieldSkillDescriptionPlaceholder')" />
+            </label>
 
-        <!-- 标签：与智能体同一套标签规范（chips 输入与上限反馈由组件内置） -->
-        <div class="hub-field">
-          <span class="hub-field-label">{{ t('hub.fieldTags') }}</span>
-          <TagInput v-model="form.tags" :hint="t('hub.fieldSkillTagsHint', { max: AGENT_TAGS_MAX_COUNT })" />
-        </div>
+            <!-- 分类（必选）：与智能体同一套分类规范；选择「新建自定义分类」时
+                 新分类名称输入框与选择器同行，保存前经 normalizeCategory 归一化 -->
+            <div class="hub-field">
+              <span class="hub-field-label">
+                {{ t('hub.fieldCategory') }}<span class="hub-required" aria-hidden="true">*</span>
+              </span>
+              <CategorySelect v-model="form.category" v-model:custom="form.customCategory" />
+              <span class="hub-hint">{{ t('hub.fieldSkillCategoryHint') }}</span>
+            </div>
 
-        <label class="hub-field">
-          <span class="hub-field-label">{{ t('hub.fieldPrompt') }}</span>
-          <textarea v-model="form.body" rows="16" required :placeholder="t('hub.fieldPromptPlaceholder')" class="hub-body-editor"></textarea>
-          <span class="hub-hint">{{ t('hub.fieldBodyHint', { count: form.body.length }) }}</span>
-        </label>
-      </template>
+            <!-- 标签：与智能体同一套标签规范（chips 输入与上限反馈由组件内置） -->
+            <div class="hub-field">
+              <span class="hub-field-label">{{ t('hub.fieldTags') }}</span>
+              <TagInput v-model="form.tags" :hint="t('hub.fieldSkillTagsHint', { max: AGENT_TAGS_MAX_COUNT })" />
+            </div>
+          </div>
 
-      <!-- 高级模式：完整 SKILL.md 原文（frontmatter + 正文），提交前严格校验 -->
-      <template v-else>
-        <label class="hub-field">
-          <span class="hub-field-label">{{ t('hub.fieldRawSkillMd') }}</span>
-          <textarea
-            v-model="form.raw"
-            rows="22"
-            class="hub-body-editor hub-raw-editor"
-            :placeholder="t('hub.fieldRawSkillMdPlaceholder')"
-            spellcheck="false"
-          ></textarea>
-          <span class="hub-hint">{{ t('hub.fieldRawSkillMdHint') }}</span>
-        </label>
-        <!-- 实时校验结果（逐条列出，保存按钮联动禁用） -->
-        <ul v-if="rawIssues.length" class="hub-raw-issues">
-          <li v-for="(issue, index) in rawIssues" :key="index">{{ issue }}</li>
-        </ul>
-      </template>
+          <div class="hub-editor-col">
+            <label class="hub-field hub-field--grow">
+              <span class="hub-field-label">{{ t('hub.fieldPrompt') }}</span>
+              <textarea v-model="form.body" rows="24" required :placeholder="t('hub.fieldPromptPlaceholder')" class="hub-body-editor hub-field--fill"></textarea>
+              <span class="hub-hint">{{ t('hub.fieldBodyHint', { count: form.body.length }) }}</span>
+            </label>
+          </div>
+        </template>
+
+        <!-- 高级模式：左列完整 SKILL.md 原文，右列实时校验 + 资源文件 -->
+        <template v-else>
+          <div class="hub-editor-col">
+            <label class="hub-field hub-field--grow">
+              <span class="hub-field-label">{{ t('hub.fieldRawSkillMd') }}</span>
+              <textarea
+                v-model="form.raw"
+                rows="26"
+                class="hub-body-editor hub-raw-editor hub-field--fill"
+                :placeholder="t('hub.fieldRawSkillMdPlaceholder')"
+                spellcheck="false"
+              ></textarea>
+              <span class="hub-hint">{{ t('hub.fieldRawSkillMdHint') }}</span>
+            </label>
+          </div>
+
+          <div class="hub-editor-col">
+            <!-- 实时校验面板：随输入逐帧更新（computed 驱动），保存按钮联动禁用 -->
+            <div
+              class="hub-validation"
+              :class="rawValidation.ok ? 'is-ok' : 'is-error'"
+              role="status"
+              aria-live="polite"
+            >
+              <div class="hub-validation-head">
+                <svg v-if="rawValidation.ok" viewBox="0 0 16 16" aria-hidden="true">
+                  <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+                  <path d="M5.2 8.3l1.9 1.9 3.7-4.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                <svg v-else viewBox="0 0 16 16" aria-hidden="true">
+                  <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+                  <path d="M8 4.6v4.2M8 11.2v.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                </svg>
+                <span>{{ t('hub.validationTitle') }}</span>
+                <span v-if="!rawValidation.ok" class="hub-validation-count">{{ rawIssues.length }}</span>
+              </div>
+              <p v-if="rawValidation.ok" class="hub-validation-ok-text">{{ t('hub.validationOk') }}</p>
+              <ul v-else class="hub-validation-items">
+                <li
+                  v-for="(issue, index) in rawIssues"
+                  :key="index"
+                  class="hub-validation-item"
+                  :style="{ animationDelay: `${Math.min(index * 40, 240)}ms` }"
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4" />
+                    <path d="M8 4.9v3.9M8 11v.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  </svg>
+                  <span>{{ issue }}</span>
+                </li>
+              </ul>
+            </div>
+
+            <!-- 资源文件管理（文件夹式技能）：SKILL.md 之外的文件树增 / 改 / 删 / 重命名 -->
+            <div class="hub-field hub-resource-manager">
+              <span class="hub-field-label">{{ t('hub.resourceFilesTitle', { count: resourceFileCount }) }}</span>
+              <p class="hub-hint">{{ t('hub.resourceFilesHint') }}</p>
+
+              <div v-if="resourceFileCount > 0" class="hub-resource-list">
+                <div
+                  v-for="(content, path) in resourceFiles"
+                  :key="path"
+                  class="hub-resource-item"
+                  :class="{ 'is-active': resourceEditingPath === path }"
+                >
+                  <button type="button" class="hub-resource-path" :title="path" @click="openResourceFile(path)">
+                    {{ path }}
+                  </button>
+                  <span class="hub-resource-size">{{ t('hub.resourceFileChars', { count: content.length }) }}</span>
+                  <span class="hub-resource-ops">
+                    <button type="button" class="hub-op" @click="openResourceFile(path)">{{ t('hub.edit') }}</button>
+                    <button type="button" class="hub-op hub-op-danger" @click="removeResourceFile(path)">
+                      {{ t('hub.delete') }}
+                    </button>
+                  </span>
+                </div>
+              </div>
+              <p v-else class="hub-hint">{{ t('hub.resourceFilesEmpty') }}</p>
+
+              <!-- 单文件编辑面板（新建 / 编辑 / 重命名共用） -->
+              <div v-if="resourceEditorOpen" class="hub-resource-editor">
+                <label class="hub-field">
+                  <span class="hub-field-label">{{ t('hub.resourceFilePath') }}</span>
+                  <input
+                    v-model.trim="resourceForm.path"
+                    type="text"
+                    maxlength="200"
+                    :placeholder="t('hub.resourceFilePathPlaceholder')"
+                  />
+                  <span v-if="resourceEditingPath && resourceEditingPath !== resourceForm.path" class="hub-hint">
+                    {{ t('hub.resourceFileRenameHint', { path: resourceEditingPath }) }}
+                  </span>
+                </label>
+                <label class="hub-field">
+                  <span class="hub-field-label">{{ t('hub.resourceFileContent') }}</span>
+                  <textarea
+                    v-model="resourceForm.content"
+                    rows="12"
+                    class="hub-body-editor"
+                    spellcheck="false"
+                  ></textarea>
+                </label>
+                <p v-if="resourceError" class="hub-error">{{ resourceError }}</p>
+                <div class="hub-editor-actions">
+                  <button type="button" class="hub-btn" @click="closeResourceEditor">{{ t('common.cancel') }}</button>
+                  <button type="button" class="hub-btn hub-btn-primary" @click="saveResourceFile">
+                    {{ t('hub.resourceFileSave') }}
+                  </button>
+                </div>
+              </div>
+              <button v-else type="button" class="hub-btn" @click="startResourceCreate">
+                {{ t('hub.resourceFileAdd') }}
+              </button>
+            </div>
+          </div>
+        </template>
+      </div>
 
       <div class="hub-editor-footer">
         <span v-if="errorMessage" class="hub-error">{{ errorMessage }}</span>
+        <span v-else-if="editorMode === 'advanced' && resourceEditorOpen" class="hub-hint">
+          {{ t('hub.resourceEditorOpenHint') }}
+        </span>
         <div class="hub-editor-actions">
           <button type="button" class="hub-btn" @click="cancelEdit">{{ t('common.cancel') }}</button>
-          <button type="submit" class="hub-btn hub-btn-primary" :disabled="!canSave">{{ t('common.save') }}</button>
+          <button type="submit" class="hub-btn hub-btn-primary" :disabled="!canSave || saving">{{ t('common.save') }}</button>
         </div>
       </div>
     </form>
@@ -194,18 +314,21 @@
  * 技能管理：全量启停（含预置，跨上下文同步）+ 自定义技能的新建/编辑/删除
  * + zip / md 导入导出。
  *
- * 编辑器双模式：
- *   - 简单模式：name / description / category / tags / prompt 五字段，保存时
- *     自动组装规范 SKILL.md（其余 frontmatter 字段在编辑既有技能时原样保留），
- *     百分百可正确创建；分类必选，与智能体共用同一套分类/标签规范；
- *   - 高级模式：直接编辑完整 SKILL.md（frontmatter + 正文），提交时经
- *     validateSkillMd 严格校验并逐条提示格式问题（含缺失 category 字段）。
+ * 编辑器双模式（左右布局，模式经 HubSegmented 分段控件切换）：
+ *   - 简单模式：左列 name / description / category / tags，右列提示词正文；
+ *     保存时自动组装规范 SKILL.md（其余 frontmatter 字段在编辑既有技能时
+ *     原样保留），百分百可正确创建；分类必选，与智能体共用同一套分类/标签规范；
+ *   - 高级模式：左列直接编辑完整 SKILL.md（frontmatter + 正文），右列为
+ *     实时校验面板（输入即校验、逐条提示格式问题）+ 资源文件管理。
  * 模式互切有内容转换：简单 → 高级按表单重组原文；高级 → 简单解析回填
  * （解析失败时阻止切换，避免半份内容静默丢失）。
  */
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { t, type MessageKey } from '@/utils/i18n';
 import CategorySelect from '../components/CategorySelect.vue';
+// Hub 共享自定义控件：分段控件（模式切换）与 iOS 形态开关（技能启停）
+import HubSegmented from '../components/HubSegmented.vue';
+import HubSwitch from '../components/HubSwitch.vue';
 import TagInput from '../components/TagInput.vue';
 import {
   AGENT_TAGS_MAX_COUNT,
@@ -220,17 +343,16 @@ import {
   removeCustomSkill,
   setSkillEnabled,
   onSkillsChange,
-  getSkillByName,
-  uniqueSkillName,
+  flushSkillStoreWrites,
+  rollbackCustomSkills,
+  snapshotCustomSkills,
   type SkillRecord,
   type SkillWriteResult,
 } from '@/utils/skills/skill-store';
 import {
-  takeLearnDraft,
-  hasLearnDraft,
-  type LearnDraftTakeResult,
+  readLearnDraft, claimLearnDraftEditor, saveLearnDraftEditor, completeLearnDraft, isLearnDraftEditorState, LEARN_TRANSFER_MARKER,
 } from '@/utils/learn/learn-draft-store';
-import type { SkillDraft } from '@/utils/learn/learn-types';
+import type { SkillDraft, LearnDraftEditorState } from '@/utils/learn/learn-types';
 import SkillDraftConfirm from './SkillDraftConfirm.vue';
 import { modelSkillIdOf } from '@/utils/skills/skill-types';
 import {
@@ -242,12 +364,21 @@ import {
   type SkillMdIssue,
 } from '@/utils/skills/frontmatter-parser';
 import {
-  importSkillsFromZipBytes,
   importSkillFromMdText,
+  parseSkillZipBytes,
+  commitImportCandidates,
   downloadSkillZip,
   type SkillImportReport,
   type SkillImportSkip,
 } from '@/utils/skills/skill-import-export';
+import {
+  SKILL_IMPORT_MAX_FILE_CHARS,
+  SKILL_IMPORT_MAX_FILES,
+  SKILL_IMPORT_MAX_PACKAGE_BYTES,
+  SKILL_IMPORT_MAX_TOTAL_CHARS,
+  SKILL_IMPORT_WARN_BYTES,
+  SKILL_PATH_MAX_CHARS,
+} from '@/utils/skills/skill-types';
 
 // ──── 列表态 ────
 
@@ -262,6 +393,11 @@ onUnmounted(() => unsubscribe());
 
 /** 分类显示名：内置分类走 i18n，自定义分类原样展示 id；缺省归入通用（与智能体同规范） */
 const categoryLabel = (categoryId: string): string => categoryLabelOf(categoryId, id => t(id as MessageKey));
+
+/** 卡片徽章用：技能的资源文件数（SKILL.md 之外） */
+function resourceCountOf(skill: SkillRecord): number {
+  return Object.keys(skill.files ?? {}).filter(path => path !== 'SKILL.md').length;
+}
 
 const toggleEnabled = (skill: SkillRecord) => {
   setSkillEnabled(skill.id, !skill.enabled);
@@ -315,12 +451,13 @@ function importSkipText(skip: SkillImportSkip): string {
     'file-too-large': 'hub.importSkipFileTooLarge',
     'total-too-large': 'hub.importSkipTotalTooLarge',
     'skill-limit': 'hub.importSkipSkillLimit',
+    oversize: 'hub.importSkipOversize',
     'store-reject': 'hub.importSkipStoreReject',
   };
   return t(reasonKeys[skip.reason] as MessageKey, { source: skip.source });
 }
 
-/** 组装导入反馈文案（成功概要 + 重命名明细 + 跳过明细） */
+/** 组装导入反馈文案（成功概要 + 跳过明细 + 丢弃文件明细，行数封顶防刷屏） */
 function showImportFeedback(report: SkillImportReport, fileName: string): void {
   const lines: string[] = [];
   if (report.imported.length > 0) {
@@ -329,15 +466,35 @@ function showImportFeedback(report: SkillImportReport, fileName: string): void {
     lines.push(t('hub.importNone', { file: fileName }));
   }
   for (const skip of report.skipped) lines.push(importSkipText(skip));
+  // 二进制 / 超限文件被丢弃必须可见：静默丢文件会让用户以为导入是完整的
+  if (report.droppedFiles.length > 0) {
+    const shown = report.droppedFiles.slice(0, 5);
+    for (const dropped of shown) lines.push(t('hub.importDroppedFile', { path: dropped.path }));
+    if (report.droppedFiles.length > shown.length) {
+      lines.push(t('hub.importDroppedMore', { count: report.droppedFiles.length - shown.length }));
+    }
+  }
   importFeedbackLines.value = lines;
   importFeedbackTone.value = report.imported.length > 0 ? 'ok' : 'error';
   if (importFeedbackTimer) clearTimeout(importFeedbackTimer);
   importFeedbackTimer = setTimeout(() => {
     importFeedbackLines.value = [];
-  }, 15_000);
+  }, 20_000);
 }
 
-/** 读取并导入所选文件（zip 走批量解析，md 走单文解析；异常统一可读反馈） */
+/**
+ * 读取并导入所选文件。
+ *
+ * 工业级门序（前一关不过就不进入下一关，避免无谓的内存开销与副作用）：
+ *   1. 包体量硬门（zip）：unzipSync 是同步整包解压，超大包 / 解压炸弹会在
+ *      逐技能校验前打爆内存——读文件前用 file.size 一票否决；
+ *   2. 解析与逐技能校验（无 SKILL.md / 名称 / 体量上限…）；
+ *   3. 5MB 预警确认：超限技能逐个弹窗告知环境风险（无终端、脚本不可执行、
+ *      存储与同步成本），拒绝时只跳过超限项、不阻断同包其余技能；
+ *   4. 提交写内存表 + 排队持久化；
+ *   5. 落盘确认：chrome.storage 写失败 → 回滚到导入前快照并报错，
+ *      保证「列表所见 = 持久层所存」，杜绝关页丢数据 / 重试产生重复。
+ */
 async function handleImportFile(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
@@ -348,14 +505,83 @@ async function handleImportFile(event: Event): Promise<void> {
   try {
     const lowerName = file.name.toLowerCase();
     if (lowerName.endsWith('.zip')) {
+      // 门 1：包体量硬门
+      if (file.size > SKILL_IMPORT_MAX_PACKAGE_BYTES) {
+        importFeedbackLines.value = [
+          t('hub.importPackageTooLarge', {
+            file: file.name,
+            max: Math.round(SKILL_IMPORT_MAX_PACKAGE_BYTES / (1024 * 1024)),
+          }),
+        ];
+        importFeedbackTone.value = 'error';
+        return;
+      }
+
       const buffer = await file.arrayBuffer();
       const fallbackName = normalizeSkillName(file.name.replace(/\.zip$/i, '')) || 'imported-skill';
-      const report = importSkillsFromZipBytes(new Uint8Array(buffer), fallbackName);
+      // 门 2：解析与逐技能校验
+      const parsed = parseSkillZipBytes(new Uint8Array(buffer), fallbackName);
+
+      // 门 3：5MB 预警确认（列表超长截断，防止确认窗被数百个名字撑爆）
+      const oversize = parsed.candidates.filter(c => (c.bytes ?? 0) > SKILL_IMPORT_WARN_BYTES);
+      let approved = parsed.candidates;
+      if (oversize.length > 0) {
+        const totalBytes = oversize.reduce((sum, c) => sum + (c.bytes ?? 0), 0);
+        const nameList = oversize.map(c => c.name).slice(0, 8).join('、');
+        const list = oversize.length > 8 ? `${nameList} 等 ${oversize.length} 个` : nameList;
+        const ok = window.confirm(
+          t('hub.importOversizeConfirm', {
+            count: oversize.length,
+            size: (totalBytes / (1024 * 1024)).toFixed(1),
+            list,
+          }),
+        );
+        if (!ok) {
+          approved = parsed.candidates.filter(c => (c.bytes ?? 0) <= SKILL_IMPORT_WARN_BYTES);
+          for (const candidate of oversize) {
+            parsed.skipped.push({ source: candidate.name, reason: 'oversize' });
+          }
+        }
+      }
+
+      // 门 4 + 5：提交（先拍回滚点）→ 落盘确认 → 失败回滚
+      const snapshot = snapshotCustomSkills();
+      const report = commitImportCandidates(approved);
+      report.skipped.unshift(...parsed.skipped);
+      report.droppedFiles.push(...parsed.droppedFiles);
+
+      const flushed = await flushSkillStoreWrites();
+      if (!flushed.ok) {
+        rollbackCustomSkills(snapshot);
+        importFeedbackLines.value = [
+          t('hub.importStorageWriteFailed', { detail: flushed.error ?? '' }),
+        ];
+        importFeedbackTone.value = 'error';
+        return;
+      }
       showImportFeedback(report, file.name);
     } else if (lowerName.endsWith('.md')) {
+      // md 直导同样过体量门（file.size 以 UTF-8 字节计，与字符上限同量级判定）
+      if (file.size > SKILL_IMPORT_MAX_FILE_CHARS * 4) {
+        importFeedbackLines.value = [
+          t('hub.importSkipFileTooLarge', { source: file.name }),
+        ];
+        importFeedbackTone.value = 'error';
+        return;
+      }
       const text = await file.text();
       const fallbackName = file.name.replace(/\.md$/i, '');
+      const snapshot = snapshotCustomSkills();
       const report = importSkillFromMdText(text, fallbackName);
+      const flushed = await flushSkillStoreWrites();
+      if (!flushed.ok) {
+        rollbackCustomSkills(snapshot);
+        importFeedbackLines.value = [
+          t('hub.importStorageWriteFailed', { detail: flushed.error ?? '' }),
+        ];
+        importFeedbackTone.value = 'error';
+        return;
+      }
       showImportFeedback(report, file.name);
     } else {
       importFeedbackLines.value = [t('hub.importUnsupportedType', { file: file.name })];
@@ -377,6 +603,17 @@ const editingSource = ref<SkillRecord | null>(null);
 const errorMessage = ref('');
 /** 编辑模式：simple（表单）/ advanced（完整 SKILL.md 原文） */
 const editorMode = ref<'simple' | 'advanced'>('simple');
+
+/** 分段控件选项（随界面语言刷新显示名） */
+const modeOptions = computed(() => [
+  { value: 'simple', label: t('hub.modeSimple') },
+  { value: 'advanced', label: t('hub.modeAdvanced') },
+]);
+
+/** 分段控件 → switchMode 桥接（HubSegmented 的 value 为 string，此处收窄回联合类型） */
+function onModeChange(value: string): void {
+  if (value === 'simple' || value === 'advanced') switchMode(value);
+}
 
 const form = reactive({
   name: '',
@@ -401,61 +638,214 @@ const form = reactive({
  */
 let preservedFrontmatterLines: string[] = [];
 
-// ──── 网站学习成果（草稿深链消费） ────
+// ──── 资源文件（文件夹式技能：SKILL.md 之外的文件树） ────
+
+/**
+ * 资源文件表：相对路径 → 内容。与主编辑区（SKILL.md）分离承载，
+ * 简单 / 高级模式切换、保存、草稿预填都不触碰它——「简单模式保存绝不丢文件」
+ * 这条防线由数据结构保证，而不是靠流程小心。
+ */
+const resourceFiles = ref<Record<string, string>>({});
+const resourceFileCount = computed(() => Object.keys(resourceFiles.value).length);
+/** 单文件编辑面板开关 */
+const resourceEditorOpen = ref(false);
+/** 正在编辑的既有文件路径（null = 新建；与输入框不同即视为重命名/移动） */
+const resourceEditingPath = ref<string | null>(null);
+const resourceForm = reactive({ path: '', content: '' });
+const resourceError = ref('');
+
+/** 归一化资源路径：反斜杠转正斜杠、去空白与 './' 前缀（与导入清洗同规则） */
+function normalizeResourcePath(raw: string): string {
+  return raw.replace(/\\/g, '/').trim().replace(/^\.\/+/, '');
+}
+
+/** 路径含控制字符（NUL / 换行等，会污染存储键与 zip 导出路径）判定（逐码元扫描，规避 no-control-regex 对意图的误报） */
+function hasControlCharacter(text: string): boolean {
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/** 校验资源路径（originalPath 为正在编辑的原路径，重命名时排除自比较） */
+function validateResourcePath(path: string, originalPath: string | null): string | null {
+  if (
+    !path ||
+    path.startsWith('/') ||
+    // 段级硬边界：拒绝空段（连续 / 或尾随 /）、当前层引用（a/./b）与穿越（..）
+    path.split('/').some(segment => segment === '' || segment === '.' || segment === '..') ||
+    hasControlCharacter(path)
+  ) {
+    return t('hub.resourceFileInvalidPath');
+  }
+  if (path.toLowerCase() === 'skill.md') {
+    return t('hub.resourceFileReservedPath');
+  }
+  if (path.length > SKILL_PATH_MAX_CHARS) {
+    return t('hub.resourceFileInvalidPath');
+  }
+  const others = { ...resourceFiles.value };
+  if (originalPath !== null) delete others[originalPath];
+  if (others[path] !== undefined) {
+    return t('hub.resourceFileDuplicate');
+  }
+  return null;
+}
+
+function closeResourceEditor(): void {
+  resourceEditorOpen.value = false;
+  resourceEditingPath.value = null;
+  resourceForm.path = '';
+  resourceForm.content = '';
+  resourceError.value = '';
+}
+
+function startResourceCreate(): void {
+  closeResourceEditor();
+  resourceEditorOpen.value = true;
+}
+
+function openResourceFile(path: string): void {
+  const content = resourceFiles.value[path];
+  if (content === undefined) return;
+  closeResourceEditor();
+  resourceEditingPath.value = path;
+  resourceForm.path = path;
+  resourceForm.content = content;
+  resourceEditorOpen.value = true;
+}
+
+/**
+ * 保存资源文件（新建 / 覆盖 / 重命名移动共用）。
+ * 容量校验与导入同一套上限（单文件 / 总量含 SKILL.md / 文件数），
+ * 两处口径不一致会出现「能导入却在编辑器里存不进去」的割裂。
+ */
+function saveResourceFile(): void {
+  const path = normalizeResourcePath(resourceForm.path);
+  const pathError = validateResourcePath(path, resourceEditingPath.value);
+  if (pathError) {
+    resourceError.value = pathError;
+    return;
+  }
+  if (resourceForm.content.length > SKILL_IMPORT_MAX_FILE_CHARS) {
+    resourceError.value = t('hub.resourceFileTooLarge', { max: SKILL_IMPORT_MAX_FILE_CHARS });
+    return;
+  }
+  const next = { ...resourceFiles.value };
+  if (resourceEditingPath.value !== null && resourceEditingPath.value !== path) {
+    delete next[resourceEditingPath.value];
+  }
+  next[path] = resourceForm.content;
+  // 总量按「资源文件 + 当前模式下的 SKILL.md」估算；SKILL.md 变更在保存时再终检
+  const skillMdLength =
+    editorMode.value === 'simple' ? composeSkillMd().length : form.raw.length;
+  const totalChars =
+    Object.entries(next).reduce((sum, [, content]) => sum + content.length, 0) + skillMdLength;
+  if (totalChars > SKILL_IMPORT_MAX_TOTAL_CHARS) {
+    resourceError.value = t('hub.resourceTotalTooLarge', { max: SKILL_IMPORT_MAX_TOTAL_CHARS });
+    return;
+  }
+  if (Object.keys(next).length + 1 > SKILL_IMPORT_MAX_FILES) {
+    resourceError.value = t('hub.resourceFileLimit', { max: SKILL_IMPORT_MAX_FILES });
+    return;
+  }
+  resourceFiles.value = next;
+  closeResourceEditor();
+}
+
+/** 删除资源文件（二次确认；正在编辑该文件时同步关闭编辑面板） */
+function removeResourceFile(path: string): void {
+  if (!window.confirm(t('hub.confirmDeleteResourceFile', { path }))) return;
+  const next = { ...resourceFiles.value };
+  delete next[path];
+  resourceFiles.value = next;
+  if (resourceEditingPath.value === path) closeResourceEditor();
+}
+
+// ──── 网站学习成果（持久交接与编辑恢复） ────
 
 /** 学习成果确认卡（预填后展示；null = 无待确认成果） */
 const draftCard = ref<{ draft: SkillDraft; finalName: string } | null>(null);
-/** 编辑中收到交付信号：挂起为待导入（peek 不消费，见 consumeLearnDraft） */
-const pendingDraftImport = ref(false);
+const emit = defineEmits<{ editorState: [editing: boolean] }>();
+watch(editing, value => emit('editorState', value), { immediate: true, flush: 'sync' });
+const activeTransferId = ref<string | null>(null);
+const acceptingDraft = ref(false);
+const saving = ref(false);
+let releaseEditor: (() => void) | null = null;
+let editorWrites: Promise<void> = Promise.resolve();
+let editorWriteError = '';
+let restoringDraft = false;
+let destroyed = false;
 
-/**
- * 消费网站学习草稿（外壳在深链 / 挂载时调用；one-shot 由存储层保证幂等）。
- *
- * @param viaHash 是否由深链触发——深链对用户承诺了「成果已送达」，
- *                缺失 / 过期 / 形态非法都要明确告知；常规打开只在拿到
- *                有效草稿时静默接手（完成未竟的交付），不打扰无关访问。
- *
- * 编辑态冲突：绝不打断用户正在编辑的内容——peek 探测后挂起为待导入信号
- * （读取即删的语义留给用户真正接手的那一刻），编辑结束时自动接手。
- */
-async function consumeLearnDraft(viaHash: boolean): Promise<void> {
-  if (editing.value) {
-    if (await hasLearnDraft()) pendingDraftImport.value = true;
-    return;
-  }
-  applyDraftResult(await takeLearnDraft(), viaHash);
+function editorSnapshot(): LearnDraftEditorState {
+  return JSON.parse(JSON.stringify({ form, editorMode: editorMode.value, preservedFrontmatterLines,
+    resourceFiles: resourceFiles.value, resourceEditorOpen: resourceEditorOpen.value,
+    resourceEditingPath: resourceEditingPath.value, resourceForm }));
 }
+function queueEditorCopy(): void {
+  const id = activeTransferId.value;
+  if (!id || restoringDraft) return;
+  const snapshot = editorSnapshot();
+  editorWrites = editorWrites.then(async () => {
+    const result = await saveLearnDraftEditor(id, snapshot);
+    editorWriteError = result.ok ? '' : result.error;
+    if (!result.ok) errorMessage.value = t('hub.learnEditorCopyFailed', { detail: result.error });
+  }).catch(error => { editorWriteError = String(error); errorMessage.value = t('hub.learnEditorCopyFailed', { detail: String(error) }); });
+}
+watch(() => activeTransferId.value ? JSON.stringify(editorSnapshot()) : '', queueEditorCopy, { flush: 'sync' });
+onUnmounted(() => { destroyed = true; void editorWrites.finally(() => releaseEditor?.()); });
 
-/** 按消费结果分流：有效草稿 → 预填；否则按触发口径决定是否提示 */
-function applyDraftResult(result: LearnDraftTakeResult, viaHash: boolean): void {
-  if (result.status === 'ok') {
-    startCreateWithDraft(result.draft);
-    return;
-  }
-  // 'none'：存储里没有草稿——多半是**已经被消费**（用户已在另一个管理中心
-  // 标签里处理过）或被中止流程清除。此时提示「已过期」会让人误以为成果丢了，
-  // 与 learn-draft-store 对该状态的定义相悖；深链仍开空表单，但静默。
-  if (result.status === 'none') {
-    if (viaHash) startCreate();
-    return;
-  }
-  if (!viaHash) return; // 常规打开：已过期 / 脏数据一律静默
-  startCreate();
-  errorMessage.value = t(
-    result.status === 'invalid' ? 'hub.learnDraftInvalid' : 'hub.learnDraftExpired',
-  );
+/** Only the shell's explicit user acknowledgement can open this form. */
+async function acceptLearnDraft(id: string): Promise<{ ok: boolean; error?: string }> {
+  if (acceptingDraft.value || saving.value) return { ok: false, error: t('hub.learnHandoffBusy') };
+  if (activeTransferId.value === id) return { ok: true };
+  if (editing.value) return { ok: false, error: t('hub.learnHandoffSaveFirst') };
+  acceptingDraft.value = true;
+  let claim: Awaited<ReturnType<typeof claimLearnDraftEditor>> | null = null;
+  try {
+    claim = await claimLearnDraftEditor();
+    if (!claim.ok) return claim;
+    const result = await readLearnDraft(id);
+    if (destroyed) return { ok: false, error: t('hub.learnHandoffReadFailed') };
+    if (result.status !== 'ok') return { ok: false, error: t('hub.learnHandoffReadFailed') };
+    if (result.transfer.status !== 'pending') return { ok: false, error: t('hub.learnHandoffAlreadyHandled') };
+    if (editing.value) return { ok: false, error: t('hub.learnHandoffSaveFirst') };
+    const state = result.transfer.editorState;
+    if (state !== undefined && !isLearnDraftEditorState(state)) return { ok: false, error: t('hub.learnHandoffReadFailed') };
+    const saved = getAllSkills().find(skill => skill.source === 'custom' && parseFrontmatter(skill.files['SKILL.md'] ?? '').data[LEARN_TRANSFER_MARKER] === id);
+    if (saved && !state) {
+      const acknowledged = await completeLearnDraft(id, saved.id);
+      return acknowledged.ok ? { ok: false, error: t('hub.learnHandoffAlreadyHandled') } : acknowledged;
+    }
+    restoringDraft = true;
+    startCreateWithDraft(result.transfer.draft);
+    if (state) {
+      Object.assign(form, state.form); editorMode.value = state.editorMode;
+      preservedFrontmatterLines = [...state.preservedFrontmatterLines];
+      resourceFiles.value = { ...state.resourceFiles }; resourceEditorOpen.value = state.resourceEditorOpen;
+      resourceEditingPath.value = state.resourceEditingPath; Object.assign(resourceForm, state.resourceForm);
+    }
+    if (saved) { editingSource.value = saved; editingExisting.value = true; }
+    preservedFrontmatterLines = preservedFrontmatterLines.filter(line => !line.startsWith(LEARN_TRANSFER_MARKER + ':'));
+    preservedFrontmatterLines.push(LEARN_TRANSFER_MARKER + ': ' + id);
+    activeTransferId.value = id;
+    releaseEditor = claim.release; claim = null;
+    editorWriteError = '';
+    restoringDraft = false;
+    queueEditorCopy();
+    return { ok: true };
+  } catch (error) { return { ok: false, error: String(error) }; }
+  finally { restoringDraft = false; if (claim?.ok) claim.release(); acceptingDraft.value = false; }
 }
 
 /**
  * 预填表单并弹出确认卡。
- * 名称在预填时就做重名避让——AI 生成的名字与既有技能撞车概率不低，
- * 避让只是给一个不撞车的默认名（同名本身已合法、不会导致保存失败），
- * 用户仍可在表单里改回原名。
+ * 保留生成的原名；技能身份由 id 区分，同名不会覆盖既有技能。
  */
 function startCreateWithDraft(draft: SkillDraft): void {
   startCreate(); // 进入创建态、清空表单（resetForm 同步复位确认卡）
-  pendingDraftImport.value = false;
-  const finalName = getSkillByName(draft.name) ? uniqueSkillName(draft.name) : draft.name;
+  const finalName = draft.name;
   form.name = finalName;
   form.description = draft.description;
   form.body = draft.body;
@@ -473,6 +863,8 @@ function startCreateWithDraft(draft: SkillDraft): void {
   preservedFrontmatterLines = draft.allowedTools.length > 0
     ? [`allowed-tools: ${draft.allowedTools.join(' ')}`]
     : [];
+  preservedFrontmatterLines.push(`x-learning-mode: ${draft.mode}`);
+  if (draft.summary) preservedFrontmatterLines.push(`x-learning-summary: ${JSON.stringify(draft.summary)}`);
   draftCard.value = { draft, finalName };
 }
 
@@ -530,8 +922,17 @@ const rawIssues = computed<string[]>(() =>
   }),
 );
 
+/**
+ * 可保存判定：
+ *   - 简单模式：表单校验通过；
+ *   - 高级模式：SKILL.md 校验通过 **且** 资源文件编辑面板已关闭——
+ *     面板内容只有在面板内「保存文件」后才进入文件表，主保存带着未保存的
+ *     面板直接提交会静默丢掉那份编辑。禁用 + 提示，而不是替用户决定。
+ */
 const canSave = computed(() =>
-  editorMode.value === 'simple' ? simpleValid.value : rawValidation.value.ok,
+  editorMode.value === 'simple'
+    ? simpleValid.value
+    : rawValidation.value.ok && !resourceEditorOpen.value,
 );
 
 function resetForm(): void {
@@ -545,6 +946,8 @@ function resetForm(): void {
   preservedFrontmatterLines = [];
   errorMessage.value = '';
   draftCard.value = null;
+  resourceFiles.value = {};
+  closeResourceEditor();
 }
 
 function startCreate(): void {
@@ -589,6 +992,11 @@ function startEdit(skill: SkillRecord): void {
   form.description = skill.description;
   form.body = skill.body.replace(/\s+$/, '');
   form.raw = skillMd;
+  // 资源文件整体带入（浅拷贝隔离编辑副本；保存时与重写的 SKILL.md 合并落库）
+  resourceFiles.value = Object.fromEntries(
+    Object.entries(skill.files).filter(([path]) => path !== 'SKILL.md'),
+  );
+  closeResourceEditor();
   // 分类回填：内置分类直接选中；自定义分类进入「自定义创建」态并回填名称
   // （历史数据缺分类时由存储层归入通用，此处不会出现空白项）
   if (!skill.category || isBuiltinCategory(skill.category)) {
@@ -605,16 +1013,17 @@ function startEdit(skill: SkillRecord): void {
   editing.value = true;
 }
 
-function cancelEdit(): void {
-  editing.value = false;
-  editingSource.value = null;
-  resetForm();
-  // 编辑期间挂起的交付信号：编辑结束即接手（保留深链提示口径——
-  // 若等待期间草稿过期/被清，用户会得到明确告知而不是静默落空）
-  if (pendingDraftImport.value) {
-    pendingDraftImport.value = false;
-    void consumeLearnDraft(true);
-  }
+async function cancelEdit(): Promise<void> {
+  if (saving.value) return;
+  await editorWrites;
+  if (editorWriteError) { errorMessage.value = t('hub.learnEditorCopyFailed', { detail: editorWriteError }); return; }
+  finishEditing();
+}
+function finishEditing(): void {
+  activeTransferId.value = null;
+  releaseEditor?.(); releaseEditor = null;
+  editorWriteError = '';
+  editing.value = false; editingSource.value = null; resetForm();
 }
 
 /**
@@ -701,23 +1110,51 @@ function writeErrorText(result: Extract<SkillWriteResult, { ok: false }>): strin
   }
 }
 
-function save(): void {
+async function save(): Promise<void> {
+  if (saving.value) return;
+  saving.value = true;
+  try { await saveImpl(); }
+  catch (error) { errorMessage.value = String(error); }
+  finally { saving.value = false; }
+}
+async function saveImpl(): Promise<void> {
   if (!canSave.value) {
-    errorMessage.value = t('hub.errorSkillInvalid');
+    // 区分不可保存原因：资源面板未收起（提示收面板）而非笼统的「表单不完整」
+    errorMessage.value =
+      editorMode.value === 'advanced' && resourceEditorOpen.value
+        ? t('hub.resourceEditorOpenHint')
+        : t('hub.errorSkillInvalid');
     return;
   }
 
+  const submittedSnapshot = JSON.stringify(editorSnapshot());
   // 两种模式最终都收敛为「完整 SKILL.md 原文 + 显式 name/description」
-  const skillMd = editorMode.value === 'simple' ? composeSkillMd() : form.raw;
+  let skillMd = editorMode.value === 'simple' ? composeSkillMd() : form.raw;
+  if (activeTransferId.value) {
+    const id = activeTransferId.value;
+    if (parseFrontmatter(skillMd).data[LEARN_TRANSFER_MARKER] !== id) {
+      const lines = skillMd.replace(/\r\n/g, '\n').split('\n');
+      const end = lines.findIndex((line, index) => index > 0 && (line.trim() === '---' || line.trim() === '...'));
+      if (lines[0]?.trim() !== '---' || end < 1) throw new Error(t('hub.errorSkillInvalid'));
+      skillMd = ['---', ...lines.slice(1, end).filter(line => !line.startsWith(LEARN_TRANSFER_MARKER + ':')), `${LEARN_TRANSFER_MARKER}: ${id}`, ...lines.slice(end)].join('\n');
+    }
+  }
   const parsed = parseFrontmatter(skillMd);
   const name = normalizeSkillName(
     parsed.data['name'] || editingSource.value?.name || form.name,
   );
   const description = (parsed.data['description'] || form.description || '').trim();
 
-  // 资源文件保留：仅重写 SKILL.md，其余文件（references 等）原样携带
-  const files: Record<string, string> = { ...(editingSource.value?.files ?? {}) };
+  // 资源文件与重写的 SKILL.md 合并（简单模式同样保留资源文件——数据结构保证不丢）
+  const files: Record<string, string> = { ...resourceFiles.value };
   files['SKILL.md'] = skillMd;
+
+  // 总量终检（与导入同一套上限；资源面板已按同一口径预检，此处兜底 SKILL.md 本身）
+  const totalChars = Object.entries(files).reduce((sum, [, content]) => sum + content.length, 0);
+  if (totalChars > SKILL_IMPORT_MAX_TOTAL_CHARS) {
+    errorMessage.value = t('hub.resourceTotalTooLarge', { max: SKILL_IMPORT_MAX_TOTAL_CHARS });
+    return;
+  }
 
   // allowed-tools 保留判定：frontmatter 中的 allowed-tools 行未被用户改动时，
   // 显式沿用原记录的归一化列表——保留可能存在的持久化覆盖（反序列化语义），
@@ -733,7 +1170,8 @@ function save(): void {
       : {};
 
   const result = setCustomSkill({
-    id: editingSource.value?.id,
+    id: editingSource.value?.id ?? (activeTransferId.value ? getAllSkills().find(skill =>
+      skill.source === 'custom' && parseFrontmatter(skill.files['SKILL.md'] ?? '').data[LEARN_TRANSFER_MARKER] === activeTransferId.value)?.id : undefined),
     name,
     files,
     description,
@@ -744,13 +1182,34 @@ function save(): void {
     errorMessage.value = writeErrorText(result);
     return;
   }
+
+  // 落盘确认：chrome.storage 写失败时保留编辑态（用户可重试保存或先导出），
+  // 绝不让「界面提示已保存、重启后技能消失」的静默丢失发生
+  editingSource.value = result.skill;
+  editingExisting.value = true;
+  const flushed = await flushSkillStoreWrites();
+  if (!flushed.ok) {
+    errorMessage.value = t('hub.errorSkillStorageWrite', { detail: flushed.error ?? '' });
+    return;
+  }
+  // 防御程序化更新/异步回调：保存途中出现的新编辑不能被旧保存结果关闭。
+  if (JSON.stringify(editorSnapshot()) !== submittedSnapshot) {
+    errorMessage.value = t('hub.editorChangedDuringSave');
+    return;
+  }
+
   // 成功创建（且本次来自学习成果确认卡）→ 关掉确认卡：
   // 成果已落库，卡片再挂着会让「确认一次后仍显示待确认」误导用户重复点击
   //（表单校验失败 / 存储层拒绝时保留卡片，故只在成功路径清理）
+  if (activeTransferId.value) {
+    await editorWrites;
+    const acknowledged = await completeLearnDraft(activeTransferId.value, result.skill.id);
+    if (!acknowledged.ok) { errorMessage.value = t('hub.learnHandoffAckFailed'); return; }
+  }
   draftCard.value = null;
-  cancelEdit();
+  finishEditing();
 }
 
-/** 供外壳（hub App）在深链 / 挂载时调用的草稿消费入口 */
-defineExpose({ consumeLearnDraft });
+/** 供外壳在用户主动确认后调用；深链与挂载不能直接触发预填。 */
+defineExpose({ acceptLearnDraft });
 </script>

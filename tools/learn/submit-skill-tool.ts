@@ -190,10 +190,11 @@ export class SubmitSkillTool extends BaseTool {
       description:
         '提交本次网站学习的终态并结束学习阶段。**无论成功还是失败，本阶段都只能靠调用本工具结束**，' +
         '不要用一段文字总结代替提交。\n' +
-        'status=success：已经完整跑通目标流程，交出可入库的技能草稿（需填 name/description/category/body/allowedTools/mode）。\n' +
+        'status=success：已掌握完整端到端路径及关键差异，交出可复用技能草稿（需填 name/description/category/body/allowedTools/mode）。批量任务默认用 2–3 条有差异的代表样本，不执行整批，不为测试重复发送/投递；保留遍历、去重、逐条结果及终止规则，注明覆盖限制。\n' +
         'status=failed：流程本身没走通但原因已定位，**不必交正文**——填 reason（原因分类）、' +
         'detail（卡在哪一步、期望什么、实际什么）、findings（已经探明的可复用知识）与 suggestion（建议的下一步）。\n' +
-        'status=blocked：被必须由人完成的前置条件挡住（登录、验证码、扫码、付费、授权），其余字段同 failed。\n' +
+        '优先核实用户额外描述，证实的步骤与澄清必须写入正文；与实际冲突或无法推进时先调用 interact 等真实答复，不擅改要求。\n' +
+        'status=blocked：请求用户补充或手动处理后仍受阻，其余字段同 failed。\n' +
         '参数不合法会返回可读错误且**不会**结束学习，请按错误提示修正后重新提交。',
       parameters: {
         type: 'object',
@@ -442,7 +443,7 @@ export class SubmitSkillTool extends BaseTool {
       if (body.length > SKILL_BODY_MAX_CHARS) {
         return skillFailure(
           '正文超长',
-          `body 长度 ${body.length} 超过上限 ${SKILL_BODY_MAX_CHARS}（超出的部分会在注入时被截断，导致技能尾部步骤丢失）`,
+          `body 长度 ${body.length} 超过上限 ${SKILL_BODY_MAX_CHARS}（激活注入按约 3000 token 分页，超长正文的后续页依赖模型主动翻页，尾部步骤极易漏执行）`,
           '精简正文：合并重复步骤、压缩示例与解释、坑点只保留会导致失败的关键项；结构小节标题保留',
         );
       }

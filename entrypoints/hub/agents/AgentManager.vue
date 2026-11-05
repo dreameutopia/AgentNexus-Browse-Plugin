@@ -5,18 +5,23 @@
       <div class="hub-list-toolbar">
         <span class="hub-list-count">{{ t('hub.agentCount', { count: filteredAgents.length }) }}</span>
         <div class="hub-list-filters">
-          <input
-            v-model.trim="filterQuery"
-            type="text"
-            class="hub-list-search"
-            :placeholder="t('hub.searchAgentPlaceholder')"
+          <div class="hub-search">
+            <svg class="hub-search__icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M11.1 10.2a4.6 4.6 0 1 0-.9.9l3 3 .9-.9-3-3zm-4.1.3a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z" fill="currentColor" />
+            </svg>
+            <input
+              v-model.trim="filterQuery"
+              type="text"
+              class="hub-list-search"
+              :placeholder="t('hub.searchAgentPlaceholder')"
+            />
+          </div>
+          <HubSelect
+            v-model="filterCategory"
+            :options="filterCategoryOptions"
+            :aria-label="t('hub.fieldCategory')"
+            style="width: 168px"
           />
-          <select v-model="filterCategory" class="hub-list-category">
-            <option value="">{{ t('hub.filterAllCategories') }}</option>
-            <option v-for="category in availableCategories" :key="category.id" :value="category.id">
-              {{ category.labelKey ? t(category.labelKey as MessageKey) : category.id }}
-            </option>
-          </select>
           <button type="button" class="hub-btn hub-btn-primary" @click="startCreate">
             {{ t('hub.newAgent') }}
           </button>
@@ -166,6 +171,7 @@
                   :class="{ checked: form.groups.includes(group.id), locked: isGroupLocked(group.id) }"
                 >
                   <input
+                    class="hub-check"
                     type="checkbox"
                     :value="group.id"
                     :checked="form.groups.includes(group.id)"
@@ -199,6 +205,7 @@
                   :class="{ checked: form.skills.includes(skill.id), 'is-disabled-skill': !skill.enabled }"
                 >
                   <input
+                    class="hub-check"
                     type="checkbox"
                     :value="skill.id"
                     :checked="form.skills.includes(skill.id)"
@@ -210,28 +217,26 @@
                 </label>
               </div>
             </div>
-            <label v-for="missing in missingSkillRefs" :key="missing" class="hub-hint"><input type="checkbox" checked @change="toggleSkill(missing)" />{{ missing }} · {{ t('hub.skillDisabledMark') }}</label>
+            <label v-for="missing in missingSkillRefs" :key="missing" class="hub-hint"><input class="hub-check" type="checkbox" checked @change="toggleSkill(missing)" />{{ missing }} · {{ t('hub.skillDisabledMark') }}</label>
             <p class="hub-hint">{{ t('hub.fieldAgentSkillsHint') }}</p>
           </div>
 
           <fieldset class="hub-field">
             <legend class="hub-field-label">{{ t('hub.fieldVision') }}</legend>
-            <label class="hub-switch-row">
-              <input type="checkbox" v-model="form.visionEnabled" />
-              <span>{{ t('hub.visionEnable') }}</span>
-            </label>
+            <HubSwitch v-model="form.visionEnabled">{{ t('hub.visionEnable') }}</HubSwitch>
             <template v-if="form.visionEnabled">
               <p class="hub-hint">{{ t('hub.visionCoordinatesHint') }}</p>
               <label class="hub-inline-field hub-vision-tool">
                 <span>{{ t('hub.screenshotTool') }}</span>
-                <select v-model="form.screenshotTool">
-                  <option value="screenshot">screenshot</option>
-                </select>
+                <HubSelect
+                  :model-value="form.screenshotTool"
+                  :options="[{ value: 'screenshot', label: 'screenshot' }]"
+                  :aria-label="t('hub.screenshotTool')"
+                  style="width: 200px"
+                  @update:model-value="form.screenshotTool = 'screenshot'"
+                />
               </label>
-              <label class="hub-switch-row">
-                <input type="checkbox" v-model="form.reScreenshotAfterTools" />
-                <span>{{ t('hub.reScreenshot') }}</span>
-              </label>
+              <HubSwitch v-model="form.reScreenshotAfterTools">{{ t('hub.reScreenshot') }}</HubSwitch>
             </template>
           </fieldset>
         </div>
@@ -255,13 +260,16 @@
  * 采样参数（temperature / maxTokens）与流式开关已移除——统一取用户全局 API 配置，流式恒开。
  * 写入经 utils/agents/agent-store（chrome.storage 权威源），跨上下文实时同步到 sidepanel。
  */
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { t, type MessageKey } from '@/utils/i18n';
 // 智能体头像展示（图片或 emoji，无背景色）：预置 / 自定义 / 导入三类智能体共用
 import AgentAvatar from '@/common/AgentAvatar.vue';
 // 智能体展示文案随界面语言切换（预置智能体的多语言文案；自定义智能体沿用其自填文案）
 import { useAgentDisplay } from '@/common/use-agent-display';
 import CategorySelect from '../components/CategorySelect.vue';
+// Hub 共享自定义控件：玻璃选择框与 iOS 形态开关（设计语言统一，见 hub.css）
+import HubSelect from '../components/HubSelect.vue';
+import HubSwitch from '../components/HubSwitch.vue';
 import ExternalToolsPicker from './ExternalToolsPicker.vue';
 import TagInput from '../components/TagInput.vue';
 // 头像 emoji 选择卡片（全量清单网格，取代原预置图片选择）
@@ -375,6 +383,15 @@ const availableCategories = computed(() => {
   return [...builtin, ...custom];
 });
 
+/** 筛选下拉选项（自绘选择框用）：全部 + 各分类的当前语言显示名 */
+const filterCategoryOptions = computed(() => [
+  { value: '', label: t('hub.filterAllCategories') },
+  ...availableCategories.value.map(category => ({
+    value: category.id,
+    label: category.labelKey ? t(category.labelKey) : category.id,
+  })),
+]);
+
 const filteredAgents = computed(() => {
   const query = filterQuery.value.toLowerCase();
   const category = filterCategory.value;
@@ -445,6 +462,8 @@ function toggleSkill(skillId: string): void {
 // ──── 编辑态 ────
 
 const editing = ref(false);
+const emit = defineEmits<{ editorState: [editing: boolean] }>();
+watch(editing, value => emit('editorState', value), { immediate: true, flush: 'sync' });
 const editingExisting = ref(false);
 /** 正在编辑的原始配置（重命名时删除旧键）；null = 新建 */
 const editingSource = ref<AgentConfig | null>(null);

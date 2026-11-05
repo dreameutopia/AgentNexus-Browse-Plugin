@@ -40,6 +40,7 @@ import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
 import { TOOL_NAMES, isRestrictedUrl } from '@/common/constants';
 import { cdpSession } from './cdp-session';
+import { CONFIRM_GUIDANCE, CONFIRM_PARAMETER_DESCRIPTION } from '../confirmation-policy';
 import {
   saveDataRefJson,
   getDataRef,
@@ -103,7 +104,7 @@ interface PageExecParams {
   /** readRef 模式：本页字符数（默认 2000，上限 2000，超出自动收敛） */
   limit?: number;
   /**
-   * 脚本含不可逆操作（提交 / 下单 / 发送 / 删除）时传 true，触发执行前的用户批准。
+   * 脚本涉及工具说明列出的资金/敏感操作时传 true，请求执行前用户审批。
    * 仅参与审批判定，不透传给页面。
    */
   confirm?: boolean;
@@ -392,7 +393,7 @@ export class PageExecTool extends BaseBrowserTool {
     tags: ['browser', 'script', 'exec', 'rpa', 'cdp', 'chrome'],
     displayName: '页面执行引擎',
     permissions: ['scripting', 'debugger'],
-    // 参数语义级人审门：本工具可执行任意 JS，脚本含不可逆操作时必须由模型
+    // 参数语义级人审门：本工具可执行任意 JS，脚本含资金/敏感操作时由模型
     // 显式 confirm=true 触发用户批准（code 不参与关键词扫描——抓取脚本里
     // 出现「提交/删除」等词属正常代码，扫描会大量误伤）
     requiresConfirm: true,
@@ -403,15 +404,15 @@ export class PageExecTool extends BaseBrowserTool {
     function: {
       name: TOOL_NAMES.BROWSER.PAGE_EXEC,
       description:
-        '在指定页面/frame 执行 async JavaScript 函数体，用 return 返回结果。' +
+        '在指定页面/frame 执行 async JavaScript 函数体，用 return 返回精简对象或所需字段，不必 JSON.stringify。' +
         '自动分层执行：普通代码走页面主世界注入；遇到严格 CSP 拒绝 eval 时自动升级 CDP 通道（无视页面 CSP）；' +
         '只有用户代码尚未执行的权限探测失败才切换引擎；代码开始后不自动重放。CDP 失败明确报错。' +
-        '适用：RPA 抓取结构化数据、去广告去弹窗、填写表单、读取页面 JS 状态、自动化操作等。' +
-        '需要访问页面全局变量（如 window.xxx）或在严格 CSP 站点执行 eval 时，建议 strategy 设为 "cdp"。' +
+        '适用：普通观察不足时读取结构化数据/组件状态，或专用工具无法完成的必要操作；常规点击/填写优先 browser_interact。合并独立只读检查，写操作逐次执行并核对业务回执，不用长循环反复滚动/点击/提交。' +
+        '默认 auto 通常足够；只有确需调试器通道时才指定 strategy="cdp"。读取 DOM 可按需使用 world="ISOLATED"，不能假定隔离世界能读页面全局变量。超时不保证脚本已停止，先核对现状，不重放效果未知的操作。' +
         '数据输出契约：单次响应的数据正文最多 2000 字符——总长 ≤2000 字符的结果全量返回；' +
         '更长的结果自动存入数据暂存区（saveResult 省略或 false 也会自动触发；saveResult=true 则即使 ≤2000 字符也强制暂存），' +
         '响应只保留前 2000 字符预览（result 字段，附 totalChars/resultTruncated）与 dataRef 引用（行数/字段统计）。' +
-        '要查看暂存数据的其它片段：传 readRef=引用ID（此时不要传 code），用 offset/limit 分页读取，每页最多 2000 字符。',
+        '要查看暂存数据的其它片段：传 readRef=引用ID（此时不要传 code），用 offset/limit 分页读取，每页最多 2000 字符。' + CONFIRM_GUIDANCE,
       parameters: {
         type: 'object',
         properties: {
@@ -495,9 +496,7 @@ export class PageExecTool extends BaseBrowserTool {
           },
           confirm: {
             type: 'boolean',
-            description:
-              '脚本包含不可逆操作（提交表单 / 下单支付 / 发送消息 / 删除数据等）时必须传 true——' +
-              '系统会停下来等用户批准后再执行。只读抓取、去广告、读取页面状态等脚本省略或传 false。',
+            description: CONFIRM_PARAMETER_DESCRIPTION,
             default: false,
           },
         },

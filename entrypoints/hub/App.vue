@@ -21,6 +21,27 @@
         </div>
       </header>
 
+      <section v-if="visibleTransfers.length || handoffError" class="hub-handoff" aria-live="polite">
+        <div>
+          <strong>{{ t('hub.learnHandoffTitle') }}</strong>
+          <p>{{ t('hub.learnHandoffIntro') }}</p>
+          <p v-if="agentEditorOpen || skillEditorOpen" class="hub-handoff__warning">{{ t('hub.learnHandoffSaveFirst') }}</p>
+          <p v-if="handoffError" class="hub-handoff__error" role="alert">{{ handoffError }}</p>
+        </div>
+        <div class="hub-handoff__actions">
+          <HubSelect
+            v-if="visibleTransfers.length"
+            v-model="selectedTransferId"
+            :options="transferOptions"
+            :disabled="handoffBusy"
+            :aria-label="t('hub.learnHandoffSelect')"
+            style="width: min(420px, 100%)"
+          />
+          <button type="button" class="hub-btn hub-btn-primary" :disabled="handoffBusy || !visibleTransfers.length || agentEditorOpen || skillEditorOpen" @click="acceptHandoff">{{ t('hub.learnHandoffAccept') }}</button>
+          <button type="button" class="hub-btn" :disabled="handoffBusy" @click="refreshPending">{{ t('hub.learnHandoffRetry') }}</button>
+        </div>
+      </section>
+
       <!-- 左右布局：左侧导航 + 右侧内容 -->
       <div class="api-config-layout">
         <aside class="api-config-nav">
@@ -37,12 +58,12 @@
         </aside>
 
         <!-- 分区内容（v-show 常驻挂载：切换不丢编辑中的表单状态） -->
-        <main class="api-config-body">
+        <main class="api-config-body" :inert="handoffBusy" :aria-busy="handoffBusy">
           <section v-show="activeSection === 'agents'" class="api-section">
-            <AgentManager />
+            <AgentManager @editor-state="agentEditorOpen = $event" />
           </section>
           <section v-show="activeSection === 'skills'" class="api-section">
-            <SkillManager ref="skillManagerRef" />
+            <SkillManager ref="skillManagerRef" @editor-state="onSkillEditorState" />
           </section>
           <section v-show="activeSection === 'plugins'" class="api-section"><PluginManager /></section>
           <section v-show="activeSection === 'backup'" class="api-section">
@@ -61,22 +82,23 @@
  * 各分区为自包含管理组件，直接读写共享存储层（utils/agents、utils/skills），
  * 保存后经 chrome.storage 跨上下文同步实时作用于 sidepanel。
  *
- * 网站学习草稿深链（hub.html#new-skill）：hash 命中 → 切到技能分区并把
- * 消费信号交给 SkillManager；处理后立即清 hash（replaceState 不触发
- * hashchange，无循环），避免刷新重复命中。挂载与 hashchange 双监听——
- * sidepanel 复用已开标签页走 tabs.update，只监听挂载会漏掉该路径。
+ * 学习深链仅选择待接收成果，保留各分区编辑状态；主动确认后才交给 SkillManager。
+ * 挂载、hashchange 与 storage 变化均可刷新队列，不依赖一次性消费信号。
  */
-import { onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { t, useLocale, LOCALE_OPTIONS, type MessageKey } from '@/utils/i18n';
 // 复用设置弹窗壳样式（布局/头部/侧导航/分区容器），视觉与设置弹窗完全一致
 import '../sidepanel/components/modals/settings-modal.css';
 import AgentManager from './agents/AgentManager.vue';
+// Hub 共享自定义选择框（学习成果下拉；全站替换原生 <select>）
+import HubSelect from './components/HubSelect.vue';
 import PluginManager from './plugins/PluginManager.vue';
 import { startPluginClient } from '@/utils/plugins/client';
 void startPluginClient().catch(error => console.warn('[Plugins] Startup failed', error));
 import SkillManager from './skills/SkillManager.vue';
 import BackupSection from './BackupSection.vue';
-import { LEARN_DRAFT_HASH } from '@/utils/learn/learn-types';
+import { LEARN_DRAFT_HASH, type LearnDraftTransfer } from '@/utils/learn/learn-types';
+import { listLearnDrafts, readLearnDraft, watchLearnDrafts, isLearnTransferId } from '@/utils/learn/learn-draft-store';
 
 type HubSection = 'agents' | 'skills' | 'plugins' | 'backup';
 
@@ -89,8 +111,66 @@ const sections: ReadonlyArray<{ id: HubSection; labelKey: MessageKey }> = [
 
 const activeSection = ref<HubSection>('agents');
 
-/** 技能分区管理器（草稿消费入口：深链信号经此交给它，编辑态冲突由其自行处置） */
+/** 技能分区管理器：仅在用户明确确认后接收指定成果。 */
 const skillManagerRef = ref<InstanceType<typeof SkillManager> | null>(null);
+const agentEditorOpen = ref(false), skillEditorOpen = ref(false);
+const pendingTransfers = ref<LearnDraftTransfer[]>([]);
+const selectedTransferId = ref('');
+const editingTransferId = ref('');
+const handoffError = ref(''), handoffBusy = ref(false);
+const visibleTransfers = computed(() => pendingTransfers.value.filter(item => !skillEditorOpen.value || item.id !== editingTransferId.value));
+/** 接收条下拉选项（自绘选择框用）：成果名 + 交付时间 */
+const transferOptions = computed(() => visibleTransfers.value.map(item => ({
+  value: item.id,
+  label: `${item.draft.name} · ${new Date(item.createdAt).toLocaleString()}`,
+})));
+let requestedTransferId = '';
+let refreshGeneration = 0;
+let disposed = false;
+function onSkillEditorState(open: boolean): void {
+  skillEditorOpen.value = open;
+  if (!open) editingTransferId.value = '';
+}
+
+async function refreshPending(): Promise<void> {
+  const generation = ++refreshGeneration;
+  const result = await listLearnDrafts();
+  if (disposed || generation !== refreshGeneration) return;
+  if (!result.ok) { handoffError.value = t('hub.learnHandoffReadFailed'); return; }
+  pendingTransfers.value = result.transfers;
+  handoffError.value = result.invalidIds.length ? t('hub.learnHandoffReadFailed') : '';
+  if (requestedTransferId) {
+    const requested = requestedTransferId;
+    if (result.transfers.some(item => item.id === requested)) selectedTransferId.value = requested;
+    else {
+      const detail = await readLearnDraft(requested);
+      if (disposed || generation !== refreshGeneration) return;
+      handoffError.value = detail.status === 'ok' && detail.transfer.status !== 'pending'
+        ? t('hub.learnHandoffAlreadyHandled') : t('hub.learnHandoffReadFailed');
+    }
+    requestedTransferId = '';
+  }
+  if (!visibleTransfers.value.some(item => item.id === selectedTransferId.value)) selectedTransferId.value = visibleTransfers.value[0]?.id ?? '';
+}
+
+async function acceptHandoff(): Promise<void> {
+  if (handoffBusy.value || agentEditorOpen.value || skillEditorOpen.value || !isLearnTransferId(selectedTransferId.value)) return;
+  const id = selectedTransferId.value;
+  handoffBusy.value = true;
+  try {
+    const result = await skillManagerRef.value?.acceptLearnDraft(id);
+    if (!result?.ok) { handoffError.value = result?.error ?? t('hub.learnHandoffReadFailed'); return; }
+    editingTransferId.value = id;
+    activeSection.value = 'skills';
+    handoffError.value = '';
+  } catch { handoffError.value = t('hub.learnHandoffReadFailed'); }
+  finally { handoffBusy.value = false; }
+}
+
+function protectEditor(event: BeforeUnloadEvent): void {
+  if (!agentEditorOpen.value && !skillEditorOpen.value) return;
+  event.preventDefault(); event.returnValue = '';
+}
 
 /**
  * 分区深链（hub.html#backup 等）：命中即切到对应分区并清 hash。
@@ -113,44 +193,36 @@ function consumeSectionHash(): boolean {
 }
 
 /**
- * 解析草稿深链：命中则切到技能分区并清 hash，返回是否命中。
- * 无 hash 的常规打开不产生信号——交付信号唯一，避免用户普通打开管理中心
- * 被无关事件打断（草稿消费的防残留见 learn-draft-store 三重防线）。
- *
- * 匹配 `#new-skill` 或 `#new-skill?<nonce>`：nonce 由 sidepanel 每次交付时
- * 随机生成，用于保证「hub 标签已停在同一 hash 上」的重复交付也能触发
- * hashchange（URL 完全相同时不会产生 hashchange，成果会静默滞留）。
+ * 解析指定成果 ID 后清除导航信号；不切分区、不重置编辑器、不删除数据。
  */
 function consumeDraftHash(): boolean {
   const hash = window.location.hash;
-  if (hash !== LEARN_DRAFT_HASH && !hash.startsWith(`${LEARN_DRAFT_HASH}?`)) return false;
-  activeSection.value = 'skills';
+  if (hash !== LEARN_DRAFT_HASH && !hash.startsWith(LEARN_DRAFT_HASH + '?')) return false;
+  const params = new URLSearchParams(hash.split('?')[1] ?? '');
+  const id = params.get('id');
+  requestedTransferId = id ?? '';
+  // This only records a delivery signal; no editor is reset and no payload is consumed.
   window.history.replaceState(null, '', window.location.pathname + window.location.search);
   return true;
 }
-
+let unsubscribeDrafts: (() => void) | null = null;
 onMounted(() => {
-  // 分区深链优先（用户明确指定了要看哪个分区）
-  if (consumeSectionHash()) {
-    window.addEventListener('hashchange', onHashChange);
-    return;
-  }
-  // 挂载即消费（hash 决定提示口径：深链承诺了草稿，缺失/过期要明确告知）
-  const viaHash = consumeDraftHash();
-  void skillManagerRef.value?.consumeLearnDraft(viaHash);
+  consumeSectionHash(); consumeDraftHash();
   window.addEventListener('hashchange', onHashChange);
+  window.addEventListener('beforeunload', protectEditor);
+  unsubscribeDrafts = watchLearnDrafts(() => { void refreshPending(); });
+  void refreshPending();
 });
-
 function onHashChange(): void {
-  // 分区深链：标签已开着时 sidepanel 经 tabs.update 送达，也能命中
   if (consumeSectionHash()) return;
-  // 标签已开着时 sidepanel 经 tabs.update 送达深链：命中才消费
-  if (consumeDraftHash()) {
-    void skillManagerRef.value?.consumeLearnDraft(true);
-  }
+  if (consumeDraftHash()) void refreshPending();
 }
-
-onUnmounted(() => window.removeEventListener('hashchange', onHashChange));
+onUnmounted(() => {
+  disposed = true; refreshGeneration++;
+  unsubscribeDrafts?.();
+  window.removeEventListener('hashchange', onHashChange);
+  window.removeEventListener('beforeunload', protectEditor);
+});
 
 // 语言切换：core 为唯一事实源，切换后立即持久化并同步到所有扩展页面
 const { locale, switchLocale } = useLocale();

@@ -434,10 +434,22 @@ h1 {
   box-shadow: none; /* 提示态无动作可执行，不给 hover 放大反馈 */
 }
 
-/* 成果兜底条（站点学习会话读回草稿）：同一套学习配色 + 右侧动作按钮 */
+/* 成果兜底条（站点学习会话读回草稿）：学习配色（靛紫）+ 右侧动作按钮。
+   与「API 未配置」提示（橙色）刻意区分——两者可能同时出现（配置正常时
+   兜底条与输入框并存），配色必须一眼分清「学习成果待处理」与「配置问题」。
+   体量也刻意收窄：它是输入区上的次级提示条，不该占满一条大横幅。 */
 .learn-recover-notice {
   gap: 4px;
   font-size: 13px;
+  padding: 8px 12px;
+  min-height: 0;
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.12) 0%, rgba(102, 126, 234, 0.06) 100%);
+  color: #4f46e5;
+}
+
+.learn-recover-notice:hover {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.18) 0%, rgba(102, 126, 234, 0.1) 100%);
+  box-shadow: none;
 }
 
 .learn-recover-btn {

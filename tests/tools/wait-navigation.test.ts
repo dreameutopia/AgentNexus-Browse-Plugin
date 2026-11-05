@@ -41,6 +41,22 @@ try {
   const outcome=await enginePending;
   assert.equal(outcome.anyFailure,false);assert.equal(outcome.messages.length,2);assert.equal(outcome.waitedMs,600000);
   assert.equal(scheduled.size,0,'Every success/abort path cleans its timer');
+  let answerUser: (value: any) => void = () => {};
+  const questionEngine = new ConversationEngine({
+    executeTool: async (name: string) => name === 'interact'
+      ? new Promise(resolve => { answerUser = resolve; }) : { success: true, data: { text: 'resumed' } },
+    requiresApproval: () => false,
+  } as any) as any;
+  const questionRuntime = { ...runtime, toolIds: ['interact', 'browser_get_page_text'] };
+  const questionHandle = { ...handle, abortController: new AbortController(), record: { toolCalls: [], parts: [] } };
+  const answering = questionEngine.executeToolCalls(questionRuntime, questionHandle,
+    [call('interact', { question: '用户流程与现场不符，请澄清' }), call('browser_get_page_text', {})], {}, () => {}, clock + 10000);
+  assert.equal(scheduled.size, 0, '人工交互不受普通工具超时限制');
+  clock += 1200000;
+  answerUser({ success: true, data: { answered: true, answer: '按新入口继续' } });
+  const resumed = await answering;
+  assert.equal(resumed.waitedMs, 1200000, '等待真实用户答复不消耗主动运行预算');
+  assert.equal(resumed.anyFailure, false, '长时间人工等待后同轮后续观察仍可运行');
 } finally {globalThis.setTimeout=originalSet;globalThis.clearTimeout=originalClear;Date.now=originalNow;}
 
 // Assert ordering at the actual continuation boundary, including cancellation
@@ -84,6 +100,38 @@ try {
   assert.equal(tabCreates.length,1);assert.equal(updated.length,0,'Default navigation preserves the original page');
   assert.equal((await nav.execute({url:'https://current.example/',newTab:false,waitForLoad:false})).success,true);
   assert.equal(tabCreates.length,1);assert.equal(updated[0].args.url,'https://current.example/');
+  tabs.push({id:77,windowId:7,url:'https://duplicate.example/',status:'complete'});
+  const priorUpdates = updated.length;
+  assert.equal((await nav.execute({url:'https://duplicate.example/',newTab:false,waitForLoad:false})).success,true);
+  assert.equal(updated[priorUpdates].id,1,'Explicit current-tab navigation must not activate an existing matching tab');
+  assert.equal(updated[priorUpdates].args.url,'https://duplicate.example/');
+  tabs.push({id:78,windowId:7,url:'https://reuse.example/',status:'complete'});
+  const reused = await nav.execute({url:'https://reuse.example/',newTab:true,waitForLoad:false});
+  assert.equal(reused.success,true);assert.equal(reused.data.navigationAction,'reused');assert.equal(reused.data.tabId,78);
+  assert.equal(tabCreates.length,1,'Default new-tab mode still reuses a matching page');
+  for (const [source,target] of [
+    ['https://routes.example/#/list','https://routes.example/#/detail'],
+    ['https://routes.example/Item','https://routes.example/item'],
+    ['https://routes.example/?token=AbC','https://routes.example/?token=abc'],
+    ['https://routes.example/list','https://routes.example/list/'],
+  ]) {
+    tabs[0].url=source;
+    const previous: number=updated.length;
+    const routed=await nav.execute({url:target,newTab:false,waitForLoad:false});
+    assert.equal(routed.success,true);assert.equal(routed.data.navigationAction,'navigated');
+    assert.equal(updated[previous].args.url,target,'Do not erase hash routes, case-sensitive state or trailing slash semantics');
+  }
+  const clockNow = Date.now; let navigationClock = 1000;
+  Date.now=()=>navigationClock;
+  try {
+    const timed = new NavigateTool() as any; let waitedFor=0;
+    timed.waitForUrlChange=async()=>{navigationClock+=800;return {changed:true,currentUrl:'https://budget.example/'};};
+    timed.waitForPageLoad=async(_id:number,ms:number)=>{waitedFor=ms;throw Error('load timeout');};
+    const outcome=await timed.execute({url:'https://budget.example/',newTab:false,waitForLoad:true,timeout:1000});
+    assert.equal(waitedFor,200,'URL wait consumes the same navigation timeout budget');
+    assert.equal(outcome.data.loadStatus,'timeout');
+    assert.ok(!outcome.data.message.includes('load complete'),'Loading timeout cannot claim page readiness');
+  } finally {Date.now=clockNow;}
   assert.equal((await nav.execute({url:'https://bad.example/',newWindow:true} as any)).success,false);
   assert.equal((await nav.execute({url:'https://bad.example/',newTab:'true'} as any)).success,false);
   tabs=[];windowAvailable=false;const before=tabCreates.length;

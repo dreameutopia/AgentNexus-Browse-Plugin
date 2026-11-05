@@ -10,8 +10,8 @@
  *   3. 合成激活轮：assistant(tool_calls) + tool 结果的配对形态、与真实
  *      load_skill 回传逐字同源、多技能单轮、按技能 id 去重、失效/停用跳过、
  *      预授权工具有序去重。
- *   4. 指令装配：优先级约定置顶、环境说明、预授权工具回显、资源文件清单、
- *      超长正文截断与取原文指引、未声明工具的占位文案。
+ *   4. 指令装配：优先级约定置顶、环境说明、预授权工具回显、资源文件清单
+ *      （含字数）、正文分页页脚与续读指引、未声明工具的占位文案。
  *   5. 发现清单：已激活技能被排除、条目为「- 模型标识: 描述」、全激活时为 null。
  *   6. 预置技能装配：run.mjs 把仓库 skills/ 的真实文件按 import.meta.glob 键格式
  *      注入，预置技能经 initStore 走真实装配链路——id 落在保留区间且由名称
@@ -20,8 +20,14 @@
  *   7. 硬编码引用契约：扫描源码里 presetSkillIdFromName('名字') 字面量，
  *      断言每个引用都能命中内置技能且与 frontmatter name 同源（改名漏改
  *      硬编码会让关联静默落空，这条是唯一的守门测试）。
- *   8. 传输层截断豁免：技能指令（≤15,000）不得被守卫的 8KB 工具内容上限
+ *   8. 传输层截断豁免：技能指令（按页有界）不得被守卫的 8KB 工具内容上限
  *      砍半，其余工具结果照常截断且计数准确。
+ *   9. 分页引擎：确定性（各页拼接还原原文）、CJK / ASCII 预算口径、代理对
+ *      安全、页码归一、越界报错、字数（码点）口径、非字符串输入收敛。
+ *  10. 读取工具：load_skill 分页参数与越界自纠、read_skill_file 缺省路径 /
+ *      白名单 / 分页元信息 / 续读指引 / 脏参数防御。
+ *  11. 写入原子性与导入防御：md 直导体量门、快照 / 回滚（含污染快照拒绝）、
+ *      第三方（插件）形状退化记录的装配防御。
  *
  * 运行：node tests/skills/run.mjs   （或 npm run test:skills）
  */
@@ -29,9 +35,9 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
-  SKILL_BODY_MAX_CHARS,
   SKILL_ID_PATTERN,
   SKILL_ID_RESERVED_PREFIX,
+  SKILL_IMPORT_MAX_FILE_CHARS,
   findDuplicateSkillNames,
   generateSkillId,
   generateUniqueSkillId,
@@ -41,17 +47,28 @@ import {
   skillIdFromName,
 } from '@/utils/skills/skill-types';
 import {
+  SkillPageOutOfRangeError,
   buildSkillInstruction,
   skillLoadSuccessMessage,
   skillLoadToolContent,
 } from '@/utils/skills/skill-instruction';
 import {
+  SKILL_PAGE_TOKEN_BUDGET,
+  countSkillChars,
+  normalizeSkillPageParam,
+  paginateSkillText,
+} from '@/utils/skills/skill-pagination';
+import { loadSkillTool } from '@/tools/skill/load-skill-tool';
+import { readSkillFileTool } from '@/tools/skill/read-skill-file-tool';
+import {
   getAllSkills,
   getSkillByName,
   resolveSkill,
+  rollbackCustomSkills,
   setCustomSkill,
+  snapshotCustomSkills,
 } from '@/utils/skills/skill-store';
-import { commitImportCandidates } from '@/utils/skills/skill-import-export';
+import { commitImportCandidates, importSkillFromMdText } from '@/utils/skills/skill-import-export';
 import { skillEngine } from '@/entrypoints/sidepanel/core/registry/skill-engine';
 import { ContextWindowGuard } from '@/entrypoints/sidepanel/utils/ai/context-window-guard';
 import type { ChatMessage } from '@/entrypoints/sidepanel/utils/ai/ai-chat-api';
@@ -324,7 +341,10 @@ function mdFiles(name: string, body: string, extraFrontmatter: string[] = []): R
   check(instruction.instruction.includes('技能预授权工具：xlsx_tool'), 'D2 回显预授权工具');
   check(instruction.instruction.includes('# 技能资源文件'), 'D3 携带资源文件清单');
   check(instruction.instruction.includes('- references/extra.md'), 'D3 资源清单列出具体路径');
-  check(!instruction.truncated, 'D4 正文未超长时不截断');
+  check(instruction.instruction.includes('（4 字）'), 'D3 资源清单附带字数', instruction.instruction);
+  check(instruction.instruction.includes('只能作为文字参考阅读'), 'D2 环境说明写明脚本不执行');
+  check(!instruction.truncated, 'D4 正文未超预算时不分页');
+  check(instruction.pagination.pageCount === 1, 'D4 单页分页元信息');
   eq(instruction.skill, modelSkillIdOf(rich), 'D4 载荷携带模型标识');
 
   const bare = mustWrite(
@@ -336,20 +356,37 @@ function mdFiles(name: string, body: string, extraFrontmatter: string[] = []): R
     'D2 未声明工具时给出占位文案',
   );
 
-  const longBody = 'x'.repeat(SKILL_BODY_MAX_CHARS + 500);
+  // 超长正文：分页注入（默认第 1 页）+ 页脚元信息 + 续读指引。
+  // ASCII ≈ 4 字符/token → 20000 字符 ≈ 5000 token → 按 3000 预算切 2 页
+  const longBody = 'x'.repeat(20_000);
   const long = mustWrite({ name: 'instr-long', files: mdFiles('instr-long', longBody) }, 'D5 超长正文技能');
-  const longInstruction = buildSkillInstruction(long);
-  check(longInstruction.truncated, 'D5 超过上限标记截断');
-  check(longInstruction.instruction.includes('已截断'), 'D5 附带截断说明');
+  const page1 = buildSkillInstruction(long);
+  check(page1.truncated, 'D5 超预算标记分页截断');
+  check(page1.pagination.page === 1, 'D5 默认返回第 1 页');
+  check(page1.pagination.pageCount === 2, 'D5 总页数按预算切分', page1.pagination);
+  check(page1.instruction.includes('第 1/2 页'), 'D5 页脚携带页码');
   check(
-    longInstruction.instruction.includes(`read_skill_file(skill_name="${modelSkillIdOf(long)}"`),
-    'D5 附带取原文指引',
+    page1.instruction.includes(`load_skill(skill_name="${modelSkillIdOf(long)}", page=2)`),
+    'D5 页脚携带续读调用',
   );
   check(
-    longInstruction.instruction.length < longBody.length,
-    'D5 截断后确实变短',
-    { before: longBody.length, after: longInstruction.instruction.length },
+    page1.instruction.length < longBody.length,
+    'D5 分页后确实变短',
+    { before: longBody.length, after: page1.instruction.length },
   );
+
+  const page2 = buildSkillInstruction(long, 2);
+  check(page2.pagination.page === 2 && page2.pagination.remainingChars === 0, 'D5 末页剩余为 0', page2.pagination);
+  check(page2.instruction.includes(longBody.slice(-50)), 'D5 末页包含正文结尾');
+  check(!page2.instruction.includes('page=3'), 'D5 末页不再提示续读');
+
+  let outOfRangeThrown = '';
+  try {
+    buildSkillInstruction(long, 3);
+  } catch (error) {
+    outOfRangeThrown = error instanceof SkillPageOutOfRangeError ? 'typed' : `other:${error}`;
+  }
+  eq(outOfRangeThrown, 'typed', 'D5 越界页码抛出类型化错误');
 
   // 合成结果必须是合法 JSON，且与 buildSuccessPayload 同源
   const content = skillLoadToolContent(instruction);
@@ -477,8 +514,8 @@ function mdFiles(name: string, body: string, extraFrontmatter: string[] = []): R
 }
 
 // ==================== 8. 传输层截断豁免（技能指令必须完整送达） ====================
-// 守卫对 tool 内容按 8KB 一刀切，而技能指令的设计上限是 SKILL_BODY_MAX_CHARS
-// （15,000）——不豁免就会静默砍半，模型读到残缺指令还以为读全了。
+// 守卫对 tool 内容按 8KB 一刀切，而技能指令按 SKILL_PAGE_TOKEN_BUDGET 分页
+// （单页 ≈3000 token ≈ 12000 ASCII 字符）——不豁免就会静默砍半，模型读到残缺指令还以为读全了。
 
 {
   const longText = `# 指令\n${'x'.repeat(20_000)}`; // 明显超过 8KB 传输上限
@@ -502,6 +539,221 @@ function mdFiles(name: string, body: string, extraFrontmatter: string[] = []): R
   check(trimmed.length < longText.length, 'H2 其余工具结果仍按上限截断', trimmed.length);
   check(trimmed.includes('[tool response truncated'), 'H2 截断带可读标记');
   eq(guarded.toolContentsTrimmed, 1, 'H3 截断计数只统计被真正截断的工具');
+}
+
+// ==================== 9. 分页引擎 ====================
+
+/** 分页成功断言助手（失败时记一条断言并返回 null，后续用例自然失败） */
+function pageOf(text: string, page: number, budget?: number) {
+  const result = paginateSkillText(text, page, budget);
+  check(result.ok, `I0 分页应成功（page=${page}）`, result);
+  return result.ok ? result.page : null;
+}
+
+{
+  // 还原性：混排 CJK / ASCII / emoji / 换行的文本，各页按序拼接 === 原文
+  const mixed =
+    '第一段中文内容。\nSecond paragraph with ASCII words.\n😀😀😀 emoji row.\n' +
+    '混'.repeat(6000) +
+    '\n' +
+    'y'.repeat(9000);
+  let reassembled = '';
+  const first = pageOf(mixed, 1);
+  if (first) {
+    reassembled += first.content;
+    for (let page = 2; page <= first.pageCount; page++) {
+      const next = pageOf(mixed, page);
+      if (next) reassembled += next.content;
+    }
+    eq(reassembled, mixed, 'I1 各页拼接还原原文');
+    check(first.pageCount > 1, 'I1 混排长文确实被分页', first.pageCount);
+    // 字数守恒：totalChars = 各页 currentChars 之和；末页 remainingChars = 0
+    let sumChars = 0;
+    for (let page = 1; page <= first.pageCount; page++) {
+      const p = pageOf(mixed, page);
+      if (p) sumChars += p.currentChars;
+    }
+    eq(sumChars, first.totalChars, 'I1 各页字数之和等于总字数');
+  }
+
+  // 字数口径：码点数（emoji 记 1 字，不按 UTF-16 码元计）
+  eq(countSkillChars('a😀中'), 3, 'I1 字数为码点数');
+
+  // CJK 预算：3000 汉字 = 3000 token 恰好一页；加 1 字溢出成两页
+  const cjkExactly = pageOf('中'.repeat(SKILL_PAGE_TOKEN_BUDGET), 1);
+  eq(cjkExactly?.pageCount, 1, 'I2 CJK 恰好预算成一页');
+  const cjkOver = pageOf('中'.repeat(SKILL_PAGE_TOKEN_BUDGET + 1), 1);
+  eq(cjkOver?.pageCount, 2, 'I2 CJK 超一字切两页');
+  eq(cjkOver?.currentChars, SKILL_PAGE_TOKEN_BUDGET, 'I2 第一页恰好装满预算');
+
+  // ASCII 预算：4 字符/token → 12000 恰好一页；12004 切两页
+  eq(pageOf('x'.repeat(12_000), 1)?.pageCount, 1, 'I2 ASCII 恰好预算成一页');
+  eq(pageOf('x'.repeat(12_004), 1)?.pageCount, 2, 'I2 ASCII 超限切两页');
+
+  // 代理对安全：emoji（2 码元 1 码点 1 token）两页，第一页 UTF-16 长度 = 2×预算
+  const emojiText = '😀'.repeat(SKILL_PAGE_TOKEN_BUDGET * 2);
+  const emojiPage1 = pageOf(emojiText, 1);
+  eq(emojiPage1?.pageCount, 2, 'I3 emoji 按码点计费切两页');
+  eq(emojiPage1?.content.length, SKILL_PAGE_TOKEN_BUDGET * 2, 'I3 页边界不拆代理对');
+  eq(emojiPage1?.currentChars, SKILL_PAGE_TOKEN_BUDGET, 'I3 emoji 字数按码点计');
+
+  // 确定性：同一文本两次切分结果逐字一致
+  const again = pageOf(mixed, 1);
+  eq(again?.content, first?.content, 'I4 分页确定性（同文本同页码结果一致）');
+
+  // 空文本：唯一空页（不越界、不抛错）
+  const empty = pageOf('', 1);
+  eq(empty?.pageCount, 1, 'I5 空文本为唯一空页');
+  eq(empty?.content, '', 'I5 空页内容为空串');
+
+  // 越界：返回总页数与总字数（调用方据此给出可自纠报错）
+  const outOfRange = paginateSkillText('x'.repeat(12_004), 3);
+  eq(outOfRange.ok, false, 'I6 页码越界标记失败');
+  if (!outOfRange.ok) {
+    eq(outOfRange.pageCount, 2, 'I6 失败载荷携带总页数');
+    eq(outOfRange.totalChars, 12_004, 'I6 失败载荷携带总字数');
+  }
+
+  // 页码归一：脏参数优雅回落第 1 页
+  eq(normalizeSkillPageParam('2'), 2, 'I7 数字字符串归一为数字');
+  eq(normalizeSkillPageParam(2.7), 2, 'I7 小数向下取整');
+  eq(normalizeSkillPageParam(0), 1, 'I7 零回落第 1 页');
+  eq(normalizeSkillPageParam(-5), 1, 'I7 负数回落第 1 页');
+  eq(normalizeSkillPageParam('abc'), 1, 'I7 非数字回落第 1 页');
+  eq(normalizeSkillPageParam(undefined), 1, 'I7 缺省回落第 1 页');
+}
+
+// ==================== 10. 读取工具（load_skill 分页 / read_skill_file 白名单与分页） ====================
+
+{
+  // 正文 20000 ASCII ≈ 5000 token → 2 页；资源文件 16000 → 2 页
+  const skillRecord = mustWrite(
+    {
+      name: 'tool-paged',
+      files: {
+        'SKILL.md': [
+          '---',
+          'name: tool-paged',
+          'description: 分页工具用例',
+          '---',
+          '',
+          'z'.repeat(20_000),
+        ].join('\n'),
+        'references/guide.md': 'g'.repeat(16_000),
+      },
+    },
+    'J1 分页工具用例技能',
+  );
+  const ref = modelSkillIdOf(skillRecord);
+
+  // load_skill：默认第 1 页 + 分页元信息 + 续读指引
+  const load1 = await loadSkillTool.execute({ skill_name: ref });
+  check(load1.success === true, 'J1 load_skill 成功');
+  check(load1.data?.pagination?.pageCount === 2, 'J1 正文两页', load1.data?.pagination);
+  check(String(load1.data?.instruction).includes(`load_skill(skill_name="${ref}", page=2)`), 'J1 页脚带续读调用');
+
+  // load_skill：字符串页码归一；越界返回可自纠报错（不抛异常）
+  const load2 = await loadSkillTool.execute({ skill_name: ref, page: '2' });
+  check(load2.success === true && load2.data?.pagination?.page === 2, 'J2 字符串页码归一');
+  const load9 = await loadSkillTool.execute({ skill_name: ref, page: 9 });
+  check(load9.success === false, 'J2 越界页码返回失败');
+  check(String(load9.error).includes('不存在第 9 页'), 'J2 越界报错携带页码信息', load9.error);
+
+  // read_skill_file：缺省 path 读 SKILL.md（原文，含 frontmatter）
+  const readDefault = await readSkillFileTool.execute({ skill_name: ref });
+  check(readDefault.success === true, 'J3 缺省路径读取成功');
+  check(readDefault.data?.path === 'SKILL.md', 'J3 缺省路径为 SKILL.md');
+  check(String(readDefault.data?.content).startsWith('---'), 'J3 SKILL.md 原文含 frontmatter');
+
+  // read_skill_file：资源文件分页 + 元信息 + 独立 hint 字段（内容本体不夹页脚）
+  const readFile1 = await readSkillFileTool.execute({ skill_name: ref, path: 'references/guide.md' });
+  check(readFile1.success === true, 'J4 资源文件读取成功');
+  check(readFile1.data?.pagination?.pageCount === 2, 'J4 资源文件分页', readFile1.data?.pagination);
+  check(readFile1.data?.truncated === true, 'J4 截断标记');
+  check(String(readFile1.data?.hint).includes('page=2'), 'J4 续读指引在 hint 字段');
+  eq(readFile1.data?.content, 'g'.repeat(12_000), 'J4 内容本体纯净（第一页恰为预算且不夹页脚）');
+
+  const readFile2 = await readSkillFileTool.execute({ skill_name: ref, path: 'references/guide.md', page: 2 });
+  check(readFile2.success === true && readFile2.data?.truncated === false, 'J4 末页无截断标记');
+  eq(readFile2.data?.content, 'g'.repeat(4_000), 'J4 末页为剩余内容');
+
+  // 白名单：未注册路径拒绝并列出可用文件（精确键匹配天然免疫 ../ 穿越）
+  const readMissing = await readSkillFileTool.execute({ skill_name: ref, path: '../outside.md' });
+  check(readMissing.success === false, 'J5 未注册路径拒绝');
+  check(String(readMissing.error).includes('可用文件'), 'J5 报错列出可用文件', readMissing.error);
+
+  const readNoSkill = await readSkillFileTool.execute({ skill_name: 'no-such-skill-xyz' });
+  check(readNoSkill.success === false, 'J5 不存在的技能报错');
+
+  // 第三方（插件）形状防御：脏参数与脏数据不击穿工具链
+  const numericRef = await readSkillFileTool.execute({ skill_name: 42 as unknown as string });
+  check(numericRef.success === false, 'J5 数字型技能引用安全报错');
+  const nullPath = await readSkillFileTool.execute({ skill_name: ref, path: null as unknown as string });
+  check(nullPath.success === true && nullPath.data?.path === 'SKILL.md', 'J5 null 路径回落 SKILL.md');
+}
+
+// ==================== 11. 写入原子性与导入防御 ====================
+
+{
+  // md 直导体量门：超限整体跳过（与 zip 单文件口径一致）
+  const oversizedMd = [
+    '---',
+    'name: md-oversize',
+    'description: 超限直导用例',
+    '---',
+    '',
+    'y'.repeat(SKILL_IMPORT_MAX_FILE_CHARS + 1),
+  ].join('\n');
+  const mdReport = importSkillFromMdText(oversizedMd, 'md-oversize');
+  eq(mdReport.imported.length, 0, 'K1 超限 md 直导被拒');
+  eq(mdReport.skipped[0]?.reason, 'file-too-large', 'K1 跳过原因为 file-too-large');
+
+  // 非字符串 md 输入按「没有可导入的文件」降级（编程错误防御，不抛 TypeError）
+  const badMd = importSkillFromMdText(null as unknown as string, 'bad-md');
+  eq(badMd.skipped[0]?.reason, 'no-skill-md', 'K1 非字符串 md 输入安全降级');
+
+  // 快照 / 回滚：批量导入落盘失败时内存表可精确恢复到导入前
+  const rollbackBase = mustWrite(
+    { name: 'rollback-base', files: mdFiles('rollback-base', '底座正文') },
+    'K2 快照基线技能',
+  );
+  const snapshot = snapshotCustomSkills();
+  const rollbackExtra = mustWrite(
+    { name: 'rollback-extra', files: mdFiles('rollback-extra', '快照后的新增') },
+    'K2 快照后新增技能',
+  );
+  check(resolveSkill(rollbackExtra.id) !== undefined, 'K2 新增技能先落内存表');
+  rollbackCustomSkills(snapshot);
+  eq(resolveSkill(rollbackExtra.id), undefined, 'K2 回滚移除快照后的新增');
+  eq(resolveSkill(rollbackBase.id)?.name, 'rollback-base', 'K2 回滚保留快照前技能');
+
+  // 非法快照：忽略回滚请求且绝不抛出（内存表保持现状）
+  rollbackCustomSkills('not-an-array');
+  rollbackCustomSkills([{ 完全不是技能: true }]);
+  eq(resolveSkill(rollbackBase.id)?.name, 'rollback-base', 'K2 非法快照被忽略');
+
+  // 指令装配对第三方（插件）形态的防御：body / files / allowedTools 全缺失不炸
+  const foreign = {
+    id: 'ed25519:f1',
+    name: 'foreign',
+    description: '第三方包的技能',
+    category: 'general',
+    tags: [],
+    source: 'plugin',
+    enabled: true,
+    updatedAt: 0,
+  } as unknown as SkillRecord;
+  const foreignInstruction = buildSkillInstruction(foreign);
+  check(foreignInstruction.pagination.pageCount === 1 && foreignInstruction.pagination.totalChars === 0, 'K3 退化记录装配为空正文单页', foreignInstruction.pagination);
+  check(
+    foreignInstruction.instruction.includes('（未声明，沿用会话现有工具）'),
+    'K3 allowedTools 缺失走占位文案',
+  );
+
+  // 分页对非字符串文本的安全收敛（不抛 TypeError）
+  const nonStringPage = paginateSkillText(null as unknown as string, 1);
+  check(nonStringPage.ok === true && nonStringPage.page.totalChars === 0, 'K3 非字符串文本收敛为空页');
+  eq(countSkillChars(undefined as unknown as string), 0, 'K3 非字符串字数为 0');
 }
 
 // ==================== 汇总 ====================

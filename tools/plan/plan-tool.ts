@@ -139,7 +139,7 @@ export class PlanTool extends BaseTool {
         '- edit：标注单项状态（id + status: pending/in_progress/done/failed；message 可选）。failed 时 message 必填，写清失败原因；done 时 message 简要写明成果\n' +
         '- delete：删除条目（ids 为 id 数组）\n' +
         '- read：读取全量计划（每项含 id、状态与标注信息）\n' +
-        '纪律：id 只用工具返回值，禁止臆造；开始执行标 in_progress、完成即标 done、失败即标 failed；3 步以上的多步任务才建计划。',
+        '更新纪律（硬性）：开始一项先标 in_progress；一项有结果（成功或失败皆算）后，下一步动作前必须先 edit 标注——done 附简要成果、failed 必附失败原因；失败也要立即标注，严禁攒到最后批量补标或提前标记未执行项；跨轮沿用既有计划（先 read 再按 id edit，create 会整体替换并丢失旧状态）；id 只用工具返回值或错误信息回显值，edit 报「目标不存在」时按回显清单修正重试；3 步以上的多步任务才建计划。执行中若收到 <plan-status-reminder> 状态回显，先核对补标再继续。',
       parameters: {
         type: 'object',
         properties: {

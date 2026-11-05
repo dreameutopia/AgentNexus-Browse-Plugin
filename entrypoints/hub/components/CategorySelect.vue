@@ -207,10 +207,10 @@ const BUILTIN_DOT_COLORS: Record<string, string> = {
   vision: '#8b5cf6',
   content: '#10b981',
   media: '#f59e0b',
-  general: '#94a3b8',
+  general: '#9b9790',
 };
 const CUSTOM_DOT_COLOR = '#14b8a6';
-const EMPTY_DOT_COLOR = '#d1d5db';
+const EMPTY_DOT_COLOR = '#d8d4cc';
 
 function dotColorFor(id: string): string {
   if (!id) return EMPTY_DOT_COLOR;

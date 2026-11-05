@@ -246,8 +246,9 @@
           </button> -->
           <!-- 设置按钮（历史会话按钮左侧；打开设置弹窗：模型服务/高级参数/语音/已登录网站等分区） -->
           <button class="api-settings-btn" @click="showSettingsModal = true" v-tip="t('common.settings')">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.611 3.611 0 0112 15.6z" fill="currentColor"/>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+              <circle cx="12" cy="12" r="3"/>
             </svg>
           </button>
           <button class="icon-btn" v-tip="t('sidepanel.app.historyDrawer')" @click="showHistoryDrawer = true">
@@ -373,10 +374,14 @@
         />
 
         <div v-else class="input-container">
-          <!-- 原输入框，暂时隐藏 -->
-          <textarea 
+          <!-- 输入框：已配置且非学习态。
+               注意：下面三条提示各自独立判定（互不构成 v-if/v-else 链）——
+               「未配置」提示必须带上 !isChatInputEnabled，若写成 v-else
+               会被绑到上一条 v-if 链上（学习提示），条件里就没有
+               isChatInputEnabled 了，结果是「已配置也照样显示未配置」。 -->
+          <textarea
             v-if="isChatInputEnabled && !learn.isLearnActive.value"
-            v-model="userInput" 
+            v-model="userInput"
             :placeholder="t('sidepanel.app.inputPlaceholder')"
             class="message-input"
             @keydown="handleKeyDown"
@@ -395,9 +400,10 @@
 
           <!-- 站点学习会话：成果兜底（草稿随消息回放）。
                降级说明之外的第二重保障——暂存失败或未在管理中心确认时，
-               打开该会话即可把草稿重新送去创建，成果不再随暂存时效消失 -->
+               打开该会话即可把草稿重新送去创建，成果不再随暂存时效消失。
+               与输入框并存：草稿待处理不该剥夺用户继续对话的能力。 -->
           <div
-            v-else-if="activeChatId && learnRecoverableDraft"
+            v-if="!learn.isLearnActive.value && activeChatId && (learnRecoverableDraft || learn.recovery.value?.chatId === activeChatId)"
             class="input-disabled-notice learn-recover-notice"
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 8px; flex: 0 0 auto;" aria-hidden="true">
@@ -407,14 +413,19 @@
             <button type="button" class="learn-recover-btn" @click="retryCreateSkillFromLearn">
               {{ t('sidepanel.learn.recoverAction') }}
             </button>
+            <button type="button" class="learn-recover-btn" @click="downloadLearnRecovery">{{ t('sidepanel.learn.downloadRecovery') }}</button>
           </div>
 
-          <!-- 禁用提示信息（可点击打开配置弹窗）。
-               必须是链条的最后一环（v-else）：成果兜底条（草稿回放）排在它前面，
-               否则 API 已配置时 textarea 命中 v-if、兜底条永远轮不到展示——
-               「暂存失败后重试创建技能」这条恢复路径就会变成死功能。
+          <!-- 未配置提示（可点击打开配置弹窗）。
+               条件独立判定，与「已配置」的输入框严格互斥。
                附具体原因：用户不必自己猜是缺密钥、地址写错还是模型被禁。 -->
-          <div v-else class="input-disabled-notice" @click="showSettingsModal = true" style="cursor: pointer;" :title="t('sidepanel.app.configureApiHint')">
+          <div
+            v-if="!isChatInputEnabled && !learn.isLearnActive.value"
+            class="input-disabled-notice"
+            @click="showSettingsModal = true"
+            style="cursor: pointer;"
+            :title="t('sidepanel.app.configureApiHint')"
+          >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 8px;">
               <path d="M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z" fill="#ff9800"/>
             </svg>
@@ -423,9 +434,7 @@
               <span v-if="apiBlockerHint" class="input-disabled-reason">（{{ apiBlockerHint }}）</span>
             </span>
           </div>
-          
 
-          
           <!-- 学习态下隐藏整个工具栏：发送/模型选择/附件在学习流程期间一律不可达，
                入口按钮也随之让位（配置面板与状态条承载全部交互） -->
           <div class="bottom-bar" v-if="!learn.isLearnActive.value">
@@ -697,7 +706,7 @@
     />
     <!-- 收尾阶段：草稿暂存失败降级说明（非阻断；与弹窗同为模态，层级置于确认弹窗之下） -->
     <LearnDegradedNotice :visible="learn.degradedNotice.value" @close="learn.dismissDegradedNotice()" />
-    <LearnDialog :view="learn.dialog.value" @answer="learn.answerDialog($event)" />
+    <LearnDialog :view="learn.dialog.value" @answer="learn.answerDialog" />
 
     <!-- 全局 Toast 宿主（固定右上角，层级高于全部模态；反馈落库失败等轻量提示） -->
     <MessageContainer />
@@ -723,7 +732,7 @@ import { ChatMessageList, ChatHistoryDrawer, ContextUsageRing, GuardConfirmBar, 
 import { SiteLearnModal, LearnDialog, LearnStatusBar, LearnDegradedNotice } from '../components/learn';
 import { useLearnSession } from '../composables/use-learn-session';
 import { backgroundConversation as conversationEngine } from '../core/conversation/runtime-client';
-import { ACTIVE_CHAT_KEY } from '../core/conversation/runtime-protocol';
+import { readActiveChat, rememberActiveChat } from '../core/conversation/active-session';
 import { SettingsModal, AsrConfigPrompt, DeepSearchWarning } from '../components/modals';
 import { VoiceAssistantCard, VoiceAssistantSettings, VoiceRecordingModal } from '../components/voice';
 import { AiProcessingOverlay, AppDialog, InteractDialog, MessageContainer, WebSocketStatusBar } from '../components/feedback';
@@ -768,6 +777,7 @@ import {
 import { resolveDeepSearchToolIds } from '../config/deep-search-sites';
 // 网站学习成果兜底：草稿（SkillDraft）暂存 + 深链 hash（与 use-learn-session 同源）
 import { saveLearnDraft } from '@/utils/learn/learn-draft-store';
+import { asSkillDraft } from '@/utils/learn/learn-validate';
 import { learnDraftHash, type SkillDraft } from '@/utils/learn/learn-types';
 // 注册表权威源对账入口（@ / 面板开启时主动与 chrome.storage 同步，兜底跨上下文 onChanged 事件漏投）
 import { restoreCustomAgentsFromStorage } from '@/utils/agents/agent-store';
@@ -979,7 +989,7 @@ watch(activeChatId, () => {
   settleGuard(false);
   // interact 询问同理全局唯一：切走的会话仍在后台运行，其挂起询问按
   // dismissed（询问被中断）收敛，弹窗/悬浮球不留残影
-  dismissPendingInteracts();
+  dismissConversationQuestions();
 });
 
 // ==================== 工具审批（破坏性操作人审门） ====================
@@ -1016,7 +1026,15 @@ const requestToolApproval = (request: ToolApprovalRequest): Promise<boolean> =>
       window.clearTimeout(timer);
       resolve(approved);
     };
-    const timer = window.setTimeout(() => finish(false), TOOL_APPROVAL_TIMEOUT_SECONDS * 1000);
+    const timer = window.setTimeout(() => {
+      try {
+        settleDialogById(handle.id, false);
+      } catch (error) {
+        console.warn('[Conversation] 审批超时关闭弹窗失败:', error);
+      } finally {
+        finish(false);
+      }
+    }, TOOL_APPROVAL_TIMEOUT_SECONDS * 1000);
     const handle = openDialogWithHandle({
       message: t('sidepanel.chat.toolApprovalMessage', {
         name: request.name,
@@ -1032,6 +1050,21 @@ const requestToolApproval = (request: ToolApprovalRequest): Promise<boolean> =>
     // result 永不 reject（use-app-dialog 契约：任何路径都 resolve），无拒绝分支
     void handle.result.then(approved => finish(approved));
   });
+
+/** Ordinary chat and learning share one cleanup path for user questions. */
+function dismissConversationQuestions(): void {
+  dismissPendingInteracts();
+  const approval = pendingToolApproval;
+  if (!approval) return;
+  pendingToolApproval = null;
+  try {
+    settleDialogById(approval.dialogId, false);
+  } catch (error) {
+    console.warn('[Conversation] 关闭工具审批弹窗失败:', error);
+  } finally {
+    approval.finish(false);
+  }
+}
 
 // ==================== 持久化降级告知（IndexedDB 故障不再静默丢数据） ====================
 
@@ -1150,6 +1183,9 @@ const handleConversationEvent = (event: ConversationEvent): void => {
       break;
     }
     case 'assistant-start': {
+      // 学习/验证直接驱动引擎，不经过 sendMessage。响应态以统一事件为准，
+      // 由运行终态回调结束，避免流式内容被提前当作已完成消息折叠并显示反馈按钮。
+      isAiResponding.value = true;
       messages.value = messages.value.filter(message => message.id !== event.messageId);
       // 「思考中」占位（与旧实现一致的 UI 状态）
       const thinking: RunningAssistantMessage = {
@@ -1345,6 +1381,9 @@ const handleConversationEvent = (event: ConversationEvent): void => {
       if (lastPart && lastPart.type === 'text') lastPart.content = (lastPart.content || '') + errorText;
       else uiMessage.parts.push({ type: 'text', content: errorText });
       uiMessage.content += errorText;
+      // 终态收敛推理片段：流式期间可能从未到达过「正文/工具触发自动收起」
+      // 的时点（如思考中被异常打断），此处按同一展示约定补齐收起
+      uiMessage.parts.forEach(p => { if (p.type === 'reasoning' && !p.userToggled) p.collapsed = true; });
       // 失败轮次同样计时（事件在 finalize 后发射）：写入运行源后经 refresh 快照上屏
       if (event.durationMs !== undefined) uiMessage.durationMs = event.durationMs;
       refreshUiMessage(event.messageId);
@@ -1374,10 +1413,19 @@ const handleConversationEvent = (event: ConversationEvent): void => {
         break;
       }
       uiMessage.isThinking = false;
-      // 中止耗时直接落到列表项：运行源已从缓存移除，refreshUiMessage 在此是空操作，
-      // 写运行源不会上屏（列表里是流式期间快照出的独立对象）
-      if (event.durationMs !== undefined) messages.value[index].durationMs = event.durationMs;
-      refreshUiMessage(event.messageId);
+      // 终态收敛（响应式安全写法）：推理片段补齐自动收起（中止可能发生在
+      // 任何自动收起时点之前，如纯思考阶段），耗时随同落列表项。运行源已
+      // 删除、refreshUiMessage 是空操作，直接以替换列表项的方式写入快照；
+      // 先清掉可能滞留的 rAF 刷新缓冲——其中快照不含本次收敛起误覆盖回放的可能
+      pendingUiRefresh.delete(event.messageId);
+      const settled = messages.value[index];
+      messages.value.splice(index, 1, {
+        ...settled,
+        parts: uiMessage.parts.map(p =>
+          p.type === 'reasoning' && !p.userToggled ? { ...p, collapsed: true } : p,
+        ),
+        ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
+      });
       break;
     }
     case 'guard': {
@@ -1465,14 +1513,17 @@ const openHubWithHash = async (hash: string): Promise<boolean> => {
   try {
     const pageUrl = chrome.runtime.getURL('hub.html');
     const tabs = await chrome.tabs.query({});
-    const existingTab = tabs.find(
-      tab => tab.url === pageUrl || tab.url?.startsWith(`${pageUrl}#`),
-    );
+    const existingTab = tabs.find(tab => {
+      if (!tab.url) return false;
+      try { const url = new URL(tab.url), base = new URL(pageUrl); return url.protocol === base.protocol && url.host === base.host && url.pathname === base.pathname; }
+      catch { return false; }
+    });
 
     if (existingTab?.id !== undefined) {
-      // 聚焦 + 更新 URL：hash 变化会触发 hub 侧的 hashchange 重新消费草稿；
-      // 只聚焦不改 URL 会让「草稿已换新」却停在旧视图上
-      await chrome.tabs.update(existingTab.id, { url: `${pageUrl}${hash}`, active: true });
+      // 仅更新 hash 传递提示，保留查询参数与已挂载页面，不能刷新清空编辑。
+      const target = new URL(existingTab.url!);
+      target.hash = hash;
+      await chrome.tabs.update(existingTab.id, { url: target.href, active: true });
       return true;
     }
     const created = await chrome.tabs.create({ url: `${pageUrl}${hash}`, active: true });
@@ -1490,11 +1541,29 @@ const learn = useLearnSession({
     showChatMode.value = true;
   },
   setActiveChat: chatId => {
+    // 学习使用新建的独立会话：切换 ID 的同时清空旧会话的展示与运行缓存，
+    // 否则新会话的 user-message 会直接追加在上一会话的消息列表后面。
+    pendingUiRefresh.clear();
+    runningAssistantMessages.clear();
+    pendingImageRefs.clear();
+    messages.value = [];
+    activeSystemPromptSuffix.value = '';
+    learnRecoverableDraft.value = null;
+    contextUsage.value = null;
+    isCompacting.value = false;
+    isAiResponding.value = false;
     activeChatId.value = chatId;
     // 学习会话刚创建：其补充段此后只承载草稿回放数据（非 LLM 输入），
     // 装配侧必须按「学习会话」口径处理（不写普通 systemPromptSuffix、
     // 装配时置空补充段），否则草稿会被误当提示词拼进 systemPrompt
     activeSessionIsLearn = true;
+  },
+  setResponding: (chatId, responding) => {
+    if (activeChatId.value === chatId) isAiResponding.value = responding;
+  },
+  requestToolApproval,
+  dismissQuestions: chatId => {
+    if (activeChatId.value === chatId) dismissConversationQuestions();
   },
   openHub: openHubWithHash,
   t,
@@ -2524,7 +2593,7 @@ const goHome = async (options?: { force?: boolean }): Promise<boolean> => {
   // 清除会话级 systemPrompt 补充段：新会话从「无补充段」重新开始
   activeSystemPromptSuffix.value = '';
   // 清除从历史会话读回的技能草稿：它只属于那个会话，新会话不该带着旧成果
-  learnRecoverableDraft = null;
+  learnRecoverableDraft.value = null;
   activeSessionIsLearn = false;
   // 结束当前会话：下次发送将创建新会话（历史会话仍保留在转录库，可从历史抽屉打开）
   activeChatId.value = '';
@@ -2546,8 +2615,11 @@ const goHome = async (options?: { force?: boolean }): Promise<boolean> => {
  * （见 transcriptEngine.setSystemPromptSuffix 的约束说明），loadHistorySession
  * 读回后存在这里。它只服务「手动创建技能」兜底：正常路径的草稿已随
  * 暂存（chrome.storage）交给管理中心，读回只是冗余副本，绝不自动重复创建。
+ *
+ * 必须是 ref：它直接驱动模板里的 v-if，用普通变量会导致提示条的显示与
+ * 隐藏要等到别处的重渲染才生效（打开会话时兜底条可能迟迟不出现）。
  */
-let learnRecoverableDraft: SkillDraft | null = null;
+const learnRecoverableDraft = ref<SkillDraft | null>(null);
 /** 当前会话是否为站点学习会话（kind 由转录引擎落库；决定补充段的语义与保护策略） */
 let activeSessionIsLearn = false;
 
@@ -2556,31 +2628,40 @@ function parseLearnDraft(raw: string | undefined | null): SkillDraft | null {
   if (!raw || !raw.trim().startsWith('{')) return null;
   try {
     const parsed = JSON.parse(raw) as SkillDraft;
-    // 最小形态校验：必须是 submit_skill 的提交体（name + 正文），否则不认
-    return typeof parsed?.name === 'string' && typeof parsed?.body === 'string' ? parsed : null;
+    // 与 submit_skill 共用完整校验，损坏的恢复数据不能进入交接队列。
+    return asSkillDraft(parsed);
   } catch {
     return null;
   }
 }
 
-/** 「重试创建技能」：把兜底草稿重新暂存并打开管理中心；无草稿时只开空表单 */
+let retryingLearnDraft = false;
+function currentLearnRecovery(): SkillDraft | null {
+  return learn.recovery.value?.chatId === activeChatId.value ? learn.recovery.value.draft : learnRecoverableDraft.value;
+}
+
+function downloadLearnRecovery(): void {
+  const draft = currentLearnRecovery();
+  if (!draft) return;
+  const text = `---\nname: ${JSON.stringify(draft.name)}\ndescription: ${JSON.stringify(draft.description)}\ncategory: ${JSON.stringify(draft.category)}\ntags: ${JSON.stringify(draft.tags)}\nallowed-tools: ${draft.allowedTools.join(' ')}\n${draft.summary ? `x-learning-summary: ${JSON.stringify(draft.summary)}\n` : ''}---\n\n${draft.body}`;
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
+  const link = document.createElement('a'); link.href = url; link.download = `${draft.name || 'learning-recovery'}.md`; link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Retry the same durable receipt; no empty-editor fallback when handoff fails. */
 async function retryCreateSkillFromLearn(): Promise<void> {
-  let saved = false;
-  if (learnRecoverableDraft) {
-    // 暂存失败只弹提示，不中断——仍要打开管理中心：hub 侧 takeLearnDraft
-    // 得到 none 会按「草稿不存在」开空表单，用户至少能继续手动创建
-    saved = await saveLearnDraft(learnRecoverableDraft);
-    if (!saved) toast.error(t('sidepanel.learn.draftSaveDegraded'));
-  }
-  const opened = await openHubWithHash(learnDraftHash());
-  if (!opened) {
-    toast.error(t('sidepanel.learn.openHubFailed'));
-    return;
-  }
-  // 分岔依据必须与文案一致：
-  //   暂存成功 → 成果已随行，去新标签确认创建；
-  //   暂存失败 → 成果未随行，管理中心将是空白表单（openHubFailed 已覆盖「没打开」）
-  if (saved) toast.info(t('sidepanel.learn.handoffDone'));
+  if (retryingLearnDraft) return;
+  const draft = currentLearnRecovery();
+  if (!draft) { toast.error(t('sidepanel.learn.draftSaveDegraded')); return; }
+  retryingLearnDraft = true;
+  try {
+    const saved = await saveLearnDraft(draft, activeChatId.value || 'recovery');
+    if (!saved.ok) { toast.error(t('sidepanel.learn.draftSaveDegraded')); return; }
+    const opened = await openHubWithHash(learnDraftHash(saved.id));
+    if (!opened) toast.error(t('sidepanel.learn.openHubFailed'));
+    else toast.info(t('sidepanel.learn.handoffDone'));
+  } finally { retryingLearnDraft = false; }
 }
 
 // ==================== 历史会话抽屉 ====================
@@ -2613,7 +2694,9 @@ const loadHistorySessionData = async (chatId: string) => {
     // 用户重新打开该会话即可取回成果、继续手动创建技能。
     // 正常路径下暂存的草稿已在管理中心消耗，此处读回只是冗余副本，不会重复创建
     activeSessionIsLearn = meta.kind === 'site-learn';
-    learnRecoverableDraft = activeSessionIsLearn ? parseLearnDraft(effective.systemPromptSuffix) : null;
+    learnRecoverableDraft.value = activeSessionIsLearn
+      ? parseLearnDraft(effective.systemPromptSuffix)
+      : null;
     // 补充段按会话类型分岔：
     //   - 普通会话：落库值就是 LLM 补充段，回填给装配与预算重算；
     //   - 学习会话：库里是草稿回放数据（非 LLM 输入），装配一律用空，
@@ -2709,11 +2792,7 @@ conversationEngine.onSettled = (chatId, summary, error) => {
   isAiResponding.value = false;
   isCompacting.value = false;
   settleGuard(false);
-  if (pendingToolApproval) {
-    settleDialogById(pendingToolApproval.dialogId, false);
-    pendingToolApproval?.finish(false);
-  }
-  dismissPendingInteracts();
+  dismissConversationQuestions();
   if (error && !sendInFlight.value) pushSystemNotice(error);
   if (summary?.contextUsage) contextUsage.value = summary.contextUsage;
   removePageGlow();
@@ -2721,9 +2800,11 @@ conversationEngine.onSettled = (chatId, summary, error) => {
   void syncSessionContextCache(chatId);
 };
 
-// Synchronous storage keeps the selection even if the panel is closed immediately.
+// Remember only within this browser session; a browser restart opens the welcome page.
 watch(activeChatId, chatId => {
-  localStorage.setItem(ACTIVE_CHAT_KEY, chatId);
+  void rememberActiveChat(chatId).catch(error => {
+    console.warn('[App] 保存当前会话选择失败:', error);
+  });
 }, { flush: 'sync' });
 
 /**
@@ -3002,24 +3083,8 @@ const stopAiResponse = async () => {
     // 1.5 收敛挂起的守卫确认（若有）：引擎正 await 该 Promise，不收敛会让运行永久悬停
     settleGuard(false);
 
-    // 1.6 收敛挂起的 interact 询问（弹窗/悬浮球与排队中的全部）：引擎正 await
-    // 工具 Promise，不收敛同样会永久悬停；统一按 dismissed（询问被中断）回传
-    dismissPendingInteracts();
-
-    // 1.7 收敛挂起的工具审批（若有）：定向关闭审批弹窗并按拒绝放行——
-    // 否则弹窗悬停在已停止的界面上，引擎也要等审批结算（点击或 60s 超时）
-    // 才能继续退出；拒绝结果由引擎以可控失败回传后随中止信号收尾
-    if (pendingToolApproval) {
-      const approval = pendingToolApproval;
-      pendingToolApproval = null;
-      try {
-        settleDialogById(approval.dialogId, false);
-      } catch (error) {
-        // 定向关闭失败（弹窗已被正常关闭等）不影响收敛器放行
-        console.warn('[Stop] 关闭工具审批弹窗失败:', error);
-      }
-      approval.finish(false);
-    }
+    // 收敛 interact（含排队询问）及工具审批；停止后不留弹窗和悬挂回调。
+    dismissConversationQuestions();
 
     // 1.8 中止预运行阶段（发送前压缩/装配期）：引擎尚未登记运行，
     // engine.abort 对其无效；压缩的 LLM 请求经该 signal 真正取消，
@@ -3831,14 +3896,14 @@ onMounted(async () => {
   // 会话计划对账（localStorage 缓存已同步恢复，此处补 chrome.storage 权威源）
   await restorePlansFromStorage();
 
-  const lastChatId = localStorage.getItem(ACTIVE_CHAT_KEY);
-  if (lastChatId) {
-    try {
+  try {
+    const lastChatId = await readActiveChat();
+    if (lastChatId) {
       if (await transcriptEngine.getSession(lastChatId)) await loadHistorySession(lastChatId);
-      else localStorage.removeItem(ACTIVE_CHAT_KEY);
-    } catch (error) {
-      console.warn('[App] 恢复侧边栏会话失败:', error);
+      else await rememberActiveChat('');
     }
+  } catch (error) {
+    console.warn('[App] 恢复侧边栏会话失败:', error);
   }
 
   // 加载已保存的工作流

@@ -5,7 +5,7 @@
  *   learn-types.ts    本文件：纯类型 + 常量，零副作用、零 I/O，可被工具 / 编排 / UI 共用
  *   learn-validate.ts 纯函数校验与派生（配置合法性、模型过滤、策略收敛）
  *   learn-prompts.ts  分阶段 prompt 模板（学习 A/B/C 三套 + 验证两套，见该文件）
- *   learn-draft-store.ts 草稿跨页传递（chrome.storage 一次性 key，带 TTL）
+ *   learn-draft-store.ts 草稿跨页传递（持久交接队列、编辑恢复副本与保存回执）
  *   use-learn-session.ts 编排状态机（唯一写入这些类型的业务层）
  *
  * 身份与不变量：
@@ -69,12 +69,21 @@ export interface LearnConfig {
   url: string;
   /** 学习目标（自然语言，描述要完成什么） */
   goal: string;
+  /** 可选：用户建议的操作过程与任务约束；须现场核实后写入技能。 */
+  additionalDescription?: string;
   targetMode: LearnTargetMode;
   strategy: LearnStrategy;
   /** 学习模型 = 验证模型（稳定 id 对：渠道 + 模型） */
   modelRef: LearnModelRef;
   /** 是否自动进入验证阶段（默认 true；false 时学习完直接落盘） */
   autoValidate: boolean;
+  learningLimits?: LearnStageLimits;
+  validationLimits?: LearnStageLimits;
+}
+
+export interface LearnStageLimits {
+  maxIterations: number;
+  maxDurationMinutes: number;
 }
 
 /** 校验后的冻结配置（编排层只接受此形态，杜绝「带病运行」） */
@@ -114,12 +123,25 @@ export interface SkillDraft {
 /** submit_validation 的返回体 */
 export interface ValidationReport {
   passed: boolean;
-  /** 不通过时必填（工具层硬校验）；通过时可为改进建议 */
+  /** 尚未解决的执行/复用问题；不通过时非空，通过时必须为空。 */
   issues: string[];
-  /** 0-100 完成度评分（可选） */
+  /** 不影响当前流程正确性的可选建议，不用于隐藏未修复的问题。 */
+  suggestions?: string[];
+  /** 通过时需要实际样本/状态、结果回执及覆盖限制；修订可沿用 revision.evidence。 */
+  evidence?: string[];
+  /** 0-100 可复用性评分（可选，不代替证据） */
   score?: number;
   /** 一句话结论（可选） */
   summary?: string;
+  /** 仅在修订后的流程已重新验证通过时提供；不改变技能身份、模式或工具权限。 */
+  revision?: ValidationRevision;
+}
+
+export interface ValidationRevision {
+  body: string;
+  summary: string;
+  /** 实际复核的样本差异、结果及覆盖限制，不是未经验证的建议。 */
+  evidence: string[];
 }
 
 // ──── 终态分化：成功提交 / 失败提交 ────
@@ -249,50 +271,67 @@ export function isLearnRunning(phase: LearnPhase): boolean {
 /**
  * 学习 / 验证段的循环上限。
  * 学习要大量试错，默认 20 轮 / 10 分钟远不够；取 60 轮 / 30 分钟。
- * 达到上限时不直接丢弃：编排层会给一次「再给 5 轮收尾提交」的机会
- * （见 use-learn-session 的 onLimitReached 分支）。
+ * 高级设置可独立覆盖学习/验证的预算。每次触限都由用户选择继续、总结或丢弃。
  */
 export const LEARN_LIMITS = {
   maxIterations: 60,
   maxDurationMs: 30 * 60 * 1000,
 } as const;
 
-/** 收尾追加轮数（达上限后给模型一次提交机会） */
-export const LEARN_WRAP_UP_EXTRA_ITERATIONS = 5;
+/** New windows keep the same duration; only their iteration count is user-selected. */
+export const LEARN_DEFAULT_STAGE_LIMITS: Readonly<LearnStageLimits> = {
+  maxIterations: LEARN_LIMITS.maxIterations,
+  maxDurationMinutes: LEARN_LIMITS.maxDurationMs / 60_000,
+};
+export const LEARN_DEFAULT_EXTENSION_ITERATIONS = 15;
 
 // ──── 草稿跨页传递 ────
 
 /**
- * 草稿暂存的 storage key（chrome.storage.local 一次性读取）。
- * body 可达 15000 字符，不进 URL；读取即删 + TTL 过期，避免残留。
+ * 旧版草稿 storage key，仅用于无损迁移；新成果使用独立 ID 的持久记录。
  */
 export const LEARN_DRAFT_STORAGE_KEY = 'agentNexusSkillDraft';
 
-/** 草稿有效期：超过则 hub 侧按「已过期」处理（走空表单 + 提示） */
+/** 旧版有效期，保留兼容；新交接与旧数据迁移均不按此值过期删除。 */
 export const LEARN_DRAFT_TTL_MS = 10 * 60 * 1000;
 
-/** 跨页深链 hash（hub 据此切到技能分区并触发预填） */
+/** 跨页深链 hash（仅提示待接收成果，用户确认后才预填） */
 export const LEARN_DRAFT_HASH = '#new-skill';
 
 /**
- * 生成一次性草稿深链：`#new-skill?t=<nonce>`。
- *
- * 为什么必须带 nonce：hub 标签可能已经停在 `#new-skill` 上（上一次交付打开的）。
- * 此时再次交付若 URL 完全相同，浏览器不会产生 hashchange，hub 侧就不会重新
- * 消费草稿——用户看到的是上一次的旧表单，新成果静默丢失。
- * nonce 让 fragment 每次都不同，hashchange 必然触发，交付信号可靠送达。
- *
- * hub 侧按「`#new-skill` 或以 `#new-skill?` 开头」识别（见 hub/App.vue 的
- * consumeDraftHash），并在消费后用 replaceState 清掉 hash，避免重复触发。
+ * 生成 `#new-skill?id=<transferId>&t=<nonce>`。ID 定位成果，nonce 唤醒已打开的
+ * 管理中心；深链只传信号，不携带正文、不自动重置编辑器或删除交接记录。
  */
-export function learnDraftHash(): string {
+export function learnDraftHash(transferId?: string): string {
   const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  return `${LEARN_DRAFT_HASH}?t=${nonce}`;
+  return `${LEARN_DRAFT_HASH}?${transferId ? `id=${encodeURIComponent(transferId)}&` : ''}t=${nonce}`;
 }
 
-/** 写入 hub 草稿的载荷形态 */
+/** Durable outbox: opening a form never acknowledges or deletes its source. */
+export interface LearnDraftTransfer {
+  version: 2;
+  id: string;
+  sourceChatId: string;
+  createdAt: number;
+  draft: SkillDraft;
+  status: 'pending' | 'saved' | 'discarded';
+  savedSkillId?: string;
+  editorState?: LearnDraftEditorState;
+}
+
+export interface LearnDraftEditorState {
+  form: { name: string; description: string; category: string; customCategory: string; tags: string[]; body: string; raw: string };
+  editorMode: 'simple' | 'advanced';
+  preservedFrontmatterLines: string[];
+  resourceFiles: Record<string, string>;
+  resourceEditorOpen: boolean;
+  resourceEditingPath: string | null;
+  resourceForm: { path: string; content: string };
+}
+
+/** 旧版草稿载荷，仅用于迁移。 */
 export interface LearnDraftPayload {
   draft: SkillDraft;
-  /** 写入时间（TTL 判定） */
+  /** 原写入时间（迁移时保留） */
   createdAt: number;
 }

@@ -39,6 +39,7 @@ export {
 export type {
   AppSettings,
   ChannelConfig,
+  ChannelState,
   ModelRef,
 } from './channel-types';
 

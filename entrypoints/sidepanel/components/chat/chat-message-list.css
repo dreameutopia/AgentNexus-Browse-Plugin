@@ -1143,6 +1143,88 @@
   margin: 2px 0 6px;
 }
 
+/* ==================== 直播态「连续过程小折叠」条 ====================
+   直播流中连续的工具调用 / 推理 / 截图达到阈值（MIN_LIVE_CLUSTER_PARTS）
+   后收拢为一条摘要：左侧堆叠图标 + 计数摘要，右侧合计耗时 + 展开箭头；
+   最新一项活动保留在条外直接可见（见 utils/chat/part-grouping）。
+   视觉语言与前奏收起条同源（muted 色 + 悬浮弱底 + chevron 旋转），尺寸
+   收小半号以区分层级：小折叠是直播中的过程收拢，前奏条是终态的过程归档 */
+.cluster-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 24px;
+  margin: 2px 0;
+  padding: 2px 6px 2px 2px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  color: var(--ink-muted, #9b9790);
+  cursor: pointer;
+  user-select: none;
+  box-sizing: border-box;
+}
+
+.cluster-bar:hover {
+  color: var(--ink-secondary, #787671);
+  background: var(--surface-soft, #f3f1ed);
+}
+
+.cluster-bar:focus-visible {
+  outline: 2px solid var(--focus-ring, #a5a09a);
+  outline-offset: -1px;
+}
+
+.cluster-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: #a8a29e;
+}
+
+.cluster-summary {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0.01em;
+}
+
+.cluster-right {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.cluster-duration {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--ink-muted, #9b9790);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.cluster-chevron {
+  flex-shrink: 0;
+  color: #b0b7c3;
+  transform: rotate(90deg);
+  transition: transform 0.18s ease;
+}
+
+.cluster-chevron.collapsed {
+  transform: rotate(0deg);
+}
+
 /* ==================== 模型消息操作栏（复制 / 赞 / 踩） ====================
    挂在消息内容底部；无前奏收起条时右侧兼作耗时展示位（.message-duration）。
    图标统一 15px 填充风格，与前奏星形图标同一视觉语言 */

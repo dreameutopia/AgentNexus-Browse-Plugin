@@ -17,6 +17,9 @@
  *      前 2000 字符预览封装、saveResult 显式强制暂存、readRef 分页读取
  *      （首页/续读/尾页/越界收敛/limit 收敛/无标签页）、参数与模式互斥防御、
  *      捕获/暂存失败的有界降级与告警
+ *  10. plan_tool 契约（五动作/failed 必填校验/未知 id 回显/重建提示）+ 计划
+ *      状态提醒判定（plan-reminder 纯函数）+ plan-store 幂等水合
+ *      （见 ./plan.test.ts）
  *
  * 运行：node tests/tools/run.mjs   （或 npm run test:tools）
  */
@@ -924,10 +927,12 @@ await testTextAutomation(check, eq);
 // ==================== 汇总 ====================
 await import('./wait-navigation.test');
 await import('./vision-gui.test');
+await import('./confirmation.test');
 await import('./vision-assistant.test');
 await import('./prompt-cache.test');
 await import('./agent-i18n.test');
 await import('./agent-image.test');
+await import('./plan.test');
 
 console.log(`\n[tools] 通过 ${passed} 项，失败 ${failures.length} 项`);
 if (failures.length > 0) {

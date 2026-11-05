@@ -612,6 +612,22 @@ export async function restorePlansFromStorage(): Promise<void> {
   }
 }
 
+/**
+ * 幂等水合：确保本上下文已从 chrome.storage 权威源恢复过一次。
+ *
+ * 面向 background worker 冷启动场景：会话引擎与 plan_tool 都在 worker 执行，
+ * 而 worker 无 localStorage（模块加载时的同步恢复读不到缓存），跨上下文订阅
+ * 又只能收到「之后的写入」——不先水合，worker 重启后的首轮会把既有计划误判
+ * 为「不存在」（add 的自动建立分支会整体覆盖旧计划，edit 报目标不存在）。
+ * 会话引擎在每次运行准备阶段调用；首次调用后复用同一 Promise，不重复读
+ * storage。sidepanel App 挂载时的 restorePlansFromStorage 直调不受影响。
+ */
+let planHydrationPromise: Promise<void> | null = null;
+export function ensurePlansHydrated(): Promise<void> {
+  planHydrationPromise ??= restorePlansFromStorage();
+  return planHydrationPromise;
+}
+
 // 跨上下文变更订阅：其它窗口写入 → LWW 合并进内存并通知 UI（自事件被指纹跳过）
 subscribeStorageKey(PLAN_STORAGE_KEY, planWriteFingerprint, newValue => {
   const affected = mergeExternal(newValue);

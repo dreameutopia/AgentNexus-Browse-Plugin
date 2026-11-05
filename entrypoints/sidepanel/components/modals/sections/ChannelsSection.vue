@@ -271,7 +271,7 @@
                 'config-test-btn-error': form.testResult.value?.success === false,
               }"
               :disabled="form.isTesting.value || !form.canTest.value"
-              :title="form.canTest.value ? t('sidepanel.apiConfig.testHintSelect') : t('sidepanel.apiConfig.testHintFill')"
+              :title="form.testBtnTitle.value"
               @click="form.openTestPicker()"
             >
               <svg v-if="form.isTesting.value" width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" class="api-config-spin-icon">

@@ -3,6 +3,7 @@ import { config } from 'dotenv';
 import { resolve } from 'path';
 import fg from 'fast-glob';
 import { readFileSync } from 'fs';
+import { browserBuildTarget } from './scripts/browser-build-target.mjs';
 
 config({ path: resolve(process.cwd(), '.env') });
 config({ path: resolve(process.cwd(), '.env.local') });
@@ -131,8 +132,8 @@ export default defineConfig({
       __BROWSER_UUID__: JSON.stringify(BROWSER_UUID),
     },
     build: {
-      // 我们的构建产物需要兼容到es6
-      target: 'es2015',
+      // 注入函数被单独序列化，不能依赖降级生成的模块级 helper。
+      target: browserBuildTarget,
       // 非生产环境下生成sourcemap
       sourcemap: env.mode !== 'production',
       // 禁用gzip 压缩大小报告，因为压缩大型文件可能会很慢

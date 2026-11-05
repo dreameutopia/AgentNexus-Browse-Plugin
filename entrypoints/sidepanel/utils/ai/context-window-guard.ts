@@ -38,9 +38,9 @@ const TOOL_CONTENT_LIMIT = 8 * 1024;
  * 不做传输层截断的工具（按 tool 消息的 name 识别）。
  *
  * 技能指令与资源文件不是「工具产出的数据」，而是**按需注入的上下文**：体量在
- * 装配侧已受各自设计上限约束（技能正文 ≤ SKILL_BODY_MAX_CHARS、单文件 ≤
- * SKILL_FILE_MAX_CHARS），且文档承诺的可读上限（15,000 / 100,000 字符）高于
- * 传输层的 8KB——一刀切会静默砍半，模型读到残缺指令却以为读全了。
+ * 装配侧已按 SKILL_PAGE_TOKEN_BUDGET（≈3000 token/页）分页约束（见
+ * utils/skills/skill-pagination），单次注入天然有界且略高于传输层的 8KB——
+ * 一刀切会静默砍页，模型读到残缺指令却以为读全了。
  * 其余工具（页面抽取等）可能返回数十万字符，仍按 TOOL_CONTENT_LIMIT 截断。
  */
 const SKILL_CONTEXT_TOOL_NAMES: ReadonlySet<string> = new Set(['load_skill', 'read_skill_file']);

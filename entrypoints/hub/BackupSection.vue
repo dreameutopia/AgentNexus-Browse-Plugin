@@ -125,13 +125,13 @@
     <p class="config-form-hint">{{ t('sidepanel.backup.exportDataDesc') }}</p>
 
     <label class="config-backup-secrets">
-      <input type="checkbox" v-model="includeSecrets" />
+      <input class="hub-check" type="checkbox" v-model="includeSecrets" />
       <span>{{ t('sidepanel.backup.includeSecrets') }}</span>
     </label>
     <p class="config-form-hint">{{ t('sidepanel.backup.includeSecretsHint') }}</p>
 
     <label class="config-backup-secrets">
-      <input type="checkbox" v-model="includeMedia" />
+      <input class="hub-check" type="checkbox" v-model="includeMedia" />
       <span>{{ t('sidepanel.backup.includeMedia') }}</span>
     </label>
     <p class="config-form-hint">{{ t('sidepanel.backup.includeMediaHint') }}</p>

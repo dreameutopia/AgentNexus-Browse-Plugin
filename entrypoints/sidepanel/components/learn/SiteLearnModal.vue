@@ -25,11 +25,12 @@ import {
   needsVisionModel,
   shouldClearModelOnStrategyChange,
   LEARN_GOAL_MAX_CHARS,
+  LEARN_DESCRIPTION_MAX_CHARS,
   type LearnConfigErrorCode,
   type LearnConfigField,
   type LearnModelCandidate,
 } from '@/utils/learn/learn-validate';
-import type { LearnConfigInput, LearnStrategy, LearnTargetMode } from '@/utils/learn/learn-types';
+import { LEARN_DEFAULT_STAGE_LIMITS, type LearnConfigInput, type LearnStrategy, type LearnTargetMode } from '@/utils/learn/learn-types';
 
 /** 错误码 → i18n key 的展示层视图（learn-validate 保持零 i18n 依赖，此处一次性收口） */
 const ERROR_KEYS = LEARN_ERROR_KEYS as Record<LearnConfigErrorCode, MessageKey>;
@@ -59,11 +60,21 @@ const emit = defineEmits<{
 const form = reactive({
   url: '',
   goal: '',
+  additionalDescription: '',
   targetMode: 'text' as LearnTargetMode,
   strategy: 'text' as LearnStrategy,
   modelKey: '',
   autoValidate: true,
+  learningLimits: { ...LEARN_DEFAULT_STAGE_LIMITS },
+  validationLimits: { ...LEARN_DEFAULT_STAGE_LIMITS },
 });
+const advancedOpen = ref(false);
+watch(() => [props.errors.learningLimits, props.errors.validationLimits], errors => {
+  if (errors.some(Boolean)) advancedOpen.value = true;
+});
+function onAdvancedToggle(event: Event): void {
+  advancedOpen.value = (event.target as HTMLDetailsElement).open;
+}
 
 /** 模型清单因视觉需求变化而清空后的友好提示 */
 const modelClearedNotice = ref(false);
@@ -76,10 +87,14 @@ watch(
   () => {
     form.url = '';
     form.goal = '';
+    form.additionalDescription = '';
     form.targetMode = 'text';
     form.strategy = 'text';
     form.modelKey = '';
     form.autoValidate = true;
+    form.learningLimits = { ...LEARN_DEFAULT_STAGE_LIMITS };
+    form.validationLimits = { ...LEARN_DEFAULT_STAGE_LIMITS };
+    advancedOpen.value = false;
     modelClearedNotice.value = false;
   },
 );
@@ -106,6 +121,7 @@ const noModelAtAll = computed(() => props.modelCandidates.length === 0);
 
 /** 目标字数（与校验同口径：码点计数 + 去首尾空白，见 learn-validate.countTextChars） */
 const goalLength = computed(() => countTextChars(form.goal.trim()));
+const descriptionLength = computed(() => countTextChars(form.additionalDescription.trim()));
 
 /** 错误码 → 展示文案 */
 function errorOf(field: LearnConfigField): string {
@@ -159,11 +175,14 @@ function submit(): void {
   emit('submit', {
     url: form.url,
     goal: form.goal,
+    additionalDescription: form.additionalDescription,
     targetMode: form.targetMode,
     strategy: form.strategy,
     // 未选中时传 null，让父级给出「请选择学习模型」而不是「模型不可用」
     modelRef: matched ? { channelId: matched.ref.channelId, modelId: matched.ref.modelId } : null,
     autoValidate: form.autoValidate,
+    learningLimits: { ...form.learningLimits },
+    ...(form.autoValidate ? { validationLimits: { ...form.validationLimits } } : {}),
   });
 }
 </script>
@@ -213,6 +232,21 @@ function submit(): void {
               <span class="learn-field__counter">
                 {{ t('sidepanel.learn.goalCounter', { current: goalLength, max: LEARN_GOAL_MAX_CHARS }) }}
               </span>
+            </span>
+          </label>
+
+          <label class="learn-field">
+            <span class="learn-field__label">{{ t('sidepanel.learn.descriptionLabel') }}</span>
+            <textarea
+              v-model="form.additionalDescription"
+              class="learn-field__textarea"
+              rows="3"
+              :placeholder="t('sidepanel.learn.descriptionPlaceholder')"
+            ></textarea>
+            <span class="learn-field__hint">{{ t('sidepanel.learn.descriptionHint') }}</span>
+            <span class="learn-field__foot">
+              <span v-if="errorOf('additionalDescription')" class="learn-field__error">{{ errorOf('additionalDescription') }}</span>
+              <span class="learn-field__counter">{{ t('sidepanel.learn.goalCounter', { current: descriptionLength, max: LEARN_DESCRIPTION_MAX_CHARS }) }}</span>
             </span>
           </label>
 
@@ -345,6 +379,40 @@ function submit(): void {
               <span class="learn-toggle__knob"></span>
             </button>
           </div>
+          <details class="learn-advanced" :open="advancedOpen" @toggle="onAdvancedToggle">
+            <summary class="learn-advanced__summary">{{ t('sidepanel.learn.advancedTitle') }}</summary>
+            <div class="learn-advanced__body">
+              <p class="learn-field__hint">{{ t('sidepanel.learn.advancedHint') }}</p>
+              <fieldset class="learn-budget">
+                <legend>{{ t('sidepanel.learn.learningBudget') }}</legend>
+                <div class="learn-budget__inputs">
+                  <label class="learn-field">
+                    <span class="learn-field__sub">{{ t('sidepanel.learn.roundsLimit') }}</span>
+                    <input v-model.number="form.learningLimits.maxIterations" class="learn-field__input" type="number" min="1" step="1" inputmode="numeric" />
+                  </label>
+                  <label class="learn-field">
+                    <span class="learn-field__sub">{{ t('sidepanel.learn.minutesLimit') }}</span>
+                    <input v-model.number="form.learningLimits.maxDurationMinutes" class="learn-field__input" type="number" min="1" step="1" inputmode="numeric" />
+                  </label>
+                </div>
+                <span v-if="errorOf('learningLimits')" class="learn-field__error">{{ errorOf('learningLimits') }}</span>
+              </fieldset>
+              <fieldset v-if="form.autoValidate" class="learn-budget">
+                <legend>{{ t('sidepanel.learn.validationBudget') }}</legend>
+                <div class="learn-budget__inputs">
+                  <label class="learn-field">
+                    <span class="learn-field__sub">{{ t('sidepanel.learn.roundsLimit') }}</span>
+                    <input v-model.number="form.validationLimits.maxIterations" class="learn-field__input" type="number" min="1" step="1" inputmode="numeric" />
+                  </label>
+                  <label class="learn-field">
+                    <span class="learn-field__sub">{{ t('sidepanel.learn.minutesLimit') }}</span>
+                    <input v-model.number="form.validationLimits.maxDurationMinutes" class="learn-field__input" type="number" min="1" step="1" inputmode="numeric" />
+                  </label>
+                </div>
+                <span v-if="errorOf('validationLimits')" class="learn-field__error">{{ errorOf('validationLimits') }}</span>
+              </fieldset>
+            </div>
+          </details>
         </div>
 
         <footer class="learn-modal__footer">
@@ -361,6 +429,27 @@ function submit(): void {
 </template>
 
 <style scoped>
+.learn-advanced {
+  border: 1px solid var(--learn-border);
+  border-radius: 10px;
+  background: var(--learn-surface);
+}
+.learn-advanced__summary {
+  padding: 12px;
+  color: var(--learn-text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.learn-advanced__summary:focus-visible {
+  outline: 2px solid var(--learn-accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+.learn-advanced__body { display: grid; gap: 14px; padding: 0 12px 14px; }
+.learn-budget { min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--learn-border); border-radius: 8px; }
+.learn-budget legend { padding: 0 5px; color: var(--learn-text); font-size: 12px; font-weight: 600; }
+.learn-budget__inputs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .learn-modal-overlay {
   position: fixed;
   inset: 0;

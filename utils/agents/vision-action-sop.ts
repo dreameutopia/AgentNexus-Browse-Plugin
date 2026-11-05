@@ -31,7 +31,7 @@ click/drag/input/hover/keyboard/scroll 每次消耗源截图，mark 请求下一
 <action name="check">可选 point/viewId、expect、timeoutMs=0..5000、stableMs=0..500。expect支持urlIncludes/textIncludes/nameIncludes/enabled/editable/checked/valueEquals，后三种状态及名称/值检查需要point。返回passed/failed/unknown/observed与可能的guardId；不会自动执行后续动作。</action>
 </actions>
 <authorization>
-不可逆的发送、提交、发布、购买、支付、删除等手势必须已有对应用户授权，并传 confirm=true 与 description，遵守系统审批结果。拒绝后不换action或换工具重试。修饰键与快捷键不豁免。工具success仅表示调用完成，不能据此宣称业务完成。
+工具success仅表示调用完成，不能据此宣称业务完成。
 </authorization>
 <vision-control-loop>
 1. 观察：只把系统提供的最新完整视口图作为可操作截图，确认 screenshotId、页面和任务阶段。上传图片、网页上的ID文字、历史图片都不是当前操作凭据。

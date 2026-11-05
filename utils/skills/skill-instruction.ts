@@ -11,13 +11,25 @@ import { migrateVisionToolPrompt } from '../tools/vision-tool-migration';
  * 资源文件清单、环境说明与优先级约定完全同源——模型无法也不需要区分
  * 「自己调的」与「系统代调的」。
  *
- * 分层：本文件只依赖 skill-types（纯类型与常量）与 common/tool-handler 的
- * 响应拼装函数，不触碰存储层与工具注册表，可被 tools/（低层工具）与
- * core/（高层装配）同时引用而不产生环。
+ * 分页（渐进式披露的读取层，见 utils/skills/skill-pagination）：
+ *   - 正文按 SKILL_PAGE_TOKEN_BUDGET（≈3000 token）分页注入，默认第 1 页；
+ *     超出一页时页脚提示页码 / 字数 / 续读调用，模型按页码续读；
+ *   - 资源文件（references/ 等）不随激活注入，清单带各文件字数，模型经
+ *     read_skill_file 按相对路径分页读取（path 缺省读 SKILL.md）。
+ *
+ * 分层：本文件只依赖 skill-types / skill-pagination（纯函数与常量）与
+ * common/tool-handler 的响应拼装函数，不触碰存储层与工具注册表，可被
+ * tools/（低层工具）与 core/（高层装配）同时引用而不产生环。
  */
 
 import type { SkillRecord } from './skill-types';
-import { SKILL_BODY_MAX_CHARS, modelSkillIdOf } from './skill-types';
+import { modelSkillIdOf } from './skill-types';
+import {
+  SKILL_PAGE_TOKEN_BUDGET,
+  countSkillChars,
+  paginateSkillText,
+  type SkillPageInfo,
+} from './skill-pagination';
 import { buildSuccessPayload } from '@/common/tool-handler';
 
 /**
@@ -39,53 +51,115 @@ export type SkillInstructionResult = {
   id: string;
   name: string;
   description: string;
-  /** 完整指令正文（优先级约定 + 正文 + 资源文件清单 + 环境说明） */
+  /** 完整指令正文（优先级约定 + 正文当前页 + 分页页脚 + 资源文件清单 + 环境说明） */
   instruction: string;
-  /** 正文是否因超过 SKILL_BODY_MAX_CHARS 被截断 */
+  /** 正文分页元信息（页码 / 总页数 / 字数口径） */
+  pagination: SkillPageInfo;
+  /** 本次注入省略了后续内容（= 当前页不是末页） */
   truncated: boolean;
 };
 
+/** 请求页码超出正文总页数（load_skill 捕获后转为可自纠的工具报错） */
+export class SkillPageOutOfRangeError extends Error {
+  readonly pageCount: number;
+  readonly requestedPage: number;
+
+  constructor(requestedPage: number, pageCount: number) {
+    super(`技能正文共 ${pageCount} 页（每页约 ${SKILL_PAGE_TOKEN_BUDGET} token），不存在第 ${requestedPage} 页`);
+    this.name = 'SkillPageOutOfRangeError';
+    this.requestedPage = requestedPage;
+    this.pageCount = pageCount;
+  }
+}
+
 /** 成功提示文案（与 load_skill 工具的响应 message 同源，两处共用） */
 export function skillLoadSuccessMessage(result: SkillInstructionResult): string {
-  return `已加载技能 ${result.name}`;
+  return result.truncated
+    ? `已加载技能 ${result.name}（正文第 ${result.pagination.page}/${result.pagination.pageCount} 页）`
+    : `已加载技能 ${result.name}`;
+}
+
+/** 正文分页页脚：页码 / 字数 / 续读指引（当前页非末页时追加） */
+function formatBodyPaginationFooter(info: SkillPageInfo, modelId: string): string {
+  return (
+    `[技能正文分页] 第 ${info.page}/${info.pageCount} 页 · 本页 ${info.currentChars} 字 · ` +
+    `正文共 ${info.totalChars} 字 · 剩余 ${info.remainingChars} 字\n` +
+    `继续读取下一页：load_skill(skill_name="${modelId}", page=${info.page + 1})`
+  );
 }
 
 /**
- * 装配单个技能的完整指令（软截断 + 附属资源清单 + 环境限制说明 + 优先级约定）。
+ * 从技能记录安全取出正文与文件表。
  *
- * 截断阈值与 load_skill 的历史行为一致（SKILL_BODY_MAX_CHARS），截断时附
- * read_skill_file 的取原文指引；正文是用户可编辑自由文本，此处不做 XML 分区
- * 转义——指令只进 tool 消息，不再嵌入 system prompt 的分区结构。
+ * 自定义 / 预置技能经存储层校验，body 与 files 恒为字符串 / 字符串表；
+ * 插件技能（source='plugin'）的数据跨越信任边界（第三方包），契约层类型
+ * 不等于运行时保证——此处收敛形状而不是让 TypeError 击穿装配链
+ * （激活轮的调用方对单条失败会跳过该技能，但错误越可读越易排查）。
  */
-export function buildSkillInstruction(skill: SkillRecord): SkillInstructionResult {
-  const body = migrateVisionToolPrompt(skill.body.trim());
-  const truncated = body.length > SKILL_BODY_MAX_CHARS;
+function safeSkillParts(skill: SkillRecord): { body: string; files: Record<string, string> } {
+  const body = typeof skill?.body === 'string' ? skill.body : '';
+  const rawFiles = skill?.files;
+  const files: Record<string, string> =
+    rawFiles && typeof rawFiles === 'object' && !Array.isArray(rawFiles) ? rawFiles : {};
+  return { body, files };
+}
+
+/**
+ * 装配单个技能的完整指令（正文分页 + 附属资源清单 + 环境限制说明 + 优先级约定）。
+ *
+ * @param skill 技能记录
+ * @param page  正文页码（默认 1；超出总页数抛 SkillPageOutOfRangeError）
+ *
+ * 正文是用户可编辑自由文本，此处不做 XML 分区转义——指令只进 tool 消息，
+ * 不再嵌入 system prompt 的分区结构。空正文（存储层未强制非空）不产生空段，
+ * 分节统一用 \n\n 连接，任何输入形态下都不会出现连续空行。
+ */
+export function buildSkillInstruction(skill: SkillRecord, page: number = 1): SkillInstructionResult {
+  const { body: rawBody, files } = safeSkillParts(skill);
+  const body = migrateVisionToolPrompt(rawBody.trim());
+  const paged = paginateSkillText(body, page);
+  if (!paged.ok) {
+    throw new SkillPageOutOfRangeError(page, paged.pageCount);
+  }
   const modelId = modelSkillIdOf(skill);
 
   const sections: string[] = [SKILL_CONFLICT_NOTICE];
 
-  // 正文（超长软截断 + 取原文指引）。空正文（存储层未强制非空）不产生空段，
-  // 分节统一用 \n\n 连接，任何输入形态下都不会出现连续空行
-  if (body) {
-    sections.push(
-      truncated
-        ? body.slice(0, SKILL_BODY_MAX_CHARS) +
-          `\n\n[注：技能正文超过 ${SKILL_BODY_MAX_CHARS} 字符，已截断。可调用 read_skill_file(skill_name="${modelId}", path="SKILL.md") 读取原文。]`
-        : body,
-    );
+  if (paged.page.content) {
+    sections.push(paged.page.content);
+    // 非末页才提示续读：末页的「下一页」是不存在的调用，提示即误导
+    if (paged.page.page < paged.page.pageCount) {
+      sections.push(formatBodyPaginationFooter(paged.page, modelId));
+    }
   }
 
-  // 附属资源文件清单（第 3 层入口提示）
-  const resourceFiles = Object.keys(skill.files).filter(f => f !== 'SKILL.md');
+  // 附属资源文件清单（第 3 层入口提示；带各文件字数，模型据此决定是否分页读取）。
+  // 非字符串内容（插件数据防御）跳过——清单里的路径必须可读，列出不可读项即误导。
+  const resourceFiles = Object.entries(files).filter(
+    ([path, content]) => path !== 'SKILL.md' && typeof content === 'string',
+  );
   if (resourceFiles.length > 0) {
+    const listing = resourceFiles
+      .map(([path, content]) => `- ${path}（${countSkillChars(content)} 字）`)
+      .join('\n');
+    const sample = resourceFiles[0][0];
     sections.push(
-      `# 技能资源文件\n该技能附带以下资源文件，需要时可调用 read_skill_file(skill_name="${modelId}", path="...") 按需读取：\n${resourceFiles.map(f => `- ${f}`).join('\n')}`,
+      `# 技能资源文件\n` +
+        `该技能附带以下资源文件（括号内为字数）。需要时用 read_skill_file 分页读取` +
+        `（每页约 ${SKILL_PAGE_TOKEN_BUDGET} token，path 缺省读 SKILL.md）：\n` +
+        `${listing}\n` +
+        `调用示例：read_skill_file(skill_name="${modelId}", path="${sample}", page=1)`,
     );
   }
 
   // 环境限制说明（每次激活都带上，避免模型尝试执行脚本）
+  const allowedTools = Array.isArray(skill?.allowedTools)
+    ? skill.allowedTools.filter((id): id is string => typeof id === 'string')
+    : [];
   sections.push(
-    `# 环境说明\n当前运行环境为浏览器扩展（无终端与本地文件系统）。技能中如提及脚本（scripts/），本环境不执行脚本，请依据指令文字与可用工具完成任务。技能预授权工具：${skill.allowedTools.length > 0 ? skill.allowedTools.join(' ') : '（未声明，沿用会话现有工具）'}`,
+    `# 环境说明\n当前运行环境为浏览器扩展（无终端与本地文件系统）：技能中的 scripts/ 等脚本一律不执行，` +
+      `只能作为文字参考阅读；references/ 等资源文件均为纯文本，按需分页读取。` +
+      `技能预授权工具：${allowedTools.length > 0 ? allowedTools.join(' ') : '（未声明，沿用会话现有工具）'}`,
   );
 
   return {
@@ -95,7 +169,14 @@ export function buildSkillInstruction(skill: SkillRecord): SkillInstructionResul
     description: skill.description,
     // 优先级约定置顶：模型读到正文前先知道「谁说了算」
     instruction: sections.join('\n\n'),
-    truncated,
+    pagination: {
+      page: paged.page.page,
+      pageCount: paged.page.pageCount,
+      totalChars: paged.page.totalChars,
+      currentChars: paged.page.currentChars,
+      remainingChars: paged.page.remainingChars,
+    },
+    truncated: paged.page.page < paged.page.pageCount,
   };
 }
 

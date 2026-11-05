@@ -46,6 +46,36 @@ const escapeCell = (text: string): string =>
     .replace(/[\r\n]/g, ' ')
     .replace(/`/g, "'");
 
+// Enumeration never targets an element/frame; keep the schema branches separate.
+const enumerationProperties = {
+  view: {
+    type: 'string',
+    enum: ['controls', 'buttons', 'inputs', 'structure', 'accessibility'],
+    description: '枚举视图；新查询默认 controls，续读省略时继承快照视图。',
+  },
+  regex: {
+    type: 'string',
+    description: '不区分大小写。DOM：匹配文字/placeholder/aria-label 等，命中置顶，未命中候选仍返回，只有 Hit 标记才算命中；AX：只返回匹配语义节点。',
+  },
+  xpath: {
+    type: 'string',
+    description: '仅 DOM 枚举：XPath 1.0，元素或祖先命中。和 regex 同传为 AND；XPath 未命中时删除 xpath，再单独用 regex 兜底。Shadow 内局部路径不能直接作为文档 XPath。',
+  },
+  snapshotId: {
+    type: 'string',
+    description: '仅续读同一冻结结果时传；省略 view/过滤条件表示继承。改变或清除条件、切换视图、页面变化或操作后省略，从 page=1 重采。DOM/AX 快照不能混用。',
+  },
+  page: {
+    type: 'integer', minimum: 1,
+    description: '仅枚举：从 1 开始，每页最多 40 条。新查询省略或传 1；续读传返回的 nextPage，nextPage=null 即结束。',
+  },
+};
+const elementProperties = {
+  view: { type: 'string', enum: ['element'] },
+  elementId: { type: 'string', minLength: 1, description: '仅 view=element：原样复制最近枚举得到的 DOM ElementId，不能用行号、CSS、XPath 或 ax: 引用。' },
+  frameId: { type: 'integer', minimum: 0, description: '仅 view=element：与 ElementId 同一行的 FrameId，0 也须显式提供。不是枚举范围参数；其它视图必须省略，不能传 0 或 null 占位。' },
+};
+
 export class BrowserObserveTool extends BaseBrowserTool {
   name = 'browser_observe';
   constructor(private defaultView: ScanMode = 'controls') {
@@ -64,46 +94,27 @@ export class BrowserObserveTool extends BaseBrowserTool {
     function: {
       name: this.name,
       description:
-        '观察页面及可注入 frame。controls=按钮与输入；buttons/inputs=分类；element=传枚举得到的 elementId 和 frameId，读取指定元素的属性、XPath、文字、状态、外观与 frame 内位置；structure=表格/滚动容器；accessibility=辅助功能语义。DOM 引用需配合同一行 FrameId；AX 引用不支持 element。新查询从 page=1；续读传 snapshotId 和 nextPage；改条件省略快照。未渲染数据不会自动出现。',
+        '观察当前活动页。两种调用互斥：\n' +
+        '1. 枚举：controls=按钮与输入（默认）；buttons/inputs=分类；structure=表格、选区、值/选项、滚动容器与 canvas；accessibility=辅助功能语义。自动覆盖可访问 frame，不传 elementId/frameId（包括 0/null）；可用 regex，DOM 视图还可用 xpath。例如 {"view":"buttons","regex":"提交"}。\n' +
+        '2. 节点详情：仅传 view="element"、枚举返回的 DOM elementId 和同一行 frameId，读取属性、XPath、文字、状态、外观与 frame 内位置；不传 regex/xpath/page/snapshotId。AX 引用不支持此视图。\n' +
+        '新枚举省略 snapshotId，从 page=1 开始；续读传 snapshotId，page 取上次返回的 nextPage，nextPage=null 即结束。改变条件或操作后重新采集。# 是展示行号，不是 ElementId。交互调用 browser_interact：DOM 引用配同一行 FrameId，AX 引用自带路由。coverage 表示覆盖边界，未渲染数据不会自动出现。',
       parameters: {
         type: 'object',
         additionalProperties: false,
         properties: {
+          ...enumerationProperties,
+          ...elementProperties,
           view: {
             type: 'string',
-            enum: [
-              'controls',
-              'buttons',
-              'inputs',
-              'structure',
-              'accessibility',
-              'element',
-            ],
-            default: 'controls',
-          },
-          regex: {
-            type: 'string',
-            description:
-              'DOM：命中置顶，未命中仍返回；AX：只返回匹配语义节点。不区分大小写。',
-          },
-          elementId: { type: 'string', description: '仅 view=element：最近枚举得到的 DOM ElementId。' },
-          frameId: { type: 'number', description: '仅 view=element：与 ElementId 同一行的 FrameId。' },
-          xpath: {
-            type: 'string',
-            description:
-              '仅 DOM 视图的 XPath 1.0；元素/祖先命中，和 regex 同时提供为 AND。',
-          },
-          snapshotId: {
-            type: 'string',
-            description: '续读上次快照；新查询或操作后省略。',
-          },
-          page: {
-            type: 'number',
-            description: '正整数；每页最多40条，新查询为1。',
-            default: 1,
+            enum: [...enumerationProperties.view.enum, 'element'],
+            description: '枚举与节点详情二选一；新查询默认 controls，续读省略则继承快照视图。只有 element 接受且必须提供 elementId/frameId。',
           },
         },
         required: [],
+        anyOf: [
+          { type: 'object', additionalProperties: false, properties: enumerationProperties },
+          { type: 'object', additionalProperties: false, properties: elementProperties, required: ['view', 'elementId', 'frameId'] },
+        ],
       },
     },
   };
@@ -157,9 +168,10 @@ export class BrowserObserveTool extends BaseBrowserTool {
         return this.createErrorResponse('view 无效');
       if (input.view === 'element') {
         if (typeof input.elementId !== 'string' || !input.elementId.trim() || input.elementId.startsWith('ax:') || !Number.isSafeInteger(input.frameId) || input.frameId! < 0)
-          return this.createErrorResponse('element 视图必须提供枚举得到的 DOM elementId 与同一行 frameId');
-        if (['regex', 'xpath', 'snapshotId', 'page'].some(key => key in input))
-          return this.createErrorResponse('element 视图不接受过滤或分页参数');
+          return this.createErrorResponse('INVALID_ARGUMENT：view=element 必须提供枚举得到的 DOM elementId 与同一行非负整数 frameId（包括 0）；AX 引用不支持此视图。');
+        const extraFields = ['regex', 'xpath', 'snapshotId', 'page'].filter(key => key in input);
+        if (extraFields.length)
+          return this.createErrorResponse(`INVALID_ARGUMENT：view=element 不接受 ${extraFields.join('/')}。删除这些字段，仅保留 view、elementId、frameId 后重试。`);
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (typeof tab?.id !== 'number' || !tab.url || isRestrictedUrl(tab.url))
           return this.createErrorResponse('当前页面不可读取');
@@ -171,8 +183,9 @@ export class BrowserObserveTool extends BaseBrowserTool {
         if (!detail || detail.error) return this.createErrorResponse(detail?.error || '元素或 frame 已消失，请重新枚举');
         return this.createSuccessResponse({ ...detail, frameId: input.frameId, tabId: tab.id });
       }
-      if (input.elementId !== undefined || input.frameId !== undefined)
-        return this.createErrorResponse('elementId/frameId 仅用于 view=element');
+      const referenceFields = ['elementId', 'frameId'].filter(key => key in input);
+      if (referenceFields.length)
+        return this.createErrorResponse(`INVALID_ARGUMENT：枚举不接受 ${referenceFields.join('/')}。删除这些字段，保留原枚举条件后重试；枚举自动覆盖可访问 frame，frameId 不是范围参数。节点详情才使用 view=element + elementId + frameId。`);
       for (const key of ['regex', 'xpath', 'snapshotId'] as const) {
         if (input[key] !== undefined && typeof input[key] !== 'string')
           return this.createErrorResponse(key + ' 必须是字符串');
@@ -396,7 +409,7 @@ export class BrowserObserveTool extends BaseBrowserTool {
             (hasFilter && totalHits === 0
               ? '没有任何元素命中过滤条件，表格仍包含其余候选。'
               : '') +
-            '翻页传 snapshotId 和 nextPage；改变/清除过滤条件或页面变化后，省略 snapshotId 从 page=1 重采。操作时原样传 ElementId 和 FrameId，# 只是当前快照的全局行号。',
+            '续读传 snapshotId 和 page（取 nextPage 的值）；改变条件或操作后省略 snapshotId 重采。节点详情用 view=element，交互用 browser_interact；枚举不传 elementId/frameId。',
         },
         'Retrieved ' +
           elements.length +

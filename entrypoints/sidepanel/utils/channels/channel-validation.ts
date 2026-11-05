@@ -209,13 +209,18 @@ export function validateModel(model: ModelConfig): string[] {
  * 校验与活性判定共用同一份问题清单（endpoint-liveness），差别只在措辞：
  * 校验说「请输入 API 密钥」（祈使句，指向修复动作），
  * 活性诊断说「渠道「X」缺少 API 密钥」（陈述句，指出缺了什么）。
+ *
+ * 表只覆盖端点三要素相关的 4 个 code，声明为 Partial 索引签名：
+ * 其余 LivenessCode（no-channels / channel-disabled / model-disabled /
+ * model-name-empty）是保存期合法状态或另有专属文案，
+ * 查表得 undefined 后由调用处的 continue 跳过。
  */
-const ENDPOINT_ISSUE_VALIDATION_KEYS = {
+const ENDPOINT_ISSUE_VALIDATION_KEYS: Partial<Record<LivenessCode, MessageKey>> = {
   'driver-unknown': 'sidepanel.apiConfig.unsupportedProtocol',
   'url-empty': 'sidepanel.apiConfig.validateUrlRequired',
   'url-invalid': 'sidepanel.apiConfig.invalidServiceUrl',
   'key-missing': 'sidepanel.apiConfig.validateApiKeyRequired',
-} as const satisfies Partial<Record<LivenessCode, MessageKey>>;
+};
 
 /**
  * 校验单个渠道（保存前调用；含其全部模型）。

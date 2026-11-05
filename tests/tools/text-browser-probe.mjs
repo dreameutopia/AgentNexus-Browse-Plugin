@@ -7,6 +7,7 @@ import { createServer } from 'node:http';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { pathToFileURL } from 'node:url';
+import { browserBuildTarget } from '../../scripts/browser-build-target.mjs';
 
 const bundle = path.resolve('node_modules/.cache/text-browser-driver.mjs');
 await build({
@@ -15,7 +16,8 @@ await build({
   bundle: true,
   platform: 'node',
   format: 'esm',
-  target: 'es2022',
+  target: browserBuildTarget,
+  minify: true,
 });
 
 const executable = [
@@ -176,6 +178,12 @@ try {
     },
     scripting: {
       executeScript: async ({ func, args = [], target: scope, world }) => {
+        // JSON.stringify alone would silently turn undefined into null and
+        // conceal the Chrome args[2] serialization failure for click.
+        for (const [index, arg] of args.entries())
+          assert.notEqual(
+            arg, undefined, `injection args[${index}] is unserializable`
+          );
         const tree = await send('Page.getFrameTree');
         const frames = [];
         const visit = (node) => {
@@ -232,7 +240,17 @@ try {
     return { elementId, frameId };
   };
   try {
+    const button = await refByName('原生按钮', 'buttons');
+    ok(await interact.execute({
+      action: 'click', ...button, description: '点击原生按钮（无 value 参数）',
+    }));
+    assert.equal(await evaluate('buttonHits'), 1);
+    await evaluate('buttonHits=0');
     const namebox = await refByName('名称框');
+    ok(await interact.execute({
+      action: 'focus', ...namebox, description: '聚焦名称框',
+    }));
+    assert.equal(await evaluate('document.activeElement===namebox'), true);
     ok(
       await interact.execute({
         action: 'fill',
@@ -461,6 +479,30 @@ try {
       1,
       'no-result failures must not replay'
     );
+    // Emulate an injection that runs but loses its return value. Never call
+    // this stale or replay it: the input event may already have taken effect.
+    await evaluate(
+      'window.fillEvents=0;namebox.addEventListener("input",()=>fillEvents++)'
+    );
+    chrome.scripting.executeScript = async (options) => {
+      const rows = await originalInject(options);
+      return options.target.allFrames ? rows : [{ frameId: 0 }];
+    };
+    const noFillResult = await interact.execute({
+      action: 'fill', ...namebox, value: '已生效',
+      description: '验证无结果时不重放输入',
+    });
+    const noFocusResult = await interact.execute({
+      action: 'focus', ...namebox, description: '验证无结果时不误报失效引用',
+    });
+    chrome.scripting.executeScript = originalInject;
+    for (const failed of [noFillResult, noFocusResult]) {
+      assert.equal(failed.success, false);
+      assert.match(failed.error, /INJECTION_NO_RESULT/);
+      assert.doesNotMatch(failed.error, /STALE_ELEMENT/);
+    }
+    assert.equal(await evaluate('fillEvents'), 1, 'uncertain fill must not replay');
+    assert.equal(await evaluate('namebox.value'), '已生效');
     const text = ok(await new driver.GetPageTextTool().execute({}));
     assert.equal(text.coverage.frames.length, 2);
     assert.ok(text.textContent.includes('实际浏览器🙂'));

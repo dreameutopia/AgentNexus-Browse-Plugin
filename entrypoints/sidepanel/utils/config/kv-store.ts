@@ -32,6 +32,26 @@ export const DEFAULT_SNAPSHOT_COUNT = 5;
 /** 默认读回校验重试次数（首次写入之外的额外尝试） */
 export const DEFAULT_VERIFY_RETRIES = 3;
 
+/**
+ * 判定一组读取告警是否**只是「从未配置过」的初始空态**。
+ *
+ * 域在首次使用前，存储里主副本 / 镜像 / 快照三层都没有数据，
+ * 恢复阶梯会如实记录 'primary:empty' / 'mirror:empty' / 'snapshots:empty'——
+ * 这不是异常，而是「还没写过」的正常事实。
+ *
+ * 消费方据此把「空态」与「真的损坏」区分开：
+ * 空态静默跳过（不刷无意义的红色告警），损坏照常告警并走修复流程。
+ * 若不区分，每个未配置的域在每次启动时都会刷一条告警，
+ * 真正的损坏告警会被淹没在噪声里。
+ */
+export function isInitialEmptyState(issues: readonly string[]): boolean {
+  if (issues.length === 0) return false;
+  return issues.every(
+    issue =>
+      issue === 'primary:empty' || issue === 'mirror:empty' || issue === 'snapshots:empty',
+  );
+}
+
 /** 写入失败（未通过读回校验 / 配额超限 / 载荷非法） */
 export class ConfigWriteError extends Error {
   readonly code: string;

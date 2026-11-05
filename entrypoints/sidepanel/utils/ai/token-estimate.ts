@@ -26,8 +26,8 @@
  */
 export const IMAGE_CONTEXT_TOKENS = 1800;
 
-/** 拉丁等非 CJK 文本的字符/token 经验比值 */
-const CHARS_PER_TOKEN = 4;
+/** 拉丁等非 CJK 文本的字符/token 经验比值（导出供技能分页按同一口径收页） */
+export const CHARS_PER_TOKEN = 4;
 
 /**
  * 判定码点是否按「≈1 token/字」计费的 CJK 类字符：
@@ -37,8 +37,11 @@ const CHARS_PER_TOKEN = 4;
  *   - CJK 符号与标点（全角引号、顿号等）
  *   - 全角/半角形式（全角字母数字、全角标点）
  *   - 扩展 B 及以上（增补平面汉字）
+ *
+ * 导出供技能分页（utils/skills/skill-pagination）按同一套字符分类收页，
+ * 保证「每页约 N token」的声称与上下文计量不漂移。
  */
-function isCjkLikeCodePoint(codePoint: number): boolean {
+export function isCjkLikeCodePoint(codePoint: number): boolean {
   return (
     (codePoint >= 0x4e00 && codePoint <= 0x9fff) || // CJK 统一表意
     (codePoint >= 0x3400 && codePoint <= 0x4dbf) || // 扩展 A

@@ -24,6 +24,7 @@ import { GeminiAdapter } from '../../entrypoints/sidepanel/utils/stream/adapters
 import { ClaudeAdapter } from '../../entrypoints/sidepanel/utils/stream/adapters/claude-adapter';
 import { ResponsesAdapter } from '../../entrypoints/sidepanel/utils/stream/adapters/responses-adapter';
 import { VisionGuiTool } from '../../tools/vision/gui-tool';
+import { BrowserObserveTool } from '../../tools/browser/observe';
 import { streamClient } from '../../entrypoints/sidepanel/utils/stream/stream-client';
 import { prepareVisionRequest, clearVisionCache } from '../../entrypoints/sidepanel/utils/stream/vision';
 import { probeConnection } from '../../entrypoints/sidepanel/utils/stream/probe';
@@ -436,6 +437,7 @@ async function main() {
   // ---------- OpenAI ----------
   {
     const gui = new VisionGuiTool().openaiSchema;
+    const observe = new BrowserObserveTool().openaiSchema;
     for (const [name, adapter] of [['openai',openai],['ollama',ollama],['gemini',gemini],['claude',claude],['responses',responses]] as const) {
       const body = adapter.buildRequestBody({model:'test',messages:systemAndUser,tools:[gui]});
       const schema = name === 'gemini' ? body.tools[0].functionDeclarations[0].parameters
@@ -443,6 +445,12 @@ async function main() {
         : name === 'responses' ? body.tools[0].parameters : body.tools[0].function.parameters;
       eq(schema, gui.function.parameters, `${name}: preserves complete vision_gui action-discriminated schema`);
       check(JSON.stringify(body.tools).includes('<vision_gui>'), `${name}: preserves XML action descriptions`);
+      const observeBody = adapter.buildRequestBody({model:'test',messages:systemAndUser,tools:[observe]});
+      const observeSchema = name === 'gemini' ? observeBody.tools[0].functionDeclarations[0].parameters
+        : name === 'claude' ? observeBody.tools[0].input_schema
+        : name === 'responses' ? observeBody.tools[0].parameters : observeBody.tools[0].function.parameters;
+      eq(observeSchema, observe.function.parameters, `${name}: preserves browser_observe enumeration/element branches`);
+      check(JSON.stringify(observeBody.tools).includes('不传 elementId/frameId'), `${name}: preserves observe parameter guidance`);
     }
   }
   {

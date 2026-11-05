@@ -32,7 +32,11 @@ import {
   type SkillDraft,
   type ValidatedLearnConfig,
   type ValidationReport,
+  type ValidationRevision,
+  LEARN_DEFAULT_STAGE_LIMITS,
+  type LearnStageLimits,
 } from './learn-types';
+import { validateLearnSkillBody } from './learn-output-contract';
 import {
   SKILL_BODY_MAX_CHARS,
   SKILL_DESCRIPTION_MAX_CHARS,
@@ -41,9 +45,10 @@ import {
 
 /** 学习目标字符上限（超长会让首轮请求吃掉大量上下文预算） */
 export const LEARN_GOAL_MAX_CHARS = 2000;
+export const LEARN_DESCRIPTION_MAX_CHARS = 6000;
 
 /** 配置字段（错误按字段归集，UI 据此做内联红字） */
-export type LearnConfigField = 'url' | 'goal' | 'targetMode' | 'strategy' | 'modelRef';
+export type LearnConfigField = 'url' | 'goal' | 'additionalDescription' | 'targetMode' | 'strategy' | 'modelRef' | 'learningLimits' | 'validationLimits';
 
 /**
  * 校验错误码（机器码，调用方经 i18n 映射为文案）。
@@ -58,6 +63,9 @@ export type LearnConfigErrorCode =
   | 'url-protocol'
   | 'goal-empty'
   | 'goal-too-long'
+  | 'description-invalid'
+  | 'description-too-long'
+  | 'limits-invalid'
   | 'target-mode-required'
   | 'strategy-required'
   | 'model-required'
@@ -156,6 +164,25 @@ export function countTextChars(text: string): number {
   return Array.from(text).length;
 }
 
+export function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1;
+}
+
+function parseStageLimits(value: unknown): LearnStageLimits | null {
+  if (value === undefined) return { ...LEARN_DEFAULT_STAGE_LIMITS };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const input = value as Partial<LearnStageLimits>;
+  if (!isPositiveSafeInteger(input.maxIterations) || !isPositiveSafeInteger(input.maxDurationMinutes) ||
+      !Number.isSafeInteger(input.maxDurationMinutes * 60_000)) return null;
+  return { maxIterations: input.maxIterations, maxDurationMinutes: input.maxDurationMinutes };
+}
+
+export function stageRunLimits(config: LearnConfig, stage: 'learning' | 'validating') {
+  const limits = parseStageLimits(stage === 'learning' ? config.learningLimits : config.validationLimits);
+  if (!limits) throw new Error('学习/验证预算无效');
+  return { maxIterations: limits.maxIterations, maxDurationMs: limits.maxDurationMinutes * 60_000 };
+}
+
 function validateGoal(raw: unknown, maxChars: number): LearnConfigErrorCode | null {
   if (typeof raw !== 'string' || !raw.trim()) return 'goal-empty';
   if (countTextChars(raw.trim()) > maxChars) return 'goal-too-long';
@@ -183,12 +210,21 @@ export function validateLearnConfig(
 ): LearnConfigValidation {
   const errors: Partial<Record<LearnConfigField, LearnConfigErrorCode>> = {};
   const input = raw ?? {};
+  const learningLimits = parseStageLimits(input.learningLimits);
+  const validationLimits = input.autoValidate === false ? { ...LEARN_DEFAULT_STAGE_LIMITS } : parseStageLimits(input.validationLimits);
+  if (!learningLimits) errors.learningLimits = 'limits-invalid';
+  if (!validationLimits) errors.validationLimits = 'limits-invalid';
 
   const urlError = validateUrl(input.url);
   if (urlError) errors.url = urlError;
 
   const goalError = validateGoal(input.goal, LEARN_GOAL_MAX_CHARS);
   if (goalError) errors.goal = goalError;
+  if (input.additionalDescription !== undefined && typeof input.additionalDescription !== 'string') {
+    errors.additionalDescription = 'description-invalid';
+  } else if (typeof input.additionalDescription === 'string' && countTextChars(input.additionalDescription.trim()) > LEARN_DESCRIPTION_MAX_CHARS) {
+    errors.additionalDescription = 'description-too-long';
+  }
 
   // 目标模式只接受白名单值（脏值不静默回落——回落会改变产出 SKILL 的形态）
   const targetMode = input.targetMode;
@@ -225,10 +261,14 @@ export function validateLearnConfig(
     config: {
       url: (input.url as string).trim(),
       goal: (input.goal as string).trim(),
+      ...(typeof input.additionalDescription === 'string' && input.additionalDescription.trim()
+        ? { additionalDescription: input.additionalDescription.trim() } : {}),
       targetMode: targetMode as LearnTargetMode,
       strategy,
       modelRef: { channelId: matched!.ref.channelId, modelId: matched!.ref.modelId },
       autoValidate: input.autoValidate !== false,
+      learningLimits: learningLimits!,
+      validationLimits: validationLimits!,
     },
   };
 }
@@ -240,6 +280,9 @@ export const LEARN_ERROR_KEYS: Record<LearnConfigErrorCode, string> = {
   'url-protocol': 'sidepanel.learn.errUrlProtocol',
   'goal-empty': 'sidepanel.learn.errGoalEmpty',
   'goal-too-long': 'sidepanel.learn.errGoalTooLong',
+  'description-invalid': 'sidepanel.learn.errDescriptionInvalid',
+  'description-too-long': 'sidepanel.learn.errDescriptionTooLong',
+  'limits-invalid': 'sidepanel.learn.errLimitsInvalid',
   'target-mode-required': 'sidepanel.learn.errTargetMode',
   'strategy-required': 'sidepanel.learn.errStrategy',
   'model-required': 'sidepanel.learn.errModelRequired',
@@ -311,18 +354,60 @@ export function asSkillDraft(value: unknown): SkillDraft | null {
   return draft as SkillDraft;
 }
 
-/** 同 asSkillDraft：验收报告的形态守卫（passed 必须是布尔、issues 必须是字符串数组） */
+/** Validate the complete replacement before it can overwrite a working draft. */
+export function parseValidationRevision(value: unknown): ValidationRevision {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('revision 必须是对象');
+  const input = value as Record<string, unknown>;
+  if (Object.keys(input).some(key => !['body', 'summary', 'evidence'].includes(key)))
+    throw new Error('revision 仅接受 body、summary、evidence，不得修改技能身份、模式或工具权限');
+  if (typeof input.body !== 'string' || !input.body.trim() || input.body.length > SKILL_BODY_MAX_CHARS)
+    throw new Error(`revision.body 必须为非空完整正文，最多 ${SKILL_BODY_MAX_CHARS} 字符，不截断正文`);
+  const body = input.body.trim();
+  const issues = validateLearnSkillBody(body);
+  if (issues.length) throw new Error(`revision.body 结构不完整：${issues.join('；')}`);
+  if (typeof input.summary !== 'string' || !input.summary.trim() || input.summary.length > 500)
+    throw new Error('revision.summary 必须说明修改原因，1–500 字符');
+  if (!Array.isArray(input.evidence) || input.evidence.length < 1 || input.evidence.length > 6 ||
+      !input.evidence.every(item => typeof item === 'string' && item.trim() && item.length <= 500))
+    throw new Error('revision.evidence 必须为 1–6 条实际复核证据，每条 1–500 字符');
+  return { body, summary: input.summary.trim(), evidence: input.evidence.map(item => (item as string).trim()) };
+}
+
+/** Strict report guard: never silently discard a malformed revision and mark its original as passed. */
 export function asValidationReport(value: unknown): ValidationReport | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const report = value as Partial<ValidationReport>;
   if (typeof report.passed !== 'boolean') return null;
-  if (!Array.isArray(report.issues)) return null;
+  if (!Array.isArray(report.issues) || !report.issues.every(issue => typeof issue === 'string')) return null;
+  if (!report.passed && !report.issues.some(issue => issue.trim())) return null;
+  if (report.passed && report.issues.some(issue => issue.trim())) return null;
+  let revision: ValidationRevision | undefined;
+  if (report.revision !== undefined) {
+    if (!report.passed) return null;
+    try { revision = parseValidationRevision(report.revision); } catch { return null; }
+  }
+  const boundedList = (value: unknown, max: number): value is string[] => Array.isArray(value) && value.length <= max && value.every(item => typeof item === 'string' && !!item.trim() && item.length <= 500);
+  if (report.issues.length > 20 || report.issues.some(issue => !issue.trim() || issue.length > 500)) return null;
+  if (report.suggestions !== undefined && !boundedList(report.suggestions, 6)) return null;
+  const evidence = report.evidence === undefined ? revision?.evidence : report.evidence;
+  if (evidence !== undefined && !boundedList(evidence, 6)) return null;
+  if (report.passed && !evidence?.length) return null;
   return {
     passed: report.passed,
     issues: report.issues.filter((issue): issue is string => typeof issue === 'string'),
+    ...(report.suggestions?.length ? { suggestions: report.suggestions.map(item => item.trim()) } : {}),
+    ...(evidence?.length ? { evidence: evidence.map(item => item.trim()) } : {}),
     ...(typeof report.score === 'number' && Number.isFinite(report.score) ? { score: report.score } : {}),
     ...(typeof report.summary === 'string' ? { summary: report.summary } : {}),
+    ...(revision ? { revision } : {}),
   };
+}
+
+/** Apply only a validated body; metadata and declared capabilities belong to the original task. */
+export function applyValidationRevision(draft: SkillDraft, report: ValidationReport): SkillDraft {
+  const checked = asValidationReport(report);
+  if (!checked) throw new Error('验证回执无效，保留原草稿');
+  return checked.revision ? { ...draft, body: checked.revision.body } : draft;
 }
 
 /**

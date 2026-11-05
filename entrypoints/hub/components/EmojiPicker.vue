@@ -66,10 +66,15 @@ const activeEmojis = computed(
 </script>
 
 <style scoped>
+/* 玻璃卡容器 + 分组页签（设计 token 与 hub.css 同源） */
 .emoji-picker {
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  background: #fff;
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.78));
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(18px) saturate(165%);
+  -webkit-backdrop-filter: blur(18px) saturate(165%);
+  box-shadow: var(--glass-inset, inset 0 1px 0 rgba(255, 255, 255, 0.92)),
+    0 8px 24px rgba(41 40 36 / 7%);
   overflow: hidden;
 }
 
@@ -78,28 +83,29 @@ const activeEmojis = computed(
   flex-wrap: wrap;
   gap: 4px;
   padding: 8px 8px 0;
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid rgba(41 40 36 / 6%);
 }
 
 .emoji-picker-tab {
   border: none;
   background: transparent;
   font-size: 11px;
-  color: #6b7280;
-  padding: 4px 8px;
-  border-radius: 6px 6px 0 0;
+  font-family: inherit;
+  color: var(--ink-secondary, #787671);
+  padding: 4px 9px;
+  border-radius: 7px;
   cursor: pointer;
-  transition: color 0.15s, background 0.15s;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .emoji-picker-tab:hover {
-  color: #374151;
-  background: #f3f4f6;
+  color: var(--ink-primary, #292824);
+  background: rgba(41 40 36 / 5%);
 }
 
 .emoji-picker-tab.is-active {
-  color: #667eea;
-  background: rgba(102, 126, 234, 0.1);
+  color: #4f46e5;
+  background: rgba(102, 126, 234, 0.12);
   font-weight: 600;
 }
 
@@ -115,22 +121,27 @@ const activeEmojis = computed(
 .emoji-picker-item {
   border: 1px solid transparent;
   background: transparent;
-  border-radius: 8px;
+  border-radius: 9px;
   font-size: 20px;
   line-height: 1;
   padding: 5px 0;
   cursor: pointer;
   font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background 0.12s ease, border-color 0.12s ease, transform 0.18s cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 .emoji-picker-item:hover {
-  background: #f3f4f6;
-  border-color: #e5e7eb;
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(41 40 36 / 8%);
+  transform: translateY(-1px);
+}
+
+.emoji-picker-item:active {
+  transform: scale(0.92);
 }
 
 .emoji-picker-item.is-active {
-  border-color: #667eea;
+  border-color: rgba(102, 126, 234, 0.6);
   background: rgba(102, 126, 234, 0.12);
 }
 </style>

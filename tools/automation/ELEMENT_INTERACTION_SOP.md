@@ -1,6 +1,6 @@
 # 纯文本网页交互协议
 
-文本通用助手 不配置视觉模型、截图或坐标动作。运行期统一规范在 utils/agents/element-interaction-sop.ts，文本通用助手、数据收割机和网站学习/验证共用。
+文本通用助手不配置视觉模型、截图或坐标动作。工具参数契约以工具 schema 为准；动作智能体和数据收割机使用 utils/agents/element-interaction-sop.ts，网站学习/验证独立维护任务指南。
 
 ## 工具分工
 
@@ -17,10 +17,11 @@
 ## 观察与分页
 
 - controls：按钮与输入；buttons/inputs：分类观察。
+- 枚举自动覆盖可访问 frame，不传 elementId/frameId（包括 0/null）。只有 view=element 使用同一行的 DOM elementId 与 frameId 读取节点详情，且不接受过滤或分页参数；schema 分支与运行时均校验这两种调用互斥。
 - structure：标准 table、ARIA grid/row/gridcell、选区属性、输入值、select 选项、滚动范围和 canvas 的存在信息。字段值/选项有输出边界，未渲染行列不在此视图中。
 - accessibility：实际浏览器 Accessibility 树，返回角色、名称、值和状态。根据后端 DOM 节点生成 ax: 引用；没有可映射 DOM 节点的语义项不提供可操作引用。
 - DOM 的 regex/xpath 是命中置顶（同时提供为 AND，零命中仍返回候选）；AX regex 只返回匹配语义项，不支持 XPath。
-- 新查询从 page=1 开始，不传 snapshotId。续读传返回的 snapshotId 与 nextPage；省略过滤条件表示继承。改变条件/view、导航、操作后重新采集。nextPage=null 即结束，越界明确报错。
+- 新查询从 page=1 开始，不传 snapshotId。续读传返回的 snapshotId，page 取 nextPage 的值；省略过滤条件表示继承。改变条件/view、导航、操作后重新采集。nextPage=null 即结束，越界明确报错。
 - 每页最多40条；DOM 与 AX 各自最多8份120秒快照。快照冻结成员和排序，新的行列需重采，不会静默重排旧数据。交付前核验节点身份；AX 页会重新读取并核对对应语义节点。
 - # 是单个快照内跨页连续的展示行号。不是单元格地址，也不是业务记录 ID。
 
@@ -28,13 +29,13 @@
 
 DOM ElementId 包含来源 tab、随机文档标识和递增编号，绑定实际节点（WeakRef）。不使用网站 HTML id 或位置 CSS 路径；不向网页添加定位属性。签名核对标签、关键属性、文字、关联标签、上下文；输入值不是节点身份。节点替换、导航或过期会失败，不猜测其他节点。HTTP 页面使用 getRandomValues 生成标识，不依赖 secure-context-only 的 randomUUID。
 
-DOM 引用同时提交返回行的 FrameId。AX 引用自带 frame/文档/调试会话路由，省略 FrameId；目前只用于 focus/keys/type。AX 操作前重新核对后端节点身份和焦点，失效就重采，禁止拿 AX 行号构造 DOM 引用。
+调用 browser_observe(view="element") 或 browser_interact 操作 DOM 引用时，同时提交返回行的 FrameId；枚举不使用节点引用。AX 引用自带 frame/文档/调试会话路由，省略 FrameId；目前只用于 focus/keys/type。AX 操作前重新核对后端节点身份和焦点，失效就重采，禁止拿 AX 行号构造 DOM 引用。
 
 DOM 扫描及命中测试使用开放或扩展可访问的封闭 ShadowRoot。浏览器权限仍可能阻止注入。AX 对跨进程 frame 可能仅部分覆盖，响应 warnings/coverage 会明确显示；不能以空结果证明页面无内容。
 
 ## 交互参数与结果
 
-所有交互必须给 description 说明目标和意图，不可逆操作继续使用 confirm=true 和现有审批流程。只传对应 action 的字段。
+所有交互必须给 description 说明目标和意图。只传对应 action 的字段。
 
 | action | 参数 | 行为与校验 |
 | --- | --- | --- |
@@ -62,7 +63,7 @@ keys/type 后读取返回的 focus。Tab、Enter、F2 可能切换到新编辑�
 | 前后焦点 | `["Tab"]` / `["Shift","Tab"]` | 返回的新 focus |
 | 光标／选区 | `["ArrowLeft"]` / `["Shift","ArrowRight"]` | 当前选区；整词导航按平台使用 Control 或 Alt |
 | 首尾／翻页 | `["Home"]` / `["End"]` / `["PageDown"]` | 应用响应；Mac 文档首尾常按 Meta+ArrowUp/Down |
-| 提交／取消 | `["Enter"]` / `["Escape"]` | 提交反馈或编辑状态；不可逆提交 confirm=true |
+| 提交／取消 | `["Enter"]` / `["Escape"]` | 提交反馈或编辑状态 |
 | 表格编辑／换行 | `["F2"]` / `["Alt","Enter"]` | 以应用真实快捷键与当前模式为准 |
 | 上下文菜单 | `["ContextMenu"]` / `["Shift","F10"]` | 是否实际出现菜单 |
 | 应用组合键 | `["Control","Alt","Shift","s"]` | 不把示例解释为任何站点都支持 |

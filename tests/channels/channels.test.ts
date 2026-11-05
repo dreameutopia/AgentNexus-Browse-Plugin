@@ -475,8 +475,8 @@ async function testStoresAndRegistry(): Promise<void> {
     noKeyResult.issues,
   );
 
-  const disabledModel = { ...createEmptyModel(), id: 'm_dis', name: 'gpt-4o', enabled: false };
-  const modelResult = checkModelLiveness(liveChannel, disabledModel, liveResult);
+  const disabledModelConfig = { ...createEmptyModel(), id: 'm_dis', name: 'gpt-4o', enabled: false };
+  const modelResult = checkModelLiveness(liveChannel, disabledModelConfig, liveResult);
   eq(modelResult.ok, false, '禁用模型不可用');
   check(
     modelResult.issues.some(issue => issue.code === 'model-disabled'),

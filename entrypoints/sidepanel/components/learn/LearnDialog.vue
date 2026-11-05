@@ -16,18 +16,27 @@
  * （learnFailed 按阶段分叉：验证阶段持有草稿，不提供「放弃」）。
  */
 import { t, type MessageKey } from '@/utils/i18n';
+import { computed, ref, watch } from 'vue';
 import './learn-theme.css';
 import type { LearnDialogChoice, LearnDialogView } from '@/entrypoints/sidepanel/composables/use-learn-session';
-import { LEARN_FAILURE_REASON_KEYS } from '@/utils/learn/learn-validate';
-import { isHumanBlockedReason, type LearnFailureReason } from '@/utils/learn/learn-types';
+import { LEARN_FAILURE_REASON_KEYS, isPositiveSafeInteger } from '@/utils/learn/learn-validate';
+import { LEARN_DEFAULT_STAGE_LIMITS, LEARN_DEFAULT_EXTENSION_ITERATIONS, isHumanBlockedReason, type LearnFailureReason } from '@/utils/learn/learn-types';
 
 const props = defineProps<{
   view: LearnDialogView | null;
 }>();
 
 const emit = defineEmits<{
-  answer: [choice: LearnDialogChoice];
+  answer: [choice: LearnDialogChoice, extraIterations?: number];
 }>();
+const extraIterations = ref<number | string>(LEARN_DEFAULT_EXTENSION_ITERATIONS);
+watch(() => props.view, view => {
+  if (view?.mode === 'limitWrapUp') extraIterations.value = view.extraIterations;
+}, { immediate: true });
+const canExtend = computed(() => isPositiveSafeInteger(extraIterations.value));
+function extend(): void {
+  if (isPositiveSafeInteger(extraIterations.value)) emit('answer', 'extend', extraIterations.value);
+}
 
 /** 失败原因码 → 展示文案（映射单点收敛在 learn-validate，此处只取文案） */
 const REASON_KEYS = LEARN_FAILURE_REASON_KEYS as Record<LearnFailureReason, MessageKey>;
@@ -92,6 +101,10 @@ function formatElapsed(ms: number): string {
                 <dd>{{ view.config.goal }}</dd>
               </div>
               <div class="learn-summary__row">
+                <dt>{{ t('sidepanel.learn.descriptionLabel') }}</dt>
+                <dd style="white-space: pre-wrap">{{ view.config.additionalDescription || '—' }}</dd>
+              </div>
+              <div class="learn-summary__row">
                 <dt>{{ t('sidepanel.learn.rowMode') }}</dt>
                 <dd>{{ view.config.targetMode === 'vision' ? t('sidepanel.learn.targetModeVision') : t('sidepanel.learn.targetModeText') }}</dd>
               </div>
@@ -106,6 +119,14 @@ function formatElapsed(ms: number): string {
               <div class="learn-summary__row">
                 <dt>{{ t('sidepanel.learn.rowValidate') }}</dt>
                 <dd>{{ view.config.autoValidate ? t('sidepanel.learn.valueOn') : t('sidepanel.learn.valueOff') }}</dd>
+              </div>
+              <div class="learn-summary__row">
+                <dt>{{ t('sidepanel.learn.learningBudget') }}</dt>
+                <dd>{{ t('sidepanel.learn.budgetSummary', { iterations: view.config.learningLimits?.maxIterations ?? LEARN_DEFAULT_STAGE_LIMITS.maxIterations, minutes: view.config.learningLimits?.maxDurationMinutes ?? LEARN_DEFAULT_STAGE_LIMITS.maxDurationMinutes }) }}</dd>
+              </div>
+              <div v-if="view.config.autoValidate" class="learn-summary__row">
+                <dt>{{ t('sidepanel.learn.validationBudget') }}</dt>
+                <dd>{{ t('sidepanel.learn.budgetSummary', { iterations: view.config.validationLimits?.maxIterations ?? LEARN_DEFAULT_STAGE_LIMITS.maxIterations, minutes: view.config.validationLimits?.maxDurationMinutes ?? LEARN_DEFAULT_STAGE_LIMITS.maxDurationMinutes }) }}</dd>
               </div>
             </dl>
             <ul class="learn-warnings">
@@ -147,7 +168,7 @@ function formatElapsed(ms: number): string {
           </div>
           <footer class="learn-dialog__footer">
             <button type="button" class="learn-btn learn-btn--ghost" @click="emit('answer', 'cancel')">
-              {{ t('sidepanel.learn.stopCancel') }}
+              {{ view.fromLimit ? t('sidepanel.learn.backToLimits') : t('sidepanel.learn.stopCancel') }}
             </button>
             <button type="button" class="learn-btn learn-btn--danger" @click="emit('answer', 'confirm')">
               {{ t('sidepanel.learn.stopConfirm') }}
@@ -155,23 +176,33 @@ function formatElapsed(ms: number): string {
           </footer>
         </template>
 
-        <!-- ════════ 轮数上限：收尾提交 ════════ -->
+        <!-- ════════ 预算边界：继续 / 收尾 / 丢弃 ════════ -->
         <template v-else-if="view.mode === 'limitWrapUp'">
           <header class="learn-dialog__header">
             <span class="learn-dialog__badge learn-dialog__badge--warn" aria-hidden="true">⏱️</span>
             <h3 class="learn-dialog__title">{{ t('sidepanel.learn.limitTitle') }}</h3>
           </header>
           <div class="learn-dialog__body">
+            <p class="learn-dialog__intro">{{ view.phase === 'learning' ? t('sidepanel.learn.learningBudget') : t('sidepanel.learn.validationBudget') }} · {{ view.reason === 'max-duration' ? t('sidepanel.learn.limitTimeReason') : view.reason === 'tool-failures' ? t('sidepanel.learn.limitFailuresReason') : t('sidepanel.learn.limitRoundsReason') }}</p>
             <p class="learn-dialog__text">
-              {{ t('sidepanel.learn.limitBody', { iterations: view.iterations }) }}
+              {{ t('sidepanel.learn.limitBody', { iterations: view.iterations, minutes: view.minutes }) }}
             </p>
+            <label class="learn-extension">
+              <span>{{ t('sidepanel.learn.extraRoundsLabel') }}</span>
+              <input v-model.number="extraIterations" class="learn-extension__input" type="number" min="1" step="1" inputmode="numeric" />
+            </label>
+            <p v-if="!canExtend" class="learn-extension__error" role="alert">{{ t('sidepanel.learn.errExtraRounds') }}</p>
+            <p class="learn-dialog__muted">{{ t('sidepanel.learn.extensionHint') }}</p>
           </div>
-          <footer class="learn-dialog__footer">
-            <button type="button" class="learn-btn learn-btn--ghost" @click="emit('answer', 'stop')">
-              {{ t('sidepanel.learn.limitStop') }}
+          <footer class="learn-dialog__footer learn-limit-actions">
+            <button type="button" class="learn-btn learn-btn--primary" :disabled="!canExtend" @click="extend">
+              {{ t('sidepanel.learn.limitExtend', { iterations: extraIterations }) }}
             </button>
-            <button type="button" class="learn-btn learn-btn--primary" @click="emit('answer', 'wrapUp')">
-              {{ t('sidepanel.learn.limitWrapUp') }}
+            <button type="button" class="learn-btn learn-btn--ghost" @click="emit('answer', 'summarize')">
+              {{ view.phase === 'validating' ? t('sidepanel.learn.limitSummarizeValidation') : t('sidepanel.learn.limitSummarize') }}
+            </button>
+            <button type="button" class="learn-btn learn-btn--ghost learn-limit-discard" @click="emit('answer', 'discard')">
+              {{ t('sidepanel.learn.limitStop') }}
             </button>
           </footer>
         </template>
@@ -301,6 +332,13 @@ function formatElapsed(ms: number): string {
 </template>
 
 <style scoped>
+.learn-dialog__footer.learn-limit-actions { flex-direction: column; align-items: stretch; }
+.learn-limit-actions .learn-btn { width: 100%; }
+.learn-limit-discard { color: var(--learn-danger); }
+.learn-extension { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--learn-text); }
+.learn-extension__input { width: 100px; min-width: 0; padding: 8px 10px; border: 1px solid var(--learn-border-strong); border-radius: 8px; background: var(--learn-bg); color: var(--learn-text); font: inherit; }
+.learn-extension__input:focus-visible { outline: 2px solid var(--learn-accent-soft-border); outline-offset: 2px; }
+.learn-extension__error { margin: 0; font-size: 12px; color: var(--learn-danger); }
 .learn-dialog-overlay {
   position: fixed;
   inset: 0;
@@ -363,6 +401,8 @@ function formatElapsed(ms: number): string {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
   padding: 14px 20px 4px;
   overflow-y: auto;
 }
@@ -525,6 +565,7 @@ function formatElapsed(ms: number): string {
 
 .learn-dialog__footer {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: flex-end;
   gap: 10px;

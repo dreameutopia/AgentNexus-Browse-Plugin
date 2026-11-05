@@ -91,8 +91,8 @@ export const SKILL_BODY_MAX_CHARS = 15000;
  */
 export const SKILL_DESCRIPTION_MAX_CHARS = 1024;
 
-/** 单个资源文件读取上限（字符） */
-export const SKILL_FILE_MAX_CHARS = 100000;
+/** 资源文件相对路径长度上限（编辑器与导入共用的防御；规范建议引用保持一层目录深度） */
+export const SKILL_PATH_MAX_CHARS = 200;
 
 // ──── 导入 / 导出防护上限 ────
 
@@ -107,6 +107,23 @@ export const SKILL_IMPORT_MAX_TOTAL_CHARS = 10_000_000;
 
 /** 单次导入允许的技能个数上限 */
 export const SKILL_IMPORT_MAX_SKILLS = 20;
+
+/**
+ * 导入预警阈值（UTF-8 字节）：单个技能文本总量超过该值时，导入前必须弹窗
+ * 确认（用户明确知晓风险后才写入）。预警而不硬拒的原因：体量本身不违法，
+ * 风险属于「环境错配」——浏览器扩展没有终端，scripts/ 无法运行（只能当
+ * 文档读），超大文本还会长期占用扩展存储并拖慢每次写入与跨上下文同步。
+ */
+export const SKILL_IMPORT_WARN_BYTES = 5 * 1024 * 1024;
+
+/**
+ * 技能包（zip）的硬性体量上限（字节）。
+ * 防的是解压炸弹与误选文件：unzipSync 是同步整包解压，超大包会在逐技能
+ * 校验之前就把内存打爆（UI 卡死 / 标签页崩溃），必须在读文件与解压之前
+ * 用 file.size 一票否决。64MB 远高于「20 技能 × 各 10M 字符」的合法上限
+ * （合法文本压缩后通常只有个位数 MB），不会误伤正常包。
+ */
+export const SKILL_IMPORT_MAX_PACKAGE_BYTES = 64 * 1024 * 1024;
 
 // ──── 归一化（共享不变量） ────
 

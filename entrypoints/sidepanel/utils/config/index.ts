@@ -51,6 +51,7 @@ export {
   ConfigWriteError,
   DEFAULT_SNAPSHOT_COUNT,
   DEFAULT_VERIFY_RETRIES,
+  isInitialEmptyState,
   MIRROR_SUFFIX,
   ResilientDomain,
   SNAPSHOT_SUFFIX,
