@@ -13,13 +13,17 @@
  *   8. 注入荷载真实行为：源码在干净作用域求值（验证序列化自包含）+ jsdom DOM——
  *      buttons/inputs 两模式采集与评分、regex 命中置顶、容器级 xpath 祖先链、
  *      遮挡剔除、非法过滤条件的模式化报错、enhance 点击/填充与遮挡/未命中报错
- *   9. browser_page_exec 数据通道：超 2000 字符自动暂存（阈值边界 2000/2001）、
- *      前 2000 字符预览封装、saveResult 显式强制暂存、readRef 分页读取
+ *   9. browser_page_exec 数据通道：默认暂存（省略 saveResult 即存、trigger 三态
+ *      default/explicit/auto）、超 2000 字符强制暂存（阈值边界 2000/2001）、
+ *      前 2000 字符预览封装、readRef 分页读取
  *      （首页/续读/尾页/越界收敛/limit 收敛/无标签页）、参数与模式互斥防御、
  *      捕获/暂存失败的有界降级与告警
  *  10. plan_tool 契约（五动作/failed 必填校验/未知 id 回显/重建提示）+ 计划
  *      状态提醒判定（plan-reminder 纯函数）+ plan-store 幂等水合
  *      （见 ./plan.test.ts）
+ *  11. browser_dom_explore：parent/children/siblings/similar 荷载行为、
+ *      重复模式两种形态与生成选择器、noPattern、visibleOnly/depth、
+ *      宿主分页快照（40/页/STALE 语义/参数防御）（见 ./dom-explore.test.ts）
  *
  * 运行：node tests/tools/run.mjs   （或 npm run test:tools）
  */
@@ -246,6 +250,149 @@ registerAllTools();
   }
 }
 
+// ==================== 2b. 统一搜索工具 web_search 契约 ====================
+
+{
+  const { WebSearchTool, SEARCH_PLATFORM_IDS, SEARCH_PLATFORMS } = await import('../../tools/search');
+  const tool = new WebSearchTool();
+
+  // —— 注册与平台面 ——
+  check(toolRegistry.getTool('web_search') !== null, 'web_search 已注册');
+  eq(SEARCH_PLATFORM_IDS.length, 9, '平台注册表共 9 个平台');
+  for (const id of SEARCH_PLATFORM_IDS) {
+    const platform = SEARCH_PLATFORMS[id];
+    check(
+      typeof platform.buildSearchUrl('q') === 'string' && platform.buildSearchUrl('q').includes(encodeURIComponent('q')),
+      `平台 ${id}: URL 模板含编码关键词`,
+    );
+    if (platform.extractor.kind === 'script') {
+      check(!!platform.extractor.file && !!platform.extractor.action, `平台 ${id}: script 通道配置完整`);
+    } else {
+      check(typeof platform.extractor.func === 'function', `平台 ${id}: inline 通道有解析函数`);
+    }
+  }
+  check(
+    (tool.openaiSchema.function.parameters?.properties as Record<string, { enum?: string[] }>).website?.enum?.length === 9,
+    'schema 的 website 枚举与平台注册表一致',
+  );
+  check(
+    (tool.openaiSchema.function.description ?? '').includes('browser_navigate'),
+    '工具描述明确声明自带导航（引用 browser_navigate）',
+  );
+  check(tool.metadata.visionRefresh === 'after', 'web_search 声明 visionRefresh=after（搜索改变页面）');
+
+  // —— 参数防御（不触导航即返回错误） ——
+  const badPlatform = await tool.execute({ website: 'google', query: 'x' });
+  check(badPlatform.success === false && /不支持的搜索平台/.test(badPlatform.error ?? '') && (badPlatform.error ?? '').includes('baidu'), '未知平台：报错并列出支持平台', badPlatform.error);
+  const badQuery = await tool.execute({ website: 'bing', query: '   ' });
+  check(badQuery.success === false && /query 必填/.test(badQuery.error ?? ''), '空白 query：报错');
+  const badShape = await tool.execute('not-an-object');
+  check(badShape.success === false, '非对象参数：报错');
+  const badLength = await tool.execute({ website: 'bing', query: 'x'.repeat(301) });
+  check(badLength.success === false && /query 过长/.test(badLength.error ?? ''), '超长 query：报错');
+
+  // —— 行为用例：可控桩替换（导航 + 解析两条通道） ——
+  const chromeStub = (globalThis as Record<string, unknown>).chrome as Record<string, unknown>;
+  const tabsStub = chromeStub.tabs as Record<string, unknown>;
+  const scriptingStub = chromeStub.scripting as Record<string, unknown>;
+  const originalTabs = { ...tabsStub };
+  const originalExecuteScript = scriptingStub.executeScript;
+  const originalSetTimeout = globalThis.setTimeout;
+  // 压缩等待节奏：waitTime 归零、加载轮询即时
+  const fastTimeout = ((fn: () => void, ms?: number) => originalSetTimeout(fn, Math.min(ms ?? 0, 1))) as typeof setTimeout;
+  try {
+    let lastCreatedTabId = 0;
+    let pageUrl = 'https://www.bing.com/search?q=test';
+    let pageStatus = 'complete';
+    let inlineResult: unknown[] = [];
+    let messageResponse: unknown;
+    tabsStub.create = (async (props: { url?: string }) => {
+      lastCreatedTabId = 77;
+      pageUrl = props.url ?? pageUrl;
+      return { id: lastCreatedTabId, url: props.url };
+    }) as typeof tabsStub.create;
+    tabsStub.update = (async (tabId: number, props: { url?: string }) => {
+      pageUrl = props.url ?? pageUrl;
+      return { id: tabId, url: pageUrl };
+    }) as typeof tabsStub.update;
+    tabsStub.get = (async (tabId: number) => {
+      if (tabId !== 1 && tabId !== 77) throw new Error('tab gone');
+      return { id: tabId, url: pageUrl, status: pageStatus };
+    }) as typeof tabsStub.get;
+    tabsStub.sendMessage = (async () => messageResponse) as typeof tabsStub.sendMessage;
+    scriptingStub.executeScript = (async () => [{ result: inlineResult }]) as typeof scriptingStub.executeScript;
+    globalThis.setTimeout = fastTimeout as typeof globalThis.setTimeout;
+
+    // 1) inline 通道（bing）：导航成功 + 解析成功 + 两部分封装
+    inlineResult = [{ title: 'A', link: 'https://a', description: 'd' }];
+    const ok = await tool.execute({ website: 'bing', query: 'test', waitTime: 0 });
+    check(ok.success === true, 'inline: 整体 success');
+    const okData = ok.data as { navigation: { success: boolean; url: string; tabId: number }; results: { success: boolean; count: number; markdown?: string } };
+    check(okData.navigation.success === true && okData.navigation.url === 'https://www.bing.com/search?q=test' && okData.navigation.tabId === 77, 'inline: navigation 封装含当前网址与 tabId', okData.navigation);
+    check(okData.results.success === true && okData.results.count === 1, 'inline: results 含条目计数');
+    check(okData.results.markdown === undefined, 'inline: data.results 不含 markdown（单份契约，防引擎序列化双份）');
+    const okContent = (ok.content as Array<{ text?: string }>)[0]?.text ?? '';
+    check(okContent.includes('| title |') && okContent.includes('https://a'), 'inline: content 携带唯一一份 Markdown 表', okContent.slice(0, 80));
+
+    // 2) 解析失败不拖垮导航封装（inline 抛错）
+    scriptingStub.executeScript = (async () => { throw new Error('CSP blocked'); }) as typeof scriptingStub.executeScript;
+    const parseFail = await tool.execute({ website: 'bing', query: 'test', waitTime: 0 });
+    check(parseFail.success === true, '解析失败: 整体仍 success（导航事实不被吞）');
+    const parseFailData = parseFail.data as { navigation: { success: boolean }; results: { success: boolean; hint?: string } };
+    check(parseFailData.navigation.success === true, '解析失败: navigation 仍成功');
+    check(parseFailData.results.success === false && /browser_get_page_text/.test(parseFailData.results.hint ?? ''), '解析失败: 提示自行解析', parseFailData.results.hint);
+
+    // 3) script 通道（zhihu）：注入 + sendMessage 契约
+    scriptingStub.executeScript = (async () => undefined) as typeof scriptingStub.executeScript;
+    messageResponse = { status: 'success', data: [{ title: 'T', link: 'https://z' }] };
+    const scriptOk = await tool.execute({ website: 'zhihu', query: 'test', waitTime: 0 });
+    const scriptOkData = scriptOk.data as { results: { success: boolean; count: number } };
+    check(scriptOk.success === true && scriptOkData.results.success === true && scriptOkData.results.count === 1, 'script: 通道契约解析成功');
+    messageResponse = { status: 'error', message: '页面结构变化' };
+    const scriptErr = await tool.execute({ website: 'zhihu', query: 'test', waitTime: 0 });
+    const scriptErrData = scriptErr.data as { navigation: { success: boolean }; results: { success: boolean } };
+    check(scriptErr.success === true && scriptErrData.navigation.success === true && scriptErrData.results.success === false, 'script: 内容脚本报错时仅 results 失败');
+
+    // 4) 空结果：success + 提示
+    messageResponse = { status: 'success', data: [] };
+    const empty = await tool.execute({ website: 'csdn', query: 'test', waitTime: 0 });
+    const emptyData = empty.data as { results: { success: boolean; count: number; hint?: string } };
+    check(emptyData.results.success === true && emptyData.results.count === 0 && /browser_get_page_text/.test(emptyData.results.hint ?? ''), '空结果: success=true 且提示自行确认');
+
+    // 5) 导航硬失败（新标签页创建后即消失）
+    tabsStub.create = (async () => ({ id: 88 })) as typeof tabsStub.create;
+    const navFail = await tool.execute({ website: 'baidu', query: 'test', waitTime: 0 });
+    check(navFail.success === false && /导航失败/.test(navFail.error ?? ''), '导航失败: 整体报错', navFail.error);
+    const navFailData = navFail.data as { navigation: { success: boolean } };
+    check(navFailData.navigation.success === false, '导航失败: navigation 如实封装');
+
+    // 6) currentTab 模式（newTab=false）复用标签页 1
+    tabsStub.create = (async (props: { url?: string }) => { lastCreatedTabId = 77; pageUrl = props.url ?? pageUrl; return { id: 77, url: props.url }; }) as typeof tabsStub.create;
+    scriptingStub.executeScript = (async () => [{ result: inlineResult }]) as typeof scriptingStub.executeScript;
+    pageUrl = 'https://www.bing.com/search?q=test';
+    const currentTab = await tool.execute({ website: 'bing', query: 'test', newTab: false, waitTime: 0 });
+    const currentTabData = currentTab.data as { navigation: { tabId: number; newTab: boolean } };
+    check(currentTabData.navigation.tabId === 1 && currentTabData.navigation.newTab === false, 'newTab=false: 复用当前标签页', currentTabData.navigation);
+
+    // 7) 加载超时=软失败：navigation.success 仍为 true、status='timeout' 带 note，解析照常进行
+    pageStatus = 'loading';
+    inlineResult = [{ title: 'B', link: 'https://b' }];
+    const slowLoad = await tool.execute({ website: 'bing', query: 'test', waitTime: 0 });
+    const slowData = slowLoad.data as { navigation: { success: boolean; status: string; note?: string }; results: { success: boolean; count: number } };
+    check(
+      slowLoad.success === true && slowData.navigation.success === true && slowData.navigation.status === 'timeout' && !!slowData.navigation.note,
+      '加载超时: navigation 软失败如实上报（不判死）',
+      slowData.navigation,
+    );
+    check(slowData.results.success === true && slowData.results.count === 1, '加载超时: 解析照常进行');
+    pageStatus = 'complete';
+  } finally {
+    Object.assign(tabsStub, originalTabs);
+    scriptingStub.executeScript = originalExecuteScript;
+    globalThis.setTimeout = originalSetTimeout;
+  }
+}
+
 // ==================== 3. 测试面板目录对齐 ====================
 
 {
@@ -451,6 +598,11 @@ type AnyRecord = Record<string, any>;
 function dataOf(result: { data?: AnyRecord }): AnyRecord { return result.data ?? {}; }
 const { testElementInteraction } = await import('./element-interaction.test');
 await testElementInteraction(check, eq);
+
+// ==================== 11. browser_dom_explore DOM 关系探索 ====================
+
+const { testDomExplore } = await import('./dom-explore.test');
+await testDomExplore(check, eq);
 const { testSiteLearning } = await import('./site-learning.test');
 await testSiteLearning(check);
 const { testTextAutomation } = await import('./text-automation.test');
@@ -758,16 +910,25 @@ await testTextAutomation(check, eq);
 
   await dataRefStore.remove('all');
 
-  // —— 小结果：不暂存、全量结构化返回 ——
+  // —— 小结果：默认（省略 saveResult）也暂存，result 为全量 JSON 文本 ——
   setExecResult({ value: { ok: true, n: 1 }, rawJson: '{"ok":true,"n":1}' });
   const small = await execTool.execute({ code: 'return {ok:true,n:1}' });
   check(small.success, '小结果执行成功', small.error);
   const smallData = dataOf(small);
-  eq(smallData.dataRef, undefined, '≤2000 字符且未显式 saveResult 时不暂存');
-  eq(smallData.result, { ok: true, n: 1 }, '小结果全量结构化返回');
+  check(!!smallData.dataRef, '默认（省略 saveResult）小结果也暂存');
+  eq(smallData.dataRefTrigger, 'default', '省略参数触发标记为 default');
+  eq(smallData.result, '{"ok":true,"n":1}', '小结果全量 JSON 封装进 result');
   eq(smallData.resultTruncated, undefined, '小结果无截断标记');
 
-  // —— 超长结果：自动暂存 + 前 2000 字符预览 ——
+  // —— 小结果 + 显式 saveResult=false：跳过暂存，结构化值直接返回 ——
+  setExecResult({ value: { ok: true, n: 2 }, rawJson: '{"ok":true,"n":2}' });
+  const smallNoSave = await execTool.execute({ code: 'return {ok:true,n:2}', saveResult: false });
+  check(smallNoSave.success, '显式 false 执行成功', smallNoSave.error);
+  const smallNoSaveData = dataOf(smallNoSave);
+  eq(smallNoSaveData.dataRef, undefined, 'saveResult=false 且 ≤2000 字符时不暂存');
+  eq(smallNoSaveData.result, { ok: true, n: 2 }, '未暂存小结果全量结构化返回');
+
+  // —— 超长结果：默认暂存 + 前 2000 字符预览 ——
   const bigRows = Array.from({ length: 150 }, (_, i) => ({ id: i + 1, name: `商品-${i + 1}`, price: 9.9 + i }));
   const bigJson = JSON.stringify(bigRows);
   check(bigJson.length > 3000, '样本数据显著超过自动暂存阈值', bigJson.length);
@@ -775,8 +936,8 @@ await testTextAutomation(check, eq);
   const auto = await execTool.execute({ code: 'return rows', label: '第1页' });
   check(auto.success, '超长结果执行成功', auto.error);
   const autoData = dataOf(auto);
-  check(!!autoData.dataRef, '超 2000 字符自动暂存（未显式 saveResult）');
-  eq(autoData.dataRefTrigger, 'auto', '自动触发标记为 auto');
+  check(!!autoData.dataRef, '超 2000 字符默认暂存');
+  eq(autoData.dataRefTrigger, 'default', '省略参数触发标记为 default');
   eq(autoData.resultType, 'json-preview', '暂存模式 resultType 为 json-preview');
   eq(autoData.result, bigJson.slice(0, 2000), 'result 为全量 JSON 前 2000 字符');
   eq((autoData.result as string).length, 2000, '预览恰好 2000 字符');
@@ -786,6 +947,7 @@ await testTextAutomation(check, eq);
   eq(autoData.dataRef.rowCount, 150, 'dataRef 行数统计正确');
   check(String(autoData.dataRefGuide).includes('readRef'), '引导文案包含分页读取指引');
   check(String(autoData.dataRefGuide).includes('xlsx_tool'), '引导文案包含导出指引');
+  check(String(autoData.dataRefGuide).includes('12 小时'), '引导文案标注有效期');
   check(
     JSON.stringify(autoData).length < 6000,
     '自动暂存响应总载荷有界（不含全量数据）',
@@ -795,7 +957,15 @@ await testTextAutomation(check, eq);
   const storedEntry = await dataRefStore.get(refId);
   eq(storedEntry?.json, bigJson, '暂存区保存的是全量 JSON');
 
-  // —— 显式 saveResult：小结果也强制暂存，全部封装进 result ——
+  // —— 超长结果 + 显式 saveResult=false：仍强制暂存（防截断丢失），trigger=auto ——
+  setExecResult({ value: bigRows, rawJson: bigJson });
+  const forcedAuto = await execTool.execute({ code: 'return rows', saveResult: false, label: '强制暂存' });
+  check(forcedAuto.success, '显式 false 超长结果执行成功', forcedAuto.error);
+  const forcedAutoData = dataOf(forcedAuto);
+  check(!!forcedAutoData.dataRef, 'saveResult=false 超长结果仍自动暂存');
+  eq(forcedAutoData.dataRefTrigger, 'auto', '显式 false 的强制暂存标记为 auto');
+
+  // —— 显式 saveResult=true：小结果也暂存，trigger=explicit ——
   setExecResult({ value: { a: 1 }, rawJson: '{"a":1}' });
   const forced = await execTool.execute({ code: 'return {a:1}', saveResult: true });
   check(forced.success, '显式暂存执行成功', forced.error);
@@ -805,17 +975,67 @@ await testTextAutomation(check, eq);
   eq(forcedData.result, '{"a":1}', '小数据全部封装进 result');
   eq(forcedData.resultTruncated, undefined, '小数据无截断标记');
 
-  // —— 阈值边界：恰好 2000 不暂存、2001 自动暂存 ——
+  // —— 返回值疑似错误对象：warnings 浮出提示，但原始结果不被改动 ——
+  setExecResult({
+    value: { message: 'API rate limit exceeded for 1.2.3.4.', documentation_url: 'https://docs.github.com/rest' },
+    rawJson: '{"message":"API rate limit exceeded for 1.2.3.4.","documentation_url":"https://docs.github.com/rest"}',
+  });
+  const errShape = await execTool.execute({ code: 'return r', saveResult: false });
+  check(errShape.success, '疑似错误对象：执行仍成功（只是提示）', errShape.error);
+  const errShapeData = dataOf(errShape);
+  check(
+    Array.isArray(errShapeData.warnings) && String(errShapeData.warnings[0]).includes('疑似错误响应'),
+    '疑似错误对象：warnings 携带浮出提示',
+    errShapeData.warnings,
+  );
+  check(
+    String(errShapeData.warnings?.[0]).includes('res.ok'),
+    '疑似错误对象：提示指出 fetch 未检查 res.ok',
+  );
+  eq(
+    (errShapeData.result as Record<string, unknown>).message,
+    'API rate limit exceeded for 1.2.3.4.',
+    '疑似错误对象：原始结果字段不被改动',
+  );
+
+  // 单字段错误对象（GitHub 限流最小形态）与中文关键词同样命中
+  setExecResult({ value: { message: '请求被限流，请稍后再试' }, rawJson: '{"message":"请求被限流，请稍后再试"}' });
+  const cnShape = await execTool.execute({ code: 'return e', saveResult: false });
+  check(
+    Array.isArray(dataOf(cnShape).warnings) && String(dataOf(cnShape).warnings[0]).includes('疑似错误响应'),
+    '中文限流错误对象：同样浮出提示',
+  );
+
+  // 正常业务数据（含 message 字段但结构丰富、无错误信号）不得误报
+  setExecResult({
+    value: { message: '加载成功', items: [{ id: 1 }, { id: 2 }], total: 2 },
+    rawJson: '{"message":"加载成功","items":[{"id":1},{"id":2}],"total":2}',
+  });
+  const normalShape = await execTool.execute({ code: 'return d', saveResult: false });
+  eq(dataOf(normalShape).warnings, undefined, '正常业务数据（无错误信号）不误报');
+
+  // 键数超过 4 的对象即便含 message 也不判错误形态（保守上限）
+  const wideShape = { message: 'ok', a: 1, b: 2, c: 3, d: 4 };
+  setExecResult({ value: wideShape, rawJson: JSON.stringify(wideShape) });
+  const wideResult = await execTool.execute({ code: 'return w', saveResult: false });
+  eq(dataOf(wideResult).warnings, undefined, '键数超限的宽对象不判错误形态');
+
+  // —— 阈值边界（显式 false）：恰好 2000 不暂存、2001 强制暂存 ——
   const atJson = JSON.stringify('x'.repeat(1998)); // 1998 + 2 个引号 = 2000 字符
   eq(atJson.length, 2000, '边界样本恰好 2000 字符');
   setExecResult({ value: 'x'.repeat(1998), rawJson: atJson });
-  const atLimit = await execTool.execute({ code: 'x' });
-  eq(dataOf(atLimit).dataRef, undefined, '恰好 2000 字符不自动暂存');
+  const atLimit = await execTool.execute({ code: 'x', saveResult: false });
+  eq(dataOf(atLimit).dataRef, undefined, 'saveResult=false 且恰好 2000 字符不暂存');
   const overJson = JSON.stringify('x'.repeat(1999)); // 2001 字符
   eq(overJson.length, 2001, '边界样本 2001 字符');
   setExecResult({ value: 'x'.repeat(1999), rawJson: overJson });
-  const overLimit = await execTool.execute({ code: 'x' });
-  check(!!dataOf(overLimit).dataRef, '2001 字符触发自动暂存');
+  const overLimit = await execTool.execute({ code: 'x', saveResult: false });
+  check(!!dataOf(overLimit).dataRef, 'saveResult=false 时 2001 字符仍触发自动暂存');
+
+  // —— 非法 saveResult 类型被拒绝 ——
+  setExecResult({ value: { a: 1 }, rawJson: '{"a":1}' });
+  const badSave = await execTool.execute({ code: 'return {a:1}', saveResult: 'yes' as unknown as boolean });
+  check(!badSave.success && String(badSave.error).includes('saveResult'), '非布尔 saveResult 被拒绝', badSave.error);
 
   // —— readRef 分页读取：首页 / 续读 / 尾页 / 越界收敛 / limit 收敛 ——
   resetTabStub();
@@ -880,7 +1100,8 @@ await testTextAutomation(check, eq);
   setExecResult({ value: 7, rawJson: '7' });
   const strayOffset = await execTool.execute({ code: '1+1', offset: 0, limit: 2000 });
   check(strayOffset.success, '执行模式下 offset/limit 被忽略而非报错', strayOffset.error);
-  eq(dataOf(strayOffset).result, 7, '忽略 stray 参数后正常返回执行结果');
+  eq(dataOf(strayOffset).result, '7', '忽略 stray 参数后正常返回执行结果（默认暂存 → JSON 文本）');
+  check(!!dataOf(strayOffset).dataRef, '默认暂存对 stray 参数场景同样生效');
   const noCode = await execTool.execute({});
   check(!noCode.success && String(noCode.error).includes('code'), '缺少 code 时给出可读错误', noCode.error);
   check(String(noCode.error).includes('readRef'), '缺参错误同时引导 readRef 模式', noCode.error);
@@ -891,7 +1112,7 @@ await testTextAutomation(check, eq);
     value: bigValue,
     rawJsonError: '数据量 9999999 字符超过单次暂存上限 6000000——请在脚本内先筛选字段或限制条数后分批保存',
   });
-  const overflow = await execTool.execute({ code: 'return hugeData' });
+  const overflow = await execTool.execute({ code: 'return hugeData', saveResult: false });
   check(overflow.success, '捕获失败不阻断执行结果', overflow.error);
   const overflowData = dataOf(overflow);
   eq(overflowData.dataRef, undefined, '捕获失败不产生 dataRef');
@@ -905,6 +1126,19 @@ await testTextAutomation(check, eq);
     Array.isArray(overflowData.warnings) && String((overflowData.warnings as string[])[0]).includes('自动暂存'),
     '给出无法自动暂存告警',
     overflowData.warnings,
+  );
+
+  // —— 默认暂存模式下同样的捕获失败：告警措辞为「数据暂存失败」——
+  setExecResult({
+    value: bigValue,
+    rawJsonError: '数据量 9999999 字符超过单次暂存上限 6000000——请在脚本内先筛选字段或限制条数后分批保存',
+  });
+  const overflowDefault = await execTool.execute({ code: 'return hugeData' });
+  check(
+    Array.isArray(dataOf(overflowDefault).warnings) &&
+      String((dataOf(overflowDefault).warnings as string[])[0]).includes('数据暂存失败'),
+    '默认暂存意图下的捕获失败告警不静默',
+    dataOf(overflowDefault).warnings,
   );
 
   // —— 显式暂存失败：告警但不影响执行结果返回 ——

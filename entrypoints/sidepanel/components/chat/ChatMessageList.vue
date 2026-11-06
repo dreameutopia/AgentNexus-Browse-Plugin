@@ -1,6 +1,11 @@
 <template>
   <div class="chat-content" v-show="showChatMode">
-      <div class="messages-container" ref="messagesContainer" @wheel.passive="handleUserScrollIntent" @touchmove.passive="handleUserScrollIntent" @pointerdown="handleUserScrollIntent">
+      <div
+        class="messages-container"
+        ref="messagesContainer"
+        @wheel.passive="handleUserScrollIntent"
+        @touchmove.passive="handleUserScrollIntent"
+      >
         <MessageItem
           v-for="(message, index) in filteredMessages"
           :key="message.id || index"
@@ -59,68 +64,94 @@ const filteredMessages = computed(() => {
 //
 // 行为约定（对齐主流聊天客户端的通用模式）：
 //   - 输出期间默认持续跟随滚动到底部；
-//   - 用户任意滚动意图（滚轮 / 触摸滑动 / 拖动滚动条）即视为「接管」，
-//     本次任务输出期间不再强制滚动——用户向上翻阅不被打断；
+//   - 用户任意滚动意图（滚轮向上 / 触摸滑动 / 拖动滚动条 / 键盘翻页）即视为
+//     「接管」，本次任务输出期间不再强制滚动——用户向上翻阅不被打断；
 //   - 用户重新滚回底部附近（≤ 阈值）自动恢复跟随；
 //   - 新一轮任务开始（isAiResponding false → true）或切换会话时重置为跟随。
+//
+// 滚动容器探测：本组件只拥有内容节点（.messages-container，flex 布局自身
+// 不滚动），真正的滚动发生在祖先链上（当前为 .chat-content，见 app.css）。
+// 历史实现把 scrollTop 赋值与 scroll 监听全放在内容节点上——对不滚动的
+// 元素赋值是空操作、scroll 事件永不触发，自动跟随与接管释放全部失效。
+// 现按「最近的 overflow-y:auto/scroll 祖先」在运行时解析，样式重构挪动
+// 滚动容器时无需改这里；断连（DOM 重建）时自动重新解析。
 
 /** 距底部多少像素内视为"已在底部"（恢复跟随 / 初始判定阈值） */
 const NEAR_BOTTOM_PX = 24;
 /** 用户接管标记：true = 本次输出期间不自动滚动 */
 const userTookOver = ref(false);
-/** 拖动滚动条的按压中标记（pointerdown 后到 pointerup 前的 scroll 视为用户行为） */
-let pointerDownOnContainer = false;
+/** 解析出的真实滚动容器（内容节点的最近可滚动祖先；未解析/断连时为 null） */
+let scrollEl: HTMLElement | null = null;
+
+/**
+ * 解析真实滚动容器：从内容节点向上找第一个 overflow-y 为 auto/scroll/overlay
+ * 的祖先。只看声明的 overflow 而非「当前是否溢出」——容器即使暂时没有
+ * 滚动余量也是既定的滚动容器。找不到时回退到内容节点的父元素（组件根，
+ * 与现行 CSS 的滚动容器一致），保证逻辑永远有一个明确的落点。
+ */
+const resolveScrollEl = (): HTMLElement | null => {
+  if (scrollEl && scrollEl.isConnected) return scrollEl;
+  const start = messagesContainer.value;
+  if (!start) return null;
+  let node: HTMLElement | null = start.parentElement;
+  while (node && node !== document.body) {
+    const overflowY = window.getComputedStyle(node).overflowY;
+    if (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') {
+      scrollEl = node;
+      return scrollEl;
+    }
+    node = node.parentElement;
+  }
+  scrollEl = start.parentElement;
+  return scrollEl;
+};
 
 const isNearBottom = (): boolean => {
-  const el = messagesContainer.value;
+  const el = resolveScrollEl();
   if (!el) return true;
   return el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
 };
 
 /**
- * 用户滚动意图入口（wheel / touchmove / 滚动条拖动按下）。
- * 仅在 AI 输出期间生效：空闲期的滚动浏览不代表对下一次输出的接管意愿；
- * 用户滚回底部附近时解除接管，恢复自动跟随。
+ * 用户滚动意图入口（wheel / touchmove）。
+ * 仅在 AI 输出期间生效：空闲期的滚动浏览不代表对下一次输出的接管意愿。
+ * wheel 向上要在事件层拦截——容器已在顶部时滚轮向上不产生 scroll 事件，
+ * 只有这里能捕捉到该意图；触摸滑动同理（惯性滚动后续由 scroll 事件兜底）。
  */
-const handleUserScrollIntent = (event: WheelEvent | TouchEvent | PointerEvent): void => {
-  if (event instanceof PointerEvent) {
-    // 指针按下：可能是拖动滚动条或选择文本前的按压，记录之供 scroll 判定
-    pointerDownOnContainer = true;
-    window.addEventListener('pointerup', releasePointer, { once: true, passive: true });
-    return;
-  }
+const handleUserScrollIntent = (event: WheelEvent | TouchEvent): void => {
   if (!props.isAiResponding) return;
   // 滚轮向上（deltaY < 0）或触摸滑动明确是主动翻阅行为 → 接管
-  if (event instanceof WheelEvent && event.deltaY < 0) {
-    userTookOver.value = true;
-  } else if (!(event instanceof WheelEvent)) {
-    userTookOver.value = true;
-  }
+  if (event instanceof WheelEvent && event.deltaY >= 0) return;
+  userTookOver.value = true;
 };
 
-const releasePointer = (): void => {
-  pointerDownOnContainer = false;
-};
+/**
+ * 自己的程序滚动忽略窗口（毫秒）：scrollTop 赋值后的 scroll 事件异步到达，
+ * 窗口内的事件不参与接管判定，避免把自己的跟随滚动误判为用户离开底部。
+ */
+let programmaticScrollUntil = 0;
 
-/** 容器 scroll 事件：跟随用户实际位置更新接管状态 */
+/**
+ * 滚动容器的 scroll 事件：跟随用户实际位置更新接管状态。
+ * - 回到底部附近 → 解除接管，恢复跟随；
+ * - 离开底部（滚动条拖动 / 键盘翻页 / 选择拖动等不经容器内 wheel 的路径）
+ *   → 接管。内容增长本身不触发 scroll 事件（scrollTop 不变），布局收缩时
+ *   浏览器钳制后仍处底部，因此「离开底部」可以安全地等价于用户主动离开。
+ */
 const handleContainerScroll = (): void => {
   if (!props.isAiResponding) return;
-  if (pointerDownOnContainer) {
-    // 拖动滚动条产生的滚动：视位置决定——离开底部即接管
-    if (!isNearBottom()) userTookOver.value = true;
-    return;
-  }
-  // 非指针、非滚轮触发的 scroll（如程序 scrollTop 赋值）不改变接管状态；
-  // 用户通过任何方式回到底部附近则恢复跟随
+  if (performance.now() < programmaticScrollUntil) return;
   if (isNearBottom()) userTookOver.value = false;
+  else userTookOver.value = true;
 };
 
 const scrollToBottom = () => {
   // watch 回调先于 DOM 更新触发（默认 pre flush），待补丁应用后再读 scrollHeight
   nextTick(() => {
-    const el = messagesContainer.value;
+    const el = resolveScrollEl();
     if (!el) return;
     el.scrollTop = el.scrollHeight;
+    programmaticScrollUntil = performance.now() + 64;
   });
 };
 
@@ -131,11 +162,12 @@ const followStreamIfNeeded = (): void => {
 };
 
 onMounted(() => {
-  messagesContainer.value?.addEventListener('scroll', handleContainerScroll, { passive: true });
+  resolveScrollEl()?.addEventListener('scroll', handleContainerScroll, { passive: true });
 });
 
 onBeforeUnmount(() => {
-  messagesContainer.value?.removeEventListener('scroll', handleContainerScroll);
+  scrollEl?.removeEventListener('scroll', handleContainerScroll);
+  scrollEl = null;
 });
 
 // 新一轮任务开始：重置接管状态，恢复跟随（上一轮的接管意愿不延续到新任务）

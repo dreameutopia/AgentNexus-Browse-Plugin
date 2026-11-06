@@ -39,7 +39,7 @@ const child = spawn(
     `--user-data-dir=${profile}`,
     'about:blank',
   ],
-  { windowsHide: true }
+  { windowsHide: true },
 );
 const server = createServer((req, res) => {
   if (req.url === '/api/cells') {
@@ -54,7 +54,7 @@ const server = createServer((req, res) => {
   }
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.end(
-    '<!doctype html><style>body{margin:10px;font:16px sans-serif}#pane{width:220px;height:70px;overflow:auto}#inside{width:900px;height:500px}#grid{border:1px solid;padding:20px}textarea{position:fixed;left:-100px;top:-100px;width:1px;height:1px}</style>\n<input id="namebox" aria-label="名称框"><button id="button">原生按钮</button><div id="grid" role="grid" tabindex="0" aria-label="工作表一"><div role="row"><span id="cell" role="gridcell" aria-rowindex="2" aria-colindex="2">初始值</span></div></div><textarea id="editor" aria-label="单元格编辑器"></textarea><div id="pane" role="region" aria-label="滚动容器"><div id="inside">内容</div></div><iframe src="/child"></iframe><div id="shadow"></div>\n<script>window.nativeKeys=[];window.buttonHits=0;button.onclick=()=>buttonHits++;document.addEventListener(\'keydown\',e=>nativeKeys.push({key:e.key,trusted:e.isTrusted}));namebox.onkeydown=e=>{if(e.key===\'Enter\'){e.preventDefault();grid.dataset.range=namebox.value;grid.focus();}};grid.onkeydown=e=>{if(e.key===\'F2\'||e.key===\'Enter\'){e.preventDefault();editor.value=cell.textContent;editor.focus();}};editor.onkeydown=e=>{if(e.key===\'Enter\'){e.preventDefault();cell.textContent=editor.value;grid.focus();}};shadow.attachShadow({mode:\'open\'}).innerHTML=\'<input aria-label="影子输入">\';</script>'
+    '<!doctype html><style>body{margin:10px;font:16px sans-serif}#pane{width:220px;height:70px;overflow:auto}#inside{width:900px;height:500px}#grid{border:1px solid;padding:20px}textarea{position:fixed;left:-100px;top:-100px;width:1px;height:1px}</style>\n<input id="namebox" aria-label="名称框"><button id="button">原生按钮</button><div id="grid" role="grid" tabindex="0" aria-label="工作表一"><div role="row"><span id="cell" role="gridcell" aria-rowindex="2" aria-colindex="2">初始值</span></div></div><textarea id="editor" aria-label="单元格编辑器"></textarea><div id="pane" role="region" aria-label="滚动容器"><div id="inside">内容</div></div><iframe src="/child"></iframe><div id="shadow"></div>\n<script>window.nativeKeys=[];window.buttonHits=0;button.onclick=()=>buttonHits++;document.addEventListener(\'keydown\',e=>nativeKeys.push({key:e.key,trusted:e.isTrusted}));namebox.onkeydown=e=>{if(e.key===\'Enter\'){e.preventDefault();grid.dataset.range=namebox.value;grid.focus();}};grid.onkeydown=e=>{if(e.key===\'F2\'||e.key===\'Enter\'){e.preventDefault();editor.value=cell.textContent;editor.focus();}};editor.onkeydown=e=>{if(e.key===\'Enter\'){e.preventDefault();cell.textContent=editor.value;grid.focus();}};shadow.attachShadow({mode:\'open\'}).innerHTML=\'<input aria-label="影子输入">\';</script>',
   );
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -66,7 +66,7 @@ try {
   const url = await new Promise((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new Error('Chromium startup timeout')),
-      15000
+      15000,
     );
     child.once('error', reject);
     child.stderr.on('data', (chunk) => {
@@ -84,7 +84,7 @@ try {
   const target = await (
     await fetch(
       `${base}/json/new?${encodeURIComponent(`http://127.0.0.1:${server.address().port}`)}`,
-      { method: 'PUT' }
+      { method: 'PUT' },
     )
   ).json();
   socket = new WebSocket(target.webSocketDebuggerUrl);
@@ -138,7 +138,7 @@ try {
     url: `http://127.0.0.1:${server.address().port}`,
   });
   await evaluate(
-    'new Promise(r=>document.readyState==="complete"?r():addEventListener("load",r,{once:true}))'
+    'new Promise(r=>document.readyState==="complete"?r():addEventListener("load",r,{once:true}))',
   );
   await send('Page.bringToFront');
   const memory = new Map();
@@ -182,7 +182,9 @@ try {
         // conceal the Chrome args[2] serialization failure for click.
         for (const [index, arg] of args.entries())
           assert.notEqual(
-            arg, undefined, `injection args[${index}] is unserializable`
+            arg,
+            undefined,
+            `injection args[${index}] is unserializable`,
           );
         const tree = await send('Page.getFrameTree');
         const frames = [];
@@ -235,21 +237,29 @@ try {
       line
         .split('|')
         .map((x) => x.trim())
-        .filter(Boolean)[5]
+        .filter(Boolean)[5],
     );
     return { elementId, frameId };
   };
   try {
     const button = await refByName('原生按钮', 'buttons');
-    ok(await interact.execute({
-      action: 'click', ...button, description: '点击原生按钮（无 value 参数）',
-    }));
+    ok(
+      await interact.execute({
+        action: 'click',
+        ...button,
+        description: '点击原生按钮（无 value 参数）',
+      }),
+    );
     assert.equal(await evaluate('buttonHits'), 1);
     await evaluate('buttonHits=0');
     const namebox = await refByName('名称框');
-    ok(await interact.execute({
-      action: 'focus', ...namebox, description: '聚焦名称框',
-    }));
+    ok(
+      await interact.execute({
+        action: 'focus',
+        ...namebox,
+        description: '聚焦名称框',
+      }),
+    );
     assert.equal(await evaluate('document.activeElement===namebox'), true);
     ok(
       await interact.execute({
@@ -257,7 +267,7 @@ try {
         ...namebox,
         value: 'B2',
         description: '定位单元格',
-      })
+      }),
     );
     const navigated = ok(
       await interact.execute({
@@ -265,7 +275,7 @@ try {
         ...namebox,
         keys: ['Enter'],
         description: '进入目标范围',
-      })
+      }),
     );
     assert.equal(await evaluate('grid.dataset.range'), 'B2');
     const gridFocus = navigated.focus.find((f) => f.tag === 'div');
@@ -277,7 +287,7 @@ try {
         frameId: gridFocus.frameId,
         keys: ['F2'],
         description: '进入编辑模式',
-      })
+      }),
     );
     const editor = edited.focus.find((f) => f.tag === 'textarea');
     assert.ok(editor);
@@ -288,14 +298,14 @@ try {
         frameId: editor.frameId,
         keys: ['Mod', 'A'],
         description: '全选当前单元格编辑内容',
-      })
+      }),
     );
     assert.equal(
       await evaluate(
-        'editor.selectionStart===0&&editor.selectionEnd===editor.value.length'
+        'editor.selectionStart===0&&editor.selectionEnd===editor.value.length',
       ),
       true,
-      'Mod+A must actually select the editor contents'
+      'Mod+A must actually select the editor contents',
     );
     ok(
       await interact.execute({
@@ -305,7 +315,7 @@ try {
         value: '实际浏览器🙂',
         clear: false,
         description: '填写 B2',
-      })
+      }),
     );
     ok(
       await interact.execute({
@@ -314,18 +324,36 @@ try {
         frameId: editor.frameId,
         keys: ['Enter'],
         description: '确认编辑',
-      })
+      }),
     );
     assert.equal(await evaluate('cell.textContent'), '实际浏览器🙂');
-    ok(await interact.execute({action:'fill',...namebox,value:'',description:'验证标点输入'}));
-    ok(await interact.execute({action:'keys',...namebox,keys:['Shift','1'],description:'输入 US 键位感叹号'}));
-    assert.equal(await evaluate('namebox.value'),'!','Shift+1 must insert the mapped punctuation');
+    ok(
+      await interact.execute({
+        action: 'fill',
+        ...namebox,
+        value: '',
+        description: '验证标点输入',
+      }),
+    );
+    ok(
+      await interact.execute({
+        action: 'keys',
+        ...namebox,
+        keys: ['Shift', '1'],
+        description: '输入 US 键位感叹号',
+      }),
+    );
+    assert.equal(
+      await evaluate('namebox.value'),
+      '!',
+      'Shift+1 must insert the mapped punctuation',
+    );
     assert.ok(await evaluate('nativeKeys.some(e=>e.key==="F2"&&e.trusted)'));
     const ax = ok(
-      await observe.execute({ view: 'accessibility', regex: '原生按钮' })
+      await observe.execute({ view: 'accessibility', regex: '原生按钮' }),
     );
     const axButton = ax.elements.find(
-      (e) => e.role === 'button' && e.name === '原生按钮'
+      (e) => e.role === 'button' && e.name === '原生按钮',
     );
     assert.ok(axButton);
     ok(
@@ -334,11 +362,11 @@ try {
         elementId: axButton.elementId,
         keys: ['Enter'],
         description: '打开按钮',
-      })
+      }),
     );
     assert.equal(await evaluate('buttonHits'), 1);
     const structure = ok(
-      await observe.execute({ view: 'structure', regex: '滚动容器' })
+      await observe.execute({ view: 'structure', regex: '滚动容器' }),
     );
     const scrollLine = String(structure.elements)
       .split('\n')
@@ -354,7 +382,7 @@ try {
         deltaX: 100,
         deltaY: 100,
         description: '滚动表格容器',
-      })
+      }),
     );
     assert.equal(scrolled.moved, true);
     assert.ok(await evaluate('pane.scrollLeft>0&&pane.scrollTop>0'));
@@ -366,7 +394,7 @@ try {
         ...child,
         value: 'frame data',
         description: '填写子页面',
-      })
+      }),
     );
     const shadow = await refByName('影子输入');
     ok(
@@ -375,139 +403,278 @@ try {
         ...shadow,
         value: 'shadow data',
         description: '填写影子控件',
-      })
+      }),
     );
     assert.equal(
       await evaluate('shadow.shadowRoot.querySelector("input").value'),
-      'shadow data'
+      'shadow data',
     );
     const capture = ok(
-      await network.execute({ action: 'start', urlIncludes: '/api/' })
+      await network.execute({ action: 'start', urlIncludes: '/api/' }),
     );
     await evaluate('fetch("/api/cells").then(r=>r.json())');
     let read;
     for (let i = 0; i < 20; i++) {
       read = ok(
-        await network.execute({ action: 'read', captureId: capture.captureId })
+        await network.execute({ action: 'read', captureId: capture.captureId }),
       );
       if (read.entries.some((e) => e.dataRef)) break;
       await new Promise((r) => setTimeout(r, 50));
     }
     assert.ok(
       read.entries.some((e) => e.dataRef && e.preview.includes('服务器数据')),
-      'network body missing'
+      'network body missing',
     );
     ok(await network.execute({ action: 'stop', captureId: capture.captureId }));
     assert.ok(
-      !protocolCalls.some((method) => /captureScreenshot/.test(method))
+      !protocolCalls.some((method) => /captureScreenshot/.test(method)),
     );
-    const exec = new driver.PageExecTool();
+    await evaluate(`(() => {
+      const host=document.createElement('section');
+      host.innerHTML='<button aria-label="关闭控件测试" id="semanticClose">关闭</button><input id="semanticCheck" type="checkbox" aria-label="语义勾选"><select id="semanticMulti" multiple aria-label="语义多选"><option value="a" selected>甲</option><option value="b" selected>乙</option><option value="c">丙</option></select><input id="semanticDate" aria-label="语义日期" type="date" max="2026-11-30"><button id="semanticCombo" role="combobox" aria-label="语义组合框" aria-expanded="false" aria-controls="semanticPortal">展开</button><div id="semanticPortal" role="listbox" aria-label="语义选项列表" style="display:none"><div id="semanticOption" role="option" aria-selected="false">选项一</div></div>';
+      document.body.append(host);
+      semanticCheck.indeterminate=true;
+      window.semanticClicks=0;semanticCheck.onclick=()=>semanticClicks++;
+      semanticCombo.addEventListener('pointerdown',event=>{event.preventDefault();semanticCombo.setAttribute('aria-expanded','true');semanticPortal.style.display='block';});
+      semanticOption.onclick=()=>semanticOption.setAttribute('aria-selected','true');
+    })()`);
+    const semantic = async (action, ref, args = {}) =>
+      interact.execute({
+        action,
+        ...ref,
+        ...args,
+        description: '真实浏览器语义交互验证',
+      });
+    const checkedRef = await refByName('语义勾选', 'controls');
+    const initial = ok(await observe.execute({ categories: ['checkbox'] }));
+    assert.ok(initial.details.some((item) => item.checked === 'mixed'));
+    ok(await semantic('set_checked', checkedRef, { checked: true }));
+    const unchanged = ok(
+      await semantic('set_checked', await refByName('语义勾选', 'controls'), {
+        checked: true,
+      }),
+    );
+    assert.equal(unchanged.changed, false);
+    assert.equal(await evaluate('semanticClicks'), 1);
+    const multiRef = await refByName('语义多选', 'controls');
+    ok(await semantic('select', multiRef, { values: ['a', '丙'] }));
+    assert.deepEqual(
+      await evaluate('Array.from(semanticMulti.selectedOptions,o=>o.value)'),
+      ['a', 'c'],
+    );
     assert.equal(
-      ok(
-        await exec.execute({
-          code: 'window.execCount=(window.execCount||0)+1; return window.execCount;',
+      (
+        await semantic('fill', await refByName('语义多选', 'controls'), {
+          value: '乙',
         })
-      ).result,
-      1
+      ).success,
+      false,
     );
-    const bulk = ok(
-      await exec.execute({
-        code: 'return Array.from({length:300},(_,i)=>({row:i,value:"完整记录"}));',
-        strategy: 'scripting',
-        world: 'ISOLATED',
-        saveResult: true,
-      })
-    );
-    assert.ok(
-      bulk.dataRef,
-      'serialized injection must preserve full JSON in dataRef'
-    );
-    const bulkRef =
-      typeof bulk.dataRef === 'string' ? bulk.dataRef : bulk.dataRef.id;
-    const bulkTail = ok(
-      await exec.execute({
-        readRef: bulkRef,
-        offset: bulk.totalChars - 300,
-        limit: 300,
-      })
-    );
-    assert.ok(
-      bulkTail.content.includes('"row":299'),
-      'dataRef must contain rows beyond sanitized preview limit'
+    ok(
+      await semantic('fill', await refByName('语义日期', 'controls'), {
+        value: '2026-11-20',
+      }),
     );
     assert.equal(
-      ok(
+      (
+        await semantic('fill', await refByName('语义日期', 'controls'), {
+          value: '2026-12-20',
+        })
+      ).success,
+      false,
+    );
+    // Pointer-down is sufficient to open Radix-like controls. Do not click twice.
+    ok(
+      await semantic(
+        'set_expanded',
+        await refByName('语义组合框', 'controls'),
+        { expanded: true },
+      ),
+    );
+    const expandedRef = await refByName('语义组合框', 'controls');
+    ok(await semantic('select', expandedRef, { values: ['选项一'] }));
+    assert.equal(
+      await evaluate('semanticOption.getAttribute("aria-selected")'),
+      'true',
+    );
+    await evaluate(
+      `semanticOption.setAttribute('aria-selected','false');semanticOption.onclick=()=>{semanticCombo.textContent='选项一';semanticCombo.setAttribute('aria-expanded','false');semanticPortal.remove();};`,
+    );
+    const unmounted = ok(
+      await semantic('select', await refByName('语义组合框', 'controls'), {
+        values: ['选项一'],
+      }),
+    );
+    assert.equal(unmounted.state.verification, 'owner_value');
+    const axControls = ok(
+      await observe.execute({
+        view: 'accessibility',
+        categories: ['checkbox', 'multiselect', 'date'],
+      }),
+    );
+    assert.ok(
+      axControls.elements.some((item) => item.category === 'multiselect'),
+    );
+    assert.ok(
+      axControls.elements.some(
+        (item) =>
+          item.category === 'checkbox' && item.states.checked === 'true',
+      ),
+    );
+    assert.equal(
+      (
+        await observe.execute({
+          snapshotId: axControls.snapshotId,
+          categories: ['close'],
+        })
+      ).success,
+      false,
+    );
+    // A framework replacing the node during change must never produce a verified success.
+    await evaluate(
+      'semanticCheck.onclick=()=>semanticCheck.replaceWith(semanticCheck.cloneNode(true))',
+    );
+    const replaced = await semantic(
+      'set_checked',
+      await refByName('语义勾选', 'controls'),
+      { checked: false },
+    );
+    assert.equal(replaced.success, false);
+    assert.equal(replaced.data.outcome, 'unknown');
+    await evaluate(`(() => {
+      const host=document.createElement('section');
+      host.innerHTML='<div data-date-range id="rangeProof"><input type="date" aria-label="区间开始" value="2026-11-05"><input type="date" aria-label="区间结束" value="2026-11-09"></div><div data-calendar role="grid" aria-label="十一月日历"><div role="row"><button id="calendarProof" role="gridcell" aria-label="2026年11月6日" aria-selected="false" data-date="2026-11-06" aria-rowindex="2" aria-colindex="6">6</button></div></div><div id="virtualProof" role="treegrid" aria-label="多维表格" aria-rowcount="1000000" aria-colcount="50"><div role="row" aria-rowindex="500"><div id="cellProof" role="gridcell" aria-label="业务单元格" aria-colindex="23" tabindex="0">原值</div></div></div>';
+      document.body.append(host);
+      calendarProof.onclick=()=>calendarProof.setAttribute('aria-selected','true');
+    })()`);
+    const rangeProof=ok(await observe.execute({categories:['date-range']}));
+    assert.ok(rangeProof.details.some(item=>item.fields?.length===2));
+    ok(await semantic('fill',await refByName('区间开始','controls'),{value:'2026-11-06'}));
+    ok(await semantic('fill',await refByName('区间结束','controls'),{value:'2026-11-10'}));
+    const calendarProof=ok(await observe.execute({categories:['calendar']}));
+    assert.ok(calendarProof.details.some(item=>item.states['data-date']==='2026-11-06'));
+    ok(await semantic('set_selected',await refByName('2026年11月6日','controls'),{selected:true}));
+    const virtualProof=ok(await observe.execute({view:'structure',regex:'多维表格'}));
+    assert.ok(virtualProof.details.some(item=>item.states.rowcount==='1000000'));
+    const oldCellProof=await refByName('业务单元格','controls');
+    await evaluate('cellProof.parentElement.setAttribute("aria-rowindex","501")');
+    assert.equal((await semantic('click',oldCellProof)).success,false);
+    await evaluate(`(() => {const button=document.createElement('button');button.setAttribute('role','checkbox');button.setAttribute('aria-checked','false');button.setAttribute('aria-label','取消兼容鼠标事件');button.textContent='取消兼容鼠标事件';document.body.append(button);window.compatibilityMouseCount=0;button.onpointerdown=event=>event.preventDefault();button.onmousedown=()=>compatibilityMouseCount++;button.onclick=()=>button.setAttribute('aria-checked','true');})()`);
+    ok(await semantic('set_checked',await refByName('取消兼容鼠标事件','controls'),{checked:true}));
+    assert.equal(await evaluate('compatibilityMouseCount'),0,'cancelled pointerdown suppresses compatibility mousedown');
+    if (!process.env.TEXT_SEMANTIC_ONLY) {
+      const exec = new driver.PageExecTool();
+      const scalar = ok(await exec.execute({code:'window.execCount=(window.execCount||0)+1; return window.execCount;'}));
+      assert.equal(scalar.resultType,'json-preview');
+      assert.equal(scalar.dataRefTrigger,'default');
+      assert.equal(JSON.parse(scalar.result),1);
+      const scalarRead = ok(await exec.execute({readRef:typeof scalar.dataRef === 'string' ? scalar.dataRef : scalar.dataRef.id}));
+      assert.equal(JSON.parse(scalarRead.content),1,'default storage preserves the scalar type');
+      assert.equal(await evaluate('window.execCount'),1,'reading storage must not replay execution');
+      const bulk = ok(
         await exec.execute({
-          code: 'return document.querySelector("input").getAttribute("aria-label");',
-          frameId: 1,
+          code: 'return Array.from({length:300},(_,i)=>({row:i,value:"完整记录"}));',
           strategy: 'scripting',
           world: 'ISOLATED',
-        })
-      ).result,
-      '子页面输入'
-    );
-    const cspError = await exec.execute({
-      code: 'window.cspCount=(window.cspCount||0)+1;throw new Error("Refused to evaluate because unsafe-eval violates Content Security Policy");',
-    });
-    assert.equal(cspError.success, false);
-    assert.equal(
-      await evaluate('window.cspCount'),
-      1,
-      'runtime CSP-looking errors must not replay'
-    );
-    const runtimeError = await exec.execute({
-      code: 'window.errorCount=(window.errorCount||0)+1; throw new Error("Illegal return statement from application");',
-    });
-    assert.equal(runtimeError.success, false);
-    assert.equal(
-      await evaluate('window.errorCount'),
-      1,
-      'runtime errors must not replay'
-    );
-    const originalInject = chrome.scripting.executeScript;
-    chrome.scripting.executeScript = async (options) => {
-      await originalInject(options);
-      return [{ frameId: 0, result: undefined }];
-    };
-    const noResult = await exec.execute({
-      code: 'window.noResultCount=(window.noResultCount||0)+1;return window.noResultCount;',
-    });
-    chrome.scripting.executeScript = originalInject;
-    assert.equal(noResult.success, false);
-    assert.equal(
-      await evaluate('window.noResultCount'),
-      1,
-      'no-result failures must not replay'
-    );
-    // Emulate an injection that runs but loses its return value. Never call
-    // this stale or replay it: the input event may already have taken effect.
-    await evaluate(
-      'window.fillEvents=0;namebox.addEventListener("input",()=>fillEvents++)'
-    );
-    chrome.scripting.executeScript = async (options) => {
-      const rows = await originalInject(options);
-      return options.target.allFrames ? rows : [{ frameId: 0 }];
-    };
-    const noFillResult = await interact.execute({
-      action: 'fill', ...namebox, value: '已生效',
-      description: '验证无结果时不重放输入',
-    });
-    const noFocusResult = await interact.execute({
-      action: 'focus', ...namebox, description: '验证无结果时不误报失效引用',
-    });
-    chrome.scripting.executeScript = originalInject;
-    for (const failed of [noFillResult, noFocusResult]) {
-      assert.equal(failed.success, false);
-      assert.match(failed.error, /INJECTION_NO_RESULT/);
-      assert.doesNotMatch(failed.error, /STALE_ELEMENT/);
+          saveResult: true,
+        }),
+      );
+      assert.ok(
+        bulk.dataRef,
+        'serialized injection must preserve full JSON in dataRef',
+      );
+      const bulkRef =
+        typeof bulk.dataRef === 'string' ? bulk.dataRef : bulk.dataRef.id;
+      const bulkTail = ok(
+        await exec.execute({
+          readRef: bulkRef,
+          offset: bulk.totalChars - 300,
+          limit: 300,
+        }),
+      );
+      assert.ok(
+        bulkTail.content.includes('"row":299'),
+        'dataRef must contain rows beyond sanitized preview limit',
+      );
+      const childResult = ok(await exec.execute({
+            code: 'return document.querySelector("input").getAttribute("aria-label");',
+            frameId: 1,
+            strategy: 'scripting',
+            world: 'ISOLATED',
+          }));
+      assert.equal(JSON.parse(childResult.result),'子页面输入');
+      assert.equal(childResult.frameId,1,'child-frame execution preserves routing');
+      const cspError = await exec.execute({
+        code: 'window.cspCount=(window.cspCount||0)+1;throw new Error("Refused to evaluate because unsafe-eval violates Content Security Policy");',
+      });
+      assert.equal(cspError.success, false);
+      assert.equal(
+        await evaluate('window.cspCount'),
+        1,
+        'runtime CSP-looking errors must not replay',
+      );
+      const runtimeError = await exec.execute({
+        code: 'window.errorCount=(window.errorCount||0)+1; throw new Error("Illegal return statement from application");',
+      });
+      assert.equal(runtimeError.success, false);
+      assert.equal(
+        await evaluate('window.errorCount'),
+        1,
+        'runtime errors must not replay',
+      );
+      const originalInject = chrome.scripting.executeScript;
+      chrome.scripting.executeScript = async (options) => {
+        await originalInject(options);
+        return [{ frameId: 0, result: undefined }];
+      };
+      const noResult = await exec.execute({
+        code: 'window.noResultCount=(window.noResultCount||0)+1;return window.noResultCount;',
+      });
+      chrome.scripting.executeScript = originalInject;
+      assert.equal(noResult.success, false);
+      assert.equal(
+        await evaluate('window.noResultCount'),
+        1,
+        'no-result failures must not replay',
+      );
+      // Emulate an injection that runs but loses its return value. Never call
+      // this stale or replay it: the input event may already have taken effect.
+      await evaluate(
+        'window.fillEvents=0;namebox.addEventListener("input",()=>fillEvents++)',
+      );
+      chrome.scripting.executeScript = async (options) => {
+        const rows = await originalInject(options);
+        return options.target.allFrames ? rows : [{ frameId: 0 }];
+      };
+      const noFillResult = await interact.execute({
+        action: 'fill',
+        ...namebox,
+        value: '已生效',
+        description: '验证无结果时不重放输入',
+      });
+      const noFocusResult = await interact.execute({
+        action: 'focus',
+        ...namebox,
+        description: '验证无结果时不误报失效引用',
+      });
+      chrome.scripting.executeScript = originalInject;
+      for (const failed of [noFillResult, noFocusResult]) {
+        assert.equal(failed.success, false);
+        assert.match(failed.error, /INJECTION_NO_RESULT/);
+        assert.doesNotMatch(failed.error, /STALE_ELEMENT/);
+      }
+      assert.equal(
+        await evaluate('fillEvents'),
+        1,
+        'uncertain fill must not replay',
+      );
+      assert.equal(await evaluate('namebox.value'), '已生效');
+      const text = ok(await new driver.GetPageTextTool().execute({}));
+      assert.equal(text.coverage.frames.length, 2);
+      assert.ok(text.textContent.includes('实际浏览器🙂'));
     }
-    assert.equal(await evaluate('fillEvents'), 1, 'uncertain fill must not replay');
-    assert.equal(await evaluate('namebox.value'), '已生效');
-    const text = ok(await new driver.GetPageTextTool().execute({}));
-    assert.equal(text.coverage.frames.length, 2);
-    assert.ok(text.textContent.includes('实际浏览器🙂'));
     console.log(
-      '[text-browser] Range navigation, trusted F2/input/Enter, AX activation, nested XY scrolling, iframe/shadow input, network response capture passed; zero screenshots.'
+      '[text-browser] Native/ARIA semantic controls, idempotence, pointer-down expansion, portal selection, multi-select, date constraints, AX categories, replacement recovery, trusted keys, iframe/shadow and response capture passed; zero screenshots.',
     );
   } finally {
     await driver.cdpSession.detachAll();

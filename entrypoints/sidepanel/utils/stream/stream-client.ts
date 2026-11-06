@@ -99,6 +99,25 @@ export class StreamClient {
     const inputPrefix = providerConfig.provider === 'claude' ? inputReplayPrefix({ ...config }) : undefined;
     let lastError: Error | null = null;
 
+    /**
+     * 4xx 一次性直发重试：网关偶发会把完全合法的请求按 4xx 拒掉（负载均衡
+     * 到坏节点、鉴权服务抖动、上游瞬断等），同一载荷原样再发一次即可分辨
+     * 「偶发」与「确定性失败」。约束（全部为防御性设计）：
+     *   - 每次 chat() 至多一次（clientErrorRetryUsed），绝不无限循环；
+     *   - 请求体零加工（与兼容降级重发不同：不删参数、不裁载荷）；
+     *   - 无退避直发（偶发故障等待无益）；不消耗常规重试配额（attempt 回退）；
+     *   - 发射守卫仍然优先：已流出任何内容（token/推理/工具调用）一律不重试。
+     * 仅对结构化 ApiRequestError 的 4xx 生效（408/429 本就可重试，走常规配额）。
+     */
+    let clientErrorRetryUsed = false;
+    let skipNextBackoff = false;
+    /**
+     * onRetry 的重试序号（1 起）。不用 attempt 下标：4xx 直发重试会回退 attempt
+     *（配额外），下标会与直发重试的序号重复；显式计数在两条路径下都等于
+     * 「这是第几次重试」的真实序数。
+     */
+    let retryOrdinal = 0;
+
     // 流中发射守卫：一旦已向调用方发射过任何内容（token / 推理 / 工具调用），
     // 重试会把同一内容从头再发射一遍——上层（会话引擎的转录累积、UI 流式渲染）
     // 无法去重，会造成正文重复。因此「已发射后失败」一律直接抛出，
@@ -129,6 +148,12 @@ export class StreamClient {
     };
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      // 每轮循环顶部取出并清零直发标志——若只在 attempt>0 分支内消费，
+      // 4xx 直发重试发生在 attempt=0 时标志会残留，泄漏到后续**常规**重试
+      // 并错误跳过其指数退避（E1 400 → 直发 E2 500 → 常规重试 E3 未退避）
+      const immediateRetry = skipNextBackoff;
+      skipNextBackoff = false;
+
       // 检查是否已被取消
       if (options.signal?.aborted) {
         throw new DOMException('Request was aborted', 'AbortError');
@@ -136,6 +161,9 @@ export class StreamClient {
 
       try {
         if (attempt > 0) {
+          if (immediateRetry) {
+            // 4xx 直发重试到达：偶发故障等待无益，立即重发
+          } else {
           // 服务端 Retry-After（429/503 携带）优先于本地退避——服务器比客户端
           // 更清楚何时解除限流；秒数形态才识别，封顶 60s 防异常头挂死重试节奏
           const serverDelayMs = lastError instanceof ApiRequestError ? lastError.retryAfterMs : undefined;
@@ -153,8 +181,9 @@ export class StreamClient {
               ? Math.min(serverDelayMs, 60000)
               : Math.floor(exponentialMs / 2 + Math.random() * (exponentialMs / 2));
           console.warn(`[StreamClient] 第 ${attempt} 次重试，等待 ${delayMs / 1000}s 后重试...`);
-          callbacks.onRetry?.(attempt, delayMs);
+          callbacks.onRetry?.(++retryOrdinal, delayMs);
           await this.sleep(delayMs, options.signal);
+          }
         }
 
         if (attempt === 0) {
@@ -168,6 +197,23 @@ export class StreamClient {
 
         // 不重试的错误类型
         if (this.isNonRetryableError(error)) {
+          // 4xx 一次性同载荷直发重试（防网关偶发；契约见 clientErrorRetryUsed 注释）。
+          // 只认结构化 ApiRequestError：非结构化脏错误不做任何额外请求。
+          if (
+            !clientErrorRetryUsed &&
+            !streamEmitted &&
+            error instanceof ApiRequestError &&
+            typeof error.status === 'number' &&
+            error.status >= 400 &&
+            error.status < 500
+          ) {
+            clientErrorRetryUsed = true;
+            attempt--; // 配额外的专享直发，不消耗常规重试次数
+            skipNextBackoff = true;
+            console.warn(`[StreamClient] 4xx（${error.status}）疑似网关偶发，同一载荷直接重试一次`);
+            callbacks.onRetry?.(++retryOrdinal, 0);
+            continue;
+          }
           console.error(`[StreamClient] 不可重试错误，直接抛出`, error.message);
           throw lastError;
         }
@@ -367,7 +413,9 @@ export class StreamClient {
    * 规则（与 ApiRequestError.isRetryable 同源）：
    *   - 用户主动取消 → 不重试
    *   - 永久性前置错误（协议能力不匹配等确定性失败）→ 不重试
-   *   - 4xx 永久失败（401 密钥失效、403 无权限、404 地址错、400 参数错…）→ 不重试
+   *   - 4xx 永久失败（401 密钥失效、403 无权限、404 地址错、400 参数错…）→
+   *     不进入常规重试（例外：chat() 对结构化 4xx 保留一次同载荷直发重试，
+   *     用于分辨网关偶发拒收，见 clientErrorRetryUsed 注释）
    *   - 408 超时 / 429 限流 / 5xx 服务端错误 / 网络不可达 / 建连超时 → 重试
    *   - 协议异常 / 流内服务端错误 → 重试（可能瞬时恢复；已有内容发射时由
    *     发射守卫兜底不重试）

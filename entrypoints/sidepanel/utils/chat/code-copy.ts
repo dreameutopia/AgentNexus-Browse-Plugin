@@ -35,19 +35,23 @@ function extractCodeText(button: HTMLElement): string {
 /**
  * 从 API 错误卡片中拼装「可直接提交 issue」的错误报告。
  * 卡片 DOM 结构见 markdown-renderer 的 buildApiErrorCard：
- * 头部（title / badge / provider / model）+ 摘要 + 原始响应（pre.api-error-raw）。
+ * 头部（title / badge /「请求模型」浮层）+ 摘要 + 原始响应（pre.api-error-raw）。
  * 环境元信息（扩展版本 / 发生时间）一并携带：定位问题时「哪个版本、何时发生」
  * 与错误本体同等重要；密钥只存在于请求头，原始响应不含凭据，报告可安全外发。
+ *
+ * 协议 / 模型 / 端点不再平铺在顶栏（收进「请求模型」浮层），统一从卡片根节点的
+ * data-* 读取——渲染器与复制委托共用同一份数据源，不会出现「卡片显示的」与
+ * 「报告里写的」不一致。
  */
 function extractApiErrorReport(button: HTMLElement): string {
   const card = button.closest('.api-error-card');
   if (!card) return '';
   const title = card.querySelector('.api-error-title')?.textContent?.trim() ?? '';
   const badge = card.querySelector('.api-error-badge')?.textContent?.trim() ?? '';
-  const provider = card.querySelector('.api-error-provider')?.textContent?.trim() ?? '';
+  const provider = card.getAttribute('data-provider')?.trim() ?? '';
   const model = card.getAttribute('data-model')?.trim() ?? '';
   // 端点（多渠道定位「哪个地址出错」；构造期已脱敏，报告可安全外发）
-  const url = card.querySelector('.api-error-url')?.textContent?.trim() ?? '';
+  const url = card.getAttribute('data-url')?.trim() ?? '';
   const occurredAt = card.getAttribute('data-occurred-at')?.trim() ?? '';
   const summary = card.querySelector('.api-error-summary')?.textContent?.trim() ?? '';
   const raw = card.querySelector('.api-error-raw')?.textContent?.trim() ?? '';

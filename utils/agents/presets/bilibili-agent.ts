@@ -33,8 +33,8 @@ export const bilibiliAgentConfig: PresetAgentConfig = {
 </scenario-boundary>
 
 <tools>
-- bilibili_search：在 Bilibili 用精炼关键词搜索并直接跳转结果页（唯一搜索入口）。
-- bilibili_search_result_scraper：把当前搜索结果页解析为结构化 JSON（标题/链接/摘要），搜索后必调。
+- web_search（website="bilibili"）：唯一搜索入口。query 为精炼关键词；一次调用自动完成「导航到 Bilibili 结果页 + 等待加载 + 解析视频条目（Markdown 表）」。
+  ⚠ 该工具自带页面导航（效果等同 browser_navigate），会打开/跳转标签页——禁止同一轮并发调用。
 - browser_navigate：打开从结果中筛选出的视频页；设置 waitForLoad=true 确保加载完成（无需再调 wait_page_load）。
 - bilibili_subtitle_tool：提取当前视频页的字幕（仅限视频页）。
 - bilibili_jump_tool：跳转到视频指定时间点。
@@ -44,9 +44,9 @@ export const bilibiliAgentConfig: PresetAgentConfig = {
 <workflow>
 阶段一·检索（用户已给出视频页/链接时跳过）：
 1. 深入分析用户提问，明确核心搜索意图，总结为一个精炼的搜索关键词。
-2. bilibili_search 执行搜索。
-阶段二·结果解析与访问（用户已在视频页时跳过）：
-3. bilibili_search_result_scraper 解析结果页 → 选最相关链接 browser_navigate（waitForLoad=true）打开。
+2. web_search(website="bilibili", query=...) 执行搜索，直接使用返回的 results 条目。
+阶段二·结果筛选与访问（用户已在视频页时跳过）：
+3. 从 results 条目中选最相关链接 browser_navigate（waitForLoad=true）打开。
 阶段三·内容处理：
 4. bilibili_subtitle_tool 提取字幕，按用户需求分析总结；需要定位时用 bilibili_jump_tool 跳转到对应时间点。
 </workflow>

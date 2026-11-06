@@ -36,17 +36,50 @@ import 'highlight.js/styles/github.css';
 import { renderFileCards, installFileCardHandler } from './file-card';
 import { installCodeCopyHandler } from './code-copy';
 import { installTableActionHandler } from './table-actions';
+import { installApiErrorModelHandler } from './api-error-model';
+import { installApiErrorRetryHandler } from './api-error-retry';
 import { escapeHtml } from './html-escape';
 import { unescapeXmlText } from '../xml-entities';
 import { buildStatCardBlock } from './stat-card';
-import { RICH_OUTPUT_ECHARTS_LANGS, RICH_OUTPUT_STAT_CARD_LANGS } from './rich-output-prompt';
+import {
+  COMPONENT_FENCE_LANG,
+  findRichComponentByFenceLang,
+  parseRichEnvelope,
+  buildEnvelopeComponentBlock,
+  buildDiffBlock,
+} from './rich-components';
 import { SHORT_ID_PATTERN } from '../../core/images/image-store';
+import { driverRegistry } from '../stream/driver-registry';
+import type { ProviderType } from '../stream/types';
 import { t } from '@/utils/i18n/core';
 
-// 文件下载委托 + 代码复制委托 + 表格工具栏委托（均为幂等安装）；本模块只在 DOM 上下文被使用
+// 文件下载委托 + 代码复制委托 + 表格工具栏委托 + 错误卡片浮层/重试委托（均为幂等安装）；本模块只在 DOM 上下文被使用
 installFileCardHandler();
 installCodeCopyHandler();
 installTableActionHandler();
+installApiErrorModelHandler();
+installApiErrorRetryHandler();
+
+/** 「请求模型」浮层 id 序号（同一页多张错误卡片时保证 id 唯一） */
+let apiErrorModelPanelSeq = 0;
+
+/**
+ * <api-error> 卡片合法分类（发射侧 ApiRequestErrorKind 五类 + 非 ApiRequestError
+ * 的兜底 error，见 utils/stream/errors.ts 的 toApiErrorBlock）。
+ *
+ * kind 会拼进卡片的 class 属性（CSS 按 .kind-* 切换分类配色）——必须白名单
+ * 校验：卡片 XML 会随转录持久化，存储层损坏或被篡改时，任意字符串直接进
+ * class 等于向样式选择器面注入任意 token。未知值一律按 error（中性配色）
+ * 呈现，信息不丢（原始块始终原文保留在卡片/降级 pre 中）。
+ */
+const API_ERROR_KINDS: ReadonlySet<string> = new Set([
+  'http',
+  'timeout',
+  'network',
+  'protocol',
+  'inband',
+  'error',
+]);
 
 // ==================== 通用工具 ====================
 
@@ -288,7 +321,7 @@ export interface RenderOptions {
   enableMarkdown?: boolean;
   enableCodeHighlight?: boolean;
   enableMermaid?: boolean;
-  /** 富内容组件（ECharts 图表 / 统计卡）围栏渲染开关 */
+  /** 富内容组件围栏渲染开关（```component 信封 + legacy 直连名 + diff） */
   enableRichCharts?: boolean;
   codeTheme?: string;
 }
@@ -326,27 +359,45 @@ export class MarkdownRenderer {
       const lang = (token.info || '').trim().split(/\s+/)[0] || '';
       const code = token.content;
 
-      // 图表围栏（Mermaid / PlantUML）→ 统一图表块容器：
-      // 实际 SVG / <img> 由 diagram-renderer.ts 在 v-html 注入后异步渲染（库懒加载），
-      // 源码以转义文本保存在隐藏 <pre> 中，作为「查看源码 / 复制」的唯一事实源
-      if ((lang === 'mermaid' || lang === 'plantuml' || lang === 'puml') && this.mermaidEnabled) {
-        return this.buildDiagramBlock(lang === 'mermaid' ? 'mermaid' : 'plantuml', code);
-      }
-
-      // ── 富内容围栏（ECharts 图表 / 统计卡；契约见 rich-output-prompt.ts）──
-      // 图表：同 Mermaid 的「骨架 + 异步渲染」模式，沙箱 iframe 渲染由
-      // chart-renderer.ts 在 v-html 注入后驱动；统计卡：纯可信 HTML 在渲染期
-      // 同步产出（校验失败回落为普通代码块，源码可见、信息不丢）
-      if (this.richChartsEnabled) {
-        if (RICH_OUTPUT_ECHARTS_LANGS.includes(lang)) {
-          return this.buildChartBlock(code);
-        }
-        if (RICH_OUTPUT_STAT_CARD_LANGS.includes(lang)) {
-          const statHtml = buildStatCardBlock(code);
-          if (statHtml !== null) {
-            return statHtml;
+      // ── 富内容围栏：注册表分发（语言名单单一事实源见 rich-components/registry.ts）──
+      // 三类入口共用此处分发：
+      //   1. ```component 统一信封（type 字段决定组件；chart 走骨架 + 异步派生，
+      //      stat/table/timeline/tree 渲染期同步产出可信 HTML）；
+      //   2. legacy 直连名（echarts / stat-card 等，历史消息兼容）；
+      //   3. 原生 DSL 名（mermaid / plantuml / puml / diff）。
+      // 任何解析 / 校验失败都继续下落为普通代码块：源码可见、信息不丢。
+      if (lang === COMPONENT_FENCE_LANG && this.richChartsEnabled) {
+        const parsed = parseRichEnvelope(code);
+        if (parsed.ok) {
+          if (parsed.envelope.type === 'chart') {
+            // 图表：骨架 + data-chart-input="envelope"，chart-renderer 在
+            // v-html 注入后解析信封 → 派生 option → 净化 → 沙箱渲染
+            return this.buildChartBlock(code, 'envelope');
           }
-          // 校验失败 → 继续走普通代码块渲染（降级展示原始 JSON）
+          const componentHtml = buildEnvelopeComponentBlock(parsed.envelope);
+          if (componentHtml !== null) return componentHtml;
+        }
+        // 信封解析 / 构建失败 → 普通代码块（源码降级展示）
+      } else {
+        const spec = findRichComponentByFenceLang(lang);
+        if (spec?.id === 'diagram' && this.mermaidEnabled) {
+          // 图表围栏（Mermaid / PlantUML）→ 统一图表块容器：
+          // 实际 SVG / <img> 由 diagram-renderer.ts 在 v-html 注入后异步渲染
+          // （库懒加载），源码以转义文本保存在隐藏 <pre> 中
+          return this.buildDiagramBlock(lang === 'mermaid' ? 'mermaid' : 'plantuml', code);
+        }
+        if (spec && this.richChartsEnabled) {
+          if (spec.id === 'chart') {
+            // legacy ```echarts 直连：源码即 option，chart-renderer 直接净化
+            return this.buildChartBlock(code, 'option');
+          }
+          if (spec.id === 'stat') {
+            // legacy ```stat-card 直连：zod 校验 + 可信 HTML（失败回落代码块）
+            const statHtml = buildStatCardBlock(code);
+            if (statHtml !== null) return statHtml;
+          } else if (spec.id === 'diff') {
+            return buildDiffBlock(code);
+          }
         }
       }
 
@@ -598,7 +649,7 @@ export class MarkdownRenderer {
    * ECharts 图表围栏 → 图表块 HTML。DOM 契约（chart-renderer.ts 依赖，
    * 与 diagram-block 同构、类名独立——避免 diagram-renderer 误拾取）：
    *
-   *   <div class="chart-block" data-chart-kind="echarts" data-chart-state="pending">
+   *   <div class="chart-block" data-chart-kind="echarts" data-chart-input="option|envelope" data-chart-state="pending">
    *     <div class="chart-header">
    *       <span class="chart-lang-label">…</span>
    *       <button class="code-copy-btn chart-copy-btn" …>复制</button>   ← 复用代码块复制委托
@@ -608,17 +659,20 @@ export class MarkdownRenderer {
    *     <pre class="chart-source"><code>转义源码</code></pre>  ← 默认隐藏，切换/复制的事实源
    *   </div>
    *
-   * 源码只以转义文本形态存在；.chart-body 初始内容为无害占位文本，
-   * 真正的图表产物由沙箱页内 ECharts 渲染（见 chart-renderer.ts 安全模型）。
+   * data-chart-input 决定 chart-renderer 的处理路径：option = legacy 直连
+   * （源码即 option，直接净化）；envelope = 统一信封（源码是列式数据，
+   * 先信封解析 → derive-chart 派生 option → 再净化）。源码只以转义文本
+   * 形态存在；.chart-body 初始内容为无害占位文本，真正的图表产物由沙箱页
+   * 内 ECharts 渲染（见 chart-renderer.ts 安全模型）。
    */
-  private buildChartBlock(code: string): string {
+  private buildChartBlock(code: string, input: 'option' | 'envelope'): string {
     const label = t('sidepanel.chat.chartEchartsLabel');
     const copyLabel = t('sidepanel.chat.copyLabel');
     const copiedLabel = t('sidepanel.chat.copiedLabel');
     const viewSourceLabel = t('sidepanel.chat.chartViewSource');
     const viewChartLabel = t('sidepanel.chat.chartViewChart');
     return (
-      `<div class="chart-block" data-chart-kind="echarts" data-chart-state="pending">` +
+      `<div class="chart-block" data-chart-kind="echarts" data-chart-input="${input}" data-chart-state="pending">` +
       `<div class="chart-header">` +
       `<span class="chart-lang-label">${escapeHtml(label)}</span>` +
       `<button type="button" class="code-copy-btn chart-copy-btn"` +
@@ -679,7 +733,7 @@ export class MarkdownRenderer {
    *     <raw>完整原始响应</raw>
    *   </api-error>
    * 所有展示文本一律 HTML 转义；解析失败的块降级为 <pre> 展示原文（信息不丢）。
-   * model / occurred-at 同时以 data-* 暴露给复制委托，拼装「可直接提交 issue」的报告。
+   * provider / model / url / occurred-at 同时以 data-* 暴露给复制委托，拼装「可直接提交 issue」的报告。
    */
   private buildApiErrorCard(block: string): string {
     try {
@@ -695,7 +749,9 @@ export class MarkdownRenderer {
       const summaryMatch = block.match(/<summary>([\s\S]*?)<\/summary>/);
       const rawMatch = block.match(/<raw>([\s\S]*?)<\/raw>/);
 
-      const kind = attrs['kind'] || 'error';
+      // 白名单校验（API_ERROR_KINDS）：未知 kind 一律按 error，class 只含受信枚举
+      const rawKind = attrs['kind'] || 'error';
+      const kind = API_ERROR_KINDS.has(rawKind) ? rawKind : 'error';
       const title = attrs['title'] || (attrs['status'] ? `HTTP ${attrs['status']}` : '');
       const label = attrs['label'] || '';
       const summary = summaryMatch ? unescapeXmlText(summaryMatch[1]).trim() : '';
@@ -707,30 +763,42 @@ export class MarkdownRenderer {
 
       // 环境元信息以 data-* 暴露给复制委托（code-copy.ts 拼装 issue 报告用）
       const parts: string[] = [
-        `<div class="api-error-card kind-${escapeHtml(kind)}"` +
+        `<div class="api-error-card kind-${kind}"` +
+          ` data-provider="${escapeHtml(provider)}"` +
           ` data-model="${escapeHtml(model)}"` +
+          ` data-url="${escapeHtml(url)}"` +
           ` data-occurred-at="${escapeHtml(occurredAt)}">`,
       ];
       parts.push('<div class="api-error-head">');
       parts.push('<span class="api-error-icon" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12,2L1,21H23M12,6L19.53,19H4.47M11,10V14H13V10M11,16V18H13V16" fill="currentColor"/></svg></span>');
       if (title) parts.push(`<span class="api-error-title">${escapeHtml(title)}</span>`);
       if (label) parts.push(`<span class="api-error-badge">${escapeHtml(label)}</span>`);
-      if (provider) parts.push(`<span class="api-error-provider">${escapeHtml(provider)}</span>`);
-      if (model) parts.push(`<span class="api-error-provider">${escapeHtml(model)}</span>`);
-      // 端点定位（多渠道场景「哪个地址出错」）；构造期已脱敏，密钥不会展示
-      if (url) {
-        parts.push(
-          `<span class="api-error-provider api-error-url" title="${escapeHtml(url)}">${escapeHtml(url)}</span>`,
-        );
-      }
+      // 协议 / 模型 / 端点收进「请求模型」浮层卡：顶栏只留状态与操作，
+      // 长 URL 不再把徽章与操作按钮挤到换行
+      const hasRequestModel = Boolean(provider || model || url);
+      const requestModelBlock = hasRequestModel
+        ? this.buildRequestModelBlock(provider, model, url)
+        : '';
       // 一键复制结构化错误报告（分类/状态/摘要/原始响应 + 环境元信息）——
       // 反馈与提交 issue 即拷即用；走 document 级委托（见 code-copy.ts），符合扩展 CSP（无内联脚本）
       const copyLabel = t('sidepanel.chat.copyErrorLabel');
       const copiedLabel = t('sidepanel.chat.copiedLabel');
-      parts.push(
+      const copyButton =
         `<button type="button" class="api-error-copy-btn"` +
         ` data-copy-idle-label="${escapeHtml(copyLabel)}"` +
-        ` data-copy-done-label="${escapeHtml(copiedLabel)}">${escapeHtml(copyLabel)}</button>`,
+        ` data-copy-done-label="${escapeHtml(copiedLabel)}">${escapeHtml(copyLabel)}</button>`;
+      // 重试（主操作）：重新发起请求以继续会话；语义与守卫在应用层回调
+      // （App.vue 的 retryFromErrorCard，委托见 api-error-retry.ts）——渲染层只发按钮
+      const retryLabel = t('sidepanel.chat.apiErrorRetry');
+      const retryTitle = t('sidepanel.chat.apiErrorRetryTitle');
+      const retryButton =
+        `<button type="button" class="api-error-retry-btn" title="${escapeHtml(retryTitle)}"` +
+        ` aria-label="${escapeHtml(retryTitle)}">` +
+        `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>` +
+        `<span>${escapeHtml(retryLabel)}</span></button>`;
+      // 操作按钮成组：窄侧边栏里顶栏放不下时整组换行，不会把状态标题挤没
+      parts.push(
+        `<span class="api-error-actions">${requestModelBlock}${retryButton}${copyButton}</span>`,
       );
       parts.push('</div>');
       if (summary) parts.push(`<div class="api-error-summary">${escapeHtml(summary)}</div>`);
@@ -739,8 +807,75 @@ export class MarkdownRenderer {
       return parts.join('');
     } catch (error) {
       console.warn('[MarkdownRenderer] api-error 卡片解析失败，降级为原文展示:', error);
-      return `<pre class="api-error-raw">${escapeHtml(block)}</pre>`;
+      // 专用兜底样式（.api-error-fallback）：不能复用 .api-error-raw——后者依赖
+      // 卡片根节点上的 --ae-* 分类配色变量，脱离卡片容器时同类声明会被静默丢弃
+      return `<pre class="api-error-fallback">${escapeHtml(block)}</pre>`;
     }
+  }
+
+  /**
+   * 「请求模型」按钮 + 浮层卡（协议 / 模型 / 端点）。
+   *
+   * 这三项原先平铺在卡片顶栏右侧：长端点 URL 会把顶栏撑开、把状态徽章与
+   * 操作按钮挤到换行，窄侧边栏里尤其明显。现改为单个按钮点开浮层卡，
+   * 顶栏只保留状态与操作，定位信息按需展开。
+   *
+   * 协议展示名走驱动注册表（OpenAI / Ollama / …），未注册协议原样展示协议 id；
+   * 协议 id 与展示名不同时并列展示，排查时既能看协议族也能看原始标识。
+   *
+   * 浮层内容全部来自已转义的结构化属性（provider / model / url），本模块不注入
+   * 任何动态 HTML；显隐由 api-error-model.ts 的 document 级委托负责。
+   */
+  private buildRequestModelBlock(provider: string, model: string, url: string): string {
+    const panelId = `api-error-model-panel-${++apiErrorModelPanelSeq}`;
+    const protocolLabel = provider
+      ? driverRegistry.tryGet(provider as ProviderType)?.meta.label || provider
+      : '';
+    // 展示名与协议 id 仅大小写不同时（如 Ollama / ollama）不必并列，重复信息反而杂乱
+    const showRawProtocol =
+      Boolean(protocolLabel) && protocolLabel.toLowerCase() !== provider.toLowerCase();
+
+    // 行构造器：key 走 i18n 键值；valueHtml 为已转义的值 HTML（协议行可带
+    // 并列 id 后缀，故收 HTML 而非纯文本），mono 控制是否用等宽字体
+    const row = (key: string, valueHtml: string, mono: boolean): string =>
+      `<div class="api-error-model-row">` +
+      `<dt class="api-error-model-key">${escapeHtml(key)}</dt>` +
+      `<dd class="api-error-model-val${mono ? ' api-error-model-mono' : ''}">${valueHtml}</dd>` +
+      `</div>`;
+
+    const rows: string[] = [];
+    if (protocolLabel) {
+      rows.push(
+        row(
+          t('sidepanel.chat.apiErrorModelProtocol'),
+          escapeHtml(protocolLabel) +
+            (showRawProtocol ? `<span class="api-error-model-id">${escapeHtml(provider)}</span>` : ''),
+          false,
+        ),
+      );
+    }
+    if (model) {
+      rows.push(row(t('sidepanel.chat.apiErrorModelModel'), escapeHtml(model), true));
+    }
+    if (url) {
+      // 端点定位（多渠道场景「哪个地址出错」）；构造期已脱敏，密钥不会展示
+      rows.push(row(t('sidepanel.chat.apiErrorModelUrl'), escapeHtml(url), true));
+    }
+
+    return (
+      `<span class="api-error-model">` +
+      `<button type="button" class="api-error-model-btn" aria-expanded="false"` +
+      ` aria-controls="${escapeHtml(panelId)}">` +
+      `<svg class="api-error-model-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>` +
+      `<span class="api-error-model-btn-text">${escapeHtml(t('sidepanel.chat.apiErrorModelButton'))}</span>` +
+      `<svg class="api-error-model-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>` +
+      `</button>` +
+      `<div class="api-error-model-panel" id="${escapeHtml(panelId)}" role="group"` +
+      ` aria-label="${escapeHtml(t('sidepanel.chat.apiErrorModelTitle'))}" hidden>` +
+      `<div class="api-error-model-panel-title">${escapeHtml(t('sidepanel.chat.apiErrorModelTitle'))}</div>` +
+      `<dl class="api-error-model-list">${rows.join('')}</dl>` +
+      `</div></span>`
+    );
   }
 }
 

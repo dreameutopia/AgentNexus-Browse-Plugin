@@ -177,9 +177,20 @@ function ensureSession(chatId: string): PlanSession {
   return session;
 }
 
-/** 步骤数组归一化：非字符串/空白剔除、clamp、精确文本去重保序；返回 [items, droppedCount] */
-function normalizeSteps(steps: readonly unknown[], limit: number): [PlanItem[], number] {
-  const seen = new Set<string>();
+/**
+ * 步骤数组归一化：非字符串/空白剔除、clamp、精确文本去重保序；返回 [items, droppedCount]
+ *
+ * `existingTexts` 是计划中**已有**的步骤文本：追加时一并参与去重。
+ * 只有批内去重是不够的——模型在追加时常常重述已有的步骤（「再检索平台A」），
+ * 不去重就会让计划里出现两条一模一样的步骤，进度统计与完成判定都被污染。
+ * create 是整体替换，不传该集合（替换后不存在「已有」概念）。
+ */
+function normalizeSteps(
+  steps: readonly unknown[],
+  limit: number,
+  existingTexts?: ReadonlySet<string>,
+): [PlanItem[], number] {
+  const seen = new Set<string>(existingTexts ?? []);
   const items: PlanItem[] = [];
   let dropped = 0;
   for (const raw of steps) {
@@ -246,8 +257,13 @@ export function addPlanItems(
 ): { items: PlanItem[]; created: boolean; droppedCount: number } {
   const existing = sessions.get(chatId);
   const remaining = PLAN_MAX_ITEMS - (existing?.items.length ?? 0);
-  // normalizeSteps 的 dropped 已含全部未接受原因（上限截断 / 非法 / 重复）
-  const [normalized, dropped] = normalizeSteps(steps, Math.max(remaining, 0));
+  // normalizeSteps 的 dropped 已含全部未接受原因（上限截断 / 非法 / 重复）；
+  // 重复含「与计划中已有步骤重述」——追加不产生两条一样的步骤。
+  const [normalized, dropped] = normalizeSteps(
+    steps,
+    Math.max(remaining, 0),
+    existing ? new Set(existing.items.map(item => item.step)) : undefined,
+  );
   if (normalized.length === 0) {
     // 早退：不创建空会话；created 语义 = 「若可写入是否会是新建」，供提示文案选择
     return { items: [], created: !existing, droppedCount: dropped };
@@ -594,10 +610,14 @@ function deserializePlan(chatId: string, raw: unknown): PlanSession | null {
  * chrome.storage 权威源对账（App 挂载时 await 一次）。
  * LWW 合并：内存已有且更新的会话不受影响；外部较新的采纳并通知 UI
  * （覆盖「恢复完成晚于活跃会话打开」的时序窗口）。
+ *
+ * @returns 是否真的从权威源恢复到了内容。false 有两种情形：「storage 不可用 /
+ *          读取失败」与「storage 里还没有该键」——调用方据此决定要不要重试
+ *          （见 ensurePlansHydrated）。
  */
-export async function restorePlansFromStorage(): Promise<void> {
+export async function restorePlansFromStorage(): Promise<boolean> {
   try {
-    if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
+    if (typeof chrome === 'undefined' || !chrome.storage?.local) return false;
     const result = await chrome.storage.local.get(PLAN_STORAGE_KEY);
     const stored = result?.[PLAN_STORAGE_KEY];
     if (stored && typeof stored === 'object') {
@@ -606,9 +626,12 @@ export async function restorePlansFromStorage(): Promise<void> {
         console.log(`[PlanStore] 从 chrome.storage 恢复 ${affected.length} 个会话的计划`);
         for (const chatId of affected) notify(chatId, sessions.get(chatId) ?? null);
       }
+      return true;
     }
+    return false;
   } catch (error) {
     console.warn('[PlanStore] chrome.storage 恢复计划失败:', error);
+    return false;
   }
 }
 
@@ -619,12 +642,26 @@ export async function restorePlansFromStorage(): Promise<void> {
  * 而 worker 无 localStorage（模块加载时的同步恢复读不到缓存），跨上下文订阅
  * 又只能收到「之后的写入」——不先水合，worker 重启后的首轮会把既有计划误判
  * 为「不存在」（add 的自动建立分支会整体覆盖旧计划，edit 报目标不存在）。
- * 会话引擎在每次运行准备阶段调用；首次调用后复用同一 Promise，不重复读
+ * 会话引擎在每次运行准备阶段调用；恢复成功后复用同一 Promise，不重复读
  * storage。sidepanel App 挂载时的 restorePlansFromStorage 直调不受影响。
+ *
+ * **读不到就不锁死**：storage 不可用 / 尚无该键 / 读取出错时都**不**锁定幂等
+ * 状态，后续调用会重新尝试。worker 冷启动那一刻 storage 里可能还没有任何计划
+ * （别的上下文尚未写回），此时若把「一次性」锁死，本 worker 整个生命周期都读不到
+ * 既有计划——正是本函数要防的问题。
  */
 let planHydrationPromise: Promise<void> | null = null;
 export function ensurePlansHydrated(): Promise<void> {
-  planHydrationPromise ??= restorePlansFromStorage();
+  if (!planHydrationPromise) {
+    planHydrationPromise = restorePlansFromStorage()
+      .then(restored => {
+        // 未从权威源恢复出任何会话 → 不锁定幂等，允许后续重试
+        if (!restored) planHydrationPromise = null;
+      })
+      .catch(() => {
+        planHydrationPromise = null;
+      });
+  }
   return planHydrationPromise;
 }
 

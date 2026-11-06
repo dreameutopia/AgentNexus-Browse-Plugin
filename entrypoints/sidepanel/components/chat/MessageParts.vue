@@ -1,7 +1,7 @@
 <template>
   <template v-for="entry in renderEntries" :key="entry.kind === 'cluster-bar' ? entry.key : entry.item.index">
-    <!-- ════ 直播态「连续过程小折叠」条：连续工具调用 / 工具+思考 / 截图
-         达到阈值后收拢为一条摘要（最新活动保留在条外，见 part-grouping）════ -->
+    <!-- ════ 「连续过程小折叠」条：连续的工具调用 / 思考 / 截图收拢为
+         一条摘要；正文文本与 notice 恒可见并隔离簇，见 part-grouping ════ -->
     <button
       v-if="entry.kind === 'cluster-bar'"
       type="button"
@@ -104,11 +104,11 @@
  *     推理折叠定位到错误片段；本组件统一携带原始索引，回传时不再错位。
  *   - 供 ChatMessageList 在两种形态下复用：直播态全量渲染；结束态按
  *     「过程前奏（可折叠）/ 末段正文 / 尾部」分组渲染。
- *   - 直播态启用「连续过程小折叠」（buildLivePartSegments）：连续的工具
- *     调用 / 推理 / 截图达到阈值后收拢为一条摘要条，最新活动保留可见——
- *     长任务直播不再无限拉长过程行（对标 Claude Code / Codex / Copilot 的
- *     直播收拢约定）。结束态（streaming=false）不启用：过程内容已整体收入
- *     前奏折叠条，展开前奏后应看到完整平铺的时间线，不再嵌套折叠。
+ *   - 连续过程小折叠（buildLivePartSegments）在直播态与结束态同一规则：
+ *     连续的工具调用 / 思考 / 截图收拢为一条摘要条，最新活动保留可见——
+ *     长任务直播不再无限拉长过程行，展开前奏折叠后内部的小折叠同样生效
+ *     （对标 Claude Code / Codex / Copilot 的收拢约定）。正文文本是正式
+ *     输出，恒可见并作为簇间隔离——出现非思考输出时连续即被隔断。
  *   - streaming 透传给文本片段：直播中的片段按节流间隔渲染 Markdown，
  *     已结束片段直接渲染（见 MarkdownText）。
  *   - notice 片段以独立系统信息条呈现（与工具行同风格的轻量容器），
@@ -132,7 +132,7 @@ const props = withDefaults(
   defineProps<{
     parts: IndexedMessagePart[];
     messageId: string;
-    /** 本组片段是否处于直播流（文本片段开启节流渲染；过程簇启用小折叠） */
+    /** 本组片段是否处于直播流（文本片段开启节流渲染） */
     streaming?: boolean;
   }>(),
   { streaming: false },
@@ -144,14 +144,13 @@ const emit = defineEmits<{
 }>();
 
 /**
- * 渲染项序列：直播时把连续过程片段收拢为小折叠条，否则原样逐项输出。
- * 输入形态防御：parts 非数组（调用方契约被破坏 / 未来误用）时收敛为空序列，
- * 宁可本组片段不渲染也不能让 computed 抛错拖垮整个消息列表的渲染。
+ * 渲染项序列：连续的工具调用 / 思考 / 截图收拢为小折叠条；正文文本与
+ * notice 恒可见并隔离簇。直播与结束态（含展开的前奏折叠内部）同一规则。
+ * 输入形态防御：parts 非数组（调用方契约被破坏 / 未来误用）时收敛为空
+ * 序列，宁可本组片段不渲染也不能让 computed 抛错拖垮整个消息列表。
  */
 const renderEntries = computed<LiveRenderEntry[]>(() =>
-  buildLivePartSegments(Array.isArray(props.parts) ? props.parts : [], {
-    collapse: props.streaming === true,
-  }),
+  buildLivePartSegments(Array.isArray(props.parts) ? props.parts : []),
 );
 
 /**

@@ -29,6 +29,7 @@ import {
 } from '../stream';
 import { openaiToolsConverter } from '../tools/openai-tools-converter';
 import { OpenAITool } from '@/common/openai-types';
+import { normalizeWireToolArguments } from '../stream/adapters/unified-normalize';
 // 注意：本模块不静态引入 ../chat/markdown-renderer —— 它是纯传输层，
 // 被 background 的工具链（tools/automation 等）引用；而 markdown-renderer
 // 连带 katex + highlight.js 整套渲染栈，一旦静态引入会被打进 Service Worker
@@ -129,6 +130,29 @@ function buildRequestContext(options: ChatRequestOptions): RequestContext {
   };
 }
 
+/**
+ * 发送侧最后一道工具参数归一：任何来源（执行侧宽容解析后回放的原始脏串、
+ * 旧转录重放、非引擎调用方自建的消息）的 tool_calls.arguments 上线前都归一为
+ * strict 可解析形态（契约见 normalizeWireToolArguments）。
+ *
+ * 非破坏性（map 新对象、未变化的调用原样透传）：调用方历史/前缀守卫的
+ * 逐字比对不受发送侧归一影响；对合法 JSON 字节不变，不伤提供商前缀缓存。
+ */
+function normalizeMessagesForWire(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map(message => {
+    if (!Array.isArray(message.tool_calls)) return message;
+    return {
+      ...message,
+      tool_calls: message.tool_calls.map(call => {
+        const fn = call?.function;
+        if (!fn || typeof fn.arguments !== 'string') return call;
+        const normalized = normalizeWireToolArguments(fn.arguments);
+        return normalized === fn.arguments ? call : { ...call, function: { ...fn, arguments: normalized } };
+      }),
+    };
+  });
+}
+
 export class AiChatApi {
   /**
    * 统一发送核心（sendStreamMessage / sendVisionMessage 唯一实现）。
@@ -151,7 +175,9 @@ export class AiChatApi {
     options: ChatRequestOptions,
   ): Promise<{ finalMessage: ChatMessage; finishReason: string | null }> {
     const ctx = buildRequestContext(options);
-    const wire = wireNames(ctx.tools, messages);
+    // 发送侧最后一道归一：tool_calls.arguments 恒为 strict 可解析字符串，
+    // 防止宽容解析后的原始脏串被 strict 校验网关整单拒收（400）
+    const wire = wireNames(ctx.tools, normalizeMessagesForWire(messages));
     const startTime = Date.now();
 
     console.log(`[AiChatApi] ${label} 开始`, {

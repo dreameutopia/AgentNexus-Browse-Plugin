@@ -64,20 +64,19 @@ registerAllTools()                      (tools/index.ts)
   与磁盘目录不必一一对应（如 `browser_interact` 属 `browser`、`python_run` 属 `code`）；
   文档表格按运行期分类记录，由测试强制对齐。
 
-## 三、分类清单（截至本次核对，共 104 个）
+## 三、分类清单（截至本次核对，共 79 个）
 
 | 分类 | 数量 | 工具名 |
 | --- | --- | --- |
-| analyse | 10 | `baidu_result_scraper`、`bilibili_search_result_scraper`、`bing_result_scraper`、`cnki_result_scraper`、`csdn_result_scraper`、`getPageMarkdown`、`github_result_scraper`、`mooc_result_scraper`、`xiaohongshu_result_scraper`、`zhihu_result_scraper` |
+| analyse | 1 | `getPageMarkdown` |
 | automation | 9 | `ai_action`、`ai_locate`、`check_restricted_url`、`extract_data`、`file_upload_getter`、`file_uploader`、`formFiller`、`get_downloads_status`、`xiaozhi_config` |
 | base | 3 | `page-source`、`task-result`、`task-submit` |
 | bilibili | 2 | `bilibili_jump_tool`、`bilibili_subtitle_tool` |
-| browser | 28 | `browser_bookmark_create`、`browser_bookmark_delete`、`browser_clean_page`、`browser_close_tab`、`browser_close_tabs`、`browser_console`、`browser_create_tab`、`browser_extract_data`、`browser_get_all_tabs`、`browser_get_page_html`、`browser_get_page_info`、`browser_get_page_text`、`browser_go_back_or_forward`、`browser_interact`、`browser_navigate`、`browser_network_capture`、`browser_network_request`、`browser_observe`、`browser_page_exec`、`browser_scroll`、`browser_search_bookmarks`、`browser_search_history`、`browser_send_command_to_inject_script`、`browser_switch_tab`、`browser_vector_search`、`browser_wait_for_element`、`browser_web_fetcher`、`browser_window` |
+| browser | 29 | `browser_bookmark_create`、`browser_bookmark_delete`、`browser_clean_page`、`browser_close_tab`、`browser_close_tabs`、`browser_console`、`browser_create_tab`、`browser_dom_explore`、`browser_extract_data`、`browser_get_all_tabs`、`browser_get_page_html`、`browser_get_page_info`、`browser_get_page_text`、`browser_go_back_or_forward`、`browser_interact`、`browser_navigate`、`browser_network_capture`、`browser_network_request`、`browser_observe`、`browser_page_exec`、`browser_scroll`、`browser_search_bookmarks`、`browser_search_history`、`browser_send_command_to_inject_script`、`browser_switch_tab`、`browser_vector_search`、`browser_wait_for_element`、`browser_web_fetcher`、`browser_window` |
 | code | 2 | `mermaid_renderer`、`python_run` |
 | common | 2 | `generic_wait`、`wait_page_load` |
 | data | 1 | `data_ref_tool` |
 | excalidraw | 3 | `draw_on_canvas`、`excalidraw_tool`、`setup_excalidraw_canvas` |
-| integrated-search | 9 | `baidu_integrated_search`、`bilibili_integrated_search`、`bing_integrated_search`、`cnki_integrated_search`、`csdn_integrated_search`、`github_integrated_search`、`mooc_integrated_search`、`xiaohongshu_integrated_search`、`zhihu_integrated_search` |
 | interact | 1 | `interact` |
 | learn | 2 | `submit_skill`、`submit_validation` |
 | navigation | 3 | `bookmark_navigation`、`history_navigation`、`quick_navigation` |
@@ -85,7 +84,7 @@ registerAllTools()                      (tools/index.ts)
 | office | 1 | `xlsx_tool` |
 | plan | 1 | `plan_tool` |
 | resource | 7 | `clear_captured_files`、`get_captured_file_by_id`、`list_captured_files`、`resource_downloader`、`resource_sniffer`、`start_download_interception`、`stop_download_interception` |
-| search | 9 | `baidu_search`、`bilibili_search`、`bing_search`、`cnki_search`、`csdn_search`、`github_search`、`mooc_search`、`xiaohongshu_search`、`zhihu_search` |
+| search | 1 | `web_search` |
 | skill | 2 | `load_skill`、`read_skill_file` |
 | text-processing | 1 | `semantic_compressor` |
 | vision | 7 | `ocr`、`screenshot`、`vision_gui`、`vision_read`、`vision_read_scroll`、`vision_read_wait`、`vision_read_zoom` |

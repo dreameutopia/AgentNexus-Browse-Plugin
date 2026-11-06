@@ -51,3 +51,13 @@ const limits = spawnSync(process.execPath, [path.resolve('tests/chat-ui/learn-li
 assert.equal(limits.status, 0, 'Learning/validation budget choices regression');
 const handoff = spawnSync(process.execPath, [path.resolve('tests/chat-ui/learn-handoff.test.mjs')], { stdio: 'inherit' });
 assert.equal(handoff.status, 0, 'Learning result durable handoff regression');
+const recovery = spawnSync(process.execPath, [path.resolve('tests/chat-ui/learn-recovery.test.mjs')], { stdio: 'inherit' });
+assert.equal(recovery.status, 0, 'Learning result receipt sync and persistent dismissal regression');
+const scroll = spawnSync(process.execPath, [path.resolve('tests/chat-ui/scroll-follow.test.mjs')], { stdio: 'inherit' });
+assert.equal(scroll.status, 0, 'Scroll follow regression');
+const apiErrorCard = spawnSync(process.execPath, [path.resolve('tests/chat-ui/api-error-card.test.mjs')], { stdio: 'inherit' });
+assert.equal(apiErrorCard.status, 0, 'API error card request-model panel regression');
+const richComponents = spawnSync(process.execPath, [path.resolve('tests/chat-ui/rich-components.test.mjs')], { stdio: 'inherit' });
+assert.equal(richComponents.status, 0, 'Rich components (envelope/registry/derivation/blocks) regression');
+const streamingMarkdown = spawnSync(process.execPath, [path.resolve('tests/chat-ui/streaming-markdown.test.mjs')], { stdio: 'inherit' });
+assert.equal(streamingMarkdown.status, 0, 'Streaming incremental freeze (boundary + MarkdownText host) regression');

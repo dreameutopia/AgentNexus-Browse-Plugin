@@ -533,6 +533,12 @@ body {
   transform: scale(0.9);
 }
 
+/* 危险操作变体（删除文件等）：悬停红，与 .hub-op-danger 同语义 */
+.hub-icon-btn--danger:hover {
+  color: var(--error-color, #ef4444);
+  background: rgba(239, 68, 68, 0.1);
+}
+
 .hub-icon-btn svg {
   width: 14px;
   height: 14px;
@@ -577,13 +583,13 @@ body {
 
 /* 技能编辑器双模式各自的列宽：
    简单模式左窄右宽（元信息表单 / 大段提示词正文）；
-   高级模式左宽右窄（SKILL.md 原文 / 实时校验 + 资源文件面板） */
+   高级模式左树右码（文件树固定起步宽 / 编辑器吃满余宽，VS Code 式比例） */
 .hub-editor-split--skill-simple {
   grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
 }
 
 .hub-editor-split--skill-advanced {
-  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  grid-template-columns: minmax(232px, 3fr) minmax(0, 10fr);
 }
 
 .hub-editor-col {
@@ -618,12 +624,21 @@ body {
   min-height: 220px;
 }
 
-/* 窄窗口（或浏览器侧栏拖窄）时回退为单列堆叠 */
+/* 窄窗口（或浏览器侧栏拖窄）时回退为单列堆叠；文件树随之限高，避免树把编辑器推出视口 */
 @media (max-width: 860px) {
   .hub-editor-split,
   .hub-editor-split--skill-simple,
   .hub-editor-split--skill-advanced {
     grid-template-columns: 1fr;
+  }
+
+  .hub-tree {
+    min-height: 0;
+    max-height: 260px;
+  }
+
+  .hub-code {
+    min-height: 360px;
   }
 }
 
@@ -1327,14 +1342,6 @@ body {
   margin-top: 2.5px;
 }
 
-/* 高级模式原文编辑器（更高行距 + 等宽，区别于简单模式正文） */
-.hub-raw-editor {
-  line-height: 1.65;
-  white-space: pre;
-  overflow-x: auto;
-  min-height: 320px;
-}
-
 /* ==================== 资源文件管理（文件夹式技能） ==================== */
 
 /* 简单模式下的资源文件提示横幅（信息级，非错误） */
@@ -1365,82 +1372,314 @@ body {
   gap: 6px;
 }
 
-/* 资源文件列表（高级模式）：玻璃卡内分行 */
-.hub-resource-list {
+/* ==================== 技能高级模式：VS Code 式文件树 + 编辑器 ==================== */
+
+/* 左：文件树（强化玻璃面，独立滚动；--depth 变量驱动行缩进） */
+.hub-tree {
   display: flex;
   flex-direction: column;
-  border: 1px solid rgba(41 40 36 / 8%);
-  border-radius: 12px;
+  min-width: 0;
+  min-height: 460px;
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+  background: var(--glass-tint-strong);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-inset), var(--glass-shadow);
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.5);
+  animation: hubPanelIn 0.3s var(--ease-out) both;
 }
 
-.hub-resource-item {
+.hub-tree-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(41 40 36 / 7%);
+}
+
+.hub-tree-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-primary, #292824);
+}
+
+.hub-tree-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-secondary, #787671);
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(41 40 36 / 6%);
+}
+
+.hub-tree-add {
+  margin-left: auto;
+}
+
+.hub-tree-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* 树行通用：透明行按钮 + 悬停浮起 / 选中品牌条 */
+.hub-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  border: none;
+  background: none;
+  border-radius: 8px;
+  padding: 5px 8px;
+  padding-left: calc(8px + var(--depth, 0) * 16px);
+  font-size: 12.5px;
+  font-family: inherit;
+  color: var(--ink-secondary, #787671);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.16s var(--ease-out), color 0.16s var(--ease-out);
+}
+
+.hub-tree-row:hover {
+  background: rgba(41 40 36 / 5%);
+  color: var(--ink-primary, #292824);
+}
+
+.hub-tree-row.is-active {
+  background: rgba(102, 126, 234, 0.13);
+  color: var(--ink-primary, #292824);
+  box-shadow: inset 2.5px 0 0 var(--primary-color, #667eea);
+}
+
+.hub-tree-row.is-entry {
+  color: var(--ink-primary, #292824);
+  font-weight: 600;
+}
+
+.hub-tree-row.is-entry .hub-tree-file-icon {
+  color: var(--primary-color, #667eea);
+}
+
+.hub-tree-row.is-folder {
+  font-weight: 600;
+  color: var(--ink-primary, #292824);
+}
+
+.hub-tree-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.is-file .hub-tree-name {
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
   font-size: 12px;
-  transition: background 0.15s ease;
 }
 
-.hub-resource-item + .hub-resource-item {
-  border-top: 1px solid rgba(41 40 36 / 6%);
+.hub-tree-file-icon {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--ink-muted, #9b9790);
 }
 
-.hub-resource-item:hover {
-  background: rgba(255, 255, 255, 0.6);
+.hub-tree-row.is-active .hub-tree-file-icon {
+  color: var(--primary-color, #667eea);
 }
 
-.hub-resource-item.is-active {
-  background: rgba(102, 126, 234, 0.1);
+/* 目录折叠箭头（展开旋转 90°，弹性缓动） */
+.hub-tree-chevron {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  color: var(--ink-muted, #9b9790);
+  transition: transform 0.18s var(--ease-spring);
 }
 
-/* 路径即按钮：点击进入编辑 */
-.hub-resource-path {
+.hub-tree-chevron:not(.is-collapsed) {
+  transform: rotate(90deg);
+}
+
+/* 脏标记圆点：内容与持久层不一致的文件（VS Code 未保存提示的等价物） */
+.hub-tree-dirty {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--primary-color, #667eea);
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.14);
+}
+
+.hub-tree-badge {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--primary-color, #667eea);
+  background: rgba(102, 126, 234, 0.12);
+  border: 1px solid rgba(102, 126, 234, 0.25);
+}
+
+/* 文件行容器：行 + 行尾悬停操作（重命名 / 删除） */
+.hub-tree-branch {
+  position: relative;
+  display: flex;
+}
+
+.hub-tree-branch .hub-tree-row {
+  padding-right: 58px;
+}
+
+.hub-tree-ops {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s var(--ease-out);
+}
+
+.hub-tree-branch:hover .hub-tree-ops,
+.hub-tree-branch:focus-within .hub-tree-ops {
+  opacity: 1;
+}
+
+.hub-tree-ops .hub-icon-btn {
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 1px 4px rgb(41 40 36 / 10%);
+}
+
+/* 新建 / 重命名输入行（就地内联，Enter 确认 / Esc 取消） */
+.hub-tree-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px calc(6px + var(--depth, 0) * 16px);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(102, 126, 234, 0.38);
+  box-shadow: var(--ring-primary);
+  animation: hubPanelIn 0.22s var(--ease-out) both;
+}
+
+.hub-tree-input-row input {
   flex: 1;
   min-width: 0;
   border: none;
   background: none;
-  padding: 2px 4px;
-  text-align: left;
-  color: var(--ink-primary, #292824);
+  outline: none;
   font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
   font-size: 12px;
-  cursor: pointer;
+  color: var(--ink-primary, #292824);
+  padding: 3px 2px;
+}
+
+.hub-tree-error {
+  margin: 6px 4px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--error-color, #ef4444);
+}
+
+.hub-tree-empty {
+  margin: 10px 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-muted, #9b9790);
+}
+
+/* 右：当前文件编辑器（页头路径 + 等宽编辑区 + 底部状态条） */
+.hub-code {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 460px;
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+  background: var(--glass-tint-strong);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-inset), var(--glass-shadow);
+  overflow: hidden;
+  animation: hubPanelIn 0.3s var(--ease-out) 0.05s both;
+}
+
+.hub-code-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(41 40 36 / 7%);
+}
+
+.hub-code-path {
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-primary, #292824);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  border-radius: 6px;
 }
 
-.hub-resource-path:hover {
-  text-decoration: underline;
-}
-
-.hub-resource-size {
+.hub-code-meta {
+  margin-left: auto;
+  font-size: 11.5px;
   color: var(--ink-muted, #9b9790);
   white-space: nowrap;
 }
 
-.hub-resource-ops {
-  display: inline-flex;
-  gap: 2px;
-  white-space: nowrap;
+/* 编辑区：无边框融入玻璃面，等宽字体；软换行对技能文档更友好 */
+.hub-code-input {
+  flex: 1 1 auto;
+  min-height: 280px;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  padding: 14px 16px;
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--ink-primary, #292824);
 }
 
-/* 单文件编辑面板（新建 / 编辑 / 重命名共用） */
-.hub-resource-editor {
-  margin-top: 10px;
-  padding: 12px;
-  border: 1px solid rgba(102, 126, 234, 0.3);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.55);
-  box-shadow: var(--glass-inset);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  animation: hubPanelIn 0.28s var(--ease-out) both;
+.hub-code-note {
+  margin: 0;
+  padding: 8px 14px;
+  border-top: 1px solid rgba(41 40 36 / 7%);
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--ink-muted, #9b9790);
+}
+
+/* 校验面板嵌入编辑器底部：贴平圆角、问题列表超高滚动 */
+.hub-code .hub-validation {
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  margin: 0;
+}
+
+.hub-code .hub-validation-items {
+  max-height: 160px;
+  overflow-y: auto;
 }
 
 /* ==================== 自定义分类选择器（智能体 / 技能编辑器共用） ==================== */

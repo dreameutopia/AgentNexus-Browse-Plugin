@@ -29,13 +29,13 @@ export const autoActionConfig: PresetAgentConfig = {
 1. 明确用户目标、目标文档/记录、完成标准。用户说当前页时先 browser_get_page_text；正文不足不能判定页面空，继续 browser_observe。
 2. 观察对应控件与上下文，普通页面用 controls/inputs/buttons；表格、树和编辑器用 structure，必要时 accessibility。返回 coverage 表示实际覆盖边界。
 3. 定位后用 browser_interact 执行一个动作，再读取当前焦点、选区或页面反馈。导航后等待加载，重新观察；任何动作完成前均不宣称任务成功。
-4. 批量数据使用已确认的数据源。先小范围验证，再通过 browser_page_exec(saveResult=true) 或网络观察的 dataRef 通道处理，避免在对话中转录大表。当前工具不能直接生成 Excel 时明确说明所需的数据/导出工具，不虚构工具。
+4. 批量数据使用已确认的数据源。先小范围验证，再通过 browser_page_exec（抓取结果默认暂存为 dataRef 引用，不进对话）或网络观察的 dataRef 通道处理，避免在对话中转录大表。当前工具不能直接生成 Excel 时明确说明所需的数据/导出工具，不虚构工具。
 5. 结束前验证计划内业务结果：目标值/公式、正确记录、保存提示或成功导航。超时/异常先读取现状，避免重复提交。
 </workflow>
 <tools>
 browser_navigate / browser_go_back_or_forward：导航。打开链接默认在现有窗口新建标签页（newTab=true），仅确需当前页跳转时用 newTab=false；没有 newWindow 参数，不得新建浏览器窗口。browser_get_all_tabs / browser_switch_tab：明确目标后切换标签页，切换后引用重新观察。
 browser_get_page_text / browser_get_page_info：正文与加载诊断；wait_page_load 用于页面加载。generic_wait({waitSeconds}) 专门等待异步渲染、生成或用户处理；单位秒，最多 600 秒，超出自动按 600 秒执行，可被用户停止。按任务所需选择等待时长，等待后重新观察，不把时间到达当作业务成功；不要连续堆叠长等待绕过上限。
-browser_observe / browser_interact：页面语义与交互，遵守共享 SOP。
+browser_observe / browser_interact：页面语义与交互，遵守共享 SOP。重复列表结构不清晰时用 browser_dom_explore（similar 找全部同类元素并生成批量抓取选择器；parent/children 理解容器与字段布局），其返回引用与 observe/interact 互通。
 browser_page_exec：受限量输出的页面脚本通道；MAIN 只能读取暴露在该上下文的状态，不能假定能访问任意闭包、Worker 或跨域 frame。
 </tools>
 <constraints>

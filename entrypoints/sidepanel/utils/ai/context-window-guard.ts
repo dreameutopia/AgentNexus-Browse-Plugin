@@ -8,6 +8,7 @@ import {
   estimateTextTokens,
   IMAGE_CONTEXT_TOKENS,
   sliceTextToTokenBudget,
+  trimDanglingSurrogate,
 } from './token-estimate';
 
 export interface ContextGuardResult {
@@ -48,12 +49,101 @@ const SKILL_CONTEXT_TOOL_NAMES: ReadonlySet<string> = new Set(['load_skill', 're
 /** NUL 控制字符（OpenAI 等对话 API 会拒绝包含它的文本） */
 const NUL_CHAR = String.fromCharCode(0);
 
+/** 文本中是否含任何 UTF-16 代理项（快速预筛：base64 等纯 ASCII 跳过替换扫描） */
+const HAS_SURROGATE_RE = /[\uD800-\uDFFF]/;
+
+/** 未配对的孤立代理项（高位无低位跟随 / 低位无高位在前） */
+const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/**
+ * 展开消息序列为互斥原子组（导出的单一事实源实现）：
+ *   - tool 消息定位属主 assistant 后并入其组（同一 assistant 的多条并行结果同组）；
+ *   - 无法定位属主的 tool 消息（孤儿）与其余消息各自成组；
+ *   - 组间保持消息原始顺序（组按下标升序，最终结果按 __normalizedIndex 重排）。
+ *
+ * 消费方：窗口守卫的「从新到旧保留」（retainNewestMessagesWithinBudget）与
+ * 运行时压缩的 group-boundary 切分（core/conversation/compaction-boundary）。
+ * 两处共享同一实现，配对约束的判定不会漂移。
+ *
+ * @param messages 消息序列（下标即组内元素的引用键）
+ * @returns 每组为其成员消息下标的升序数组（组间按下标升序）
+ */
+export function buildAtomicGroups(messages: readonly ChatMessage[]): number[][] {
+  const toolOwner = new Map<number, number>();
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index];
+    if (message.role !== 'tool' || !message.tool_call_id) continue;
+    const ownerIndex = findOwningAssistantMessageIndex(messages, index, message.tool_call_id);
+    if (ownerIndex !== -1) {
+      toolOwner.set(index, ownerIndex);
+    }
+  }
+
+  const groups: number[][] = [];
+  const groupIndexOf = new Map<number, number>();
+  for (let index = 0; index < messages.length; index++) {
+    if (toolOwner.has(index)) continue; // tool 消息并入属主组
+    groupIndexOf.set(index, groups.length);
+    groups.push([index]);
+  }
+  for (const [toolIndex, ownerIndex] of toolOwner) {
+    const groupIndex = groupIndexOf.get(ownerIndex);
+    if (groupIndex !== undefined) {
+      groups[groupIndex].push(toolIndex);
+    }
+  }
+  return groups;
+}
+
+/**
+ * 定位 tool 消息的属主 assistant（从 tool 消息向前扫描，首个 id 匹配者）。
+ * 遇到任何 assistant 即停止——OpenAI 协议里 tool 结果紧跟其属主，越过
+ * 第一个 assistant 继续扫描只会把结果错配给更早的调用。
+ */
+function findOwningAssistantMessageIndex(
+  messages: readonly ChatMessage[],
+  toolIndex: number,
+  toolCallId: string,
+): number {
+  for (let index = toolIndex - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role !== 'assistant') {
+      continue;
+    }
+
+    if (message.tool_calls?.some(toolCall => toolCall.id === toolCallId)) {
+      return index;
+    }
+
+    break;
+  }
+
+  return -1;
+}
+
+/**
+ * 阈值解析（防御性，导出的单一事实源实现）：
+ * 运行链路恒显式传入 runtime.model.contextThreshold（模型级 token 阈值，经
+ * modelRegistry 钳制）。缺省/非法回落仅服务边缘调用方——直接采用共享默认值，
+ * **绝不回读全局配置**：回读会产生第二把口径不同的裁剪刀（运行快照阈值 vs
+ * 存储阈值），与「裁剪单点执行」原则冲突。
+ *
+ * 消费方：窗口守卫裁剪（protect）与运行时压缩的尾部预算规划
+ * （core/conversation/compaction-boundary）——两处对「阈值是什么」的答案恒一致。
+ */
+export function resolveContextThreshold(threshold?: number): number {
+  if (!Number.isFinite(threshold) || (threshold as number) <= 0) {
+    return CONTEXT_THRESHOLD_DEFAULT;
+  }
+  return Math.max(CONTEXT_THRESHOLD_MIN, Math.floor(threshold as number));
+}
+
 /**
  * 上下文窗口守卫（token 口径）。
  *
  * 计量与 context-meter（用量环 + 压缩触发）同源：全部经
- * utils/ai/token-estimate 的唯一实现（文本启发式估算 + 图片固定 1800 token），
- * 环上显示的 85%/95% 判定与实际裁剪行为不会漂移。
+ * utils/ai/token-estimate 的唯一实现（文本启发式估算 + 图片固定 1200 token），
+ * 环上显示的 85%/90% 判定与实际裁剪行为不会漂移。
  *
  * 裁剪策略保持不变：system 优先保留（超限时按 token 预算截断其正文）、
  * tool 内容传输层截断（技能类工具除外，见 SKILL_CONTEXT_TOOL_NAMES）、
@@ -63,7 +153,7 @@ export class ContextWindowGuard {
   static readonly TOOL_CONTENT_LIMIT = TOOL_CONTENT_LIMIT;
 
   static protect(messages: ChatMessage[], threshold?: number, options: { preserveToolContent?: boolean } = {}): ContextGuardResult {
-    const safeThreshold = this.resolveThreshold(threshold);
+    const safeThreshold = resolveContextThreshold(threshold);
     const normalizedMessages = messages.map((message, index) => this.normalizeMessage(message, index, options.preserveToolContent));
     const originalTokens = this.totalTokens(normalizedMessages);
     const toolContentsTrimmed = messages.reduce((count, message) => {
@@ -124,20 +214,6 @@ export class ContextWindowGuard {
     };
   }
 
-  /**
-   * 阈值解析（防御性）：
-   * 运行链路恒显式传入 runtime.model.contextThreshold（模型级 token 阈值，经
-   * modelRegistry 钳制）。缺省回落仅服务未传阈值的边缘调用方——
-   * 直接采用共享默认值，**绝不回读全局配置**：回读会产生第二把口径不同的
-   * 裁剪刀（运行快照阈值 vs 存储阈值），与「裁剪单点执行」原则冲突。
-   */
-  private static resolveThreshold(threshold?: number): number {
-    if (!Number.isFinite(threshold) || (threshold as number) <= 0) {
-      return CONTEXT_THRESHOLD_DEFAULT;
-    }
-    return Math.max(CONTEXT_THRESHOLD_MIN, Math.floor(threshold as number));
-  }
-
   private static normalizeMessage(message: ChatMessage, index: number, preserveToolContent = false): NormalizedMessage {
     return {
       ...message,
@@ -187,7 +263,16 @@ export class ContextWindowGuard {
 
   private static sanitizeText(value: string): string {
     // 剥离 NUL 控制字符：OpenAI 等对话 API 会拒绝包含 NUL 的文本
-    return value.replaceAll(NUL_CHAR, '');
+    let sanitized = value.replaceAll(NUL_CHAR, '');
+    // 孤立代理项 → U+FFFD：被劈开的增补平面字符（emoji 等）经 JSON.stringify
+    // 会成为 "\ud8xx" 孤立转义——语法合法、语义非法，serde 系严格网关会整单
+    // 400 且报错不含字段名。U+FFFD 替代与 UTF-8 编码器标准行为一致；本守卫是
+    // 全部会话请求的最后一道闸（模型自产内容同样可能携带孤立代理项）。
+    // 含代理项的文本才进入替换扫描（图片 base64 等纯 ASCII 零开销跳过）。
+    if (HAS_SURROGATE_RE.test(sanitized)) {
+      sanitized = sanitized.replace(LONE_SURROGATE_RE, '�');
+    }
+    return sanitized;
   }
 
   private static trimToolContent(content: string): string {
@@ -195,20 +280,23 @@ export class ContextWindowGuard {
       return content;
     }
 
-    return `${content.slice(0, TOOL_CONTENT_LIMIT)}\n...[tool response truncated to ${TOOL_CONTENT_LIMIT} chars]`;
+    // 截断点回退孤立代理：切点落在高位代理（0xD800-0xDBFF）上时退 1 码元，
+    // 避免产出半个增补平面字符（见 sanitizeText 的网关拒收说明）
+    return `${trimDanglingSurrogate(content, TOOL_CONTENT_LIMIT)}\n...[tool response truncated to ${TOOL_CONTENT_LIMIT} chars]`;
   }
 
   /**
    * 在 token 预算内从新到旧保留消息（按原子组）。
    *
-   * 原子组 = assistant(tool_calls) 与其全部配对 tool 结果消息：
-   * 组内要么整体保留、要么整体丢弃。这满足全部协议的配对硬约束——
-   * OpenAI 要求 assistant.tool_calls 的每个 id 都有紧随的 tool 消息、
-   * Claude 要求 tool_use 与 tool_result 逐个配对、Gemini 要求 functionCall
-   * 与 functionResponse 成对——绝不允许「保留了工具调用却裁掉部分结果」的半配对形态。
-   * 组长度一次性预计算，从新到旧累加，不会重复计入已保留消息。
+   * 原子组（buildAtomicGroups，模块级单一事实源实现）= assistant(tool_calls)
+   * 与其全部配对 tool 结果消息：组内要么整体保留、要么整体丢弃。这满足全部
+   * 协议的配对硬约束——OpenAI 要求 assistant.tool_calls 的每个 id 都有紧随的
+   * tool 消息、Claude 要求 tool_use 与 tool_result 逐个配对、Gemini 要求
+   * functionCall 与 functionResponse 成对——绝不允许「保留了工具调用却裁掉
+   * 部分结果」的半配对形态。组长度一次性预计算，从新到旧累加，不会重复计入
+   * 已保留消息。
    *
-   * 图片消息按固定 1800 token 计入组成本（见 token-estimate）：单张截图
+   * 图片消息按固定 1200 token 计入组成本（见 token-estimate）：单张截图
    * 不再以 base64 全长挤爆预算，多图历史也能按真实成本参与保留决策。
    */
   private static retainNewestMessagesWithinBudget(messages: NormalizedMessage[], budget: number): NormalizedMessage[] {
@@ -216,7 +304,7 @@ export class ContextWindowGuard {
       return [];
     }
 
-    const groups = this.buildAtomicGroups(messages);
+    const groups = buildAtomicGroups(messages);
     const groupTokens = groups.map(group => this.totalTokens(group.map(index => messages[index])));
 
     const retainedIndices = new Set<number>();
@@ -234,56 +322,6 @@ export class ContextWindowGuard {
     }
 
     return messages.filter((_, index) => retainedIndices.has(index));
-  }
-
-  /**
-   * 展开消息序列为互斥原子组：
-   *   - tool 消息定位属主 assistant 后并入其组（同一 assistant 的多条并行结果同组）；
-   *   - 无法定位属主的 tool 消息（孤儿）与其余消息各自成组；
-   *   - 组间保持消息原始顺序（最终结果按 __normalizedIndex 重排）。
-   */
-  private static buildAtomicGroups(messages: NormalizedMessage[]): number[][] {
-    const toolOwner = new Map<number, number>();
-    for (let index = 0; index < messages.length; index++) {
-      const message = messages[index];
-      if (message.role !== 'tool' || !message.tool_call_id) continue;
-      const ownerIndex = this.findOwningAssistantMessageIndex(messages, index, message.tool_call_id);
-      if (ownerIndex !== -1) {
-        toolOwner.set(index, ownerIndex);
-      }
-    }
-
-    const groups: number[][] = [];
-    const groupIndexOf = new Map<number, number>();
-    for (let index = 0; index < messages.length; index++) {
-      if (toolOwner.has(index)) continue; // tool 消息并入属主组
-      groupIndexOf.set(index, groups.length);
-      groups.push([index]);
-    }
-    for (const [toolIndex, ownerIndex] of toolOwner) {
-      const groupIndex = groupIndexOf.get(ownerIndex);
-      if (groupIndex !== undefined) {
-        groups[groupIndex].push(toolIndex);
-      }
-    }
-    return groups;
-  }
-
-  private static findOwningAssistantMessageIndex(messages: NormalizedMessage[], toolIndex: number, toolCallId: string): number {
-    for (let index = toolIndex - 1; index >= 0; index--) {
-      const message = messages[index];
-      if (message.role !== 'assistant') {
-        continue;
-      }
-
-      if (message.tool_calls?.some(toolCall => toolCall.id === toolCallId)) {
-        return index;
-      }
-
-      break;
-    }
-
-    return -1;
   }
 
   /** system 消息超阈值时按 token 预算逐条截断正文（保持消息结构与顺序） */
@@ -323,7 +361,7 @@ export class ContextWindowGuard {
    * 按 token 预算裁剪消息正文：
    *   - 字符串 content → sliceTextToTokenBudget（估算同源，保证裁后不超预算）；
    *   - 数组 content（防御路径：system 恒为字符串）→ 文本部件按剩余预算
-   *     逐段截断，图片部件按固定 1800 token 扣预算、装不下即丢弃。
+   *     逐段截断，图片部件按固定 1200 token 扣预算、装不下即丢弃。
    */
   private static trimContentToTokens(
     content: ChatMessage['content'],

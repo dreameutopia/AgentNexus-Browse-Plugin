@@ -169,6 +169,7 @@
       <ul v-if="snapshot.recentErrors.length" class="usage-error-list">
         <li v-for="(err, index) in snapshot.recentErrors" :key="`${err.at}-${index}`" class="usage-error-item">
           <span class="usage-error-time">{{ formatTime(err.at) }}</span>
+          <span v-if="err.provider" class="usage-error-provider">{{ providerLabel(err.provider) }}</span>
           <span class="usage-error-model">[{{ err.model }}]</span>
           <span class="usage-error-summary">{{ err.summary }}</span>
         </li>

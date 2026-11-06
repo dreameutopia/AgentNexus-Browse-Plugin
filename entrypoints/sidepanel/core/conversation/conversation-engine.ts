@@ -29,6 +29,8 @@ import { invariant, isPluginRef, ownerOf } from '@/utils/plugins/contracts';
  */
 
 import { aiChatApi, type ChatMessage } from '../../utils/ai/ai-chat-api';
+import { strictToolArguments } from '../../utils/stream/adapters/unified-normalize';
+import { trimDanglingSurrogate } from '../../utils/ai/token-estimate';
 import { openaiToolsConverter } from '../../utils/tools/openai-tools-converter';
 import { appendSystemTimestamp } from '../../utils/system-time';
 import { t } from '@/utils/i18n/core';
@@ -37,12 +39,13 @@ import { transcriptEngine } from '../context/transcript-engine';
 import { contextEngine, toModelFacingContent } from '../context/context-engine';
 import { storeProtocolMessages } from '../context/protocol-history';
 import { contextCompactor } from '../context/compactor';
-import { measureContextUsage, COMPACTION_RUNTIME_RATIO } from '../context/context-meter';
+import { measureContextUsage, COMPACTION_RETRY_ROUND_GAP, COMPACTION_RUNTIME_RATIO } from '../context/context-meter';
 import { imageStore } from '../images/image-store';
 import { toApiErrorBlock } from '../../utils/stream/errors';
 import { INTERACTIVE_TOOL_NAMES } from '@/tools/interact/interact-prompt';
 import { ensurePlansHydrated, getPlan } from '@/utils/plan/plan-store';
 import { buildPlanReminder, needsPlanReminder } from './plan-reminder';
+import { planRuntimeCompaction } from './compaction-boundary';
 import { toolRegistry } from '@/tools/registry';
 import { skillEngine } from '../registry/skill-engine';
 import { filterVisionAssistantTools, isVisionAssistantTool } from '@/utils/agents/vision-assistant-policy';
@@ -176,8 +179,13 @@ interface RunHandle {
   lastUsage: ContextUsage | null;
   /** 本次运行内已执行的压缩次数 */
   compactions: number;
-  /** 压缩熔断：本运行内压缩已失败过一次则不再重试（防每轮循环重复失败的通知风暴与无效请求） */
-  compactionFailed: boolean;
+  /**
+   * 最近一次运行中压缩失败所在的引擎轮次（null = 未失败过）。
+   * 冷却式熔断：失败后间隔 COMPACTION_RETRY_ROUND_GAP 轮才允许再次尝试，
+   * 而非整段运行放弃——长自治运行（网站学习/盲测）不能因一次瞬时压缩失败
+   * 失去窗口保护（见 context-meter 的常量说明）；成功后复位为 null。
+   */
+  compactionFailedAt: number | null;
   /** 运行内动态扩容的工具 ID（load_skill 激活技能后，把该技能预授权工具并入后续请求） */
   dynamicToolIds: Set<string>;
   pluginOwners?: Set<string>;
@@ -267,7 +275,7 @@ export function composeLlmUserMessage(
  * 摘要进入 user 角色消息，不受工具内容截断（TOOL_CONTENT_LIMIT 仅作用于
  * tool 角色）约束：页面抽取类结果可达数十万字符——不设上限时会瞬间占满
  * 上下文预算，甚至因单条超预算被守卫整组丢弃（连同「继续完成任务」指令
- * 一起）。图片本体已按固定 1800 token 计量（token-estimate），此处只管文本。
+ * 一起）。图片本体已按固定 1200 token 计量（token-estimate），此处只管文本。
  */
 const VISION_SUMMARY_MAX_CHARS = 600;
 
@@ -434,7 +442,7 @@ export class ConversationEngine {
         emit,
         lastUsage: null,
         compactions: 0,
-        compactionFailed: false,
+        compactionFailedAt: null,
         // 运行内动态扩容的工具 ID（load_skill 激活技能后注入其预授权工具）
         dynamicToolIds: new Set<string>(),
         pluginOwners: new Set(runtime.pluginOwners ?? []),
@@ -541,8 +549,9 @@ export class ConversationEngine {
         }
         const toolDefinitions = sessionToolIds.flatMap(id => toolSchemas.has(id) ? [structuredClone(toolSchemas.get(id)!)] : []);
 
-        // ── 上下文用量测量 + 运行时压缩（95%）：测量先于组装（反映真实需求量）；
-        //    压缩失败仅告警降级，本轮继续由窗口守卫裁剪，绝不阻断对话 ──
+        // ── 上下文用量测量 + 运行时压缩（90%）：测量先于组装（反映真实需求量）；
+        //    用量快照以事件外发（普通对话用量环与学习/验证状态条共用同一数据源，
+        //    展示恒等于最近一次真实请求的负载）；压缩失败进入冷却重试，绝不阻断对话 ──
         handle.lastUsage = measureContextUsage({
           toolDefinitions,
           systemPrompt: runtime.systemPrompt,
@@ -550,8 +559,9 @@ export class ConversationEngine {
           messages: handle.history,
           threshold: runtime.model.contextThreshold,
         });
-        if (handle.lastUsage.ratio >= COMPACTION_RUNTIME_RATIO && !handle.compactionFailed) {
-          const compacted = await this.tryCompactHistory(runtime, handle);
+        handle.emit({ type: 'context-usage', chatId: runtime.chatId, usage: handle.lastUsage });
+        if (handle.lastUsage.ratio >= COMPACTION_RUNTIME_RATIO && this.compactionRetryDue(handle, totalIterations)) {
+          const compacted = await this.tryCompactHistory(runtime, handle, totalIterations);
           if (compacted) {
             handle.compactions += 1;
             handle.lastUsage = measureContextUsage({
@@ -561,6 +571,18 @@ export class ConversationEngine {
               messages: handle.history,
               threshold: runtime.model.contextThreshold,
             });
+            handle.emit({ type: 'context-usage', chatId: runtime.chatId, usage: handle.lastUsage });
+            // 有效收益校验（第三重防线）：压缩「成功」但用量仍达触发线，说明本轮
+            // 压缩没有产生实质缓解（如尾部单条巨型消息主导窗口、摘要体量异常）。
+            // 按失败进入冷却，避免后续每轮重复发起零收益的压缩请求；冷却期过后
+            // 头部若积累了新的可压内容（边界规划的实质判定）会再次尝试。
+            if (handle.lastUsage.ratio >= COMPACTION_RUNTIME_RATIO) {
+              handle.compactionFailedAt = totalIterations;
+              console.warn(
+                `[ConversationEngine] 压缩完成后用量仍达 ${(handle.lastUsage.ratio * 100).toFixed(1)}%，` +
+                  '本轮压缩无实质缓解，进入冷却',
+              );
+            }
           }
         }
 
@@ -637,6 +659,20 @@ export class ConversationEngine {
           throw new Error(
             `模型输出被服务端安全策略拦截（finish_reason=content_filter），本轮回复可能不完整`,
           );
+        }
+
+        // ── 工具参数入史修复：模型在合法 JSON 后追加多余文本时，执行侧的
+        // 「首行 JSON」宽容解析会成功、原始脏串却随历史进入后续请求——对
+        // arguments 做 strict 校验的网关会把整个请求按 400 拒收（报错通常
+        // 不含字段名，极难定位）。入史前把可救形态重写为 strict JSON；
+        // 无可救药的原始串保持原样，交 parseToolArguments 抛可读错误回传模型自纠。
+        if (Array.isArray(finalMessage.tool_calls)) {
+          for (const call of finalMessage.tool_calls) {
+            if (call?.function && typeof call.function.arguments === 'string') {
+              const repaired = strictToolArguments(call.function.arguments);
+              if (repaired !== null) call.function.arguments = repaired;
+            }
+          }
         }
 
         // 形态防御：适配器契约保证 tool_calls 为数组，但协议脏数据（异常网关
@@ -870,37 +906,65 @@ export class ConversationEngine {
 
   // ==================== 内部：运行时上下文压缩 ====================
 
+  /** 压缩冷却判定：未失败过，或距最近失败已间隔 COMPACTION_RETRY_ROUND_GAP 轮 */
+  private compactionRetryDue(handle: RunHandle, iteration: number): boolean {
+    return (
+      handle.compactionFailedAt === null ||
+      iteration - handle.compactionFailedAt >= COMPACTION_RETRY_ROUND_GAP
+    );
+  }
+
   /**
-   * 运行时压缩（95% 触发）：最后一条用户消息之前的历史（含旧摘要消息）交给
-   * 压缩器摘要，替换为一条摘要系统消息；最后一条用户消息及其之后的内容
-   * （可能包含本轮 assistant.tool_calls + tool 结果配对）原样保留，
-   * 以满足 OpenAI 协议的配对约束。
-   * 返回是否压缩成功；失败（非中止）只告警并返回 false，本轮交由窗口守卫裁剪。
-   * 压缩期间的中止信号原样上抛，由主循环按运行中止语义收尾。
+   * 运行时压缩（90% 触发）：把压缩边界之前的头部历史（含旧摘要消息）交给
+   * 压缩器摘要，替换为一条摘要系统消息；边界之后的内容原样保留。
+   *
+   * 边界由 compaction-boundary 纯模块规划，两种模式（详见该模块说明）：
+   *   - user-boundary：最后一条用户消息之前（多轮对话 / 视觉续拍，与历史
+   *     版本语义一致；头部须具备实质可压体量，非摘要消息 ≥
+   *     USER_BOUNDARY_MIN_HEAD_TOKENS）；
+   *   - group-boundary：原子组边界回退——头部实质不足（如二次压缩时头部
+   *     只剩旧摘要，继续压零收益）或单用户消息的长自治运行（网站学习、
+   *     盲试验证、单次长工具循环）。按原子组从新到旧保留一个预算内连续
+   *     窗口（RUNTIME_COMPACTION_TAIL_RATIO），其余进入摘要，配对约束由
+   *     组边界保证。
+   *
+   * 三重防线协同：边界实质判定（本方法上游的 planRuntimeCompaction）杜绝
+   * 结构性零收益切分；压缩失败冷却（下方 catch）杜绝失败风暴；主循环的
+   * 「压缩成功但用量仍达触发线 → 冷却」杜绝残余的零收益重复（如尾部单条
+   * 巨型消息主导窗口的极端形态）。
+   *
+   * 返回是否压缩成功；失败（非中止）记录失败轮次进入冷却（不再整段熔断），
+   * 本轮交由窗口守卫兜底。压缩期间的中止信号原样上抛，由主循环按运行中止语义收尾。
+   *
+   * 持久化分层（刻意为之）：
+   *   - 边界恰好落在本轮用户消息（被压缩头部 = 初始上下文全体）且会话存在
+   *     压缩前记录（priorMaxSeq > 0）时，压缩点可用 seq 精确表达，落库会话
+   *     级摘要元信息，下次发送直接以摘要续跑；
+   *   - 其余边界（group-boundary、运行内合成的用户消息之前、priorRecords
+   *     为空的学习/盲测段）无法用 seq 表达分叉的模型上下文——学习会话的
+   *     转录是连续的，但各段的模型上下文互相独立（盲测隔离），单一会话级
+   *     压缩点反而会错误地把学习段摘要混入验证段。这些场景一律只写本条
+   *     助手记录的 modelContext 协议检查点，回放时以检查点为准（见
+   *     protocol-history 的 hasProtocolCheckpoint 重放语义）。
    */
   private async tryCompactHistory(
     runtime: ConversationRuntime,
     handle: RunHandle,
+    iteration: number,
   ): Promise<boolean> {
-    const history = handle.history;
-    let lastUserIndex = -1;
-    for (let i = history.length - 1; i >= 0; i--) {
-      if (history[i].role === 'user') {
-        lastUserIndex = i;
-        break;
-      }
-    }
-    // 最后用户消息之前没有可压缩内容（含历史为空 / 开局即超限两种情形）
-    if (lastUserIndex <= 0) return false;
+    const plan = planRuntimeCompaction(handle.history, runtime.model.contextThreshold);
+    if (!plan) return false;
+    const { head, tail } = plan;
 
-    const head = history.slice(0, lastUserIndex);
-    const tail = history.slice(lastUserIndex);
-    const headTokens = measureContextUsage({
+    // 头部体量 = 文本 + 图片成本全量口径：与压缩器自身的 originalTokens
+    // （含 IMAGE_CONTEXT_TOKENS/张）一致，start 事件的数字不会在 done 时跳变。
+    const headUsage = measureContextUsage({
       systemPrompt: '',
       toolIds: [],
       messages: head,
       threshold: 1,
-    }).messagesTokens;
+    });
+    const headTokens = headUsage.messagesTokens + headUsage.imageTokens;
 
     handle.emit({ type: 'compaction', chatId: runtime.chatId, phase: 'start', trigger: 'runtime', originalTokens: headTokens });
     try {
@@ -911,11 +975,12 @@ export class ConversationEngine {
         signal: handle.abortController.signal,
       });
       handle.history = [
-        contextCompactor.buildSummaryMessage(result.summary, Date.now()),
+        contextCompactor.buildSummaryMessage(result.summary, Date.now(), head.length),
         ...tail,
       ];
       handle.record.modelContext = await storeProtocolMessages(handle.history);
       await transcriptEngine.flush(handle.record);
+      handle.compactionFailedAt = null;
       handle.emit({
         type: 'compaction',
         chatId: runtime.chatId,
@@ -925,16 +990,17 @@ export class ConversationEngine {
         summaryTokens: result.summaryTokens,
       });
       console.info(
-        `[ConversationEngine] 运行时压缩完成: ${result.originalTokens} → ${result.summaryTokens} token` +
-          (result.droppedOldest > 0 ? `（${result.droppedOldest} 条最旧消息未纳入压缩）` : ''),
+        `[ConversationEngine] 运行时压缩完成（${plan.mode}）: ${result.originalTokens} → ${result.summaryTokens} token`,
       );
-      // 边界对齐持久化：压缩头恰好等于初始上下文（边界落在本轮用户消息）时，
-      // 压缩点可用 runtime.priorMaxSeq 精确表达，落库后下次发送直接以摘要续跑，
-      // 免去 85% 预压缩对同一段历史重复调用模型；边界落在运行内（vision 合成
-      // 消息之前等）时 seq 无法表达该边界，由本条记录的 modelContext 检查点恢复。
+      // 边界对齐持久化：仅 user-boundary 且边界消息恰为本轮用户消息时，
+      // 压缩头恰好等于初始上下文，压缩点可用 runtime.priorMaxSeq 精确表达；
+      // priorMaxSeq 为 0（priorRecords 为空的学习/盲测段）时无压缩前记录可指，
+      // 检查点已完整承载压缩结果，不落会话级元信息。
       // 持久化失败已由转录引擎经持久化降级通道通知用户，此处不重试不阻断。
       const boundaryAligned =
-        handle.runUserMessage !== null && history[lastUserIndex] === handle.runUserMessage;
+        plan.mode === 'user-boundary' &&
+        handle.runUserMessage !== null &&
+        tail[0] === handle.runUserMessage;
       if (boundaryAligned && runtime.priorMaxSeq > 0) {
         const persisted = await transcriptEngine.setCompaction(
           runtime.chatId,
@@ -948,9 +1014,9 @@ export class ConversationEngine {
       return true;
     } catch (error) {
       if (handle.abortController.signal.aborted) throw error;
-      // 熔断：本运行内不再重试压缩（后续轮次由窗口守卫裁剪兜底）
-      handle.compactionFailed = true;
-      console.warn('[ConversationEngine] 运行时压缩失败，降级为窗口裁剪:', error);
+      // 冷却：记录失败轮次，间隔 COMPACTION_RETRY_ROUND_GAP 轮后可再试
+      handle.compactionFailedAt = iteration;
+      console.warn('[ConversationEngine] 运行时压缩失败，进入冷却并降级为窗口裁剪:', error);
       handle.emit({
         type: 'compaction',
         chatId: runtime.chatId,
@@ -1610,7 +1676,7 @@ export class ConversationEngine {
         const parsed = JSON.parse(toolMessage.content as string) as { success?: boolean };
         if (parsed.success !== true) {
           const failure = parsed as { error?: unknown };
-          successSummaries.push(`${toolCalls[index].function.name} failed: ${typeof failure.error === 'string' ? failure.error.slice(0, VISION_SUMMARY_MAX_CHARS) : 'Inspect the latest screenshot before deciding how to recover.'}`);
+          successSummaries.push(`${toolCalls[index].function.name} failed: ${typeof failure.error === 'string' ? trimDanglingSurrogate(failure.error, VISION_SUMMARY_MAX_CHARS) : 'Inspect the latest screenshot before deciding how to recover.'}`);
           continue;
         }
         // answer：interact 等交互类工具的用户答复（无 text 的工具结果也能摘出关键信息）
@@ -1625,7 +1691,7 @@ export class ConversationEngine {
           typeof data.data?.screenshot === 'string' && data.data.screenshot.length > 0;
         const outcome = text
           ? text.length > VISION_SUMMARY_MAX_CHARS
-            ? `${text.slice(0, VISION_SUMMARY_MAX_CHARS)}…（已截断）`
+            ? `${trimDanglingSurrogate(text, VISION_SUMMARY_MAX_CHARS)}…（已截断）`
             : text
           : hasScreenshot
             ? '（页面截图，见随附图片）'

@@ -25,6 +25,7 @@ const { code } = await transform(`
   const isPositiveSafeInteger=n=>typeof n==='number'&&Number.isSafeInteger(n)&&n>=1;
   class LearnRunAbortedError extends Error {}
   const elapsedMs={value:1000}, toolCalls={value:0}, forceSubmitting={value:false};
+  const contextUsage={value:null};
   const config={value:{autoValidate:false}}, sessionChatId={value:'test'};
   const draft={value:phase.value==='validating'?{body:'original skill'}:null}, report={value:null}, failure={value:null};
   const limits={maxIterations:60,maxDurationMs:1800000};

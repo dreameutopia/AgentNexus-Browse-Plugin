@@ -25,6 +25,7 @@ import {
 import { pageExecTool } from './page-exec-tool';
 import { pageExtractDataTool } from './page-extract-tool';
 import { pageCleanTool } from './page-clean-tool';
+import { domExploreTool } from './dom-explore-tool';
 import { historyTool } from './history';
 import { 
   bookmarkSearchTool, 
@@ -73,6 +74,7 @@ function createBrowserTools() {
     pageExecTool,
     pageExtractDataTool,
     pageCleanTool,
+    domExploreTool,
     
     // History tool
     historyTool,
@@ -120,6 +122,7 @@ export * from './script';
 export * from './page-exec-tool';
 export * from './page-extract-tool';
 export * from './page-clean-tool';
+export * from './dom-explore-tool';
 export * from './cdp-session';
 export * from './history';
 export * from './bookmark';

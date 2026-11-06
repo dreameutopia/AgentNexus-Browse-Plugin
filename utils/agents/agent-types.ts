@@ -189,6 +189,20 @@ export interface AgentConfig {
    * 缺省 = 无头像，由 UI 回退默认 emoji。
    */
   avatar?: AgentAvatar;
+  /**
+   * 能力协商声明（影响系统提示词装配，不影响工具集与渲染层）。
+   *
+   * richComponents：富内容组件白名单（rich-components/registry.ts 的组件 id，
+   * 如 ['chart','stat','table','timeline','tree','diagram','diff']）：
+   *   - 缺省 = 默认全集（与历史行为一致）；
+   *   - 声明 = 只在 <rich-output-guidelines> 分区中教模型使用这些组件，
+   *     未知 id 装配时剔除并告警；空数组 = 整段不注入（0 提示词开销）。
+   * 只裁剪「教什么」，不裁剪「能渲染什么」——历史消息里的组件在任何
+   * 会话中都必须继续可渲染。
+   */
+  capabilities?: {
+    richComponents?: readonly string[];
+  };
 }
 
 /**

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>API 错误卡片预览</title>
+    <link rel="stylesheet" href="../entrypoints/sidepanel/styles/global.css" />
+    <link rel="stylesheet" href="../entrypoints/sidepanel/styles/app.css" />
+    <link rel="stylesheet" href="../entrypoints/sidepanel/components/chat/chat-message-list.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        background: #f4f5f7;
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+      .stage {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 16px;
+        width: 380px;
+      }
+      .stage h3 {
+        font-size: 12px;
+        color: #9ca3af;
+        margin: 0 0 12px;
+        font-weight: 500;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage">
+      <h3>请求被拒绝（openai-responses + 长端点 URL）</h3>
+      <div class="message-content"><div id="case-0"></div></div>
+    </div>
+
+    <div class="stage">
+      <h3>鉴权失败（ollama 本地端点）</h3>
+      <div class="message-content"><div id="case-1"></div></div>
+    </div>
+
+    <div class="stage">
+      <h3>超时（claude，琥珀分类配色）</h3>
+      <div class="message-content"><div id="case-2"></div></div>
+    </div>
+
+    <div class="stage">
+      <h3>网络错误（gemini，石板分类配色）</h3>
+      <div class="message-content"><div id="case-3"></div></div>
+    </div>
+
+    <script src="../node_modules/.cache/api-error-preview.js"></script>
+  </body>
+</html>

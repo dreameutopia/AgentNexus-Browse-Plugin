@@ -109,8 +109,8 @@ onBeforeUnmount(() => {
 
 .learn-hint__trigger:hover,
 .learn-hint__trigger:focus-visible {
-  color: var(--learn-accent, #667eea);
-  background: var(--learn-accent-soft, rgba(102, 126, 234, 0.12));
+  color: var(--learn-accent, #292824);
+  background: var(--learn-accent-soft, #eeece7);
   outline: none;
 }
 

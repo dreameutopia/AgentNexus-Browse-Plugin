@@ -47,6 +47,12 @@ import {
   normalizeUsageFromBody,
 } from '../../entrypoints/sidepanel/utils/stream/adapters/usage-normalize';
 import { aiUsageMetrics } from '../../entrypoints/sidepanel/utils/metrics/usage-metrics-engine';
+import {
+  normalizeWireToolArguments,
+  strictToolArguments,
+} from '../../entrypoints/sidepanel/utils/stream/adapters/unified-normalize';
+import { trimDanglingSurrogate } from '../../entrypoints/sidepanel/utils/ai/token-estimate';
+import { ContextWindowGuard } from '../../entrypoints/sidepanel/utils/ai/context-window-guard';
 import { testNativeCache } from './native-cache.test';
 import type {
   AdapterCapabilities,
@@ -1226,13 +1232,156 @@ async function main() {
       };
 
       let lastStatus = 403;
-      eq(await runChat(), 1, '403: 只发 1 次请求（不重试）');
+      eq(await runChat(), 2, '403: 发 2 次（4xx 一次性同载荷直发重试）');
       lastStatus = 400;
-      eq(await runChat(), 1, '400: 只发 1 次请求（不重试）');
+      eq(await runChat(), 2, '400: 发 2 次（4xx 一次性同载荷直发重试）');
       lastStatus = 429;
       eq(await runChat(), 2, '429: 发 2 次（retryCount=1 + 100ms 退避）');
       lastStatus = 500;
       eq(await runChat(), 2, '500: 发 2 次（可重试）');
+
+      // —— 4xx 一次性同载荷直发重试（防网关偶发）：首 400 → 直发重试成功 ——
+      {
+        const okSseText =
+          'data: {"choices":[{"index":0,"delta":{"content":"recovered"},"finish_reason":"stop"}]}\n\n' +
+          'data: [DONE]\n\n';
+        let calls = 0;
+        const bodies: any[] = [];
+        globalThis.fetch = (async (_url: string, init: any) => {
+          calls++;
+          bodies.push(JSON.parse(init?.body));
+          if (calls === 1) {
+            return {
+              ok: false,
+              status: 400,
+              statusText: 'Bad Request',
+              headers: new Headers(),
+              text: async () =>
+                JSON.stringify({ error: { message: 'Invalid request parameters', type: 'BadRequestError' } }),
+            } as unknown as Response;
+          }
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            headers: new Headers({ 'content-type': 'text/event-stream' }),
+            body: new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode(okSseText));
+                controller.close();
+              },
+            }),
+          } as unknown as Response;
+        }) as typeof fetch;
+
+        const recovered = await quiet(() =>
+          streamClient.chat(
+            { model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: true },
+            {},
+            {
+              providerConfig: { provider: 'openai', baseUrl: 'https://oneshot-4xx.example/v1', apiKey: 'k', model: 'm' },
+              retryCount: 0,
+            },
+          )
+        );
+        eq(calls, 2, '4xx 直发重试: 首次 400 后同载荷重发一次成功（retryCount=0 也生效）');
+        eq(recovered.finalMessage.content, 'recovered', '4xx 直发重试: 重发后流式正文正常');
+        eq(
+          JSON.stringify(bodies[0]),
+          JSON.stringify(bodies[1]),
+          '4xx 直发重试: 两次请求体逐字节一致（零加工直发）',
+        );
+
+        // 连续两次 400 → 恰好两次后按不可重试抛出（一次性上限，不进常规重试）
+        let doubleCalls = 0;
+        globalThis.fetch = (async () => {
+          doubleCalls++;
+          return {
+            ok: false,
+            status: 400,
+            statusText: 'Bad Request',
+            headers: new Headers(),
+            text: async () => JSON.stringify({ error: { message: 'Invalid request parameters' } }),
+          } as unknown as Response;
+        }) as typeof fetch;
+        let threw = false;
+        try {
+          await quiet(() =>
+            streamClient.chat(
+              { model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: true },
+              {},
+              {
+                providerConfig: { provider: 'openai', baseUrl: 'https://oneshot-4xx-2.example/v1', apiKey: 'k', model: 'm' },
+                retryCount: 3,
+              },
+            ),
+          );
+        } catch {
+          threw = true;
+        }
+        check(threw, '4xx 直发重试: 连续两次 400 后抛出');
+        eq(doubleCalls, 2, '4xx 直发重试: 一次性上限（retryCount=3 也不发第三次）');
+
+        // —— 泄漏回归：直发标志不得跳过后续常规重试的退避 ——
+        // E1=400 → 直发 E2（onRetry 序号 1、delay 0）→ E3... 本场景 E2=500（可重试）
+        // → 常规重试必须带退避（onRetry 序号 2、delay > 0）且最终成功
+        {
+          let seq = 0;
+          const retryEvents: Array<{ attempt: number; delayMs: number }> = [];
+          const okAfter500 =
+            'data: {"choices":[{"index":0,"delta":{"content":"final"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+          globalThis.fetch = (async () => {
+            seq++;
+            if (seq <= 2) {
+              return {
+                ok: false,
+                status: seq === 1 ? 400 : 500,
+                statusText: 'X',
+                headers: new Headers(),
+                text: async () => JSON.stringify({ error: { message: 'boom' } }),
+              } as unknown as Response;
+            }
+            return {
+              ok: true,
+              status: 200,
+              statusText: 'OK',
+              headers: new Headers({ 'content-type': 'text/event-stream' }),
+              body: new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode(okAfter500));
+                  controller.close();
+                },
+              }),
+            } as unknown as Response;
+          }) as typeof fetch;
+          const mixed = await quiet(() =>
+            streamClient.chat(
+              { model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: true },
+              {
+                onRetry: (attempt, delayMs) => retryEvents.push({ attempt, delayMs }),
+              },
+              {
+                providerConfig: { provider: 'openai', baseUrl: 'https://mixed-4xx-5xx.example/v1', apiKey: 'k', model: 'm' },
+                retryCount: 1,
+                retryIntervalMs: 100,
+              },
+            ),
+          );
+          eq(seq, 3, '泄漏回归: 400 直发 + 500 常规重试，共 3 次请求后成功');
+          eq(mixed.finalMessage.content, 'final', '泄漏回归: 最终流式正文正常');
+          eq(
+            retryEvents.map(e => e.attempt),
+            [1, 2],
+            '泄漏回归: onRetry 序号连续不重复（直发=1、常规=2）',
+          );
+          check(retryEvents[0]?.delayMs === 0, '泄漏回归: 直发重试无退避（delay 0）');
+          check(
+            (retryEvents[1]?.delayMs ?? 0) > 0,
+            '泄漏回归: 直发后发生的常规重试仍执行指数退避（标志未泄漏）',
+            retryEvents[1],
+          );
+        }
+      }
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -1527,10 +1676,12 @@ async function main() {
         }
         check(threw, '指标用例前置: 403 应抛错');
         const snap = aiUsageMetrics.getSnapshot();
-        eq(snap.totals.requests, 1, '指标: 建连失败（HTTP 403）也计入总请求');
-        eq(snap.totals.failed, 1, '指标: 建连失败计入 failed');
-        eq(snap.recentErrors.length, 1, '指标: 建连失败保留单行摘要');
-        check(snap.models.some(m => m.model === 'm-403' && m.failed === 1), '指标: 建连失败进入模型拆分');
+        // 403 触发 4xx 一次性同载荷直发重试 → 两次真实 HTTP 尝试都计入
+        //（口径：每个真实发出的 HTTP 尝试都进指标，含自动重试）
+        eq(snap.totals.requests, 2, '指标: 建连失败（HTTP 403 + 4xx 直发重试）计入 2 次请求');
+        eq(snap.totals.failed, 2, '指标: 建连失败计入 failed（两次尝试各一条）');
+        eq(snap.recentErrors.length, 2, '指标: 建连失败保留单行摘要（每尝试一条）');
+        check(snap.models.some(m => m.model === 'm-403' && m.failed === 2), '指标: 建连失败进入模型拆分');
       } finally {
         globalThis.fetch = originalFetch;
       }
@@ -1828,6 +1979,99 @@ async function main() {
   }
 
   await quiet(() => testNativeCache());
+
+  // ============================================================
+  // 十三、回放工具参数归一 + 线上文本截断的代理对安全
+  //       （strict 校验网关 400 防线：脏 arguments / 孤立代理项）
+  // ============================================================
+  {
+    const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    const strictParseOk = (value: string) => {
+      try { JSON.parse(value); return true; } catch { return false; }
+    };
+
+    // —— strictToolArguments：入史侧只修「可救」形态，无可救药返回 null ——
+    eq(strictToolArguments('{"city":"Paris"}'), '{"city":"Paris"}', '参数归一: 合法对象 JSON 字节不变');
+    eq(strictToolArguments('  {"a":1}  '), '{"a":1}', '参数归一: 合法 JSON 归一后返回');
+    eq(strictToolArguments('{"a":1}\n多余文本'), '{"a":1}', '参数归一: 尾随脏文本按首行 JSON 修复（模型加戏形态）');
+    const formatted = '{\n  "a": 1\n}';
+    eq(strictToolArguments(formatted), formatted, '参数归一: 多行格式化 JSON 原样通过');
+    eq(strictToolArguments(''), null, '参数归一: 空串交调用方兜底');
+    eq(strictToolArguments(undefined), null, '参数归一: 缺省交调用方兜底');
+    eq(strictToolArguments('不是JSON'), null, '参数归一: 无可救药返回 null（保留给执行侧抛可读错误）');
+    eq(strictToolArguments('123'), null, '参数归一: 非对象 JSON 返回 null');
+    eq(strictToolArguments('[1,2]'), null, '参数归一: 数组 JSON 返回 null');
+
+    // —— normalizeWireToolArguments：发送侧恒返回 strict 可解析字符串 ——
+    eq(normalizeWireToolArguments('{"city":"Paris"}'), '{"city":"Paris"}', '线上参数: 合法原文字节不变（不伤前缀缓存）');
+    eq(normalizeWireToolArguments('{"a":1}\n多余文本'), '{"a":1}', '线上参数: 尾随脏文本修复');
+    eq(normalizeWireToolArguments(''), '{}', '线上参数: 空串归一为 {}（严格网关拒收空串）');
+    eq(normalizeWireToolArguments(undefined), '{}', '线上参数: 缺省归一为 {}');
+    eq(normalizeWireToolArguments('123'), '123', '线上参数: 合法非对象 JSON 原样上网（可解析）');
+    const hopeless = JSON.parse(normalizeWireToolArguments('{"a":1} 不是JSON'));
+    eq(
+      Object.keys(hopeless),
+      ['_malformedArguments'],
+      '线上参数: 无可救药降级为 _malformedArguments（与 claude 回放兜底同口径）'
+    );
+    // 全形态不变量：任何输入的输出都必须能通过 strict JSON.parse
+    const wireInputs: Array<string | undefined> = [
+      '{"a":1}', '', null as unknown as undefined, '垃圾', '{"x":{"y":"😀"}}\n尾巴', '[1,', '   ', 'null', 'true',
+    ];
+    for (const raw of wireInputs) {
+      check(
+        strictParseOk(normalizeWireToolArguments(raw)),
+        `线上参数不变量: ${JSON.stringify(raw ?? '')} 的输出必须 strict 可解析`
+      );
+    }
+
+    // —— trimDanglingSurrogate：截断点代理对回退 ——
+    eq(trimDanglingSurrogate('ab', 5), 'ab', '代理回退: 截长超文本不受影响');
+    eq(trimDanglingSurrogate('a😀b', 2), 'a', '代理回退: 切点劈开 emoji 时退 1 码元');
+    check(!LONE_SURROGATE.test(trimDanglingSurrogate('x😀😀😀', 4)), '代理回退: 结果不含孤立代理项');
+
+    // —— ContextWindowGuard：8KB 传输层截断 + sanitize 的孤立代理项防线 ——
+    // 截断边界恰好落在 emoji 中间：结果不得含孤立代理项
+    const emojiAtBoundary = 'a'.repeat(8191) + '😀tail';
+    const guardedTool = ContextWindowGuard.protect(
+      [
+        { role: 'user', content: 'hi' },
+        { role: 'tool', tool_call_id: 'c1', name: 'browser_get_page_text', content: emojiAtBoundary },
+      ] as any,
+      1_000_000,
+    );
+    eq(guardedTool.toolContentsTrimmed, 1, '守卫: 超限工具内容被截断计数');
+    const trimmed = (guardedTool.messages.find((m: any) => m.role === 'tool') as any).content as string;
+    check(trimmed.includes('truncated to'), '守卫: 截断注记保留');
+    check(!LONE_SURROGATE.test(trimmed), '守卫: 截断结果不含孤立代理项（emoji 边界回退）');
+
+    // 模型自产内容中的孤立代理项 → U+FFFD（serde 系网关不再拒收）
+    const dirtyContent = '前半' + '\uD83D' + '后半';
+    const dirtyArgs = '{"text":"ok' + '\uD83D' + '"}\n多余';
+    const guardedDirty = ContextWindowGuard.protect(
+      [
+        { role: 'user', content: dirtyContent },
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{ id: 'c2', type: 'function', function: { name: 't', arguments: dirtyArgs } }],
+        },
+      ] as any,
+      1_000_000,
+    );
+    const userOut = (guardedDirty.messages[0] as any).content as string;
+    check(userOut.includes('�') && !LONE_SURROGATE.test(userOut), '守卫: 孤立代理项被 U+FFFD 替代');
+    const argsOut = ((guardedDirty.messages[1] as any).tool_calls as any[])[0].function.arguments as string;
+    check(!LONE_SURROGATE.test(argsOut), '守卫: 工具参数中的孤立代理项同样被替代');
+    check(
+      strictParseOk(normalizeWireToolArguments(argsOut)),
+      '端到端: 守卫 sanitize + 发送侧归一后，脏参数 strict 可解析'
+    );
+
+    // NUL 剥离回归
+    const nulGuarded = ContextWindowGuard.protect([{ role: 'user', content: 'a\0b' }] as any, 1_000_000);
+    eq((nulGuarded.messages[0] as any).content, 'ab', '守卫: NUL 剥离回归');
+  }
 
   // 汇总
   // ============================================================

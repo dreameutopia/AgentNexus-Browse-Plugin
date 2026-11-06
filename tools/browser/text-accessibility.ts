@@ -1,5 +1,5 @@
 import { cdpSession } from './cdp-session';
-import { textCommand, textTab } from './text-runtime';
+import { textCommand, textTab, readableTextError } from './text-runtime';
 
 interface AXNode {
   nameTruncated?: boolean;
@@ -25,6 +25,7 @@ interface AXSnapshot {
   epoch: number;
   time: number;
   regex: string;
+  categories: string[];
   consumed?: boolean;
   entries: AXEntry[];
   warnings: string[];
@@ -33,6 +34,75 @@ interface AXSnapshot {
 const snapshots = new Map<string, AXSnapshot>();
 const refs = new Map<string, { snapshotId: string; entry: AXEntry }>();
 const LIMIT = 10_000;
+function categoryOf(node: AXNode): string {
+  const role = String(node.role?.value || '');
+  const map: Record<string, string> = {
+    button: 'button',
+    link: 'link',
+    checkbox: 'checkbox',
+    radio: 'radio',
+    switch: 'switch',
+    combobox: 'combobox',
+    listbox: 'listbox',
+    option: 'option',
+    menu: 'menu',
+    menubar: 'menu',
+    menuitem: 'menuitem',
+    menuitemcheckbox: 'checkbox',
+    menuitemradio: 'radio',
+    tab: 'tab',
+    tablist: 'tablist',
+    tree: 'tree',
+    treeitem: 'treeitem',
+    treegrid: 'grid',
+    grid: 'grid',
+    gridcell: 'gridcell',
+    table: 'table', row: 'row', cell: 'cell', columnheader:'columnheader', rowheader:'rowheader', tabpanel:'tabpanel',
+    dialog: 'dialog',
+    alertdialog: 'dialog',
+    slider: 'slider',
+    spinbutton: 'spinbutton',
+    textbox: 'text',
+    searchbox: 'search',
+    Date: 'date',
+    DateTime: 'date',
+    InputTime: 'time',
+    ColorWell: 'color',
+    DisclosureTriangle: 'disclosure',
+    group: 'group',
+    radiogroup: 'group',
+    toolbar: 'toolbar',
+    tooltip: 'tooltip',
+    status: 'status',
+    alert: 'status',
+    progressbar: 'progress',
+    meter: 'meter',
+    separator: 'separator',
+  };
+  if (
+    role === 'button' &&
+    /^(?:(?:close|dismiss)(?:\s+(?:dialog|modal|popup|popover|menu|notification|toast|panel|window|button))?|(?:关闭|關閉)(?:弹窗|彈窗|对话框|對話框|窗口|视窗|視窗|面板|菜单|選單|通知)?|×|✕|✖)$/i.test(
+      node.name?.value || '',
+    )
+  )
+    return 'close';
+  if (role === 'button' && node.properties?.some((p) => p.name === 'pressed'))
+    return 'toggle';
+  if (
+    role === 'listbox' &&
+    node.properties?.some(
+      (p) => p.name === 'multiselectable' && p.value.value === true,
+    )
+  )
+    return 'multiselect';
+  if (
+    node.properties?.some(
+      (p) => p.name === 'protected' && p.value.value === true,
+    )
+  )
+    return 'password';
+  return map[role] || 'element';
+}
 function signature(node: AXNode) {
   return JSON.stringify([
     String(node.role?.value || ''),
@@ -41,7 +111,7 @@ function signature(node: AXNode) {
 }
 function normalize(node: AXNode): AXNode {
   const protectedValue = node.properties?.some(
-    (p) => p.name === 'protected' && p.value.value === true
+    (p) => p.name === 'protected' && p.value.value === true,
   );
   return {
     nodeId: node.nodeId,
@@ -58,17 +128,15 @@ function normalize(node: AXNode): AXNode {
           ? node.value.value.slice(0, 2000)
           : node.value?.value,
     },
-    properties: (node.properties || [])
-      .slice(0, 32)
-      .map((p) => ({
-        name: p.name.slice(0, 100),
-        value: {
-          value:
-            typeof p.value.value === 'string'
-              ? p.value.value.slice(0, 500)
-              : p.value.value,
-        },
-      })),
+    properties: (node.properties || []).slice(0, 32).map((p) => ({
+      name: p.name.slice(0, 100),
+      value: {
+        value:
+          typeof p.value.value === 'string'
+            ? p.value.value.slice(0, 500)
+            : p.value.value,
+      },
+    })),
   };
 }
 function forget(id: string) {
@@ -88,6 +156,7 @@ export async function observeAccessibility(input: {
   snapshotId?: string;
   regex?: string;
   xpath?: string;
+  categories?: string[];
 }) {
   if (input.xpath)
     throw new Error('XPath 仅适用于 DOM 视图，辅助功能视图请用 regex');
@@ -107,6 +176,13 @@ export async function observeAccessibility(input: {
     input.regex.trim() !== snapshot.regex
   )
     throw new Error('QUERY_MISMATCH：改变条件时开启新查询');
+  if (
+    snapshot &&
+    input.categories !== undefined &&
+    JSON.stringify([...input.categories].sort()) !==
+      JSON.stringify(snapshot.categories)
+  )
+    throw new Error('QUERY_MISMATCH：改变类别时开启新查询');
   if (!snapshot) {
     if (page !== 1) throw new Error('新查询从 page=1 开始；翻页传 snapshotId');
     const regex = (input.regex || '').trim();
@@ -126,11 +202,13 @@ export async function observeAccessibility(input: {
         const result = await textCommand<{ nodes: AXNode[] }>(
           tab.id,
           'Accessibility.getFullAXTree',
-          { frameId: frame.id }
+          { frameId: frame.id },
         );
         for (const raw of result.nodes || []) {
           const node = normalize(raw);
           if (node.ignored) continue;
+          if (input.categories && !input.categories.includes(categoryOf(node)))
+            continue;
           if (
             filter &&
             !filter.test(
@@ -138,7 +216,7 @@ export async function observeAccessibility(input: {
                 node.role?.value,
                 node.name?.value,
                 String(node.value?.value ?? ''),
-              ].join(' ')
+              ].join(' '),
             )
           )
             continue;
@@ -150,13 +228,18 @@ export async function observeAccessibility(input: {
         }
       } catch (error) {
         warnings.push(
-          `frame ${frame.id} 未覆盖：${error instanceof Error ? error.message : String(error)}`
+          `frame ${frame.id} 未覆盖：${readableTextError(error)}`,
         );
       }
     }
     if (!entries.length && warnings.length)
       throw new Error(warnings.join('; '));
     id = 'axs:' + crypto.randomUUID();
+    entries.sort(
+      (a, b) =>
+        Number(categoryOf(b.node) === 'close') -
+        Number(categoryOf(a.node) === 'close'),
+    );
     snapshot = {
       tabId: tab.id,
       url: tab.url,
@@ -164,6 +247,7 @@ export async function observeAccessibility(input: {
       epoch: cdpSession.getEpoch(tab.id),
       time: Date.now(),
       regex,
+      categories: [...(input.categories || [])].sort(),
       entries,
       warnings,
       truncated,
@@ -184,18 +268,23 @@ export async function observeAccessibility(input: {
     const live = await textCommand<{ nodes: AXNode[] }>(
       tab.id,
       'Accessibility.getFullAXTree',
-      { frameId }
+      { frameId },
     );
     for (const entry of delivered.filter((e) => e.frameId === frameId)) {
       const node = live.nodes?.find(
         (n) =>
           n.nodeId === entry.node.nodeId &&
           n.backendDOMNodeId === entry.node.backendDOMNodeId &&
-          !n.ignored
+          !n.ignored,
       );
       if (!node || signature(node) !== signature(entry.node))
         throw new Error('STALE_ELEMENTS：辅助功能节点变化，请重采');
       entry.node = normalize(node);
+      if (
+        snapshot.categories.length &&
+        !snapshot.categories.includes(categoryOf(entry.node))
+      )
+        throw new Error('STALE_ELEMENTS：类别已变化，请重采');
     }
   }
   const totalPages = Math.max(1, Math.ceil(snapshot.entries.length / 40));
@@ -210,6 +299,7 @@ export async function observeAccessibility(input: {
     totalPages,
     nextPage: page < totalPages ? page + 1 : null,
     totalElements: snapshot.entries.length,
+    query: { regex: snapshot.regex, categories: snapshot.categories },
     coverage: {
       source: 'browser accessibility tree',
       complete: false,
@@ -219,11 +309,12 @@ export async function observeAccessibility(input: {
     elements: snapshot.entries.slice((page - 1) * 40, page * 40).map((e) => ({
       elementId: e.ref,
       role: e.node.role?.value,
+      category: categoryOf(e.node),
       name: e.node.name?.value,
       value:
         e.node.role?.value === 'password' ||
         e.node.properties?.some(
-          (p) => p.name === 'protected' && p.value.value === true
+          (p) => p.name === 'protected' && p.value.value === true,
         )
           ? undefined
           : e.node.value?.value,
@@ -232,7 +323,7 @@ export async function observeAccessibility(input: {
       parentId: e.node.parentId,
       nodeId: e.node.nodeId,
       states: Object.fromEntries(
-        (e.node.properties || []).map((p) => [p.name, p.value.value])
+        (e.node.properties || []).map((p) => [p.name, p.value.value]),
       ),
       routing: 'AX reference carries frame routing; omit frameId',
     })),
@@ -263,24 +354,27 @@ export async function resolveAX(ref: string) {
   if (
     !liveFrames.some(
       (f) =>
-        f.id === stored.entry.frameId && f.loaderId === stored.entry.loaderId
+        f.id === stored.entry.frameId && f.loaderId === stored.entry.loaderId,
     )
   )
     throw new Error('STALE_ELEMENT：目标 frame 已导航');
   const result = await textCommand<{ nodes: AXNode[] }>(
     snapshot.tabId,
     'Accessibility.getPartialAXTree',
-    { backendNodeId: stored.entry.node.backendDOMNodeId, fetchRelatives: false }
+    {
+      backendNodeId: stored.entry.node.backendDOMNodeId,
+      fetchRelatives: false,
+    },
   );
   const node = result.nodes?.find(
     (n) =>
-      n.backendDOMNodeId === stored.entry.node.backendDOMNodeId && !n.ignored
+      n.backendDOMNodeId === stored.entry.node.backendDOMNodeId && !n.ignored,
   );
   if (
     !node ||
     signature(node) !== signature(stored.entry.node) ||
     node.properties?.some(
-      (p) => p.name === 'disabled' && p.value.value === true
+      (p) => p.name === 'disabled' && p.value.value === true,
     )
   )
     throw new Error('STALE_ELEMENT：目标语义或可操作状态已改变');

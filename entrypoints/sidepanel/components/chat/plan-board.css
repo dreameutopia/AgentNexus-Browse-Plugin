@@ -8,11 +8,23 @@
  *
  * 视觉口径：与侧边栏浅色体系一致——白底、#e5e7eb 描边、#667eea 主色、
  * 灰阶文字；面板位于输入容器正上方，安静不抢戏，展开时才显出细节。
+ *
+ * 展开方向：向上覆盖式。常驻卡片（头部 + 进度条）始终占位输入区上方；
+ * 展开列表绝对定位于卡片正上方（bottom: 100%），浮层盖住上方的消息列表
+ * /工具栏等组件，不挤占任何布局空间（列表限高 240px 内部滚动）。展开态
+ * 卡片切平上圆角、列表只圆上角，二者拼成一张视觉连续的卡。
  */
 
+/* 外壳：仅承载布局占位，并作为浮层的定位锚点与层叠层级载体 */
 .plan-board {
+  position: relative; /* 展开浮层（__list）的定位包含块 */
+  z-index: 30; /* 盖过上方消息列表与底部工具栏；低于各类弹窗/下拉（≥900） */
   flex: 0 0 auto;
   margin-bottom: 8px;
+}
+
+/* 常驻卡片：折叠态全貌（头部 + 进度条），展开时作为整卡的底座 */
+.plan-board__card {
   border: 1px solid var(--line-soft, #e4e2de);
   border-radius: 14px;
   background: #ffffff;
@@ -23,11 +35,15 @@
     box-shadow 0.18s ease;
 }
 
-.plan-board:hover {
+.plan-board:hover .plan-board__card,
+.plan-board:hover .plan-board__list {
   border-color: #d8dde8;
 }
 
-.plan-board.is-expanded {
+/* 展开态：上圆角切平与上方浮层拼接成一张连续的卡，阴影随之升级 */
+.plan-board.is-expanded .plan-board__card {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
 }
 
@@ -125,13 +141,21 @@
   transition: width 0.3s ease;
 }
 
-/* ── 展开态列表 ── */
+/* ── 展开态列表：向上覆盖式浮层 ── */
 
 .plan-board__list {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%; /* 底边贴合常驻卡片顶边，向上生长盖住上方组件 */
   display: flex;
   flex-direction: column;
   padding: 6px 8px 8px;
-  border-top: 1px solid var(--surface-soft, #f3f1ed);
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-bottom: none; /* 与卡片顶边共用一条线，拼成视觉连续的整卡 */
+  border-radius: 14px 14px 0 0;
+  background: #ffffff;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
   max-height: 240px;
   overflow-y: auto;
 }

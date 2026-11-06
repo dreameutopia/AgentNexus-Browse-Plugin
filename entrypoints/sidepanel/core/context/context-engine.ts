@@ -14,7 +14,7 @@
  *
  * 窗口策略复用 ContextWindowGuard（system 优先保留、tool 内容截断、按原子组从新保留），
  * 阈值来源为 runtime.model.contextThreshold；计量经 utils/ai/token-estimate
- * （文本启发式 + 图片固定 1800 token），与用量环、压缩触发同源。
+ * （文本启发式 + 图片固定 1200 token），与用量环、压缩触发同源。
  */
 
 import type { ChatMessage } from '../../utils/ai/ai-chat-api';

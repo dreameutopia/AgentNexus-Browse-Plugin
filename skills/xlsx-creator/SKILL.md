@@ -17,7 +17,7 @@ tags: excel 表格 导出
 1. **工具只有 `xlsx_tool` 一个**，用 `action` 区分三种用法：
    - `create`：用声明式结构生成（支持多表、合并单元格、公式、样式等全部能力）；
    - `create_from_markdown`：把 Markdown 表格文本转成 xlsx（简单表格快捷路径，文本里多张 `|` 表格会变成多张工作表，`# 标题` 作为表名）；
-   - `create_from_data`：把批量抓取的暂存批次（dataRef，由 browser_page_exec 产生——saveResult=true 或结果超 2000 字符自动暂存）直接生成工作表——**批量数据一律走此路径**，不要手写 rows 复现数据。
+   - `create_from_data`：把批量抓取的暂存批次（dataRef，由 browser_page_exec 产生——saveResult 默认开启即暂存，或结果超 2000 字符自动暂存；浏览器会话内约 12 小时有效）直接生成工作表——**批量数据一律走此路径**，不要手写 rows 复现数据。
 2. **默认已自动美化**，不必手写这些样式：表头蓝底白字加粗居中、全表细边框、自动列宽（按内容自适应，中文按双宽估算）、有表头时自动冻结表头。可选项：`zebra: true` 斑马纹、`autoFilter: true` 表头筛选、`landscape: true` 横向打印、`tabColor` 标签色。
 3. **文件名**：用户给了就用用户的（无需 `.xlsx` 后缀，会自动补）；没给就用「主题_YYYYMMDD.xlsx」。
 
@@ -47,9 +47,9 @@ tags: excel 表格 导出
 }
 ```
 
-- 对象数组批次用 `fields` 选列/定序；二维数组批次可用 `headers` 定表头或 `firstRowAsHeader: true`。
+- 对象数组批次用 `fields` 选列/定序（字段名拼写错误会被校验拒绝并提示实际字段）；二维数组批次可用 `headers` 定表头或 `firstRowAsHeader: true`。字段值若是嵌套对象/数组，会以 JSON 文本写入单元格——需要拆列请在抓取脚本中展平字段。
 - `name/title/merges/columns/freeze/autoFilter/zebra` 等样式选项与 `create` 完全一致。
-- 报错常见原因：批次 ID 不存在或已过期（暂存区仅浏览器会话内有效）；行数超单表 5000 上限（分 sheet/分文件）。
+- 报错常见原因：批次 ID 不存在或已过期（暂存区仅浏览器会话内约 12 小时有效）；行数超单表 5000 上限（分 sheet/分文件）。
 
 ## create 的数据结构速查
 

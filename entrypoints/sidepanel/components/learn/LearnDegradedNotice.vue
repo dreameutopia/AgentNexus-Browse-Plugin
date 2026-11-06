@@ -27,7 +27,7 @@ const emit = defineEmits<{ close: [] }>();
           <p class="learn-degraded__text">{{ t('sidepanel.learn.draftSaveDegradedBody') }}</p>
         </div>
         <footer class="learn-degraded__footer">
-          <button type="button" class="learn-degraded__btn" @click="emit('close')">
+          <button type="button" class="learn-btn learn-btn--primary" @click="emit('close')">
             {{ t('sidepanel.learn.draftSaveDegradedAck') }}
           </button>
         </footer>
@@ -98,21 +98,6 @@ const emit = defineEmits<{ close: [] }>();
   padding: 16px 20px 18px;
 }
 
-.learn-degraded__btn {
-  padding: 9px 18px;
-  border: none;
-  border-radius: 9px;
-  background: var(--learn-accent);
-  color: #ffffff;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
-
-.learn-degraded__btn:hover {
-  background: var(--learn-accent-strong);
-}
 
 .learn-degraded-enter-active,
 .learn-degraded-leave-active {

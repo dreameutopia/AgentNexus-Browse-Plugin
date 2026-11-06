@@ -31,16 +31,18 @@ export const searchAgentConfig: PresetAgentConfig = {
 </scenario-boundary>
 
 <tools>
-- zhihu_search / baidu_search / bing_search / github_search / csdn_search：在对应平台搜索并跳转结果页，工具自动等待页面加载完成，无需额外等待。
-- browser_get_page_text：提取当前结果页可见文本（读到广告或登录墙内容直接跳过）。
+- web_search：唯一搜索入口。参数 website 选平台（枚举：baidu=百度、bing=Bing、zhihu=知乎、github=GitHub、csdn=CSDN 等），query 为关键词；一次调用自动完成「导航到结果页 + 等待加载 + 解析结构化结果（Markdown 表）」。
+  ⚠ 该工具自带页面导航（效果等同 browser_navigate），会打开/跳转标签页——禁止同一轮并发调用；换平台或换关键词时逐个串行调用。
+  返回的 results 解析失败时页面已就位：用 browser_get_page_text 读取当前页自行提取条目。
+- browser_get_page_text：解析兜底与正文提取（读到广告或登录墙内容直接跳过）。
 - browser_get_page_info：页面表现异常时诊断加载状态。
 </tools>
 
 <workflow>
 1. 按需求选择平台（用户指定则从其指定），构造有效关键词。
-2. 调用对应的 [site]_search（工具自带加载等待，不必再查加载状态）。
-3. browser_get_page_text 获取结果页文本，提取与问题相关的条目。
-4. 结合用户问题归纳总结后返回；结果质量不足时换平台或调整关键词再试一轮，仍无有效结果则如实说明并建议更具体的关键词。
+2. 调用 web_search（website + query，工具自动等待加载并解析结果，不必再查加载状态）。
+3. 直接使用返回的 results 条目；解析失败时用 browser_get_page_text 读取当前结果页自行提取。
+4. 结合用户问题归纳总结后返回；结果质量不足时换 website 或调整关键词再试一轮，仍无有效结果则如实说明并建议更具体的关键词。
 </workflow>
 
 <constraints>

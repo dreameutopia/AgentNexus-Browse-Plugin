@@ -28,7 +28,7 @@ import { filterVisionAssistantTools, isVisionAssistantTool } from '@/utils/agent
 import { VISION_ACTION_SOP } from '@/utils/agents/vision-action-sop';
 import { migrateVisionToolId, migrateVisionToolPrompt } from '@/utils/tools/vision-tool-migration';
 import { toolRegistry } from '@/tools/registry';
-import { RICH_OUTPUT_SYSTEM_PROMPT_SECTION } from '../../utils/chat/rich-output-prompt';
+import { buildRichOutputSystemPrompt } from '../../utils/chat/rich-components';
 import type {
   ChatMessageRecord,
   ConversationRuntime,
@@ -208,10 +208,13 @@ class RuntimeBuilder {
     // 任务计划准则（同样为固定分区）：长难任务的步骤清单与状态跟踪规范
     //（plan_tool 无条件注入，此处文案与其行为严格对齐）
     sections.push(PLAN_SYSTEM_PROMPT_SECTION);
-    // 富内容输出准则（同样为固定分区）：教模型在合适场景输出图表 / 统计卡
-    // 围栏块，由侧边栏可信渲染管线消费（沙箱隔离 + JSON-only，见
-    // utils/chat/rich-output-prompt.ts 的安全模型说明）
-    sections.push(RICH_OUTPUT_SYSTEM_PROMPT_SECTION);
+    // 富内容输出准则（固定分区，按智能体能力协商裁剪）：教模型在合适场景
+    // 输出 ```component 信封 / 原生 DSL 围栏，由侧边栏可信渲染管线消费。
+    // 分区正文由组件注册表生成（rich-components/registry.ts 单一事实源）；
+    // capabilities.richComponents 声明的智能体只学声明过的组件，
+    // 空数组 = 整段不注入（0 开销）。未声明 = 默认全集（历史行为）
+    const richOutputSection = buildRichOutputSystemPrompt(agent?.capabilities?.richComponents);
+    if (richOutputSection) sections.push(richOutputSection);
     // 固定分区，但技能相关句子按 disableSkillDiscovery 分叉：
     // 学习/盲测会话既无发现清单也无 load_skill，保留「先 load_skill 再用其
     // 工具」的指令会让模型去找一个不存在的入口（死链指令），并给盲测留下

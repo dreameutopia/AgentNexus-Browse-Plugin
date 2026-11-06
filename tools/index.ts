@@ -18,7 +18,6 @@ import { registerResourceTools } from './resource';
 import { registerBilibiliTools } from './bilibili';
 import { registerBrowserTools } from './browser';
 import { registerBaseTools } from './base';
-import { registerIntegratedSearchTools } from './integrated-search';
 import { registerSkillTools } from './skill';
 import { registerOfficeTools } from './office';
 import { registerInteractTools } from './interact';
@@ -45,7 +44,6 @@ export function registerAllTools() {
   registerExcalidrawTools();
   registerResourceTools();
   registerBilibiliTools();
-  registerIntegratedSearchTools(); // 注册集成搜索工具
   registerSkillTools(); // 注册技能（skill）加载与资源读取工具
   registerOfficeTools(); // 注册 office 类工具（xlsx_tool）
   registerInteractTools(); // 注册用户交互工具（interact：提问/授权征询）
@@ -75,7 +73,6 @@ export * from './note';
 export * from './excalidraw';
 export * from './resource';
 export * from './bilibili';
-export * from './integrated-search'; // 导出集成搜索工具
 export * from './skill'; // 导出技能（skill）工具
 export * from './office'; // 导出 office 类工具（xlsx_tool）
 export * from './interact'; // 导出用户交互工具（interact）

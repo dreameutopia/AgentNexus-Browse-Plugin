@@ -74,3 +74,26 @@ assert.ok(
   VISION_ACTION_SOP.includes('imageId'),
   '视觉操作协议必须说明短 id 字段名',
 );
+
+// ── 7. DOM/视觉通道选择准则（防模型在错误通道上打转）──
+assert.ok(
+  VISION_ACTION_SOP.includes('<dom-or-vision>'),
+  '视觉操作协议必须包含通道选择准则分区',
+);
+assert.ok(
+  VISION_ACTION_SOP.includes('DOM 通道优先'),
+  '通道选择准则：结构化数据默认 DOM 通道',
+);
+assert.ok(
+  VISION_ACTION_SOP.includes('vision_gui'),
+  '通道选择准则：视觉手势入口',
+);
+assert.ok(
+  /第三次原地重试|换另一种通道/.test(VISION_ACTION_SOP),
+  '通道选择准则：两次失败必须换通道或说明阻塞',
+);
+const { visionActionConfig } = await import('../../utils/agents/presets/vision-action');
+assert.ok(
+  String(visionActionConfig.system).includes('<dom-or-vision>'),
+  '视觉通用助手系统提示词携带通道选择准则（经 VISION_ACTION_SOP 注入）',
+);

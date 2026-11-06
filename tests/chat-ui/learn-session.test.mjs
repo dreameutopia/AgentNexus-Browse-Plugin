@@ -130,6 +130,7 @@ await build({ stdin: { contents: "export * from './utils/learn/learn-validate'; 
 const guards = await import(pathToFileURL(receiptOutput).href);
 const receiptState = {
   phase: { value: 'validating' }, sessionChatId: { value: 'learn' }, toolCalls: { value: 0 },
+  contextUsage: { value: null },
   draft: { value: { name: 'demo-test', description: '同一任务', mode: 'text', allowedTools: ['browser_observe'], tags: [], category: 'general', body: 'original' } },
   failure: { value: null }, report: { value: null },
 };
@@ -165,6 +166,13 @@ assert.equal(persisted.length, 1, '重复回执不会覆盖终态');
 const carried = await receipts.carry('learn', new Set(['learning-old']), 'learning summary');
 assert.deepEqual(carried.records, [currentRecords[1]], '收尾仅携带本次验证的证据');
 assert.equal(carried.summary, '', '验证收尾不能混入学习阶段遗留摘要');
+// 引擎用量快照经观察者进入学习状态数据源；跨会话事件不得串扰
+receipts.observe({ type: 'context-usage', chatId: 'learn', usage: { totalTokens: 12, ratio: 0.6, threshold: 20 } });
+assert.equal(receiptState.contextUsage.value.totalTokens, 12, 'Engine usage snapshots feed the learning status data');
+receipts.observe({ type: 'context-usage', chatId: 'other', usage: { totalTokens: 1, ratio: 0.05, threshold: 20 } });
+assert.equal(receiptState.contextUsage.value.totalTokens, 12, 'Foreign chat usage must not leak into learning status');
+receipts.observe({ type: 'context-usage', chatId: 'learn', usage: { totalTokens: 18, ratio: 0.9, threshold: 20 } });
+assert.equal(receiptState.contextUsage.value.totalTokens, 18, 'Later snapshots overwrite earlier ones within the same stage');
 let completeRun, rejectBuild = false, runOptions;
 let builtInput;
 const runBindings = {
@@ -227,6 +235,11 @@ try {
   assert.equal(bindings.learnRecoverableDraft.value, null);
   assert.equal(bindings.contextUsage.value, null);
   assert.equal(bindings.isCompacting.value, false);
+  // 引擎每轮测量的真实用量驱动用量环（与学习状态条同一事件源）
+  adapter.event({ type: 'context-usage', chatId: 'learn-chat', usage: { totalTokens: 5, ratio: 0.25, threshold: 20 } });
+  assert.equal(bindings.contextUsage.value.totalTokens, 5, 'Engine usage snapshots drive the context ring');
+  adapter.event({ type: 'context-usage', chatId: 'other-chat', usage: { totalTokens: 999, ratio: 5, threshold: 20 } });
+  assert.equal(bindings.contextUsage.value.totalTokens, 5, 'Foreign chat usage events are gated by chatId');
 
   adapter.event({ type: 'assistant-start', chatId: 'old-chat', messageId: 'late-old' });
   assert.equal(bindings.isAiResponding.value, false, 'Foreign start must not change response state');

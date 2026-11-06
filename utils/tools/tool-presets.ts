@@ -37,9 +37,7 @@ export type ToolScenario =
   | 'tabsWindows'
   | 'scripting'
   | 'bookmarkHistory'
-  | 'extendedSearch'
-  | 'resultScrape'
-  | 'integratedSearch'
+  | 'webSearch'
   | 'resourceCapture'
   | 'visionTools'
   | 'networkTools'
@@ -86,26 +84,24 @@ const BASIC_BROWSER_TOOLS = [
   'browser_close_tab',
   'browser_create_tab',
   'browser_page_exec',
-  'bing_search',
+  // 统一集成搜索（website 枚举区分平台）：导航 + 解析一步完成
+  'web_search',
 ] as const;
 
-/** 多平台搜索 */
-const SEARCH_PLATFORM_TOOLS = [
-  'zhihu_search',
-  'baidu_search',
-  'bing_search',
-  'github_search',
-  'csdn_search',
-] as const;
+/**
+ * 统一网页搜索工具组：单一 web_search（website 枚举覆盖全部 9 平台，一次调用
+ * 完成导航 + 结果解析）。原「扩展搜索平台 / 结果抓取 / 集成搜索」三组 27 个
+ * 平台专属工具已合并于此；搜索智能体场景与 hub 自定义智能体工具组共用本清单。
+ */
+const WEB_SEARCH_TOOL_IDS = ['web_search'] as const;
 
-/** Bilibili 专用 */
+/** Bilibili 专用（检索走统一 web_search 的 website="bilibili"，视频页导航走浏览器工具） */
 const BILIBILI_TOOLS = [
   'bilibili_subtitle_tool',
   'bilibili_jump_tool',
-  'bilibili_search_result_scraper',
   'browser_navigate',
   'browser_go_back_or_forward',
-  'bilibili_search',
+  'web_search',
 ] as const;
 
 /** 笔记 / 外部记忆（统一 note_tool，action 区分增删改查与列表） */
@@ -128,13 +124,15 @@ const NETWORK_CAPTURE_TOOL = 'browser_network_capture';
 const AUTOMATION_TOOLS = [
   'browser_observe',
   'browser_interact',
+  'browser_dom_explore',
   'browser_get_all_tabs',
   'browser_switch_tab',
   'browser_navigate',
   'browser_get_page_info',
   'wait_page_load',
   'browser_go_back_or_forward',
-  'bing_search',
+  // 统一集成搜索（website 枚举区分平台，自带导航）
+  'web_search',
   'generic_wait',
   // 懒加载/无限滚动页面：getter 采样前先滚动触发渲染，再重新采集
   'browser_page_exec',
@@ -183,13 +181,15 @@ const VISION_AGENT_TOOLS = [
 const SITE_LEARN_DOM_TOOLS = [
   'browser_observe',
   'browser_interact',
+  'browser_dom_explore',
   'browser_get_all_tabs',
   'browser_switch_tab',
   'browser_navigate',
   'browser_get_page_info',
   'wait_page_load',
   'browser_go_back_or_forward',
-  'bing_search',
+  // 统一集成搜索（website 枚举区分平台，自带导航）
+  'web_search',
   'generic_wait',
   // 懒加载/无限滚动页面：getter 采样前先滚动触发渲染，再重新采集
   'browser_page_exec',
@@ -317,11 +317,12 @@ const PAGE_READ_GROUP_TOOLS = [
   'browser_web_fetcher',
 ] as const;
 
-/** DOM 元素交互（文本观察、节点交互与等待；
+/** DOM 元素交互（文本观察、结构探索、节点交互与等待；
  *  点击/填充统一走 browser_interact——内联 payload + frameId 精确定向 iframe，
  *  browser_click / browser_fill（content-script 消息通道）已下线） */
 const DOM_INTERACT_GROUP_TOOLS = [
   'browser_observe',
+  'browser_dom_explore',
   'browser_interact',
   'browser_wait_for_element',
 ] as const;
@@ -355,39 +356,11 @@ const BOOKMARK_HISTORY_GROUP_TOOLS = [
   'bookmark_navigation',
 ] as const;
 
-/** 扩展搜索平台（MOOC / 小红书 / 知网 / B 站检索） */
-const EXTENDED_SEARCH_GROUP_TOOLS = [
-  'mooc_search',
-  'xiaohongshu_search',
-  'cnki_search',
-  'bilibili_search',
-] as const;
-
-/** 搜索结果抓取（各平台结果页结构化解析为 Markdown 表格） */
-const RESULT_SCRAPE_GROUP_TOOLS = [
-  'baidu_result_scraper',
-  'bing_result_scraper',
-  'zhihu_result_scraper',
-  'github_result_scraper',
-  'csdn_result_scraper',
-  'cnki_result_scraper',
-  'mooc_result_scraper',
-  'xiaohongshu_result_scraper',
-  'bilibili_search_result_scraper',
-] as const;
-
-/** 集成搜索（检索 + 结果页抓取 + Markdown 表格一步完成） */
-const INTEGRATED_SEARCH_GROUP_TOOLS = [
-  'baidu_integrated_search',
-  'bing_integrated_search',
-  'zhihu_integrated_search',
-  'github_integrated_search',
-  'csdn_integrated_search',
-  'cnki_integrated_search',
-  'mooc_integrated_search',
-  'xiaohongshu_integrated_search',
-  'bilibili_integrated_search',
-] as const;
+/**
+ * 统一网页搜索（hub 自定义智能体工具组；website 枚举覆盖全部平台）。
+ * 与搜索智能体场景共用 WEB_SEARCH_TOOL_IDS，杜绝两份同值清单漂移。
+ */
+const WEB_SEARCH_GROUP_TOOLS = [...WEB_SEARCH_TOOL_IDS];
 
 /** 下载拦截与文件捕获（开启/停止拦截 + 已捕获文件列表/详情/清理） */
 const RESOURCE_CAPTURE_GROUP_TOOLS = [
@@ -460,10 +433,10 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
   /** Bilibili 检索与视频处理（站点搜索工具按会话动态扩展） */
   bilibili: [...BILIBILI_TOOLS],
 
-  /** 搜索智能体：多平台单次快速检索 */
-  searchAgent: [...SEARCH_PLATFORM_TOOLS, 'browser_get_page_info'],
+  /** 搜索智能体：多平台快速检索（统一 web_search，website 枚举区分平台） */
+  searchAgent: [...WEB_SEARCH_TOOL_IDS, 'browser_get_page_info'],
 
-  /** Deep Search：多站点深度调研（站点 search/scraper 按已开启站点动态注入） */
+  /** Deep Search：多站点深度调研（站点 website 枚举值按已开启站点动态注入提示） */
   deepSearch: [
     'browser_go_back_or_forward',
     'browser_navigate',
@@ -508,14 +481,8 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
   /** 书签与历史（hub 自定义智能体工具组） */
   bookmarkHistory: [...BOOKMARK_HISTORY_GROUP_TOOLS],
 
-  /** 扩展搜索平台（hub 自定义智能体工具组） */
-  extendedSearch: [...EXTENDED_SEARCH_GROUP_TOOLS],
-
-  /** 搜索结果抓取（hub 自定义智能体工具组） */
-  resultScrape: [...RESULT_SCRAPE_GROUP_TOOLS],
-
-  /** 集成搜索（hub 自定义智能体工具组） */
-  integratedSearch: [...INTEGRATED_SEARCH_GROUP_TOOLS],
+  /** 统一网页搜索（hub 自定义智能体工具组；website 枚举覆盖全部平台） */
+  webSearch: [...WEB_SEARCH_GROUP_TOOLS],
 
   /** 下载拦截与文件捕获（hub 自定义智能体工具组） */
   resourceCapture: [...RESOURCE_CAPTURE_GROUP_TOOLS],

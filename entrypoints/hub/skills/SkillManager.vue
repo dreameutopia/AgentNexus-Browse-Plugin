@@ -177,25 +177,182 @@
           </div>
         </template>
 
-        <!-- 高级模式：左列完整 SKILL.md 原文，右列实时校验 + 资源文件 -->
+        <!-- 高级模式：VS Code 式双栏——左侧文件树（入口置顶 + 目录分组），右侧当前文件编辑器 -->
         <template v-else>
-          <div class="hub-editor-col">
-            <label class="hub-field hub-field--grow">
-              <span class="hub-field-label">{{ t('hub.fieldRawSkillMd') }}</span>
-              <textarea
-                v-model="form.raw"
-                rows="26"
-                class="hub-body-editor hub-raw-editor hub-field--fill"
-                :placeholder="t('hub.fieldRawSkillMdPlaceholder')"
-                spellcheck="false"
-              ></textarea>
-              <span class="hub-hint">{{ t('hub.fieldRawSkillMdHint') }}</span>
-            </label>
-          </div>
+          <!-- 左：文件树 -->
+          <aside class="hub-tree" :aria-label="t('hub.treeHeader')">
+            <div class="hub-tree-head">
+              <span class="hub-tree-title">{{ t('hub.treeHeader') }}</span>
+              <span class="hub-tree-count">{{ resourceFileCount + 1 }}</span>
+              <button
+                type="button"
+                class="hub-icon-btn hub-tree-add"
+                :title="t('hub.treeNewFileTitle')"
+                :aria-label="t('hub.treeNewFileTitle')"
+                @click="beginCreateFile"
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M8 3.2v9.6M3.2 8h9.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                </svg>
+              </button>
+            </div>
 
-          <div class="hub-editor-col">
-            <!-- 实时校验面板：随输入逐帧更新（computed 驱动），保存按钮联动禁用 -->
+            <div class="hub-tree-body">
+              <!-- 新建文件输入行（Enter 确认 / Esc 取消；半敲路径不随保存落库） -->
+              <div v-if="creatingFile" class="hub-tree-input-row">
+                <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon">
+                  <path d="M4.2 2.2h5l2.8 2.8v8.8H4.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+                </svg>
+                <input
+                  ref="createInputRef"
+                  v-model="creatingValue"
+                  type="text"
+                  maxlength="200"
+                  :placeholder="t('hub.treeNewFilePlaceholder')"
+                  spellcheck="false"
+                  @keydown.enter.prevent="commitCreateFile"
+                  @keydown.esc.stop="cancelTreeInput"
+                />
+                <button type="button" class="hub-icon-btn" :title="t('hub.treeCreate')" @click="commitCreateFile">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.6 8.4l2.8 2.8 6-6.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                </button>
+                <button type="button" class="hub-icon-btn" :title="t('common.cancel')" @click="cancelTreeInput">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
+                </button>
+              </div>
+
+              <!-- 入口文件（置顶；路径固定，由主编辑语义承载，不可删改） -->
+              <button
+                type="button"
+                class="hub-tree-row is-entry"
+                :class="{ 'is-active': selectedIsEntry }"
+                @click="selectFile('SKILL.md')"
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon">
+                  <path d="M5 2.6h6v10.8l-3-2.2-3 2.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+                </svg>
+                <span class="hub-tree-name">SKILL.md</span>
+                <span v-if="isFileDirty('SKILL.md')" class="hub-tree-dirty" :title="t('hub.treeDirty')" />
+                <span class="hub-tree-badge">{{ t('hub.treeEntryBadge') }}</span>
+              </button>
+
+              <!-- 目录与资源文件（目录可折叠；文件行悬停出重命名 / 删除） -->
+              <template v-for="row in treeRows" :key="row.key">
+                <!-- 重命名行（整行替换为输入） -->
+                <div v-if="row.kind === 'file' && renamingPath === row.path" class="hub-tree-input-row is-nested" :style="{ '--depth': row.depth }">
+                  <input
+                    :ref="setRenameInputEl"
+                    v-model="renamingValue"
+                    type="text"
+                    maxlength="200"
+                    spellcheck="false"
+                    @keydown.enter.prevent="commitRenameFile"
+                    @keydown.esc.stop="cancelTreeInput"
+                  />
+                  <button type="button" class="hub-icon-btn" :title="t('hub.treeRenameApply')" @click="commitRenameFile">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.6 8.4l2.8 2.8 6-6.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                  </button>
+                  <button type="button" class="hub-icon-btn" :title="t('common.cancel')" @click="cancelTreeInput">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
+                  </button>
+                </div>
+
+                <!-- 目录行（折叠 / 展开） -->
+                <button
+                  v-else-if="row.kind === 'folder'"
+                  type="button"
+                  class="hub-tree-row is-folder"
+                  :style="{ '--depth': row.depth }"
+                  :aria-expanded="!collapsedFolders.has(row.folderPath ?? '')"
+                  @click="toggleFolder(row.folderPath ?? '')"
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-chevron" :class="{ 'is-collapsed': collapsedFolders.has(row.folderPath ?? '') }">
+                    <path d="M6.2 4.2L10 8l-3.8 3.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                  <span class="hub-tree-name">{{ row.label }}</span>
+                </button>
+
+                <!-- 文件行 -->
+                <div v-else class="hub-tree-branch" :style="{ '--depth': row.depth }">
+                  <button
+                    type="button"
+                    class="hub-tree-row is-file"
+                    :class="{ 'is-active': selectedFile === row.path }"
+                    :title="row.path"
+                    @click="selectFile(row.path ?? '')"
+                  >
+                    <svg v-if="fileIconKind(row.label) === 'md'" viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon">
+                      <path d="M4.2 2.2h5l2.8 2.8v8.8H4.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+                      <path d="M6.2 8.6h3.6M6.2 10.8h2.4" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" />
+                    </svg>
+                    <svg v-else-if="fileIconKind(row.label) === 'code'" viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon">
+                      <path d="M6.1 5.2L3.4 8l2.7 2.8M9.9 5.2L12.6 8l-2.7 2.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                    <svg v-else viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon">
+                      <path d="M4.2 2.2h5l2.8 2.8v8.8H4.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+                    </svg>
+                    <span class="hub-tree-name">{{ row.label }}</span>
+                    <span v-if="isFileDirty(row.path ?? '')" class="hub-tree-dirty" :title="t('hub.treeDirty')" />
+                  </button>
+                  <span class="hub-tree-ops">
+                    <button type="button" class="hub-icon-btn" :title="t('hub.treeRename')" :aria-label="t('hub.treeRename')" @click.stop="beginRenameFile(row.path ?? '')">
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 12l.6-2.4 6.2-6.2 1.8 1.8-6.2 6.2zM9.8 4.4l1.8 1.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" /></svg>
+                    </button>
+                    <button type="button" class="hub-icon-btn hub-icon-btn--danger" :title="t('hub.delete')" :aria-label="t('hub.delete')" @click.stop="removeResourceFile(row.path ?? '')">
+                      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 5h8M6.5 5V3.8h3V5M5.4 5l.5 7.2h4.2l.5-7.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                    </button>
+                  </span>
+                </div>
+              </template>
+
+              <p v-if="treeError" class="hub-tree-error" role="alert">{{ treeError }}</p>
+              <p v-if="resourceFileCount === 0 && !creatingFile" class="hub-tree-empty">{{ t('hub.resourceFilesEmpty') }}</p>
+            </div>
+          </aside>
+
+          <!-- 右：当前文件编辑器 -->
+          <div class="hub-code">
+            <div class="hub-code-head">
+              <svg v-if="selectedIsEntry" viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon">
+                <path d="M5 2.6h6v10.8l-3-2.2-3 2.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+              </svg>
+              <svg v-else viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon">
+                <path d="M4.2 2.2h5l2.8 2.8v8.8H4.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+                <path d="M6.2 8.6h3.6M6.2 10.8h2.4" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" />
+              </svg>
+              <span class="hub-code-path" :title="selectedFile">{{ selectedFile }}</span>
+              <span v-if="isFileDirty(selectedFile)" class="hub-tree-dirty" :title="t('hub.treeDirty')" />
+              <span class="hub-code-meta">{{ t('hub.resourceFileChars', { count: selectedIsEntry ? form.raw.length : selectedResourceText.length }) }}</span>
+              <button
+                v-if="!selectedIsEntry"
+                type="button"
+                class="hub-icon-btn hub-icon-btn--danger"
+                :title="t('hub.delete')"
+                :aria-label="t('hub.delete')"
+                @click="removeResourceFile(selectedFile)"
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 5h8M6.5 5V3.8h3V5M5.4 5l.5 7.2h4.2l.5-7.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              </button>
+            </div>
+
+            <textarea
+              v-if="selectedIsEntry"
+              v-model="form.raw"
+              class="hub-code-input"
+              :placeholder="t('hub.fieldRawSkillMdPlaceholder')"
+              spellcheck="false"
+            ></textarea>
+            <textarea
+              v-else
+              v-model="selectedResourceText"
+              class="hub-code-input"
+              :placeholder="t('hub.treeFilePlaceholder')"
+              spellcheck="false"
+            ></textarea>
+
+            <!-- 状态条：入口文件 = 实时校验；资源文件 = 环境与读取说明 -->
             <div
+              v-if="selectedIsEntry"
               class="hub-validation"
               :class="rawValidation.ok ? 'is-ok' : 'is-error'"
               role="status"
@@ -229,77 +386,14 @@
                 </li>
               </ul>
             </div>
-
-            <!-- 资源文件管理（文件夹式技能）：SKILL.md 之外的文件树增 / 改 / 删 / 重命名 -->
-            <div class="hub-field hub-resource-manager">
-              <span class="hub-field-label">{{ t('hub.resourceFilesTitle', { count: resourceFileCount }) }}</span>
-              <p class="hub-hint">{{ t('hub.resourceFilesHint') }}</p>
-
-              <div v-if="resourceFileCount > 0" class="hub-resource-list">
-                <div
-                  v-for="(content, path) in resourceFiles"
-                  :key="path"
-                  class="hub-resource-item"
-                  :class="{ 'is-active': resourceEditingPath === path }"
-                >
-                  <button type="button" class="hub-resource-path" :title="path" @click="openResourceFile(path)">
-                    {{ path }}
-                  </button>
-                  <span class="hub-resource-size">{{ t('hub.resourceFileChars', { count: content.length }) }}</span>
-                  <span class="hub-resource-ops">
-                    <button type="button" class="hub-op" @click="openResourceFile(path)">{{ t('hub.edit') }}</button>
-                    <button type="button" class="hub-op hub-op-danger" @click="removeResourceFile(path)">
-                      {{ t('hub.delete') }}
-                    </button>
-                  </span>
-                </div>
-              </div>
-              <p v-else class="hub-hint">{{ t('hub.resourceFilesEmpty') }}</p>
-
-              <!-- 单文件编辑面板（新建 / 编辑 / 重命名共用） -->
-              <div v-if="resourceEditorOpen" class="hub-resource-editor">
-                <label class="hub-field">
-                  <span class="hub-field-label">{{ t('hub.resourceFilePath') }}</span>
-                  <input
-                    v-model.trim="resourceForm.path"
-                    type="text"
-                    maxlength="200"
-                    :placeholder="t('hub.resourceFilePathPlaceholder')"
-                  />
-                  <span v-if="resourceEditingPath && resourceEditingPath !== resourceForm.path" class="hub-hint">
-                    {{ t('hub.resourceFileRenameHint', { path: resourceEditingPath }) }}
-                  </span>
-                </label>
-                <label class="hub-field">
-                  <span class="hub-field-label">{{ t('hub.resourceFileContent') }}</span>
-                  <textarea
-                    v-model="resourceForm.content"
-                    rows="12"
-                    class="hub-body-editor"
-                    spellcheck="false"
-                  ></textarea>
-                </label>
-                <p v-if="resourceError" class="hub-error">{{ resourceError }}</p>
-                <div class="hub-editor-actions">
-                  <button type="button" class="hub-btn" @click="closeResourceEditor">{{ t('common.cancel') }}</button>
-                  <button type="button" class="hub-btn hub-btn-primary" @click="saveResourceFile">
-                    {{ t('hub.resourceFileSave') }}
-                  </button>
-                </div>
-              </div>
-              <button v-else type="button" class="hub-btn" @click="startResourceCreate">
-                {{ t('hub.resourceFileAdd') }}
-              </button>
-            </div>
+            <p v-else class="hub-code-note">{{ t('hub.resourceFilesHint') }}</p>
           </div>
         </template>
       </div>
 
       <div class="hub-editor-footer">
         <span v-if="errorMessage" class="hub-error">{{ errorMessage }}</span>
-        <span v-else-if="editorMode === 'advanced' && resourceEditorOpen" class="hub-hint">
-          {{ t('hub.resourceEditorOpenHint') }}
-        </span>
+        <span v-else-if="advancedBlockHint" class="hub-hint">{{ advancedBlockHint }}</span>
         <div class="hub-editor-actions">
           <button type="button" class="hub-btn" @click="cancelEdit">{{ t('common.cancel') }}</button>
           <button type="submit" class="hub-btn hub-btn-primary" :disabled="!canSave || saving">{{ t('common.save') }}</button>
@@ -314,16 +408,20 @@
  * 技能管理：全量启停（含预置，跨上下文同步）+ 自定义技能的新建/编辑/删除
  * + zip / md 导入导出。
  *
- * 编辑器双模式（左右布局，模式经 HubSegmented 分段控件切换）：
+ * 编辑器双模式（模式经 HubSegmented 分段控件切换）：
  *   - 简单模式：左列 name / description / category / tags，右列提示词正文；
  *     保存时自动组装规范 SKILL.md（其余 frontmatter 字段在编辑既有技能时
  *     原样保留），百分百可正确创建；分类必选，与智能体共用同一套分类/标签规范；
- *   - 高级模式：左列直接编辑完整 SKILL.md（frontmatter + 正文），右列为
- *     实时校验面板（输入即校验、逐条提示格式问题）+ 资源文件管理。
+ *     资源文件不进入表单、保存时原样携带（数据结构保证绝不丢文件）。
+ *   - 高级模式：VS Code 式双栏——左侧文件树（SKILL.md 入口置顶 + 目录分组、
+ *     新建 / 重命名 / 删除 / 折叠、脏标记圆点），右侧当前文件编辑器
+ *     （字数与脏态页头 + 等宽编辑区 + 状态条：入口文件挂实时校验面板，
+ *     资源文件挂环境与读取说明）。编辑直接绑定内存文件表，主保存统一落库；
+ *     新建/重命名的半敲输入不落库（保存被阻止直至收笔），配额上限持续校验。
  * 模式互切有内容转换：简单 → 高级按表单重组原文；高级 → 简单解析回填
  * （解析失败时阻止切换，避免半份内容静默丢失）。
  */
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { t, type MessageKey } from '@/utils/i18n';
 import CategorySelect from '../components/CategorySelect.vue';
 // Hub 共享自定义控件：分段控件（模式切换）与 iOS 形态开关（技能启停）
@@ -638,21 +736,123 @@ const form = reactive({
  */
 let preservedFrontmatterLines: string[] = [];
 
-// ──── 资源文件（文件夹式技能：SKILL.md 之外的文件树） ────
+// ──── 资源文件（文件夹式技能：SKILL.md 之外的文件树，VS Code 式编辑） ────
 
 /**
- * 资源文件表：相对路径 → 内容。与主编辑区（SKILL.md）分离承载，
+ * 资源文件表：相对路径 → 内容。与 SKILL.md 正文（form.raw）分离承载，
  * 简单 / 高级模式切换、保存、草稿预填都不触碰它——「简单模式保存绝不丢文件」
  * 这条防线由数据结构保证，而不是靠流程小心。
  */
 const resourceFiles = ref<Record<string, string>>({});
 const resourceFileCount = computed(() => Object.keys(resourceFiles.value).length);
-/** 单文件编辑面板开关 */
-const resourceEditorOpen = ref(false);
-/** 正在编辑的既有文件路径（null = 新建；与输入框不同即视为重命名/移动） */
-const resourceEditingPath = ref<string | null>(null);
-const resourceForm = reactive({ path: '', content: '' });
-const resourceError = ref('');
+
+/** 高级模式当前打开的文件：'SKILL.md' = 入口原文，否则为资源文件相对路径 */
+const selectedFile = ref('SKILL.md');
+const selectedIsEntry = computed(() => selectedFile.value === 'SKILL.md');
+
+/** 当前打开的资源文件内容（双向绑定；入口文件走 form.raw，不经此通道） */
+const selectedResourceText = computed<string>({
+  get: () => {
+    const path = selectedFile.value;
+    return path !== 'SKILL.md' ? (resourceFiles.value[path] ?? '') : '';
+  },
+  set: value => {
+    const path = selectedFile.value;
+    if (path !== 'SKILL.md' && resourceFiles.value[path] !== undefined) {
+      resourceFiles.value[path] = value;
+    }
+  },
+});
+
+/** 文件树瞬时输入态：新建行 + 单行重命名。半敲的路径不是内容——不进编辑器快照，主保存期间视为未收笔 */
+const creatingFile = ref(false);
+const creatingValue = ref('');
+const renamingPath = ref<string | null>(null);
+const renamingValue = ref('');
+/** 树内输入的就地错误提示（路径非法 / 重复 / 超限） */
+const treeError = ref('');
+const treeInputActive = computed(() => creatingFile.value || renamingPath.value !== null);
+
+/** 折叠目录集合（不可变替换保证响应性） */
+const collapsedFolders = ref<Set<string>>(new Set());
+
+const createInputRef = ref<HTMLInputElement | null>(null);
+let renameInputEl: HTMLElement | null = null;
+/** 重命名行的动态 ref（v-for 内无法用静态 ref 收集） */
+function setRenameInputEl(el: unknown): void {
+  renameInputEl = el instanceof HTMLElement ? el : null;
+}
+function focusElement(el: HTMLElement | null): void {
+  try {
+    el?.focus();
+  } catch {
+    /* JSDOM 等宿主无 focus 实现时静默（聚焦是纯增强，不影响功能） */
+  }
+}
+
+/** 文件树展示行（扁平化 + 缩进深度；折叠目录的子行不产出） */
+interface TreeRow {
+  key: string;
+  kind: 'folder' | 'file';
+  label: string;
+  depth: number;
+  /** 文件行：完整相对路径 */
+  path?: string;
+  /** 目录行：目录前缀路径 */
+  folderPath?: string;
+}
+
+const treeRows = computed<TreeRow[]>(() => {
+  interface FolderNode {
+    folders: Map<string, FolderNode>;
+    files: string[];
+  }
+  const root: FolderNode = { folders: new Map(), files: [] };
+  const ensureFolder = (folderPath: string): FolderNode => {
+    if (folderPath === '') return root;
+    const parentPath = folderPath.includes('/') ? folderPath.slice(0, folderPath.lastIndexOf('/')) : '';
+    const parent = ensureFolder(parentPath);
+    let node = parent.folders.get(folderPath);
+    if (!node) {
+      node = { folders: new Map(), files: [] };
+      parent.folders.set(folderPath, node);
+    }
+    return node;
+  };
+  for (const path of Object.keys(resourceFiles.value)) {
+    const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+    ensureFolder(dir).files.push(path);
+  }
+
+  const rows: TreeRow[] = [];
+  const walk = (node: FolderNode, depth: number): void => {
+    for (const folderPath of [...node.folders.keys()].sort((a, b) => a.localeCompare(b))) {
+      const label = folderPath.split('/').pop() ?? folderPath;
+      rows.push({ key: `d:${folderPath}`, kind: 'folder', label, depth, folderPath });
+      if (!collapsedFolders.value.has(folderPath)) walk(node.folders.get(folderPath)!, depth + 1);
+    }
+    const files = [...node.files].sort((a, b) => a.localeCompare(b));
+    for (const filePath of files) {
+      rows.push({ key: `f:${filePath}`, kind: 'file', label: filePath.split('/').pop() ?? filePath, depth, path: filePath });
+    }
+  };
+  walk(root, 0);
+  return rows;
+});
+
+/** 文件图标分型（纯展示；与工具层读取能力无关——一切按纯文本存储） */
+function fileIconKind(name: string): 'md' | 'code' | 'file' {
+  if (/\.(md|markdown|txt)$/i.test(name)) return 'md';
+  if (/\.(py|sh|bash|js|mjs|cjs|ts|json|ya?ml|toml|csv|html|css|xml)$/i.test(name)) return 'code';
+  return 'file';
+}
+
+/** 与持久层比对的单文件脏标记（新技能没有任何基准 → 一切非空皆未保存） */
+function isFileDirty(path: string): boolean {
+  const source = editingSource.value?.files ?? {};
+  if (path === 'SKILL.md') return form.raw !== (source['SKILL.md'] ?? '');
+  return (resourceFiles.value[path] ?? null) !== (source[path] ?? null);
+}
 
 /** 归一化资源路径：反斜杠转正斜杠、去空白与 './' 前缀（与导入清洗同规则） */
 function normalizeResourcePath(raw: string): string {
@@ -668,7 +868,7 @@ function hasControlCharacter(text: string): boolean {
   return false;
 }
 
-/** 校验资源路径（originalPath 为正在编辑的原路径，重命名时排除自比较） */
+/** 校验资源路径（originalPath 为重命名时的原路径，排除自比较） */
 function validateResourcePath(path: string, originalPath: string | null): string | null {
   if (
     !path ||
@@ -693,75 +893,120 @@ function validateResourcePath(path: string, originalPath: string | null): string
   return null;
 }
 
-function closeResourceEditor(): void {
-  resourceEditorOpen.value = false;
-  resourceEditingPath.value = null;
-  resourceForm.path = '';
-  resourceForm.content = '';
-  resourceError.value = '';
+// ──── 文件树操作（新建 / 重命名 / 删除 / 选中有防串扰的输入态管理） ────
+
+function cancelTreeInput(): void {
+  creatingFile.value = false;
+  creatingValue.value = '';
+  renamingPath.value = null;
+  renamingValue.value = '';
+  treeError.value = '';
 }
 
-function startResourceCreate(): void {
-  closeResourceEditor();
-  resourceEditorOpen.value = true;
+/** 切换选中文件：先收笔（半敲输入不该跟着切走），保证任意时刻只有一个焦点流 */
+function selectFile(path: string): void {
+  cancelTreeInput();
+  selectedFile.value = path;
 }
 
-function openResourceFile(path: string): void {
-  const content = resourceFiles.value[path];
-  if (content === undefined) return;
-  closeResourceEditor();
-  resourceEditingPath.value = path;
-  resourceForm.path = path;
-  resourceForm.content = content;
-  resourceEditorOpen.value = true;
+function beginCreateFile(): void {
+  cancelTreeInput();
+  creatingFile.value = true;
+  void nextTick(() => focusElement(createInputRef.value));
 }
 
-/**
- * 保存资源文件（新建 / 覆盖 / 重命名移动共用）。
- * 容量校验与导入同一套上限（单文件 / 总量含 SKILL.md / 文件数），
- * 两处口径不一致会出现「能导入却在编辑器里存不进去」的割裂。
- */
-function saveResourceFile(): void {
-  const path = normalizeResourcePath(resourceForm.path);
-  const pathError = validateResourcePath(path, resourceEditingPath.value);
+function beginRenameFile(path: string): void {
+  if (resourceFiles.value[path] === undefined) return;
+  cancelTreeInput();
+  renamingPath.value = path;
+  renamingValue.value = path;
+  void nextTick(() => focusElement(renameInputEl));
+}
+
+function commitCreateFile(): void {
+  const path = normalizeResourcePath(creatingValue.value);
+  const pathError = validateResourcePath(path, null);
   if (pathError) {
-    resourceError.value = pathError;
+    treeError.value = pathError;
     return;
   }
-  if (resourceForm.content.length > SKILL_IMPORT_MAX_FILE_CHARS) {
-    resourceError.value = t('hub.resourceFileTooLarge', { max: SKILL_IMPORT_MAX_FILE_CHARS });
+  // 文件数上限（含 SKILL.md；与导入同一套口径）
+  if (Object.keys(resourceFiles.value).length + 1 + 1 > SKILL_IMPORT_MAX_FILES) {
+    treeError.value = t('hub.resourceFileLimit', { max: SKILL_IMPORT_MAX_FILES });
+    return;
+  }
+  resourceFiles.value = { ...resourceFiles.value, [path]: '' };
+  cancelTreeInput();
+  selectedFile.value = path;
+}
+
+function commitRenameFile(): void {
+  const from = renamingPath.value;
+  if (from === null) return;
+  const to = normalizeResourcePath(renamingValue.value);
+  if (to === from) {
+    cancelTreeInput();
+    return;
+  }
+  const pathError = validateResourcePath(to, from);
+  if (pathError) {
+    treeError.value = pathError;
     return;
   }
   const next = { ...resourceFiles.value };
-  if (resourceEditingPath.value !== null && resourceEditingPath.value !== path) {
-    delete next[resourceEditingPath.value];
-  }
-  next[path] = resourceForm.content;
-  // 总量按「资源文件 + 当前模式下的 SKILL.md」估算；SKILL.md 变更在保存时再终检
-  const skillMdLength =
-    editorMode.value === 'simple' ? composeSkillMd().length : form.raw.length;
-  const totalChars =
-    Object.entries(next).reduce((sum, [, content]) => sum + content.length, 0) + skillMdLength;
-  if (totalChars > SKILL_IMPORT_MAX_TOTAL_CHARS) {
-    resourceError.value = t('hub.resourceTotalTooLarge', { max: SKILL_IMPORT_MAX_TOTAL_CHARS });
-    return;
-  }
-  if (Object.keys(next).length + 1 > SKILL_IMPORT_MAX_FILES) {
-    resourceError.value = t('hub.resourceFileLimit', { max: SKILL_IMPORT_MAX_FILES });
-    return;
-  }
+  next[to] = next[from] ?? '';
+  delete next[from];
   resourceFiles.value = next;
-  closeResourceEditor();
+  if (selectedFile.value === from) selectedFile.value = to;
+  cancelTreeInput();
 }
 
-/** 删除资源文件（二次确认；正在编辑该文件时同步关闭编辑面板） */
+/** 删除资源文件（二次确认；选中态与重命名态指向该文件时同步回退） */
 function removeResourceFile(path: string): void {
+  if (resourceFiles.value[path] === undefined) return;
   if (!window.confirm(t('hub.confirmDeleteResourceFile', { path }))) return;
   const next = { ...resourceFiles.value };
   delete next[path];
   resourceFiles.value = next;
-  if (resourceEditingPath.value === path) closeResourceEditor();
+  if (selectedFile.value === path) selectedFile.value = 'SKILL.md';
+  if (renamingPath.value === path) cancelTreeInput();
 }
+
+function toggleFolder(folderPath: string): void {
+  const next = new Set(collapsedFolders.value);
+  if (next.has(folderPath)) next.delete(folderPath);
+  else next.add(folderPath);
+  collapsedFolders.value = next;
+}
+
+/**
+ * 高级模式文件配额终检（与导入同一套上限：文件数 / 单文件 / 总量含 SKILL.md）。
+ * 旧面板流程只在「保存文件」时校验，直接绑定编辑后改为持续校验——
+ * 返回 null 表示通过，否则返回可读文案（主保存禁用 + 页脚提示共用）。
+ */
+const advancedFilesIssue = computed<string | null>(() => {
+  const entries = Object.entries(resourceFiles.value);
+  if (entries.length + 1 > SKILL_IMPORT_MAX_FILES) {
+    return t('hub.resourceFileLimit', { max: SKILL_IMPORT_MAX_FILES });
+  }
+  for (const [path, content] of entries) {
+    if (content.length > SKILL_IMPORT_MAX_FILE_CHARS) {
+      return t('hub.resourceFileTooLarge', { max: SKILL_IMPORT_MAX_FILE_CHARS, source: path });
+    }
+  }
+  const totalChars = entries.reduce((sum, [, content]) => sum + content.length, 0) + form.raw.length;
+  if (totalChars > SKILL_IMPORT_MAX_TOTAL_CHARS) {
+    return t('hub.resourceTotalTooLarge', { max: SKILL_IMPORT_MAX_TOTAL_CHARS });
+  }
+  return null;
+});
+
+/** 高级模式阻止主保存的就地提示（页脚展示，与按钮禁用同一口径） */
+const advancedBlockHint = computed<string | null>(() => {
+  if (editorMode.value !== 'advanced') return null;
+  if (treeInputActive.value) return t('hub.resourceEditorOpenHint');
+  return advancedFilesIssue.value;
+});
 
 // ──── 网站学习成果（持久交接与编辑恢复） ────
 
@@ -780,8 +1025,7 @@ let destroyed = false;
 
 function editorSnapshot(): LearnDraftEditorState {
   return JSON.parse(JSON.stringify({ form, editorMode: editorMode.value, preservedFrontmatterLines,
-    resourceFiles: resourceFiles.value, resourceEditorOpen: resourceEditorOpen.value,
-    resourceEditingPath: resourceEditingPath.value, resourceForm }));
+    resourceFiles: resourceFiles.value, selectedFile: selectedFile.value }));
 }
 function queueEditorCopy(): void {
   const id = activeTransferId.value;
@@ -797,7 +1041,7 @@ watch(() => activeTransferId.value ? JSON.stringify(editorSnapshot()) : '', queu
 onUnmounted(() => { destroyed = true; void editorWrites.finally(() => releaseEditor?.()); });
 
 /** Only the shell's explicit user acknowledgement can open this form. */
-async function acceptLearnDraft(id: string): Promise<{ ok: boolean; error?: string }> {
+async function acceptLearnDraft(id: string): Promise<{ ok: boolean; error?: string; outcome?: 'saved' | 'ignored' }> {
   if (acceptingDraft.value || saving.value) return { ok: false, error: t('hub.learnHandoffBusy') };
   if (activeTransferId.value === id) return { ok: true };
   if (editing.value) return { ok: false, error: t('hub.learnHandoffSaveFirst') };
@@ -809,22 +1053,28 @@ async function acceptLearnDraft(id: string): Promise<{ ok: boolean; error?: stri
     const result = await readLearnDraft(id);
     if (destroyed) return { ok: false, error: t('hub.learnHandoffReadFailed') };
     if (result.status !== 'ok') return { ok: false, error: t('hub.learnHandoffReadFailed') };
-    if (result.transfer.status !== 'pending') return { ok: false, error: t('hub.learnHandoffAlreadyHandled') };
+    if (result.transfer.status === 'saved') return { ok: false, outcome: 'saved', error: t('hub.learnHandoffAlreadyHandled') };
+    if (result.transfer.status === 'discarded' || result.transfer.recoveryDismissed) return { ok: false, outcome: 'ignored', error: t('hub.learnHandoffIgnored') };
     if (editing.value) return { ok: false, error: t('hub.learnHandoffSaveFirst') };
     const state = result.transfer.editorState;
     if (state !== undefined && !isLearnDraftEditorState(state)) return { ok: false, error: t('hub.learnHandoffReadFailed') };
     const saved = getAllSkills().find(skill => skill.source === 'custom' && parseFrontmatter(skill.files['SKILL.md'] ?? '').data[LEARN_TRANSFER_MARKER] === id);
     if (saved && !state) {
       const acknowledged = await completeLearnDraft(id, saved.id);
-      return acknowledged.ok ? { ok: false, error: t('hub.learnHandoffAlreadyHandled') } : acknowledged;
+      return acknowledged.ok ? { ok: false, outcome: 'saved', error: t('hub.learnHandoffAlreadyHandled') } : acknowledged;
     }
     restoringDraft = true;
     startCreateWithDraft(result.transfer.draft);
     if (state) {
       Object.assign(form, state.form); editorMode.value = state.editorMode;
       preservedFrontmatterLines = [...state.preservedFrontmatterLines];
-      resourceFiles.value = { ...state.resourceFiles }; resourceEditorOpen.value = state.resourceEditorOpen;
-      resourceEditingPath.value = state.resourceEditingPath; Object.assign(resourceForm, state.resourceForm);
+      resourceFiles.value = { ...state.resourceFiles };
+      // 选中态防御：快照指向的文件可能已被并发删除——失效即回退入口文件
+      selectedFile.value =
+        state.selectedFile === 'SKILL.md' || state.selectedFile in resourceFiles.value
+          ? state.selectedFile
+          : 'SKILL.md';
+      cancelTreeInput();
     }
     if (saved) { editingSource.value = saved; editingExisting.value = true; }
     preservedFrontmatterLines = preservedFrontmatterLines.filter(line => !line.startsWith(LEARN_TRANSFER_MARKER + ':'));
@@ -925,14 +1175,15 @@ const rawIssues = computed<string[]>(() =>
 /**
  * 可保存判定：
  *   - 简单模式：表单校验通过；
- *   - 高级模式：SKILL.md 校验通过 **且** 资源文件编辑面板已关闭——
- *     面板内容只有在面板内「保存文件」后才进入文件表，主保存带着未保存的
- *     面板直接提交会静默丢掉那份编辑。禁用 + 提示，而不是替用户决定。
+ *   - 高级模式：SKILL.md 校验通过 **且** 文件树输入已收笔（半敲的新建/重命名
+ *     路径不是内容，带着未收笔的输入保存会静默丢掉那一笔）**且** 全部文件
+ *     在配额内（文件数 / 单文件 / 总量，与导入同一套口径，持续校验）。
+ * 禁用 + 页脚就地提示，而不是替用户决定。
  */
 const canSave = computed(() =>
   editorMode.value === 'simple'
     ? simpleValid.value
-    : rawValidation.value.ok && !resourceEditorOpen.value,
+    : rawValidation.value.ok && !treeInputActive.value && advancedFilesIssue.value === null,
 );
 
 function resetForm(): void {
@@ -947,7 +1198,9 @@ function resetForm(): void {
   errorMessage.value = '';
   draftCard.value = null;
   resourceFiles.value = {};
-  closeResourceEditor();
+  selectedFile.value = 'SKILL.md';
+  collapsedFolders.value = new Set();
+  cancelTreeInput();
 }
 
 function startCreate(): void {
@@ -996,7 +1249,9 @@ function startEdit(skill: SkillRecord): void {
   resourceFiles.value = Object.fromEntries(
     Object.entries(skill.files).filter(([path]) => path !== 'SKILL.md'),
   );
-  closeResourceEditor();
+  selectedFile.value = 'SKILL.md';
+  collapsedFolders.value = new Set();
+  cancelTreeInput();
   // 分类回填：内置分类直接选中；自定义分类进入「自定义创建」态并回填名称
   // （历史数据缺分类时由存储层归入通用，此处不会出现空白项）
   if (!skill.category || isBuiltinCategory(skill.category)) {
@@ -1119,10 +1374,10 @@ async function save(): Promise<void> {
 }
 async function saveImpl(): Promise<void> {
   if (!canSave.value) {
-    // 区分不可保存原因：资源面板未收起（提示收面板）而非笼统的「表单不完整」
+    // 区分不可保存原因：树输入未收笔 / 配额超限给出就地提示，而非笼统的「表单不完整」
     errorMessage.value =
-      editorMode.value === 'advanced' && resourceEditorOpen.value
-        ? t('hub.resourceEditorOpenHint')
+      editorMode.value === 'advanced'
+        ? (advancedBlockHint.value ?? t('hub.errorSkillInvalid'))
         : t('hub.errorSkillInvalid');
     return;
   }

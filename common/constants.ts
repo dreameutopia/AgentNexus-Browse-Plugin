@@ -148,6 +148,8 @@ export const TOOL_NAMES = {
     PAGE_EXEC: 'browser_page_exec',
     PAGE_EXTRACT_DATA: 'browser_extract_data',
     PAGE_CLEAN: 'browser_clean_page',
+    // DOM 关系探索（重复结构识别 / 批量抓取入口发现）
+    DOM_EXPLORE: 'browser_dom_explore',
     
     // Navigation tools
     NAVIGATE: 'browser_navigate',

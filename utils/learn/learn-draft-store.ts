@@ -28,7 +28,8 @@ function valid(value: unknown): value is LearnDraftTransfer {
   const p = value as LearnDraftTransfer;
   return p.version === 2 && isLearnTransferId(p.id) && typeof p.sourceChatId === 'string' &&
     Number.isFinite(p.createdAt) && p.createdAt >= 0 && !!asSkillDraft(p.draft) && p.draft.allowedTools.length > 0 &&
-    ['pending', 'saved', 'discarded'].includes(p.status) && (p.status !== 'saved' || typeof p.savedSkillId === 'string');
+    ['pending', 'saved', 'discarded'].includes(p.status) && (p.status !== 'saved' || typeof p.savedSkillId === 'string') &&
+    (p.recoveryDismissed === undefined || typeof p.recoveryDismissed === 'boolean');
 }
 
 async function digest(value: string): Promise<string> {
@@ -72,6 +73,45 @@ export async function readLearnDraft(id: string): Promise<
   } catch (error) { return { status: 'error', error: failure(error).error }; }
 }
 
+export type LearnRecoveryStatus = 'available' | 'saved' | 'ignored';
+
+/** Pure lookup: reopening a transcript must not recreate a saved/dismissed handoff. */
+export async function readLearnRecovery(draft: SkillDraft, sourceChatId: string): Promise<
+  { ok: true; status: LearnRecoveryStatus; transferId: string } | Failure
+> {
+  try {
+    if (!sourceChatId || !asSkillDraft(draft)) throw new Error('缺少学习会话或有效草稿');
+    const transferId = await digest(sourceChatId + '\n' + JSON.stringify(JSON.parse(JSON.stringify(draft))));
+    const result = await readLearnDraft(transferId);
+    if (result.status === 'error') throw new Error(result.error);
+    if (result.status === 'invalid') throw new Error('学习成果交接记录异常，已保留原数据');
+    if (result.status === 'ok' && result.transfer.sourceChatId !== sourceChatId) throw new Error('学习成果与会话不匹配，已保留原数据');
+    const status: LearnRecoveryStatus = result.status === 'ok'
+      ? result.transfer.status === 'saved' ? 'saved'
+        : result.transfer.status === 'discarded' || result.transfer.recoveryDismissed ? 'ignored' : 'available'
+      : 'available';
+    return { ok: true, status, transferId };
+  } catch (error) { return failure(error); }
+}
+
+/** One atomic receipt, including memory-only recovery. Never delete a draft or invalidate an open editor. */
+export async function dismissLearnRecovery(draft: SkillDraft, sourceChatId: string): Promise<{ ok: true } | Failure> {
+  try {
+    const plain = JSON.parse(JSON.stringify(draft)) as SkillDraft;
+    if (!sourceChatId || !asSkillDraft(plain) || !plain.allowedTools.length) throw new Error('缺少学习会话或有效草稿');
+    const id = await digest(sourceChatId + '\n' + JSON.stringify(plain));
+    return await locked(id, async () => {
+      const result = await readLearnDraft(id);
+      if (result.status === 'error' || result.status === 'invalid') throw new Error('无法读取交接记录，未忽略本次学习');
+      if (result.status === 'ok' && result.transfer.sourceChatId !== sourceChatId) throw new Error('学习成果与会话不匹配，未忽略本次学习');
+      const payload: LearnDraftTransfer = result.status === 'ok' ? result.transfer
+        : { version: 2, id, sourceChatId, createdAt: Date.now(), draft: plain, status: 'pending' };
+      if (!payload.recoveryDismissed) { payload.recoveryDismissed = true; await write(payload); }
+      return { ok: true as const };
+    });
+  } catch (error) { return failure(error); }
+}
+
 /** Copy legacy data before using it; never delete or expire the only old copy. */
 async function migrateLegacy(): Promise<void> {
   const old = (await area().get(LEARN_DRAFT_STORAGE_KEY))[LEARN_DRAFT_STORAGE_KEY];
@@ -85,7 +125,7 @@ async function migrateLegacy(): Promise<void> {
   });
 }
 
-export async function listLearnDrafts(): Promise<{ ok: true; transfers: LearnDraftTransfer[]; invalidIds: string[] } | Failure> {
+export async function listLearnDrafts(includeDismissed = false): Promise<{ ok: true; transfers: LearnDraftTransfer[]; invalidIds: string[] } | Failure> {
   try {
     let legacyInvalid = false;
     try { await migrateLegacy(); } catch { legacyInvalid = true; }
@@ -97,7 +137,7 @@ export async function listLearnDrafts(): Promise<{ ok: true; transfers: LearnDra
     for (const key of selected) {
       const value = values[key];
       if (!valid(value) || key !== LEARN_TRANSFER_PREFIX + value.id) invalidIds.push(key.slice(LEARN_TRANSFER_PREFIX.length));
-      else if (value.status === 'pending') transfers.push(value);
+      else if (value.status === 'pending' && (includeDismissed || !value.recoveryDismissed)) transfers.push(value);
     }
     transfers.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
     return { ok: true, transfers, invalidIds };
@@ -131,8 +171,7 @@ export function isLearnDraftEditorState(value: unknown): value is LearnDraftEdit
   if (!state.form || !['name', 'description', 'category', 'customCategory', 'body', 'raw'].every(key => typeof (state.form as Record<string, unknown>)[key] === 'string') || !strings(state.form.tags)) return false;
   if (!['simple', 'advanced'].includes(state.editorMode) || !strings(state.preservedFrontmatterLines)) return false;
   if (!state.resourceFiles || typeof state.resourceFiles !== 'object' || Array.isArray(state.resourceFiles) || !Object.values(state.resourceFiles).every(item => typeof item === 'string')) return false;
-  if (typeof state.resourceEditorOpen !== 'boolean' || (state.resourceEditingPath !== null && typeof state.resourceEditingPath !== 'string')) return false;
-  if (!state.resourceForm || typeof state.resourceForm.path !== 'string' || typeof state.resourceForm.content !== 'string') return false;
+  if (typeof state.selectedFile !== 'string') return false;
   try { return JSON.stringify(state).length <= SKILL_IMPORT_MAX_TOTAL_CHARS + 100_000; } catch { return false; }
 }
 export function completeLearnDraft(id: string, savedSkillId: string) {
@@ -143,7 +182,7 @@ export function completeLearnDraft(id: string, savedSkillId: string) {
 /** Abort affects only its source; other pending handoffs are never globally cleared. */
 export async function clearLearnDraft(sourceChatId?: string): Promise<void> {
   if (!sourceChatId) return;
-  const result = await listLearnDrafts();
+  const result = await listLearnDrafts(true);
   if (!result.ok) throw new Error(result.error);
   for (const item of result.transfers.filter(item => item.sourceChatId === sourceChatId)) {
     const changed = await update(item.id, payload => { payload.status = 'discarded'; });
@@ -168,7 +207,8 @@ export function watchLearnDrafts(listener: () => void): () => void {
     if (name === 'local' && Object.keys(changes).some(key => {
       if (key === LEARN_DRAFT_STORAGE_KEY) return true;
       if (!key.startsWith(LEARN_TRANSFER_PREFIX)) return false;
-      return changes[key].oldValue?.status !== changes[key].newValue?.status || !changes[key].oldValue;
+      return changes[key].oldValue?.status !== changes[key].newValue?.status ||
+        changes[key].oldValue?.recoveryDismissed !== changes[key].newValue?.recoveryDismissed || !changes[key].oldValue;
     })) listener();
   };
   chrome.storage.onChanged.addListener(changed);

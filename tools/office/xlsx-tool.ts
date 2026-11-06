@@ -18,7 +18,7 @@ import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
 import { fileManager } from '@/utils/file-manager';
 import { arrayBufferToBase64 } from '@/utils/shared/base64';
-import { getDataRef } from '@/utils/data-ref-store';
+import { getDataRef, MAX_FIELDS as DATA_REF_MAX_FIELDS } from '@/utils/data-ref-store';
 import { buildWorkbook, XlsxBuildError, XLSX_LIMITS } from './xlsx-builder';
 import { parseMarkdownTables } from './xlsx-markdown';
 
@@ -187,11 +187,11 @@ const DATA_SHEET_SCHEMA = {
     title: SHEET_SCHEMA.properties.title,
     dataRef: {
       type: 'string',
-      description: '数据批次 ID（browser_page_exec 抓取产生：saveResult=true 或结果超 2000 字符自动暂存；data_ref_tool(action="list") 可查，分页批次先 merge）',
+      description: '数据批次 ID（browser_page_exec 抓取产生：saveResult 默认开启即暂存，或结果超 2000 字符自动暂存；data_ref_tool(action="list") 可查，分页批次先 merge）。浏览器会话内约 12 小时有效',
     },
     fields: {
       type: 'array',
-      description: '对象数组数据：按此字段列表取值，并决定导出列的顺序与数量（缺省取数据全部字段；不在此列表中的字段不导出）',
+      description: '对象数组数据：按此字段列表取值，并决定导出列的顺序与数量（缺省取数据全部字段；不在此列表中的字段不导出；字段名拼写错误会被校验拒绝）',
       items: { type: 'string' },
     },
     headers: {
@@ -238,9 +238,12 @@ function toXlsxCell(value: unknown): string | number | boolean | null {
 /**
  * create_from_data：把暂存批次（dataRef）转换为 buildWorkbook 可用的工作表声明。
  * 对象数组 → 按 fields（或全部字段）逐行取值；二维数组 → 行内值规范化后直传。
- * 所有结构性错误以带参数路径的 XlsxBuildError 抛出，由 execute 统一转为失败结果。
+ * 所有结构性错误以带参数路径的 XlsxBuildError 抛出，由 execute 统一转为失败结果；
+ * 数据质量提示（嵌套对象降级、全空列）以 warnings 返回，不阻断导出。
  */
-async function buildSheetsFromDataRefs(rawSheets: unknown): Promise<unknown[]> {
+async function buildSheetsFromDataRefs(
+  rawSheets: unknown
+): Promise<{ sheets: unknown[]; warnings: string[] }> {
   if (!Array.isArray(rawSheets) || rawSheets.length === 0) {
     throw new XlsxBuildError(
       'sheets: create_from_data 需要 sheets 数组（每项含 name 与 dataRef），或单表简写 sheet 对象',
@@ -248,6 +251,7 @@ async function buildSheetsFromDataRefs(rawSheets: unknown): Promise<unknown[]> {
   }
 
   const sheets: Record<string, unknown>[] = [];
+  const warnings: string[] = [];
   let roughTotalCells = 0;
 
   for (let i = 0; i < rawSheets.length; i++) {
@@ -264,7 +268,7 @@ async function buildSheetsFromDataRefs(rawSheets: unknown): Promise<unknown[]> {
     }
     const refId = spec.dataRef;
     if (typeof refId !== 'string' || !refId.trim()) {
-      throw new XlsxBuildError(`${path}.dataRef: 必须是数据批次 ID（browser_page_exec 抓取产生：saveResult=true 或结果超 2000 字符自动暂存）`);
+      throw new XlsxBuildError(`${path}.dataRef: 必须是数据批次 ID（browser_page_exec 抓取产生：saveResult 默认开启，或结果超 2000 字符自动暂存）`);
     }
 
     const entry = await getDataRef(refId.trim());
@@ -302,6 +306,18 @@ async function buildSheetsFromDataRefs(rawSheets: unknown): Promise<unknown[]> {
           throw new XlsxBuildError(`${path}.fields: 必须是字符串数组（对象数据的字段名列表）`);
         }
         keys = spec.fields as string[];
+        // 字段名硬校验：与批次存储时算好的字段并集比对，typo 直接报错而不是静默产出空列。
+        // 并集在存储层截断到 MAX_FIELDS（超出部分不在列表内）——此时跳过校验避免误伤合法字段。
+        const known = entry.fields ?? [];
+        if (known.length > 0 && known.length < DATA_REF_MAX_FIELDS) {
+          const unknownKeys = keys.filter(k => !known.includes(k));
+          if (unknownKeys.length > 0) {
+            throw new XlsxBuildError(
+              `${path}.fields: 字段 ${unknownKeys.map(k => JSON.stringify(k)).join('、')} 不在批次字段列表中（可能拼写有误）。` +
+                `批次实际字段：${known.join('、')}（data_ref_tool(action="info", ref="${refId.trim()}") 可复核）`,
+            );
+          }
+        }
       } else {
         keys = entry.fields ?? [];
       }
@@ -313,17 +329,50 @@ async function buildSheetsFromDataRefs(rawSheets: unknown): Promise<unknown[]> {
           `${path}.fields: 字段数 ${keys.length} 超过单表列上限 ${XLSX_LIMITS.maxColumnsPerSheet}——请用 fields 只选需要的列`,
         );
       }
-      rows = (value as unknown[]).map(record =>
-        keys.map(key => toXlsxCell(isPlainRecord(record) ? record[key] : undefined)),
-      );
+      // 逐行取值时同步做数据质量侦测：嵌套结构降级计数、全空列计数
+      let nestedCount = 0;
+      const definedHits = new Map<string, number>();
+      rows = (value as unknown[]).map(record => {
+        const plain = isPlainRecord(record);
+        return keys.map(key => {
+          const cellValue = plain ? record[key] : undefined;
+          if (cellValue !== undefined && cellValue !== null) {
+            definedHits.set(key, (definedHits.get(key) ?? 0) + 1);
+            if (typeof cellValue === 'object') nestedCount++;
+          }
+          return toXlsxCell(cellValue);
+        });
+      });
+      if (nestedCount > 0) {
+        warnings.push(
+          `sheets[${i}]（${spec.name}）：${nestedCount} 个单元格的值是嵌套对象/数组，已按紧凑 JSON 文本写入单元格——如需独立列请在抓取脚本中展平字段后再暂存`,
+        );
+      }
+      const emptyKeys = keys.filter(k => (definedHits.get(k) ?? 0) === 0);
+      if (emptyKeys.length > 0 && rows.length > 0) {
+        warnings.push(
+          `sheets[${i}]（${spec.name}）：字段 ${emptyKeys.join('、')} 在所有行都是空值——若非预期请用 data_ref_tool(action="info") 核对字段名`,
+        );
+      }
       headers = spec.headers !== undefined ? (spec.headers as unknown[]) : keys;
     } else {
       if (spec.fields !== undefined) {
         throw new XlsxBuildError(`${path}.fields: 仅对象数组数据支持字段筛选（该批次为二维数组）`);
       }
+      let nestedCount = 0;
       rows = (value as unknown[]).map(row =>
-        Array.isArray(row) ? row.map(toXlsxCell) : [toXlsxCell(row)],
+        Array.isArray(row)
+          ? row.map(v => {
+              if (typeof v === 'object' && v !== null) nestedCount++;
+              return toXlsxCell(v);
+            })
+          : [toXlsxCell(row)],
       );
+      if (nestedCount > 0) {
+        warnings.push(
+          `sheets[${i}]（${spec.name}）：${nestedCount} 个单元格的值是嵌套对象/数组，已按紧凑 JSON 文本写入单元格`,
+        );
+      }
       headers = spec.headers !== undefined ? (spec.headers as unknown[]) : undefined;
     }
 
@@ -347,7 +396,7 @@ async function buildSheetsFromDataRefs(rawSheets: unknown): Promise<unknown[]> {
       `预计总单元格数约 ${roughTotalCells} 超过上限 ${XLSX_LIMITS.maxTotalCells}——请减少导出列（fields 精简）或拆分为多个文件`,
     );
   }
-  return sheets;
+  return { sheets, warnings };
 }
 
 export class XlsxTool extends BaseTool {
@@ -371,7 +420,7 @@ export class XlsxTool extends BaseTool {
       description:
         '生成 Excel (.xlsx) 文件并保存为可下载产物。action=create 用声明式结构一次生成完整工作簿（多表/合并单元格/公式/富文本/超链接/冻结表头/自动筛选/样式）；' +
         'action=create_from_markdown 把 Markdown 表格文本（支持多表，标题作表名）转为 xlsx；' +
-        'action=create_from_data 把批量抓取的暂存数据（browser_page_exec 产生的 dataRef：saveResult=true 或结果超 2000 字符自动暂存）直接生成工作表——数据零转录，' +
+        'action=create_from_data 把批量抓取的暂存数据（browser_page_exec 产生的 dataRef：saveResult 默认开启即暂存，或结果超 2000 字符自动暂存）直接生成工作表——数据零转录，' +
         '适合电商 SKU、评论、榜单等大批量场景，务必用它替代手写 rows。' +
         '默认自动美化：表头蓝底白字加粗、全表细边框、自动列宽、冻结表头。生成成功后按结果中的【输出指引】在回复里插入文件标记。',
       parameters: {
@@ -423,6 +472,7 @@ export class XlsxTool extends BaseTool {
       }
 
       // ── 组装工作表声明 ──
+      const dataWarnings: string[] = [];
       let sheetsSpec: unknown;
       if (action === 'create' || action === 'create_from_data') {
         if (params.sheets !== undefined && params.sheet !== undefined) {
@@ -433,8 +483,11 @@ export class XlsxTool extends BaseTool {
         }
         sheetsSpec = params.sheets !== undefined ? params.sheets : [params.sheet];
         if (action === 'create_from_data') {
-          // dataRef → 行数据：从暂存区解析批次并转换（错误带参数路径，由 catch 统一转失败结果）
-          sheetsSpec = await buildSheetsFromDataRefs(sheetsSpec);
+          // dataRef → 行数据：从暂存区解析批次并转换（错误带参数路径，由 catch 统一转失败结果；
+          // 数据质量提示以 warnings 透传给模型）
+          const built = await buildSheetsFromDataRefs(sheetsSpec);
+          sheetsSpec = built.sheets;
+          dataWarnings.push(...built.warnings);
         }
         // 结构合法性由 buildWorkbook 逐项校验（报错带参数路径）
       } else {
@@ -471,7 +524,7 @@ export class XlsxTool extends BaseTool {
       }
 
       // ── 可选自动下载 ──
-      const warnings: string[] = [];
+      const warnings: string[] = [...dataWarnings];
       if (note) warnings.push(note);
       let autoDownloaded = false;
       if (params.autoDownload === true) {

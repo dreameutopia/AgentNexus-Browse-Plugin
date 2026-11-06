@@ -2,12 +2,12 @@
  * 图片上下文领域单元测试
  *
  * 覆盖：
- *   1. token 估算口径（图片固定 1800、CJK/拉丁/emoji 启发式、空串与坏输入）
+ *   1. token 估算口径（图片固定成本校准锚、CJK/拉丁/emoji 启发式、空串与坏输入）
  *   2. 消息级估算（图片部件计数、base64 载荷剥离、循环引用回落）
  *   3. 预算截断（前缀 ≤ 预算、代理对安全、空预算）
  *   4. 前缀单调性（窗口守卫「从新到旧保留」依赖的性质）
  *   5. 图片引用归一（形态校验、去重保序、上限截断、任意输入不抛错）
- *   6. 上下文窗口守卫（图片按 1800 计入、装不下即丢、system 保护、
+ *   6. 上下文窗口守卫（图片按固定成本计入、装不下即丢、system 保护、
  *      工具调用原子配对、NUL 剥离）
  *
  * 运行：node tests/image-context/run.mjs   （或 npm run test:image-context）
@@ -76,7 +76,9 @@ function imagePart(dataUrl: string): VisionContent {
 
 // ==================== 1. token 估算口径 ====================
 
-eq(IMAGE_CONTEXT_TOKENS, 1800, '图片固定计入 1800 token（单一事实源）');
+// 校准锚：唯一允许写死图片成本数值的地方（其余断言一律引用常量）。
+// 1200 按视口截图（≈1200×800 → Claude ≈1280 / OpenAI high-detail ≈765-1100）校准。
+eq(IMAGE_CONTEXT_TOKENS, 1200, '图片固定计入 1200 token（单一事实源校准锚）');
 
 eq(estimateTextTokens(''), 0, '空串 0 token');
 eq(estimateTextTokens('你好世界'), 4, 'CJK 按 1 token/字');
@@ -106,9 +108,9 @@ eq(estimateTextTokens('\uD800'), 1, '孤立代理项不抛错且至少 1 token')
     content: [textPart('看图'), imagePart(hugeUrl)],
   } as ChatMessage;
   const detail = estimateMessageTokensDetailed(msg);
-  eq(detail.imageTokens, 1800, '单张图片按固定 1800 计');
+  eq(detail.imageTokens, IMAGE_CONTEXT_TOKENS, '单张图片按固定成本计');
   check(detail.textTokens < 60, 'base64 载荷被剥离、不淹没文本成本', detail);
-  eq(detail.totalTokens, detail.textTokens + 1800, '单图消息合计 = 文本 + 1800');
+  eq(detail.totalTokens, detail.textTokens + IMAGE_CONTEXT_TOKENS, '单图消息合计 = 文本 + 图片固定成本');
 }
 
 {
@@ -122,8 +124,8 @@ eq(estimateTextTokens('\uD800'), 1, '孤立代理项不抛错且至少 1 token')
   } as ChatMessage;
   eq(
     estimateMessageTokensDetailed(msg).imageTokens,
-    3600,
-    '两张图片按 1800 × 2 计',
+    IMAGE_CONTEXT_TOKENS * 2,
+    '两张图片按固定成本 × 2 计',
   );
 }
 
@@ -249,7 +251,7 @@ check(!isImageRef(undefined), 'undefined 不是引用');
 }
 
 {
-  // 图片成本进入 originalTokens：带图消息比纯文本消息多出 ≈ 1800 × 张数
+  // 图片成本进入 originalTokens：带图消息比纯文本消息多出 ≈ 固定成本 × 张数
   const textOnly = [{ role: 'user', content: '你好' }] as ChatMessage[];
   const withImages = [
     {
@@ -264,8 +266,8 @@ check(!isImageRef(undefined), 'undefined 不是引用');
   const r1 = ContextWindowGuard.protect(textOnly, CONTEXT_THRESHOLD_MIN);
   const r2 = ContextWindowGuard.protect(withImages, CONTEXT_THRESHOLD_MIN);
   const diff = r2.originalTokens - r1.originalTokens;
-  check(diff >= 3600, '两张图片至少计入 3600 token', diff);
-  check(diff <= 3800, '图片成本不被文本估算放大（载荷已剥离）', diff);
+  check(diff >= IMAGE_CONTEXT_TOKENS * 2, '两张图片至少计入固定成本 × 2', diff);
+  check(diff <= IMAGE_CONTEXT_TOKENS * 2 + 200, '图片成本不被文本估算放大（载荷已剥离）', diff);
 }
 
 {

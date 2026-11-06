@@ -63,7 +63,7 @@
  * 上下文用量圆环（输入栏模型选择器右侧）
  *
  * - 数据源：core/context/context-meter 的全量口径测量（systemPrompt + 工具定义
- *   + 对话消息 + 图片），与会话引擎的压缩触发（85% / 95%）与窗口守卫裁剪同源；
+ *   + 对话消息 + 图片），与会话引擎的压缩触发（85% / 90%）与窗口守卫裁剪同源；
  * - 分级配色：<60% 绿 / 60%~85% 琥珀 / ≥85% 红（与压缩触发线对齐）；
  * - 悬浮卡片展示成分明细（系统提示词 / 工具定义 / 对话消息 / 图片）与 token 数。
  */
@@ -120,7 +120,7 @@ const componentRows = computed(() => {
     { key: 'tools', label: t('sidepanel.contextMeter.tools'), tokens: usage.toolsTokens, barWidth: toWidth(usage.toolsTokens) },
     { key: 'messages', label: t('sidepanel.contextMeter.messages'), tokens: usage.messagesTokens, barWidth: toWidth(usage.messagesTokens) },
   ];
-  // 图片按固定 1800 token/张 计量（与 base64 体积解耦，见 token-estimate）；
+  // 图片按固定 1200 token/张 计量（与 base64 体积解耦，见 token-estimate）；
   // 无图时不占行，避免恒为 0 的噪声行
   if (usage.imageTokens > 0) {
     rows.push({

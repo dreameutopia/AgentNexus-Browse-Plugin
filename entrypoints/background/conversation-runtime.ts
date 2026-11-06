@@ -207,6 +207,7 @@ export function initConversationRuntime(): void {
                 contextCompactor.buildSummaryMessage(
                   result.summary,
                   Date.now(),
+                  runtime.initialContext.length,
                 ),
               ];
               emit({

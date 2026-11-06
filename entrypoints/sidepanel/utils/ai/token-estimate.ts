@@ -2,20 +2,22 @@
  * 上下文 token 估算（唯一实现）
  *
  * 口径定义：模型单次请求的真实负载以 **token** 计量——上下文窗口（阈值）、
- * 窗口守卫裁剪、85%/95% 压缩触发、用量环显示全部同源于本模块，杜绝
+ * 窗口守卫裁剪、85%/90% 压缩触发、用量环显示全部同源于本模块，杜绝
  * 「显示未超限但请求被裁」的口径漂移。
  *
  * 估算策略（无分词器依赖的启发式，注释即依据）：
  *   - 文本：CJK 字符（汉字/假名/谚文/全角符号等）按 ≈1 token/字；
  *     其余字符按 ≈4 字符/token（OpenAI/Anthropic 系 BPE 对拉丁文本的
  *     经验比值）。非 BMP 字符（emoji 等）按 1 token 计（保守上偏）。
- *   - 图片：**固定 IMAGE_CONTEXT_TOKENS = 1800 token/张**，与图片字节、
+ *   - 图片：**固定 IMAGE_CONTEXT_TOKENS = 1200 token/张**，与图片字节、
  *     base64 长度完全解耦。依据：主流多模态接口按图像尺寸计费——
- *     OpenAI high-detail 约 85 + 170×(512px tiles)（1024×1024 ≈ 765、
- *     2048×2048 ≈ 2055），Claude ≈ (宽×高)/750（1200×800 ≈ 1280），
- *     Gemini 按 tile ≈ 数百至两千 token；1800 是覆盖主流区间的保守值。
- *     此前按 base64 JSON 长度计入（单张截图动辄数十万「字符」）会把
- *     环上占比与守卫裁剪同时打爆，是视觉对话上下文失真的根因。
+ *     OpenAI high-detail 约 85 + 170×(512px tiles)（1024×1024 ≈ 765）、
+ *     Claude ≈ (宽×高)/750（1200×800 ≈ 1280），Gemini 按 tile ≈ 数百至两千
+ *     token。本助手实际进入上下文的图片以**视口截图**为主（≈1200×800），
+ *     1200 按该主形态校准；更大分辨率的截图在 Claude/Gemini 侧可能略欠计
+ *     （预算口径偏松），以换取典型视觉对话不虚耗窗口。此前按 base64 JSON
+ *     长度计入（单张截图动辄数十万「字符」）会把环上占比与守卫裁剪同时
+ *     打爆，是视觉对话上下文失真的根因。
  *
  * 单调性：估算对文本前缀单调不减（守卫「从新到旧保留」依赖该性质）。
  */
@@ -24,7 +26,7 @@
  * 单张图片固定计入的 token 数（上下文计量、守卫裁剪、压缩触发共用；
  * 调整此值即调整全链路对图片的成本假设——单一事实源）。
  */
-export const IMAGE_CONTEXT_TOKENS = 1800;
+export const IMAGE_CONTEXT_TOKENS = 1200;
 
 /** 拉丁等非 CJK 文本的字符/token 经验比值（导出供技能分页按同一口径收页） */
 export const CHARS_PER_TOKEN = 4;
@@ -93,14 +95,12 @@ export function sliceTextToTokenBudget(text: string, maxTokens: number): string 
   return trimDanglingSurrogate(text, Math.max(1, sliceLength));
 }
 
-/** 切点落在高位代理（0xD800-0xDBFF）时回退 1 个码元，避免孤立代理项 */
-function trimDanglingSurrogate(text: string, length: number): string {
-  const end = Math.min(length, text.length);
-  if (end <= 0) return '';
-  const last = text.charCodeAt(end - 1);
-  if (last >= 0xd800 && last <= 0xdbff) return text.slice(0, end - 1);
-  return text.slice(0, end);
-}
+/**
+ * 截断点代理对回退——单一实现位于共享域 utils/text/truncate（background
+ * 工具链同样引用），此处重导出保持既有导入方稳定；契约与理由见该模块。
+ */
+import { trimDanglingSurrogate } from '@/utils/text/truncate';
+export { trimDanglingSurrogate };
 
 /** 消息中「图片部件」数量（content 数组内 type=image_url 的部件；字符串 content 恒为 0） */
 function countImageParts(message: unknown): number {

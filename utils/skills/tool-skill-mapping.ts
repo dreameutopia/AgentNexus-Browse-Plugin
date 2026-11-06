@@ -21,28 +21,14 @@
 
 import { presetSkillIdFromName } from './skill-types';
 
-/** Bilibili 系工具（站点搜索 / 结果抓取 / 字幕 / 跳转 / 集成搜索） */
+/** Bilibili 系工具（字幕 / 跳转；检索已统一到 web_search） */
 const BILIBILI_TOOL_IDS: readonly string[] = [
-  'bilibili_search',
-  'bilibili_search_result_scraper',
   'bilibili_subtitle_tool',
   'bilibili_jump_tool',
-  'bilibili_integrated_search',
 ];
 
-/** 多平台检索工具（含集成搜索形态） */
-const SEARCH_TOOL_IDS: readonly string[] = [
-  'bing_search',
-  'baidu_search',
-  'zhihu_search',
-  'github_search',
-  'csdn_search',
-  'baidu_integrated_search',
-  'bing_integrated_search',
-  'zhihu_integrated_search',
-  'github_integrated_search',
-  'csdn_integrated_search',
-];
+/** 统一多平台检索工具（website 枚举区分平台，导航 + 解析一步完成） */
+const SEARCH_TOOL_IDS: readonly string[] = ['web_search'];
 
 /** 表格生成工具 */
 const SPREADSHEET_TOOL_IDS: readonly string[] = ['xlsx_tool'];
@@ -54,7 +40,7 @@ const NOTE_TOOL_IDS: readonly string[] = ['note_tool'];
  * 内置映射表：工具 ID → 技能引用列表。
  * 当前登记（内置技能保留区间 id，与 skills/ 目录一一对应）：
  *   - Bilibili 系工具        → bilibili-video-summary（视频总结流程）
- *   - 多平台检索工具         → web-research-report（调研报告流程）
+ *   - 统一检索 web_search    → web-research-report（调研报告流程）
  *   - 表格生成工具           → xlsx-creator（Excel 生成流程）
  *   - 笔记统一工具           → note-workspace（笔记 ID 纪律与记录规范）
  */

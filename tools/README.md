@@ -52,16 +52,17 @@ tools/
 ```typescript
 import { toolRegistry } from './tools';
 
-// 获取工具并执行
-const zhihuTool = toolRegistry.getTool('zhihu_search');
-const result = await zhihuTool.execute({
+// 获取统一搜索工具并执行（website 枚举区分平台）
+const searchTool = toolRegistry.getTool('web_search');
+const result = await searchTool.execute({
+  website: 'zhihu',
   query: 'TypeScript 最佳实践',
-  searchType: 'content',
   newTab: false
 });
 
 // 或者直接通过名称执行
-const result2 = await toolRegistry.executeTool('baidu_search', {
+const result2 = await toolRegistry.executeTool('web_search', {
+  website: 'baidu',
   query: 'Vue.js 教程',
   newTab: true
 });
@@ -74,7 +75,7 @@ const result2 = await toolRegistry.executeTool('baidu_search', {
 const openaiTools = toolRegistry.getOpenAITools();
 
 // 获取特定工具的OpenAI格式定义
-const zhihuSchema = toolRegistry.getTool('zhihu_search')?.openaiSchema;
+const searchSchema = toolRegistry.getTool('web_search')?.openaiSchema;
 ```
 
 ## 🔧 创建新工具
@@ -229,18 +230,18 @@ const workflowResult = await toolRegistry.executeTool('workflow_automation', {
 ### 批量操作
 
 ```typescript
-// 在多个平台同时搜索
+// 统一搜索工具 web_search：website 枚举区分平台，一次调用完成导航 + 结果解析。
+// 注意：web_search 自带页面导航（等同 browser_navigate），并发调用会互相争抢
+// 活动标签页——多平台搜索必须逐个串行执行，禁止 Promise.all 并发。
 const searchQuery = 'React Hooks';
-const searchTools = ['zhihu_search', 'baidu_search', 'bing_search'];
 
-const results = await Promise.all(
-  searchTools.map(toolName => 
-    toolRegistry.executeTool(toolName, {
-      query: searchQuery,
-      newTab: true
-    })
-  )
-);
+for (const website of ['zhihu', 'baidu', 'bing'] as const) {
+  const result = await toolRegistry.executeTool('web_search', {
+    website,
+    query: searchQuery,
+    newTab: false // 串行复用同一标签页，避免标签页堆积
+  });
+}
 ```
 
 ### 条件执行
@@ -252,10 +253,10 @@ const pageInfo = await toolRegistry.executeTool('page_analyzer', {
 });
 
 if (pageInfo.content[0]?.text.includes('github.com')) {
-  // 在GitHub页面，执行GitHub相关操作
-  await toolRegistry.executeTool('github_search', {
-    query: 'typescript',
-    searchType: 'repositories'
+  // 在GitHub页面，执行GitHub相关搜索
+  await toolRegistry.executeTool('web_search', {
+    website: 'github',
+    query: 'typescript'
   });
 } else {
   // 其他页面，导航到GitHub
@@ -282,9 +283,9 @@ if (pageInfo.content[0]?.text.includes('github.com')) {
 import { toolRegistry } from './tools';
 
 async function testTool() {
-  const result = await toolRegistry.executeTool('zhihu_search', {
-    query: '测试查询',
-    searchType: 'content'
+  const result = await toolRegistry.executeTool('web_search', {
+    website: 'zhihu',
+    query: '测试查询'
   });
   
   console.log('执行结果:', result);

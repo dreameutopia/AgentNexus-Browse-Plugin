@@ -1,7 +1,7 @@
 /**
  * 网站学习弹窗主题（与侧边栏浅色体系一致）
  *
- * 侧边栏本身是浅色界面：白底面板、#667eea 主色、#e5e7eb 描边、灰阶文字。
+ * 复用侧边栏的暖灰表面、细描边和炭黑操作色；不建立独立的蓝紫主题。
  * 学习相关弹窗此前各自用深色变量拼装（深底 + 深字），与侧边栏割裂。
  * 本文件把配色与通用按钮收敛成一份，各弹窗只挂 .learn-root 取变量：
  *   - .learn-root   颜色变量（挂各弹窗根节点，子元素继承）
@@ -11,27 +11,26 @@
 
 .learn-root {
   /* 面板与容器 */
-  --learn-bg: #ffffff;
-  --learn-surface: #f8fafc;
-  --learn-surface-alt: #f9fafb;
-  --learn-surface-hover: #f1f5f9;
+  --learn-bg: var(--surface-card, #ffffff);
+  --learn-surface: var(--surface-soft, #f3f1ed);
+  --learn-surface-alt: var(--surface-canvas, #faf9f7);
+  --learn-surface-hover: var(--surface-hover, #eeece7);
 
   /* 描边 */
-  --learn-border: #e5e7eb;
-  --learn-border-strong: #d1d5db;
+  --learn-border: var(--line-soft, #e4e2de);
+  --learn-border-strong: #d8d4cc;
 
   /* 文字 */
-  --learn-text: #1f2937;
-  --learn-text-strong: #111827;
-  --learn-text-muted: #6b7280;
-  --learn-text-faint: #9ca3af;
+  --learn-text: var(--ink-primary, #292824);
+  --learn-text-strong: var(--ink-primary, #292824);
+  --learn-text-muted: var(--ink-secondary, #787671);
+  --learn-text-faint: var(--ink-muted, #9b9790);
 
-  /* 主色（与侧边栏 #667eea 同源） */
-  --learn-accent: #667eea;
-  --learn-accent-strong: #5a67d8;
-  --learn-accent-deep: #4f46e5;
-  --learn-accent-soft: rgba(102, 126, 234, 0.12);
-  --learn-accent-soft-border: rgba(102, 126, 234, 0.35);
+  --learn-accent: var(--ink-primary, #292824);
+  --learn-accent-strong: #44413c;
+  --learn-accent-deep: var(--ink-primary, #292824);
+  --learn-accent-soft: var(--surface-hover, #eeece7);
+  --learn-accent-soft-border: #b8b2a8;
 
   /* 语义色 */
   --learn-danger: #ef4444;
@@ -63,10 +62,18 @@
 /* ==================== 通用按钮 ==================== */
 
 .learn-btn {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 36px;
   padding: 9px 18px;
   border-radius: 9px;
   font-size: 13px;
   font-weight: 600;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
   cursor: pointer;
   transition:
     background 0.15s ease,
@@ -81,7 +88,7 @@
   color: var(--learn-text-muted);
 }
 
-.learn-btn--ghost:hover {
+.learn-btn--ghost:hover:not(:disabled) {
   background: var(--learn-surface-hover);
   color: var(--learn-text);
 }
@@ -90,10 +97,10 @@
   border: none;
   background: var(--learn-accent);
   color: #ffffff;
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.28);
+  box-shadow: none;
 }
 
-.learn-btn--primary:hover {
+.learn-btn--primary:hover:not(:disabled) {
   background: var(--learn-accent-strong);
 }
 
@@ -104,6 +111,21 @@
   box-shadow: 0 4px 12px rgba(239, 68, 68, 0.24);
 }
 
-.learn-btn--danger:hover {
+.learn-btn--danger:hover:not(:disabled) {
   background: #dc2626;
+}
+
+.learn-btn:focus-visible { outline: 2px solid var(--learn-text-muted); outline-offset: 2px; }
+.learn-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Sidepanel widths: every action and choice gets its own readable row. */
+@media (max-width: 480px) {
+  .learn-root .learn-modal__footer,
+  .learn-root .learn-dialog__footer,
+  .learn-root .learn-degraded__footer { flex-direction: column; }
+  .learn-root .learn-modal__footer .learn-btn,
+  .learn-root .learn-dialog__footer .learn-btn,
+  .learn-root .learn-degraded__footer .learn-btn { width: 100%; font-size: 12px; }
+  .learn-root .learn-modal .learn-segmented { grid-template-columns: minmax(0, 1fr); }
+  .learn-root .learn-limit-actions .learn-btn { font-size: 12px; }
 }

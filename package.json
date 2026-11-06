@@ -21,6 +21,8 @@
     "test:i18n": "node tests/i18n/run.mjs",
     "test:tools": "node tests/tools/run.mjs",
     "test:text-browser": "node tests/tools/text-browser-probe.mjs",
+    "test:semantic-controls": "node tests/tools/semantic-controls-browser.mjs",
+    "test:semantic-controls:unit": "node tests/tools/run-semantic-controls.mjs",
     "test:image-context": "node tests/image-context/run.mjs",
     "test:message-meta": "node tests/message-meta/run.mjs",
     "test:message-collapse": "node tests/message-collapse/run.mjs",
@@ -33,6 +35,7 @@
     "test:vision": "node tests/vision/run.mjs",
     "test:chat-ui": "node tests/chat-ui/run.mjs",
     "test:conversation-runtime": "node tests/conversation-runtime/run.mjs",
+    "test:compaction": "node tests/compaction/run.mjs",
     "test:plugins": "node tests/plugins/run.mjs",
     "plugin:sdk": "node scripts/plugin-cli.mjs",
     "test:plugins:ui": "node tests/plugins/run-ui.mjs"

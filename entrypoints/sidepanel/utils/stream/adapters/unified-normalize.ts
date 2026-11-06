@@ -1,3 +1,5 @@
+import { trimDanglingSurrogate } from '../../ai/token-estimate';
+
 /**
  * 统一消息回放防御性归一化（协议适配器共用）
  *
@@ -40,9 +42,59 @@ export function parseReplayArguments(raw: string | null | undefined): Record<str
     return { _value: parsed };
   } catch {
     const preview =
-      text.length > REPLAY_ARGUMENTS_LIMIT ? `${text.slice(0, REPLAY_ARGUMENTS_LIMIT)}…` : text;
+      text.length > REPLAY_ARGUMENTS_LIMIT ? `${trimDanglingSurrogate(text, REPLAY_ARGUMENTS_LIMIT)}…` : text;
     return { _malformedArguments: preview };
   }
+}
+
+/**
+ * 工具参数的 strict 化（回放/入史共用阶梯）：
+ *   - 完整合法 JSON **对象** → 原串返回（字节不变，保住前缀缓存与历史前缀守卫的逐字比对）；
+ *   - 完整解析失败但首行是合法 JSON 对象（模型在 JSON 后追加多余文本的已知形态）
+ *     → 用首行解析结果重新序列化，值与执行侧 parseToolArguments 的宽容解析完全一致；
+ *   - 其余（无法解析 / 非对象 JSON / 空串）→ null，交调用方决定兜底形态。
+ *
+ * 为什么需要它：执行侧为让工具照常运行采用「首行 JSON」宽容解析，但历史里
+ * 保存的是**原始脏串**；OpenAI 系协议以字符串原样回放 function.arguments，
+ * 对该字段做 strict JSON 校验的网关（实测 Xiaomi MiMo 等）会把整个请求按
+ * 400 "Invalid request parameters" 拒收——工具明明执行成功，下一轮请求才炸。
+ */
+export function strictToolArguments(raw: string | null | undefined): string | null {
+  const text = (raw ?? '').trim();
+  if (!text) return null;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) return text;
+    return null;
+  } catch {
+    const firstLine = text.split('\n')[0].trim();
+    try {
+      const parsed: unknown = JSON.parse(firstLine);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) return JSON.stringify(parsed);
+    } catch { /* 两级均失败：返回 null 交调用方兜底 */ }
+    return null;
+  }
+}
+
+/**
+ * 工具参数的线上形态（OpenAI 系 string-form 协议发送侧最后一道归一）：
+ * 恒返回**可被 strict JSON 解析器接受的字符串**，绝不抛错。阶梯：
+ *   1. strictToolArguments 可救 → 其结果（合法对象 JSON，合法原文保持字节不变）；
+ *   2. 空串/缺省 → '{}'（部分严格网关对空串按非法 JSON 拒收）；
+ *   3. 合法 JSON 但非对象（数字/数组等）→ 原样返回（网关可解析，语义由服务端裁量）；
+ *   4. 无可救药 → { _malformedArguments: 截断原文 }（与 parseReplayArguments 兜底同口径，
+ *      保 tool_call 配对完整、原文可读、整轮请求可继续发送）。
+ */
+export function normalizeWireToolArguments(raw: string | null | undefined): string {
+  const strict = strictToolArguments(raw);
+  if (strict !== null) return strict;
+  const text = (raw ?? '').trim();
+  if (!text) return '{}';
+  // 合法 JSON 但非对象：保持可解析原样上网（改写反而破坏字节稳定性）
+  try { JSON.parse(text); return text; } catch { /* 落到首行/兜底 */ }
+  const firstLine = text.split('\n')[0].trim();
+  try { JSON.parse(firstLine); return firstLine; } catch { /* 落到兜底 */ }
+  return JSON.stringify({ _malformedArguments: trimDanglingSurrogate(text, REPLAY_ARGUMENTS_LIMIT) });
 }
 
 /**

@@ -11,7 +11,7 @@ import { OpenAITool } from '@/common/openai-types';
  * 判定是否为「仅限 background 上下文」错误。
  * 这类错误必须向上抛出而非转为错误结果：tool-executor 依据该消息把整个工具
  * 调用转发到 background 执行；若在组合工具内部被吞掉（转为普通错误结果），
- * 转发时机将永远无法触发（bing_search 等依赖 browser_navigate 的工具即败于此）。
+ * 转发时机将永远无法触发（依赖 browser_navigate 的组合工具即败于此）。
  */
 function isBackgroundContextError(error: unknown): boolean {
   return error instanceof Error && error.message.includes('background context');
@@ -80,6 +80,10 @@ export abstract class BaseTool implements ExtendedTool {
 
 /**
  * 导航类工具基类
+ *
+ * 注：原 BaseSearchTool（9 个平台 *_search 纯导航工具的基类）已随统一搜索
+ * web_search 的落地移除——新工具自带导航（chrome.tabs）与解析，不再经由
+ * browser_navigate 组合，也不再需要 background 上下文转发舞蹈。
  */
 export abstract class BaseNavigationTool extends BaseTool {
   protected async navigateToUrl(url: string, options?: {
@@ -108,95 +112,3 @@ export abstract class BaseNavigationTool extends BaseTool {
   }
 }
 
-/**
- * 搜索类工具基类
- */
-export abstract class BaseSearchTool extends BaseTool {
-  protected abstract getSearchUrl(query: string): string;
-  protected abstract getSearchEngine(): string;
-
-  /**
-   * 导航到指定 URL（与 BaseNavigationTool 相同的实现）
-   */
-  protected async navigateToUrl(url: string, options?: {
-    newTab?: boolean;
-    waitForLoad?: boolean;
-    timeout?: number;
-  }): Promise<ToolResult> {
-    try {
-      this.log(`Navigating to: ${url}`);
-      // 通过注册表获取 navigateTool，避免循环依赖
-      const navTool = toolRegistry.get('browser_navigate');
-      if (!navTool) {
-        return this.createErrorResponse('Navigation tool not available');
-      }
-      return await navTool.execute({
-        url,
-        newTab: options?.newTab ?? true,
-        waitForLoad: true,
-        timeout: options?.timeout || 50000
-      });
-    } catch (error) {
-      // 上下文错误上抛：交由 tool-executor 将本工具整体转发到 background 执行
-      if (isBackgroundContextError(error)) throw error;
-      return this.createErrorResponse('Navigation failed', error);
-    }
-  }
-
-  /**
-   * 等待页面加载完成
-   */
-  protected async waitForPageLoad(timeout?: number): Promise<ToolResult> {
-    try {
-      // 简单等待页面就绪
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      return this.createSuccessResponse({ loaded: true }, 'Page loaded');
-    } catch (error) {
-      return this.createErrorResponse('Wait for page load failed', error);
-    }
-  }
-
-  async execute(args: { query: string }): Promise<ToolResult> {
-    try {
-      this.validateArgs(args, ['query']);
-      
-      const { query } = args;
-      const searchUrl = this.getSearchUrl(query);
-      
-      this.log(`Searching "${query}" on ${this.getSearchEngine()}`);
-      
-      // 通过注册表获取 navigateTool 导航并等待页面加载
-      const navTool = toolRegistry.get('browser_navigate');
-      if (!navTool) {
-        return this.createErrorResponse('Navigation tool not available');
-      }
-      const result = await navTool.execute({
-        url: searchUrl,
-        newTab: true,
-        waitForLoad: true,
-        timeout: 30000
-      });
-      
-      if (!result.success) {
-        return this.createErrorResponse('Navigation failed', result.error);
-      }
-      
-      // 统一返回格式
-      return this.createSuccessResponse(
-        {
-          url: searchUrl,
-          query,
-          searchEngine: this.getSearchEngine()
-        },
-        `已成功导航至:${searchUrl}，页面加载成功`
-      );
-      
-    } catch (error) {
-      // 上下文错误上抛：让 tool-executor 把整个搜索工具转发到 background 执行
-      // （在 background 中 browser_navigate 原生可用），否则会以普通错误结果
-      // 吞掉转发时机，导致 sidepanel 发起的搜索永远失败
-      if (isBackgroundContextError(error)) throw error;
-      return this.createErrorResponse('Search failed', error);
-    }
-  }
-}

@@ -241,6 +241,30 @@ try {
   assert.ok(storage[api.LEARN_TRANSFER_PREFIX + malformed.id]);
   const released = await api.claimLearnDraftEditor();
   assert.equal(released.ok, true, '失败的接收释放编辑锁'); released.release();
+  const openIgnore = await api.saveLearnDraft(draft, 'already-open-editor');
+  await until(() => document.querySelector('.hub-handoff .hub-select__trigger'), 'new inbox');
+  await pickHandoffTransfer(openIgnore.id);
+  document.querySelector('.hub-handoff .hub-btn-primary').click();
+  await until(() => document.querySelector('.draft-card'), 'editor before ignore');
+  assert.equal((await api.dismissLearnRecovery(draft, 'already-open-editor')).ok, true);
+  await tick(); await nextTick();
+  assert.ok(document.querySelector('.hub-editor'), '侧边栏忽略不销毁管理中心正在编辑的表单');
+  document.querySelector('.draft-card .hub-btn-primary').click();
+  await until(async () => (await api.readLearnDraft(openIgnore.id)).transfer.status === 'saved', 'ignored open editor can save');
+  assert.equal(api.getAllSkills().filter(skill => skill.source === 'custom').length, 2);
+  app.unmount();
+  for (const item of (await api.listLearnDrafts()).transfers) {
+    if (item.sourceChatId) await api.dismissLearnRecovery(item.draft, item.sourceChatId);
+  }
+  window.location.hash = api.learnDraftHash(validatedId);
+  document.querySelector('#hub').innerHTML = ''; mount();
+  await until(() => document.querySelector('.hub-handoff strong')?.textContent === '学习成果状态', 'saved deep link is a status notice');
+  assert.ok(!document.querySelector('.hub-handoff').textContent.includes('请先保存正在编辑'), '已处理且无待接收项时不再显示接收操作说明');
+  assert.equal(document.querySelector('.hub-handoff .hub-btn-primary'), null, '已处理时不显示接收按钮');
+  assert.equal(document.querySelector('.hub-editor'), null);
+  window.location.hash = api.learnDraftHash(openIgnore.id); window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+  await tick(); await nextTick();
+  assert.deepEqual(errors, []);
   app.unmount();
   console.log('[chat-ui] Learning/validation handoff, durable receipts, legacy recovery, editor protection, refresh restoration, cross-tab locking and idempotent save passed.');
 } finally { rejectWrite = () => false; rejectRead = false; dom.window.close(); }

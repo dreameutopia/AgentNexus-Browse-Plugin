@@ -168,8 +168,14 @@ const MessageItem = (await compileComponent(
   const prelude = container.querySelector('.answer-prelude');
   assert.ok(prelude, '中止消息必须出现前奏折叠条');
   assert.ok(prelude.classList.contains('collapsed'), '折叠条默认收起');
-  assert.equal(prelude.querySelectorAll('.message-part').length, 2, '两个工具残留全部收入折叠');
-  assert.equal(container.querySelectorAll('.message-part').length, 3, '折叠条之外仅剩末段正文');
+  const innerBar = prelude.querySelector('.cluster-bar');
+  assert.ok(innerBar, '前奏内部的小折叠同样生效（两个工具收拢成簇）');
+  assert.equal(prelude.querySelectorAll('.message-part').length, 1, '簇内仅最新工具保持可见');
+  assert.equal(container.querySelectorAll('.message-part').length, 2, '折叠条之外仅剩末段正文');
+  // 前奏内的小折叠可展开：点击后组内工具逐项渲染
+  innerBar.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+  await nextTick();
+  assert.equal(prelude.querySelectorAll('.message-part').length, 2, '展开小折叠后工具逐项渲染');
   unmount();
 }
 
@@ -188,7 +194,8 @@ const MessageItem = (await compileComponent(
   assert.deepEqual(errors, []);
   const prelude = container.querySelector('.answer-prelude');
   assert.ok(prelude, '无正文的学习收尾同样完整折叠');
-  assert.equal(prelude.querySelectorAll('.message-part').length, 2, '过程工具全部收入折叠');
+  assert.ok(prelude.querySelector('.cluster-bar'), '前奏内部两个工具收拢为小折叠');
+  assert.equal(prelude.querySelectorAll('.message-part').length, 1, '簇内仅最新工具可见');
   const notice = container.querySelector('.system-notice');
   assert.ok(notice, '终态注记有渲染');
   assert.ok(!prelude.contains(notice), '注记在折叠条之外，不被折叠遮蔽');
@@ -253,7 +260,7 @@ const MessageItem = (await compileComponent(
   unmount();
 }
 
-// ── E. 结束态分组（streaming=false）：不出现小折叠条 ──
+// ── E. 结束态（streaming=false）小折叠同样生效（前奏展开后内部可收拢） ──
 {
   const { container, errors, unmount } = await mount(MessageParts, {
     parts: [
@@ -265,8 +272,9 @@ const MessageItem = (await compileComponent(
     streaming: false,
   });
   assert.deepEqual(errors, []);
-  assert.ok(!container.querySelector('.cluster-bar'), '结束态不启用小折叠');
-  assert.equal(container.querySelectorAll('.message-part').length, 3);
+  const bar = container.querySelector('.cluster-bar');
+  assert.ok(bar, '结束态同样启用小折叠（不与 streaming 绑定）');
+  assert.equal(container.querySelectorAll('.message-part').length, 1, '仅最新工具可见');
   unmount();
 }
 

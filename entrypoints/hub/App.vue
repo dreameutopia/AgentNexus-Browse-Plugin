@@ -21,10 +21,11 @@
         </div>
       </header>
 
-      <section v-if="visibleTransfers.length || handoffError" class="hub-handoff" aria-live="polite">
+      <section v-if="visibleTransfers.length || handoffError || handoffNotice" class="hub-handoff" aria-live="polite">
         <div>
-          <strong>{{ t('hub.learnHandoffTitle') }}</strong>
-          <p>{{ t('hub.learnHandoffIntro') }}</p>
+          <strong>{{ t(visibleTransfers.length ? 'hub.learnHandoffTitle' : 'hub.learnHandoffStatusTitle') }}</strong>
+          <p v-if="visibleTransfers.length">{{ t('hub.learnHandoffIntro') }}</p>
+          <p v-if="handoffNotice" role="status">{{ handoffNotice }}</p>
           <p v-if="agentEditorOpen || skillEditorOpen" class="hub-handoff__warning">{{ t('hub.learnHandoffSaveFirst') }}</p>
           <p v-if="handoffError" class="hub-handoff__error" role="alert">{{ handoffError }}</p>
         </div>
@@ -37,7 +38,7 @@
             :aria-label="t('hub.learnHandoffSelect')"
             style="width: min(420px, 100%)"
           />
-          <button type="button" class="hub-btn hub-btn-primary" :disabled="handoffBusy || !visibleTransfers.length || agentEditorOpen || skillEditorOpen" @click="acceptHandoff">{{ t('hub.learnHandoffAccept') }}</button>
+          <button v-if="visibleTransfers.length" type="button" class="hub-btn hub-btn-primary" :disabled="handoffBusy || agentEditorOpen || skillEditorOpen" @click="acceptHandoff">{{ t('hub.learnHandoffAccept') }}</button>
           <button type="button" class="hub-btn" :disabled="handoffBusy" @click="refreshPending">{{ t('hub.learnHandoffRetry') }}</button>
         </div>
       </section>
@@ -118,6 +119,7 @@ const pendingTransfers = ref<LearnDraftTransfer[]>([]);
 const selectedTransferId = ref('');
 const editingTransferId = ref('');
 const handoffError = ref(''), handoffBusy = ref(false);
+const handoffNotice = ref('');
 const visibleTransfers = computed(() => pendingTransfers.value.filter(item => !skillEditorOpen.value || item.id !== editingTransferId.value));
 /** 接收条下拉选项（自绘选择框用）：成果名 + 交付时间 */
 const transferOptions = computed(() => visibleTransfers.value.map(item => ({
@@ -139,14 +141,16 @@ async function refreshPending(): Promise<void> {
   if (!result.ok) { handoffError.value = t('hub.learnHandoffReadFailed'); return; }
   pendingTransfers.value = result.transfers;
   handoffError.value = result.invalidIds.length ? t('hub.learnHandoffReadFailed') : '';
+  handoffNotice.value = '';
   if (requestedTransferId) {
     const requested = requestedTransferId;
     if (result.transfers.some(item => item.id === requested)) selectedTransferId.value = requested;
     else {
       const detail = await readLearnDraft(requested);
       if (disposed || generation !== refreshGeneration) return;
-      handoffError.value = detail.status === 'ok' && detail.transfer.status !== 'pending'
-        ? t('hub.learnHandoffAlreadyHandled') : t('hub.learnHandoffReadFailed');
+      if (detail.status === 'ok' && detail.transfer.status === 'saved') handoffNotice.value = t('hub.learnHandoffAlreadyHandled');
+      else if (detail.status === 'ok' && (detail.transfer.status === 'discarded' || detail.transfer.recoveryDismissed)) handoffNotice.value = t('hub.learnHandoffIgnored');
+      else handoffError.value = t('hub.learnHandoffReadFailed');
     }
     requestedTransferId = '';
   }
@@ -159,10 +163,15 @@ async function acceptHandoff(): Promise<void> {
   handoffBusy.value = true;
   try {
     const result = await skillManagerRef.value?.acceptLearnDraft(id);
-    if (!result?.ok) { handoffError.value = result?.error ?? t('hub.learnHandoffReadFailed'); return; }
+    if (!result?.ok) {
+      if (result?.outcome) { handoffNotice.value = result.error ?? ''; handoffError.value = ''; }
+      else handoffError.value = result?.error ?? t('hub.learnHandoffReadFailed');
+      return;
+    }
     editingTransferId.value = id;
     activeSection.value = 'skills';
     handoffError.value = '';
+    handoffNotice.value = '';
   } catch { handoffError.value = t('hub.learnHandoffReadFailed'); }
   finally { handoffBusy.value = false; }
 }

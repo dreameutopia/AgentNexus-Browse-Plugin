@@ -292,12 +292,23 @@ export type ConversationEvent =
       originalTokens?: number;
       summaryTokens?: number;
       error?: string;
+    }
+  | {
+      /**
+       * 上下文用量快照：引擎主循环每轮测量（及压缩成功后复测）时发射。
+       * 数据与该次真实请求的全量口径一致（系统提示词 + 工具定义 + 消息），
+       * 普通对话的用量环与学习/验证状态条共用同一事件源——任何运行期间
+       * 展示的都是「最近一次请求的真实负载」，而非发送前的静态估算。
+       */
+      type: 'context-usage';
+      chatId: string;
+      usage: ContextUsage;
     };
 
 /**
  * 上下文用量测量（全量口径：系统提示词 + 工具定义 + 对话消息，token 计量）。
  * 计量方式与 ContextWindowGuard 一致（utils/ai/token-estimate 唯一实现：
- * 文本启发式估算 + 图片固定 1800 token），保证环上显示的比例与实际裁剪行为同源。
+ * 文本启发式估算 + 图片固定 1200 token），保证环上显示的比例与实际裁剪行为同源。
  */
 export interface ContextUsage {
   /** 系统提示词 token 估算 */
@@ -306,7 +317,7 @@ export interface ContextUsage {
   toolsTokens: number;
   /** 对话消息文本部分（含运行中工具结果）token 估算 */
   messagesTokens: number;
-  /** 对话消息中的图片成本（1800 token/张） */
+  /** 对话消息中的图片成本（1200 token/张） */
   imageTokens: number;
   /** 全量合计 */
   totalTokens: number;

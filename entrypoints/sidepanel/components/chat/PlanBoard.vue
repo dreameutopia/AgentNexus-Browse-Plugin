@@ -1,45 +1,49 @@
 <template>
   <div v-if="items.length" class="plan-board" :class="{ 'is-expanded': expanded }">
-    <!-- 折叠态头部：图标 + 标题 + 完成计数 + 当前进行中的步骤（点击展开全量列表） -->
-    <button
-      type="button"
-      class="plan-board__header"
-      :title="expanded ? t('sidepanel.plan.collapse') : t('sidepanel.plan.expand')"
-      :aria-expanded="expanded"
-      @click="toggleExpanded"
-    >
-      <span class="plan-board__mark" aria-hidden="true">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M4 5H10V11H4V5Z M4 13H10V19H4V13Z M12 6H20V8H12V6Z M12 10H20V12H12V10Z M12 16H20V18H12V16Z M12 14H20V15H12V14Z" fill="currentColor" />
-        </svg>
-      </span>
-      <span class="plan-board__title">{{ t('sidepanel.plan.title') }}</span>
-      <span class="plan-board__counter">
-        {{ doneCount }}<span class="plan-board__counter-sep">/</span>{{ items.length }}
-      </span>
-      <span v-if="currentStepText" class="plan-board__current" :title="currentStepText">
-        <span class="plan-board__current-label">{{ t('sidepanel.plan.currentPrefix') }}</span>{{ currentStepText }}
-      </span>
-      <svg
-        class="plan-board__chevron"
-        :class="{ 'is-open': expanded }"
-        width="10"
-        height="10"
-        viewBox="0 0 24 24"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-        aria-hidden="true"
+    <!-- 常驻卡片（折叠态全貌）：图标 + 标题 + 完成计数 + 当前进行中的步骤（点击展开全量列表） -->
+    <div class="plan-board__card">
+      <button
+        type="button"
+        class="plan-board__header"
+        :title="expanded ? t('sidepanel.plan.collapse') : t('sidepanel.plan.expand')"
+        :aria-expanded="expanded"
+        @click="toggleExpanded"
       >
-        <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
-    </button>
+        <span class="plan-board__mark" aria-hidden="true">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M4 5H10V11H4V5Z M4 13H10V19H4V13Z M12 6H20V8H12V6Z M12 10H20V12H12V10Z M12 16H20V18H12V16Z M12 14H20V15H12V14Z" fill="currentColor" />
+          </svg>
+        </span>
+        <span class="plan-board__title">{{ t('sidepanel.plan.title') }}</span>
+        <span class="plan-board__counter">
+          {{ doneCount }}<span class="plan-board__counter-sep">/</span>{{ items.length }}
+        </span>
+        <span v-if="currentStepText" class="plan-board__current" :title="currentStepText">
+          <span class="plan-board__current-label">{{ t('sidepanel.plan.currentPrefix') }}</span>{{ currentStepText }}
+        </span>
+        <svg
+          class="plan-board__chevron"
+          :class="{ 'is-open': expanded }"
+          width="10"
+          height="10"
+          viewBox="0 0 24 24"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+        >
+          <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
 
-    <!-- 进度条：已完成占比（细线，不喧宾夺主） -->
-    <div class="plan-board__track" aria-hidden="true">
-      <span class="plan-board__track-fill" :style="{ width: `${progressPercent}%` }"></span>
+      <!-- 进度条：已完成占比（细线，不喧宾夺主） -->
+      <div class="plan-board__track" aria-hidden="true">
+        <span class="plan-board__track-fill" :style="{ width: `${progressPercent}%` }"></span>
+      </div>
     </div>
 
-    <!-- 展开态：全量计划项（状态徽标 + id + 步骤 + 标注信息） -->
+    <!-- 展开态：全量计划项（状态徽标 + id + 步骤 + 标注信息）。
+         向上覆盖式浮层：绝对定位于常驻卡片正上方，不占布局空间——
+         上方消息列表/工具栏与下方输入区位置均保持不动 -->
     <div v-if="expanded" class="plan-board__list">
       <div
         v-for="item in items"
@@ -74,11 +78,13 @@
 /**
  * 会话计划面板（PlanBoard）
  *
- * 展示当前会话的任务计划（plan_tool 产物）：折叠态为「图标 + 标题 + 完成计数
- * + 进行中的步骤」单行摘要（不打扰输入），展开态为全量计划项（状态徽标、
- * 步骤、成功/失败标注信息）。数据经 plan-store 订阅实时刷新（工具每次
- * 变更即触发），会话切换由 chatId prop 驱动重新加载（持久化数据按会话
- * 隔离，切换历史会话自动回显各自计划）。
+ * 展示当前会话的任务计划（plan_tool 产物）：常驻卡片为「图标 + 标题 + 完成
+ * 计数 + 进行中的步骤」单行摘要（不打扰输入），展开态为全量计划项（状态
+ * 徽标、步骤、成功/失败标注信息），以向上覆盖式浮层呈现——列表绝对定位于
+ * 常驻卡片正上方，盖住上方组件而不挤占任何布局空间（消息列表与输入区
+ * 位置不动）。数据经 plan-store 订阅实时刷新（工具每次变更即触发），会话
+ * 切换由 chatId prop 驱动重新加载（持久化数据按会话隔离，切换历史会话
+ * 自动回显各自计划）。
  *
  * 样式自带（./plan-board.css）：app.css 经 App.vue 的 <style scoped> 引入，
  * 作用域属性无法穿透到本组件，放在那里等于没放。

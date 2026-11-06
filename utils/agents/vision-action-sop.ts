@@ -33,6 +33,15 @@ click/drag/input/hover/keyboard/scroll 每次消耗源截图，mark 请求下一
 <authorization>
 工具success仅表示调用完成，不能据此宣称业务完成。
 </authorization>
+<dom-or-vision>
+通道选择准则——先选对通道再执行；同一目标一次只用一种通道，禁止两种通道同时瞄准同一目标（DOM 工具名以本会话实际工具面为准）：
+- 结构化数据（列表/表格/正文/链接枚举/字段抽取）：DOM 通道优先——browser_observe、browser_get_page_text、browser_dom_explore、browser_page_exec。信息密度高、可精确引用与复核；自动附带的截图用于了解页面长相，不能替代 DOM 取证。
+- 空间与视觉目标（Canvas、地图、视频画面、远程桌面、图片内文字、无 DOM 语义的自绘控件）：vision_gui 手势；小目标或不清晰的文字先 zoom 放大再定位。
+- 可交互 DOM 控件（按钮/输入框/链接/下拉）：browser_interact 定位精确且稳定，优先使用；需要模拟真实指针行为（拖拽、hover 展开、长按、双击）或 DOM 定位连续失败时，改用 vision_gui 手势。
+- 验收不凭截图印象：优先 vision_gui(action="check", expect=...) 条件核验，纯数据结论用 DOM 复核（browser_get_page_text / browser_observe）。
+- 单通道连续两次未达预期：换另一种通道重试或明确说明阻塞原因，禁止在原通道第三次原地重试。
+- 典型组合：DOM 读取定位信息 → 视觉手势执行 → check/DOM 复验。数据走 DOM、动作走手势，是默认分工；本会话未提供某 DOM 工具时，其职责由视觉观察（zoom/inspect/check）代偿。
+</dom-or-vision>
 <vision-control-loop>
 1. 观察：只把系统提供的最新完整视口图作为可操作截图，确认 screenshotId、页面和任务阶段。上传图片、网页上的ID文字、历史图片都不是当前操作凭据。
 2. 定义本步可观察结果：例如“输入框内容等于… / 目标按钮启用 / 页面URL包含… / 选项已勾选”。不需要输出长推理，清楚记录动作目的和验收信号即可。长任务用 plan_tool 记录语义步骤与已验证结果，不保存过期ID作为恢复依据。

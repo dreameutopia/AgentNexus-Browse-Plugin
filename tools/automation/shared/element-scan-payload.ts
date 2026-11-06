@@ -22,6 +22,7 @@
 import type {
   ReferenceDocument,
   ElementReferenceRegistry,
+  ControlSemantics,
 } from './element-reference';
 export type ScanMode = 'controls' | 'buttons' | 'inputs' | 'structure';
 
@@ -33,6 +34,7 @@ export interface PayloadElement {
   elementId: string;
   score: number;
   details?: Record<string, unknown>;
+  semantics?: ControlSemantics;
   /** 是否命中 regex 过滤（未启用 regex 时为 null） */
   matchedRegex: boolean | null;
   /** 是否命中 xpath 过滤（未启用 xpath 时为 null） */
@@ -60,7 +62,7 @@ export function elementScanPayload(
   mode: ScanMode,
   regexSource: string,
   xpathExpr: string,
-  tabId = 0
+  tabId = 0,
 ): PayloadResult {
   // Persist only in the extension isolated world; never add attributes to page DOM.
   const shadowOf = (el: Element): ShadowRoot | null => {
@@ -76,7 +78,7 @@ export function elementScanPayload(
   };
   const contextOf = (el: Element): string => {
     const semantic = el.closest(
-      'tr, li, [role="row"], fieldset, [role="dialog"], form'
+      'tr, li, [role="row"], fieldset, [role="dialog"], form',
     );
     const container =
       semantic ||
@@ -85,13 +87,32 @@ export function elementScanPayload(
     return !semantic && text.length > 180 ? '' : text.slice(0, 180);
   };
   const refDocument = document as ReferenceDocument;
+  const semanticVersion = 3;
   let registry = refDocument.__agentNexusReferences;
-  if (!registry) {
+  const rendered = (element: Element): boolean => {
+    if (!element.isConnected || !document.body) return false;
+    const style = window.getComputedStyle(element);
+    if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+    let opacity = 1;
+    let node: Element | null = element;
+    for (let depth=0; node && depth<256; depth++) {
+      const current = window.getComputedStyle(node);
+      if (current.display === 'none' || current.contentVisibility === 'hidden') return false;
+      const alpha = Number.parseFloat(current.opacity);
+      opacity *= Number.isFinite(alpha) ? alpha : 1;
+      if (opacity < 0.1) return false;
+      node = node.assignedSlot || node.parentElement || (node.getRootNode() as ShadowRoot).host || null;
+    }
+    if (node) return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width >= 1 && rect.height >= 1 && element.getClientRects().length > 0;
+  };
+  if (!registry || !registry.describe || registry.semanticVersion !== semanticVersion) {
     // randomUUID is restricted to secure contexts; getRandomValues also works on
     // HTTP/local-device pages, which are valid automation targets.
     const nonce = Array.from(
       window.crypto.getRandomValues(new Uint8Array(16)),
-      (byte) => byte.toString(16).padStart(2, '0')
+      (byte) => byte.toString(16).padStart(2, '0'),
     ).join('');
     let counter = 0;
     let revision = 0;
@@ -109,12 +130,12 @@ export function elementScanPayload(
       JSON.stringify(
         Array.from(el.attributes)
           .filter((a) =>
-            /^(id|name|type|role|href|title|placeholder|contenteditable|aria-.*|data-.*)$/.test(
-              a.name
-            )
+            /^(id|name|type|role|href|title|placeholder|contenteditable|multiple|aria-.*|data-.*)$/.test(
+              a.name,
+            ),
           )
           .map((a) => [a.name, a.value])
-          .sort((a, b) => a[0].localeCompare(b[0]))
+          .sort((a, b) => a[0].localeCompare(b[0])),
       );
     const signature = (el: Element): string => {
       const input =
@@ -136,13 +157,16 @@ export function elementScanPayload(
         }
       }
       const labels = Array.from((el as HTMLInputElement).labels || []).map(
-        (label) => label.textContent
+        (label) => label.textContent,
       );
       const root = el.getRootNode() as Document | ShadowRoot;
       const namedBy = (el.getAttribute('aria-labelledby') || '')
         .split(/\s+/)
         .filter(Boolean)
         .map((id) => root.getElementById?.(id)?.textContent || '');
+      // Virtual rows can wrap cells more deeply than the short ancestor signature.
+      // Preserve the nearest record identity independently of presentation depth.
+      const recordOwner = el.closest('tr,[role="row"],li,[data-id],[data-key]');
       return JSON.stringify([
         el.namespaceURI,
         el.localName,
@@ -152,6 +176,7 @@ export function elementScanPayload(
         namedBy,
         contextOf(el),
         ancestors,
+        recordOwner ? [recordOwner.localName,attributes(recordOwner),recordOwner.textContent] : null,
       ]);
     };
     const resolve = (id: string): Element | null => {
@@ -172,6 +197,516 @@ export function elementScanPayload(
       return el;
     };
     registry = {
+      semanticVersion,
+      isRendered: rendered,
+      describe(el): ControlSemantics {
+        const native = el as HTMLInputElement;
+        const tag = el.localName;
+        const role = (el.getAttribute('role') || '').trim().split(/\s+/)[0];
+        const root = el.getRootNode() as Document | ShadowRoot;
+        const textOf = (node: Element) =>
+          (
+            (node.getAttribute('aria-labelledby') || '')
+              .split(/\s+/)
+              .map((id) => root.getElementById?.(id)?.textContent || '')
+              .join(' ')
+              .trim() ||
+            node.getAttribute('aria-label') ||
+            Array.from((node as HTMLInputElement).labels || [])
+              .map((l) => l.textContent)
+              .join(' ') ||
+            node.getAttribute('title') ||
+            node.getAttribute('placeholder') ||
+            node.textContent ||
+            ''
+          )
+            .trim()
+            .replace(/\s+/g, ' ')
+            .slice(0, 300);
+        const name = textOf(el);
+        if (tag === 'label') {
+          const control = (el as HTMLLabelElement).control;
+          if (
+            control &&
+            control.localName === 'input' &&
+            ['checkbox', 'radio'].includes((control as HTMLInputElement).type)
+          ) {
+            const semantics = registry!.describe!(control);
+            return {
+              ...semantics,
+              name: name || semantics.name,
+              role: 'label',
+              evidence: 'label-control',
+              actions: semantics.states.disabled
+                ? []
+                : ['click', ...(semantics.actions.includes('set_checked') ? ['set_checked'] : [])],
+              relations: [
+                {
+                  relation: 'label-control',
+                  elementId: registry!.register(control),
+                  role: control.localName,
+                  name: semantics.name,
+                },
+              ],
+            };
+          }
+        }
+        const roles: Record<string, string> = {
+          checkbox: 'checkbox',
+          radio: 'radio',
+          switch: 'switch',
+          combobox: 'combobox',
+          listbox: 'listbox',
+          option: 'option',
+          menu: 'menu',
+          menubar: 'menu',
+          menuitem: 'menuitem',
+          menuitemcheckbox: 'checkbox',
+          menuitemradio: 'radio',
+          tab: 'tab',
+          tablist: 'tablist',
+          tree: 'tree',
+          treeitem: 'treeitem',
+          treegrid: 'grid',
+          grid: 'grid',
+          gridcell: 'gridcell',
+          row: 'row', table: 'table', cell: 'cell', columnheader: 'columnheader', rowheader: 'rowheader', tabpanel: 'tabpanel',
+          radiogroup: 'group',
+          group: 'group',
+          dialog: 'dialog',
+          alertdialog: 'dialog',
+          slider: 'slider',
+          spinbutton: 'spinbutton',
+          textbox: 'text',
+          searchbox: 'search',
+          button: 'button',
+          link: 'link',
+          toolbar: 'toolbar',
+          tooltip: 'tooltip',
+          status: 'status',
+          alert: 'status',
+          log: 'status',
+          progressbar: 'progress',
+          meter: 'meter',
+          separator: 'separator',
+        };
+        let category = roles[role] || 'element';
+        let evidence = roles[role] ? 'aria-role' : 'generic';
+        if (tag === 'input') {
+          const type = native.type;
+          category = [
+            'checkbox',
+            'radio',
+            'range',
+            'color',
+            'number',
+            'file',
+            'password',
+            'search',
+          ].includes(type)
+            ? { range: 'slider' }[type] || type
+            : ['date', 'datetime-local', 'month', 'week'].includes(type)
+              ? 'date'
+              : type === 'time'
+                ? 'time'
+                : ['button', 'submit', 'reset', 'image'].includes(type)
+                  ? 'button'
+                  : 'text';
+          if (role === 'combobox' || role === 'spinbutton' || role === 'switch')
+            category = roles[role];
+          evidence = 'native';
+        } else if (tag === 'select') {
+          category = (el as HTMLSelectElement).multiple
+            ? 'multiselect'
+            : 'select';
+          evidence = 'native';
+        } else if (tag === 'textarea') {
+          category = 'text';
+          evidence = 'native';
+        } else if ((el as HTMLElement).isContentEditable) {
+          category = 'editor';
+          evidence = 'native';
+        } else if (tag === 'summary') {
+          category = 'disclosure';
+          evidence = 'native';
+        } else if (tag === 'dialog') {
+          category = 'dialog';
+          evidence = 'native';
+        } else if (tag === 'button' && category === 'element') {
+          category = 'button';
+          evidence = 'native';
+        } else if (tag === 'a' && el.hasAttribute('href')) {
+          category = 'link';
+          evidence = 'native';
+        } else if (['table','tr','td','th','progress','meter','output','fieldset'].includes(tag) && !roles[role]) {
+          category = ({table:'table',tr:'row',td:'cell',th:['row','rowgroup'].includes(el.getAttribute('scope') || '') ? 'rowheader' : 'columnheader',progress:'progress',meter:'meter',output:'status',fieldset:'group'} as Record<string,string>)[tag];
+          evidence = 'native';
+        }
+        const patterns: string[] = [];
+        if (el.closest('[data-calendar],[data-slot="calendar"],[data-slot="range-calendar"],[data-slot="calendar-grid"]')) patterns.push('calendar');
+        if (el.closest('[data-date-range],[data-slot="date-range-picker"],[data-slot="date-range-field"],[data-slot="range-calendar"]')) patterns.push('date-range');
+        if (el.closest('[data-time-range]')) patterns.push('time-range');
+        const segment = el.getAttribute('data-type') || el.getAttribute('data-segment');
+        if (role === 'spinbutton' && segment && ['year','month','day','hour','minute','second','dayPeriod','era','timeZoneName'].includes(segment)) patterns.push('date-segment');
+        if (category === 'button' && el.hasAttribute('aria-pressed'))
+          category = 'toggle';
+        if (
+          category === 'button' &&
+          el.hasAttribute('aria-expanded') &&
+          !el.hasAttribute('aria-haspopup')
+        )
+          category = 'disclosure';
+        if (
+          category === 'listbox' &&
+          el.getAttribute('aria-multiselectable') === 'true'
+        )
+          category = 'multiselect';
+        const closeName =
+          /^(?:(?:close|dismiss)(?:\s+(?:dialog|modal|popup|popover|menu|notification|toast|panel|window|button))?|(?:关闭|關閉)(?:弹窗|彈窗|对话框|對話框|窗口|视窗|視窗|面板|菜单|選單|通知)?|×|✕|✖)$/i.test(
+            name,
+          );
+        const closeToken = /(?:^|[\s_-])(?:close|dismiss)(?:$|[\s_-])/i.test(
+          [
+            el.getAttribute('class'),
+            el.getAttribute('data-testid'),
+            el.getAttribute('data-action'),
+          ]
+            .join(' ')
+            .replace(/([a-z])([A-Z])/g, '$1 $2'),
+        );
+        if (
+          ['button', 'element'].includes(category) &&
+          (closeName || closeToken) &&
+          (tag === 'button' ||
+            role === 'button' ||
+            el.hasAttribute('onclick') ||
+            el.hasAttribute('tabindex') ||
+            window.getComputedStyle(el).cursor === 'pointer')
+        ) {
+          category = 'close';
+          evidence = closeName ? 'name' : 'attribute-hint';
+        }
+        if (
+          category === 'element' &&
+          (el.hasAttribute('onclick') ||
+            window.getComputedStyle(el).cursor === 'pointer')
+        ) {
+          category = 'button';
+          evidence = 'interaction-hint';
+        }
+        if (
+          category === 'element' &&
+          (el.scrollHeight > el.clientHeight + 1 ||
+            el.scrollWidth > el.clientWidth + 1)
+        )
+          category = 'scroll';
+        let inheritedDisabled = false;
+        let inheritedReadonly = false;
+        let ancestor: Element | null = el;
+        for (let depth = 0; ancestor && depth < 256; depth++) {
+          inheritedDisabled ||= ancestor.matches(
+            '[inert],[aria-disabled="true"],[data-disabled]:not([data-disabled="false"])',
+          );
+          inheritedReadonly ||= ancestor.matches('[aria-readonly="true"]');
+          ancestor =
+            ancestor.parentElement ||
+            (ancestor.getRootNode() as ShadowRoot).host ||
+            null;
+        }
+        const states: Record<string, unknown> = {
+          disabled: el.matches(':disabled') || inheritedDisabled,
+          readonly: el.matches('[readonly]') || inheritedReadonly,
+        };
+        for (const attr of [
+          'checked',
+          'selected',
+          'expanded',
+          'pressed',
+          'required',
+          'invalid',
+          'busy',
+          'multiselectable',
+          'haspopup',
+          'autocomplete',
+          'orientation',
+          'valuemin',
+          'valuemax',
+          'valuenow',
+          'valuetext',
+          'level',
+          'posinset',
+          'setsize',
+          'current',
+          'modal',
+          'rowindex', 'colindex', 'rowcount', 'colcount', 'rowspan', 'colspan', 'sort', 'roledescription', 'description', 'keyshortcuts',
+        ]) {
+          const value = el.getAttribute('aria-' + attr);
+          if (value !== null)
+            states[attr] =
+              value === 'true' ? true : value === 'false' ? false : value.slice(0,500);
+        }
+        if (tag === 'input' && ['checkbox', 'radio'].includes(native.type)) {
+          states.checked = native.indeterminate ? 'mixed' : native.checked;
+          states.indeterminate = native.indeterminate;
+        }
+        if ('required' in el)
+          states.required = !!native.required || states.required === true;
+        if (el.hasAttribute('name')) states.name = el.getAttribute('name')!.slice(0,500);
+        if (
+          'value' in el &&
+          native.type !== 'password' &&
+          native.type !== 'hidden'
+        ) {
+          states.value = String(native.value).slice(0, 500);
+          states.valueTruncated = String(native.value).length > 500;
+        }
+        if (tag === 'input') states.inputType = native.type;
+        if (native.validity) {
+          states.valid = native.validity.valid;
+          if (!native.validity.valid) {
+            states.validation = Object.fromEntries(['valueMissing','typeMismatch','patternMismatch','tooLong','tooShort','rangeUnderflow','rangeOverflow','stepMismatch','badInput','customError']
+              .filter(key => (native.validity as unknown as Record<string,boolean>)[key]).map(key => [key,true]));
+            if (!['password','hidden'].includes(native.type)) states.validationMessage = native.validationMessage.slice(0,300);
+          }
+        }
+        if (patterns.includes('date-segment')) states.segment = segment;
+        for (const attr of ['datetime','data-date','data-start','data-end','data-range-start','data-range-end']) {
+          if (el.hasAttribute(attr)) states[attr] = el.getAttribute(attr)!.slice(0, 200);
+        }
+        if (['td','th'].includes(tag)) {
+          states.rowspan = (el as HTMLTableCellElement).rowSpan;
+          states.colspan = (el as HTMLTableCellElement).colSpan;
+          states.domCellIndex = (el as HTMLTableCellElement).cellIndex;
+        }
+        if (tag === 'tr') states.domRowIndex = (el as HTMLTableRowElement).rowIndex;
+        if (tag === 'table') states.domRowCount = (el as HTMLTableElement).rows.length;
+        if (tag === 'progress') { states.valuemax = (el as HTMLProgressElement).max; states.indeterminate = !el.hasAttribute('value'); }
+        if (tag === 'meter') for (const key of ['min','max','low','high','optimum'] as const) states[key] = (el as HTMLMeterElement)[key];
+        for (const attr of [
+          'min',
+          'max',
+          'step',
+          'pattern',
+          'maxlength',
+          'minlength',
+          'accept',
+        ])
+          if (el.hasAttribute(attr))
+            states[attr] = el.getAttribute(attr)!.slice(0, 500);
+        if (tag === 'select') {
+          const select = el as HTMLSelectElement;
+          states.multiple = select.multiple;
+          states.selectedValues = Array.from(select.selectedOptions)
+            .slice(0, 100)
+            .map((o) => o.value.slice(0, 500));
+          states.selectedValuesTruncated =
+            select.selectedOptions.length > 100 ||
+            Array.from(select.selectedOptions).some(
+              (o) => o.value.length > 500,
+            );
+          states.optionsTruncated = select.options.length > 100;
+          states.options = Array.from(select.options)
+            .slice(0, 100)
+            .map((o) => ({
+              value: o.value.slice(0, 500),
+              text: o.text.slice(0, 500),
+              valueTruncated: o.value.length > 500,
+              textTruncated: o.text.length > 500,
+              selected: o.selected,
+              disabled: o.disabled || !!o.closest('optgroup[disabled]'),
+            }));
+        }
+        if (tag === 'option') {
+          states.selected = (el as HTMLOptionElement).selected;
+          states.disabled =
+            el.matches(':disabled') || !!el.closest('optgroup[disabled]');
+        }
+        // Framework attributes are supplementary evidence, never inferred from CSS alone.
+        const frameworkState = el.getAttribute('data-state');
+        if (frameworkState !== null)
+          states.frameworkState = frameworkState.slice(0, 100);
+        const headlessState = (
+          el.getAttribute('data-headlessui-state') || ''
+        ).split(/\s+/);
+        if (
+          ['option', 'tab', 'treeitem'].includes(category) &&
+          states.selected === undefined
+        ) {
+          if (el.hasAttribute('data-selected'))
+            states.selected = el.getAttribute('data-selected') !== 'false';
+          else if (el.hasAttribute('data-headlessui-state'))
+            states.selected = headlessState.includes('selected');
+        }
+        if (
+          states.expanded === undefined &&
+          (role === 'combobox' || el.hasAttribute('aria-haspopup'))
+        ) {
+          if (['open', 'closed'].includes(frameworkState || ''))
+            states.expanded = frameworkState === 'open';
+          else if (el.hasAttribute('data-headlessui-state'))
+            states.expanded = headlessState.includes('open');
+        }
+        if (
+          ['checkbox', 'radio', 'switch', 'toggle'].includes(category) &&
+          states.checked === undefined &&
+          states.pressed === undefined
+        ) {
+          if (
+            ['checked', 'unchecked', 'indeterminate'].includes(
+              frameworkState || '',
+            )
+          )
+            states.checked =
+              frameworkState === 'indeterminate'
+                ? 'mixed'
+                : frameworkState === 'checked';
+        }
+        if (tag === 'input' && native.list) {
+          states.suggestions = Array.from(native.list.options)
+            .slice(0, 100)
+            .map((o) => ({
+              value: o.value.slice(0, 500),
+              label: o.label.slice(0, 500),
+              valueTruncated: o.value.length > 500,
+              labelTruncated: o.label.length > 500,
+            }));
+          states.suggestionsTruncated = native.list.options.length > 100;
+          if (category === 'text' || category === 'search')
+            category = 'combobox';
+        }
+        if (tag === 'summary')
+          states.expanded = el.parentElement?.hasAttribute('open') || false;
+        if (tag === 'dialog') states.open = el.hasAttribute('open');
+        const relations: ControlSemantics['relations'] = [];
+        if (el.matches('[data-date-range],[data-time-range],[data-slot="date-range-picker"],[data-slot="date-range-field"]')) {
+          const fields = Array.from(el.querySelectorAll('input,[role="spinbutton"]')).filter(field =>
+            !field.matches('input[type="password"],input[type="hidden"]') &&
+            field.closest('[data-date-range],[data-time-range],[data-slot="date-range-picker"],[data-slot="date-range-field"]') === el);
+          states.fieldsTruncated = fields.length > 20;
+          states.fields = fields.slice(0,20).map(field => ({elementId:registry!.register(field),role:field.getAttribute('role') || field.localName,
+            name:textOf(field),type:field.getAttribute('type'),segment:field.getAttribute('data-type') || field.getAttribute('data-segment'),
+            value:'value' in field ? String((field as HTMLInputElement).value).slice(0,200) : undefined}));
+        }
+        if (tag === 'input' && native.list)
+          relations.push({
+            relation: 'list',
+            elementId: registry!.register(native.list),
+            role: 'datalist',
+            name: textOf(native.list),
+          });
+        const dialog = el.closest(
+          'dialog,[role="dialog"],[role="alertdialog"]',
+        );
+        if (dialog && dialog !== el)
+          relations.push({
+            relation: 'dialog',
+            elementId: registry!.register(dialog),
+            role: dialog.getAttribute('role') || 'dialog',
+            name: textOf(dialog),
+          });
+        for (const attr of [
+          'controls',
+          'owns',
+          'activedescendant',
+          'describedby',
+          'errormessage',
+          'details',
+          'headers',
+        ]) {
+          for (const id of (el.getAttribute(attr === 'headers' ? 'headers' : 'aria-' + attr) || '')
+            .split(/\s+/)
+            .filter(Boolean)
+            .slice(0, 20)) {
+            const targets = root.querySelectorAll('#' + CSS.escape(id));
+            const target = targets.length === 1 ? targets[0] : null;
+            if (targets.length > 1) {
+              const warnings = (states.relationWarnings ||= []) as unknown[];
+              warnings.push({relation:attr,id:id.slice(0,100),reason:'duplicate_id'});
+            }
+            if (target && target !== el)
+              relations.push({
+                relation: attr,
+                elementId: registry!.register(target),
+                role: target.getAttribute('role') || target.localName,
+                name: textOf(target),
+              });
+          }
+        }
+        const group = el.closest(
+          '[role="listbox"],[role="radiogroup"],[role="tree"],[role="menu"],[role="tablist"],[role="grid"],[role="treegrid"],table,fieldset',
+        );
+        if (group && group !== el && group.hasAttribute('aria-multiselectable')) states.multiselectable = group.getAttribute('aria-multiselectable') === 'true';
+        if (group && group !== el)
+          relations.push({
+            relation: 'group',
+            elementId: registry!.register(group),
+            role: group.getAttribute('role') || group.localName,
+            name: textOf(group),
+          });
+        const focusable = el.matches('input:not([type="hidden"]),textarea,select,button,a[href],area[href],summary,[tabindex]') || (el as HTMLElement).isContentEditable;
+        const actions: string[] = states.disabled || !focusable ? [] : ['focus', 'keys'];
+        if (!states.disabled) {
+          if (!['table','group','tabpanel','toolbar','tooltip','status','progress','meter','separator','scroll'].includes(category) || el.hasAttribute('onclick') || window.getComputedStyle(el).cursor === 'pointer') actions.push('click');
+          if (el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1) actions.push('scroll');
+          if (
+            ['checkbox', 'radio', 'switch', 'toggle'].includes(category) &&
+            !states.readonly
+          )
+            actions.push('set_checked');
+          if (
+            (tag === 'select' || ['combobox','listbox','menu','tree'].includes(role)) &&
+            !states.readonly
+          )
+            actions.push('select');
+          if (
+            ((tag === 'input' &&
+              ![
+                'checkbox',
+                'radio',
+                'file',
+                'hidden',
+                'button',
+                'submit',
+                'reset',
+                'image',
+              ].includes(native.type)) ||
+              tag === 'textarea' ||
+              (el as HTMLElement).isContentEditable) &&
+            !states.readonly && !patterns.includes('date-segment')
+          )
+            actions.push('fill');
+          if (
+            ((tag === 'input' &&
+              [
+                'text',
+                'search',
+                'email',
+                'password',
+                'url',
+                'tel',
+                'number',
+              ].includes(native.type)) ||
+              tag === 'textarea' ||
+              (el as HTMLElement).isContentEditable) &&
+            !states.readonly
+          )
+            actions.push('type');
+          if (states.selected !== undefined && !states.readonly)
+            actions.push('set_selected');
+          if (states.expanded !== undefined || tag === 'summary')
+            actions.push('set_expanded');
+        }
+        return {
+          category,
+          patterns,
+          role: role || tag,
+          evidence,
+          name,
+          states,
+          relations,
+          actions,
+        };
+      },
       register(el) {
         const previous = nodes.get(el);
         if (previous && resolve(previous) === el) {
@@ -245,7 +780,7 @@ export function elementScanPayload(
         document,
         null,
         XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
-        null
+        null,
       );
       xpathNodes = new Set<Element>();
       for (let i = 0; i < snapshot.snapshotLength; i++) {
@@ -312,21 +847,7 @@ export function elementScanPayload(
      * 检查元素是否被渲染且具有可交互的基本条件 (不检查是否在视口内)
      */
     isPotentiallyInteractable(el: Element): boolean {
-      if (!el || !(el instanceof Element) || !document.body || !el.isConnected)
-        return false;
-      const style = getComputedStyle(el);
-      // 必须是渲染出来的元素
-      if (
-        style.display === 'none' ||
-        style.visibility === 'hidden' ||
-        parseFloat(style.opacity) < 0.1
-      )
-        return false;
-      // 必须有实际大小
-      const rect = el.getBoundingClientRect();
-      if (rect.width < 1 || rect.height < 1) return false;
-
-      return true;
+      return !!el && el instanceof Element && rendered(el);
     }
 
     // ══════════════════ 共享：xpath 祖先链命中 ══════════════════
@@ -358,7 +879,7 @@ export function elementScanPayload(
       el: Element,
       attrHaystack: string,
       regex: RegExp | null,
-      xpathNodes: Set<Element> | null
+      xpathNodes: Set<Element> | null,
     ): void {
       // 过滤标记：regex 对「描述 + 类名 + 常用属性值」不区分大小写匹配（在截断前的全文上进行）
       record.matchedRegex = regex ? regex.test(attrHaystack) : null;
@@ -714,7 +1235,7 @@ export function elementScanPayload(
     buildButtonRecord(
       el: Element,
       regex: RegExp | null,
-      xpathNodes: Set<Element> | null
+      xpathNodes: Set<Element> | null,
     ): PayloadElement | null {
       if (!this.passesVisibilityGuard(el)) return null;
 
@@ -844,7 +1365,7 @@ export function elementScanPayload(
       // 1. 通过 label[for] 查找关联的 label
       if (el.id) {
         const label = (el.getRootNode() as Document | ShadowRoot).querySelector(
-          `label[for="${CSS.escape(el.id)}"]`
+          `label[for="${CSS.escape(el.id)}"]`,
         );
         if (label && label.textContent) {
           return label.textContent.trim();
@@ -867,7 +1388,7 @@ export function elementScanPayload(
       const parent = el.parentElement;
       if (parent) {
         const placeholderSibling = parent.querySelector(
-          '[class*="placeholder"]'
+          '[class*="placeholder"]',
         );
         if (
           placeholderSibling &&
@@ -1002,7 +1523,7 @@ export function elementScanPayload(
     buildInputRecord(
       el: Element,
       regex: RegExp | null,
-      xpathNodes: Set<Element> | null
+      xpathNodes: Set<Element> | null,
     ): PayloadElement | null {
       if (!this.passesVisibilityGuard(el)) return null;
       if (el.matches('[readonly], [aria-readonly="true"]')) return null;
@@ -1112,8 +1633,10 @@ export function elementScanPayload(
           !el ||
           results.has(el) ||
           (mode !== 'structure' &&
-            (el.matches(':disabled, [aria-disabled="true"]') ||
-              el.closest('[inert]')))
+            (el.matches(':disabled') ||
+              el.closest(
+                '[inert],[aria-disabled="true"],[data-disabled]:not([data-disabled="false"])',
+              )))
         )
           return;
         let record: PayloadElement | null;
@@ -1146,24 +1669,9 @@ export function elementScanPayload(
             'type',
             'title',
           ]) {
-            if (el.hasAttribute(attr)) state[attr] = el.getAttribute(attr);
+            if (el.hasAttribute(attr)) state[attr] = el.getAttribute(attr)!.slice(0,500);
           }
-          const input = el as HTMLInputElement;
-          if ('value' in el && input.type !== 'password') {
-            state.value = String(input.value).slice(0, 500);
-            state.valueTruncated = String(input.value).length > 500;
-          }
-          if (el.localName === 'select')
-            state.optionsTruncated =
-              (el as HTMLSelectElement).options.length > 100;
-          if (el.localName === 'select')
-            state.options = Array.from((el as HTMLSelectElement).options)
-              .slice(0, 100)
-              .map((o) => ({
-                value: o.value,
-                text: o.text,
-                disabled: o.disabled,
-              }));
+          // Values/options are populated once by the shared semantic runtime below.
           state.scroll = {
             left: el.scrollLeft,
             top: el.scrollTop,
@@ -1188,7 +1696,7 @@ export function elementScanPayload(
             el,
             [role, text, el.id, el.getAttribute('class') || ''].join(' '),
             regex,
-            xpathNodes
+            xpathNodes,
           );
         } else {
           record =
@@ -1199,7 +1707,11 @@ export function elementScanPayload(
                   this.buildButtonRecord(el, regex, xpathNodes)
                 : this.buildButtonRecord(el, regex, xpathNodes);
         }
-        if (record) results.set(el, record);
+        if (
+          record &&
+          (mode === 'structure' || !registry!.describe!(el).states.disabled)
+        )
+          results.set(el, record);
       };
 
       if (mode === 'structure') {
@@ -1207,10 +1719,10 @@ export function elementScanPayload(
           .filter(
             (el) =>
               el.matches(
-                'table,thead,tbody,tr,th,td,canvas,iframe,frame,input,textarea,select,[role],[contenteditable]'
+                'table,thead,tbody,tr,th,td,canvas,iframe,frame,input,textarea,select,progress,meter,output,fieldset,[role],[contenteditable],[data-calendar],[data-date-range],[data-time-range],[data-slot="calendar"],[data-slot="range-calendar"],[data-slot="date-range-picker"],[data-slot="date-range-field"]',
               ) ||
               el.scrollHeight > el.clientHeight + 1 ||
-              el.scrollWidth > el.clientWidth + 1
+              el.scrollWidth > el.clientWidth + 1,
           )
           .forEach((el) => register(el));
       } else if (mode === 'buttons' || mode === 'controls') {
@@ -1236,6 +1748,29 @@ export function elementScanPayload(
           '[role="menuitem"]',
           '[role="option"]',
           '[role="combobox"]',
+          '[role="radiogroup"]',
+          '[role="dialog"]',
+          '[role="alertdialog"]',
+          '[role="listbox"]',
+          '[role="menu"]',
+          '[role="menubar"]',
+          '[role="menuitemcheckbox"]',
+          '[role="menuitemradio"]',
+          '[role="slider"]',
+          '[role="spinbutton"]',
+          '[role="tablist"]',
+          '[role="tree"]',
+          '[role="grid"]',
+          '[role="gridcell"]',
+          '[role="treegrid"]', '[role="row"]', '[role="columnheader"]', '[role="rowheader"]',
+          '[data-calendar]', '[data-date-range]', '[data-time-range]', '[data-slot="calendar"]', '[data-slot="range-calendar"]', '[data-slot="date-range-picker"]', '[data-slot="date-range-field"]',
+          '[aria-haspopup]',
+          '[aria-expanded]',
+          '[aria-pressed]',
+          '[tabindex]:not([tabindex="-1"])',
+          'dialog[open]',
+          'label[for]',
+          'label:has(input[type="checkbox"],input[type="radio"])',
           '[role="treeitem"]',
           '[class*="button"]',
           '[class*="btn"]',
@@ -1243,9 +1778,19 @@ export function elementScanPayload(
           '[class*="action"]',
         ];
         queryAll(selectors.join(', ')).forEach((el) => register(el));
+        // React/Vue handlers need not produce onclick attributes. Discover only the
+        // outer pointer surface, not every icon/text descendant inheriting its cursor.
+        queryAll('*').forEach((el) => {
+          if (results.has(el) || !this.isPotentiallyInteractable(el)) return;
+          if (window.getComputedStyle(el).cursor !== 'pointer') return;
+          const parent = el.parentElement;
+          if (parent && window.getComputedStyle(parent).cursor === 'pointer')
+            return;
+          register(el);
+        });
         if (mode === 'controls')
           queryAll('input,textarea,select,[contenteditable]').forEach((el) =>
-            register(el)
+            register(el),
           );
 
         // 步骤 2: xpath 显式选中的元素——即使启发式未识别为可交互也纳入（提升定位上限）
@@ -1255,7 +1800,7 @@ export function elementScanPayload(
       } else {
         // 步骤 1: 标准排查 (input, textarea, select, 非body的contenteditable)
         queryAll(
-          'input, textarea, select, [contenteditable]:not([contenteditable="false"]):not(body)'
+          'input, textarea, select, [contenteditable]:not([contenteditable="false"]):not(body)',
         ).forEach((el) => register(el));
 
         // 步骤 2: 特殊案件 - 检查 <body> 本身是否是编辑器
@@ -1272,6 +1817,39 @@ export function elementScanPayload(
       }
 
       const list = Array.from(results.values());
+      for (const record of list) {
+        const node = registry!.resolve(record.elementId);
+        if (!node) continue;
+        const semantics = registry!.describe!(node);
+        record.semantics = semantics;
+        record.details = {
+          ...record.details,
+          ...semantics,
+          ...semantics.states,
+        };
+        if (
+          !['native', 'generic'].includes(semantics.evidence) ||
+          semantics.category === 'close'
+        )
+          record.type = semantics.category;
+        if (
+          semantics.name &&
+          (record.description.startsWith('[class:') ||
+            /^\[[\w-]+ @/.test(record.description) ||
+            semantics.category === 'close')
+        )
+          record.description = semantics.name;
+        if (semantics.category === 'close') record.score += 45;
+        if (node.closest('dialog[open],[role="dialog"],[role="alertdialog"]'))
+          record.score += 15;
+        if (
+          regex &&
+          regex.test(
+            [semantics.category, semantics.role, semantics.name].join(' '),
+          )
+        )
+          record.matchedRegex = true;
+      }
       const hasFilter = regex !== null || xpathNodes !== null;
 
       list.forEach((record) => {
@@ -1309,10 +1887,12 @@ export function elementScanPayload(
     return { elements, fingerprint: registry!.fingerprint() };
   } catch (error) {
     console.error(`Error during in-frame ${mode} analysis:`, error);
+    let message = 'Unserializable error value';
+    try {message = error && typeof error === 'object' && 'message' in error ? String(error.message) : String(error);} catch { /* Preserve a bounded fallback. */ }
     return {
       elements: [],
       fingerprint: frameFingerprint,
-      error: `页面内分析失败：${(error as Error).message}`,
+      error: `ELEMENT_SCAN_FAILED：页面内分析失败：${message.slice(0,2000)}`,
     };
   }
 }

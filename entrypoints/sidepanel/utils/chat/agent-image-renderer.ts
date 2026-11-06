@@ -72,7 +72,9 @@ export function processAgentImages(root: ParentNode): void {
     '.agent-image-card[data-agent-image-state="pending"]',
   );
   for (const card of pending) {
-    if (card.closest('[data-streaming]')) continue;
+    // 直播跳过（带稳定区豁免，同 chart / diagram 渲染器）：活动尾部的卡片
+    // 会被 token 重写重建；冻结段（[data-md-stable]）内的引用可立即解析
+    if (card.closest('[data-streaming]') && !card.closest('[data-md-stable]')) continue;
     // 同步前缀立即把状态推进到 loading，去抖期间再次扫描不会重复解析
     void renderAgentImage(card);
   }

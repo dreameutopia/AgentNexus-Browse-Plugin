@@ -44,8 +44,8 @@ export type StatCardData = z.infer<typeof StatCardSchema>;
 
 // ==================== 渲染 ====================
 
-/** 趋势箭头：内联 SVG（与代码库其他组件一致，不依赖字体符号） */
-const TREND_ARROW_SVG =
+/** 趋势箭头：内联 SVG（与代码库其他组件一致，不依赖字体符号；信封 stat 构建器复用） */
+export const TREND_ARROW_SVG =
   '<svg width="10" height="10" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M6,1.5L11,10H1Z" fill="currentColor"/></svg>';
 
 /** 单张卡片 HTML（所有模型文本经 escapeHtml 进入） */

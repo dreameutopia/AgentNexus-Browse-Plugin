@@ -4,6 +4,11 @@
 
 ## 工具分工
 
+控件语义、类别筛选、幂等状态操作与复杂列表多轮协议详见 [文本控件适配矩阵](../../docs/analysis/text-control-semantics.md)。
+`categories` 是严格筛选，`regex` 仍是命中置顶；默认结果包含 Category/State，details 包含关联弹层和实时状态。
+勾选用 set_checked，展开用 set_expanded，选项状态用 set_selected；原生多选使用 select + values 明确替换集合。
+自定义控件展开、搜索、滚动或选择后重新观察，限定已确认关联列表；节点替换或回读不一致时不自动重放。
+
 | 工具 | 能力 | 不代表什么 |
 | --- | --- | --- |
 | browser_observe | DOM 控件、输入、表格结构、选项、滚动容器、当前焦点、浏览器辅助功能树 | 未加载内容或整张工作簿的完整数据 |

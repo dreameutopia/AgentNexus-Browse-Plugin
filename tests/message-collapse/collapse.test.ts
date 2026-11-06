@@ -12,7 +12,6 @@ import assert from 'node:assert/strict';
 import {
   groupAnswerParts,
   buildLivePartSegments,
-  MIN_LIVE_CLUSTER_PARTS,
 } from '@/entrypoints/sidepanel/utils/chat/part-grouping';
 import type { IndexedMessagePart, MessagePart, ToolCallUI } from '@/entrypoints/sidepanel/types/chat';
 
@@ -173,86 +172,100 @@ const kinds = (entries: ReturnType<typeof buildLivePartSegments>) =>
   assert.deepEqual(g.prelude.map(p => p.part.type), ['text', 'tool', 'tool']);
 }
 
-// ════════ buildLivePartSegments：直播态「连续过程小折叠」 ════════
+// ════════ buildLivePartSegments：连续过程小折叠（正文输出为簇间断片） ════════
 
-assert.equal(MIN_LIVE_CLUSTER_PARTS, 3);
-
-// 1. 非直播（结束态分组）：不产生任何折叠条，逐项原样输出
+// 1. 单个过程片段不折叠（含伴随文本）：一行紧凑容器不值得立折叠条
 {
-  const entries = buildLivePartSegments(indexed(tool('t1'), tool('t2'), tool('t3')), {
-    collapse: false,
-  });
-  assert.deepEqual(kinds(entries), ['part', 'part', 'part']);
+  assert.deepEqual(kinds(buildLivePartSegments(indexed(tool('t1')))), ['part']);
+  assert.deepEqual(kinds(buildLivePartSegments(indexed(text('说明'), tool('t1')))), ['part', 'part']);
 }
 
-// 2. 直播：两个连续工具不折叠（低于阈值，避免一两条信息也立折叠条）
+// 2. 两个连续工具（抵达片段流末尾）→ 前者收拢、最新工具可见
 {
-  const entries = buildLivePartSegments(indexed(tool('t1'), tool('t2')), { collapse: true });
-  assert.deepEqual(kinds(entries), ['part', 'part']);
-}
-
-// 3. 直播末尾簇：连续 3 个工具 → 前 2 个收拢成条，最新 1 个保持可见
-{
-  const entries = buildLivePartSegments(indexed(tool('t1'), tool('t2'), tool('t3')), {
-    collapse: true,
-  });
-  assert.deepEqual(kinds(entries), ['bar', 'grouped', 'grouped', 'part']);
+  const entries = buildLivePartSegments(indexed(tool('t1'), tool('t2')));
+  assert.deepEqual(kinds(entries), ['bar', 'grouped', 'part']);
   const bar = entries[0];
   assert.equal(bar.kind, 'cluster-bar');
-  assert.equal(bar.counts.tools, 2);
-  assert.equal(bar.grouped.length, 2);
+  assert.equal(bar.counts.tools, 1);
   const visible = entries[entries.length - 1];
   assert.equal(visible.kind, 'part');
   assert.equal(visible.clusterKey, undefined, '最新活动不挂簇标识（恒可见）');
 }
 
-// 4. 直播中段簇：后续已有正文接续 → 整组收拢（全部被取代）
+// 3. 思考+工具 / 工具+思考 任意组合（用户点名的形态）都收拢
 {
-  const entries = buildLivePartSegments(
-    indexed(tool('t1'), tool('t2'), tool('t3'), text('中间说明')),
-    { collapse: true },
+  assert.deepEqual(
+    kinds(buildLivePartSegments(indexed(reasoning(), tool('t1')))),
+    ['bar', 'grouped', 'part'],
   );
-  assert.deepEqual(kinds(entries), ['bar', 'grouped', 'grouped', 'grouped', 'part']);
+  assert.deepEqual(
+    kinds(buildLivePartSegments(indexed(tool('t1'), reasoning()))),
+    ['bar', 'grouped', 'part'],
+  );
+  assert.deepEqual(
+    kinds(buildLivePartSegments(indexed(tool('t1'), reasoning(), tool('t2')))),
+    ['bar', 'grouped', 'grouped', 'part'],
+  );
 }
 
-// 5. 工具+思考+截图混合簇：计数分项正确，最新工具保持可见
+// 4. 正文文本是正式输出：恒可见并隔离簇——工具之间一旦出现文本，连续即被隔断
 {
-  const entries = buildLivePartSegments(
-    indexed(image(), reasoning(), tool('t1'), tool('t2')),
-    { collapse: true },
+  const entries = buildLivePartSegments(indexed(tool('t1'), text('现在点击搜索框'), tool('t2')));
+  assert.deepEqual(kinds(entries), ['part', 'part', 'part'], '文本隔断两侧，各自单独可见，不立折叠条');
+}
+
+// 5. 前导文本保持可见（模型的开场说明不折叠）
+{
+  assert.deepEqual(
+    kinds(buildLivePartSegments(indexed(text('我来处理这个任务'), tool('t1'), tool('t2')))),
+    ['part', 'bar', 'grouped', 'part'],
   );
+}
+
+// 6. 尾随正文保持可见，其前的簇整组收拢（直播中正在流出的答案不被遮住）
+{
+  assert.deepEqual(
+    kinds(buildLivePartSegments(indexed(tool('t1'), tool('t2'), text('最终答复正文')))),
+    ['bar', 'grouped', 'grouped', 'part'],
+  );
+}
+
+// 7. 多轮时间线：每轮「工具+思考」成簇，轮间文本隔离、正文后整组收拢
+{
+  const entries = buildLivePartSegments(indexed(tool('t1'), reasoning(), text('第一轮结论'), tool('t2'), reasoning('r2')));
+  // {t1,reasoning} 后有正文 → 整组收拢；正文可见；{t2,r2} 抵达末尾 → 保留最新思考可见
+  assert.deepEqual(
+    kinds(entries),
+    ['bar', 'grouped', 'grouped', 'part', 'bar', 'grouped', 'part'],
+  );
+  const bars = entries.filter(e => e.kind === 'cluster-bar');
+  assert.notEqual(bars[0].key, bars[1].key, '不同簇的标识互异');
+}
+
+// 8. 混合簇计数（截图 + 思考 + 工具）
+{
+  const entries = buildLivePartSegments(indexed(image(), reasoning(), tool('t1'), tool('t2')));
   const bar = entries[0];
   assert.equal(bar.kind, 'cluster-bar');
   assert.deepEqual(bar.counts, { tools: 1, reasoning: 1, images: 1 });
   assert.equal(kinds(entries).filter(k => k === 'part').length, 1, '仅最新工具可见');
 }
 
-// 6. 正文打断簇：两个各为 2 的簇都不折叠
+// 9. notice 恒可见且切断簇
 {
-  const entries = buildLivePartSegments(
-    indexed(tool('t1'), tool('t2'), text('说明'), tool('t3'), tool('t4')),
-    { collapse: true },
+  // 两侧各自不足两个过程片段：全部可见，无折叠条
+  assert.deepEqual(
+    kinds(buildLivePartSegments(indexed(tool('t1'), notice(), tool('t2')))),
+    ['part', 'part', 'part'],
   );
-  assert.deepEqual(kinds(entries), ['part', 'part', 'part', 'part', 'part']);
+  // 两侧各自成簇：notice 之前的簇整组收拢（其后有内容），之后的簇保留最新一项
+  assert.deepEqual(
+    kinds(buildLivePartSegments(indexed(tool('t1'), tool('t2'), notice(), tool('t3'), tool('t4')))),
+    ['bar', 'grouped', 'grouped', 'part', 'bar', 'grouped', 'part'],
+  );
 }
 
-// 7. 多簇并存：中段簇整组收拢 + 末尾簇保留最新一项
-{
-  const entries = buildLivePartSegments(
-    indexed(tool('t1'), tool('t2'), tool('t3'), text('说明'), reasoning('r1'), reasoning('r2'), reasoning('r3')),
-    { collapse: true },
-  );
-  assert.deepEqual(kinds(entries), [
-    'bar', 'grouped', 'grouped', 'grouped', // 中段工具簇
-    'part', // 说明正文
-    'bar', 'grouped', 'grouped', 'part', // 末尾思考簇（最新一段可见）
-  ]);
-  const bars = entries.filter(e => e.kind === 'cluster-bar');
-  assert.equal(bars.length, 2);
-  assert.notEqual(bars[0].key, bars[1].key, '不同簇的标识互异');
-}
-
-// 8. 已结算工具耗时合计入条；未结算（pending / 缺时长）不计
+// 10. 已结算工具耗时合计入条；未结算（pending / 缺时长）不计
 {
   const entries = buildLivePartSegments(
     indexed(
@@ -261,26 +274,21 @@ assert.equal(MIN_LIVE_CLUSTER_PARTS, 3);
       tool('t3', 'pending'),
       tool('t4'),
     ),
-    { collapse: true },
   );
   const bar = entries[0];
   assert.equal(bar.kind, 'cluster-bar');
   assert.equal(bar.durationMs, 3800);
 }
 
-// 9. notice 打断簇（终态注记不参与小折叠）
+// 11. 纯文本 / 纯推理单段：无折叠条
 {
-  const entries = buildLivePartSegments(
-    indexed(notice(), tool('t1'), tool('t2'), tool('t3')),
-    { collapse: true },
-  );
-  assert.deepEqual(kinds(entries), ['part', 'bar', 'grouped', 'grouped', 'part']);
+  assert.deepEqual(kinds(buildLivePartSegments(indexed(text('a'), text('b')))), ['part', 'part']);
+  assert.deepEqual(kinds(buildLivePartSegments(indexed(reasoning()))), ['part']);
 }
 
-// 10. 空输入
+// 12. 空输入
 {
-  assert.deepEqual(buildLivePartSegments([], { collapse: true }), []);
-  assert.deepEqual(buildLivePartSegments([], { collapse: false }), []);
+  assert.deepEqual(buildLivePartSegments([]), []);
 }
 
-console.log('[message-collapse] 分组纯函数全部场景通过（结束态前奏折叠 + 直播态连续过程小折叠）。');
+console.log('[message-collapse] 分组纯函数全部场景通过（结束态前奏折叠 + 连续过程小折叠：正文隔离语义）。');

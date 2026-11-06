@@ -370,6 +370,8 @@
           :elapsed-ms="learn.elapsedMs.value"
           :tool-calls="learn.toolCalls.value"
           :force-submitting="learn.isForceSubmitting.value"
+          :context-usage="learn.contextUsage.value"
+          :compacting="isCompacting"
           @stop="learn.requestAbort()"
         />
 
@@ -393,7 +395,7 @@
           <!-- 学习配置/确认阶段：输入区让位（面板与弹窗承载全部交互） -->
           <div v-if="learn.isLearnActive.value" class="input-disabled-notice learn-input-notice">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 8px;" aria-hidden="true">
-              <path d="M12 1.5L14.35 9.65L22.5 12L14.35 14.35L12 22.5L9.65 14.35L1.5 12L9.65 9.65L12 1.5Z" fill="#667eea"/>
+              <path d="M12 1.5L14.35 9.65L22.5 12L14.35 14.35L12 22.5L9.65 14.35L1.5 12L9.65 9.65L12 1.5Z" fill="currentColor"/>
             </svg>
             <span>{{ t('sidepanel.learn.statusHint') }}</span>
           </div>
@@ -403,17 +405,24 @@
                打开该会话即可把草稿重新送去创建，成果不再随暂存时效消失。
                与输入框并存：草稿待处理不该剥夺用户继续对话的能力。 -->
           <div
-            v-if="!learn.isLearnActive.value && activeChatId && (learnRecoverableDraft || learn.recovery.value?.chatId === activeChatId)"
-            class="input-disabled-notice learn-recover-notice"
+            v-if="!learn.isLearnActive.value && learnRecoveryState.visible.value"
+            class="learn-recover-notice"
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 8px; flex: 0 0 auto;" aria-hidden="true">
-              <path d="M12 1.5L14.35 9.65L22.5 12L14.35 14.35L12 22.5L9.65 14.35L1.5 12L9.65 9.65L12 1.5Z" fill="#667eea"/>
-            </svg>
-            <span>{{ t('sidepanel.learn.recoverHint') }}</span>
-            <button type="button" class="learn-recover-btn" @click="retryCreateSkillFromLearn">
-              {{ t('sidepanel.learn.recoverAction') }}
-            </button>
-            <button type="button" class="learn-recover-btn" @click="downloadLearnRecovery">{{ t('sidepanel.learn.downloadRecovery') }}</button>
+            <div class="learn-recover-summary">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+                <path d="M14 3v6h6M8 13h8M8 17h5"/>
+              </svg>
+              <span>{{ t('sidepanel.learn.recoverHint') }}</span>
+            </div>
+            <p v-if="learnRecoveryState.syncError.value" class="learn-recover-sync-error" role="status">{{ t('sidepanel.learn.recoverySyncFailed') }}</p>
+            <div class="learn-recover-actions">
+              <button type="button" class="learn-recover-btn learn-recover-btn--primary" :disabled="retryingLearnDraft || learnRecoveryState.busy.value" @click="retryCreateSkillFromLearn">
+                {{ t('sidepanel.learn.recoverAction') }}
+              </button>
+              <button type="button" class="learn-recover-btn" @click="downloadLearnRecovery">{{ t('sidepanel.learn.downloadRecovery') }}</button>
+              <button type="button" class="learn-recover-btn learn-recover-btn--ignore" :disabled="retryingLearnDraft || learnRecoveryState.busy.value" @click="learnRecoveryState.requestDismiss">{{ t('sidepanel.learn.ignoreAction') }}</button>
+            </div>
           </div>
 
           <!-- 未配置提示（可点击打开配置弹窗）。
@@ -707,6 +716,7 @@
     <!-- 收尾阶段：草稿暂存失败降级说明（非阻断；与弹窗同为模态，层级置于确认弹窗之下） -->
     <LearnDegradedNotice :visible="learn.degradedNotice.value" @close="learn.dismissDegradedNotice()" />
     <LearnDialog :view="learn.dialog.value" @answer="learn.answerDialog" />
+    <LearnRecoveryDismissDialog :visible="learnRecoveryState.confirming.value" :busy="learnRecoveryState.busy.value" :error="learnRecoveryState.dismissError.value" @cancel="learnRecoveryState.cancelDismiss" @confirm="learnRecoveryState.confirmDismiss" />
 
     <!-- 全局 Toast 宿主（固定右上角，层级高于全部模态；反馈落库失败等轻量提示） -->
     <MessageContainer />
@@ -729,7 +739,7 @@ import { useAgentDisplay } from '@/common/use-agent-display';
 import ToolComponent from './Tool.vue';
 // 组件按功能域从 barrel 引入（chat / modals / voice / feedback）
 import { ChatMessageList, ChatHistoryDrawer, ContextUsageRing, GuardConfirmBar, PlanBoard } from '../components/chat';
-import { SiteLearnModal, LearnDialog, LearnStatusBar, LearnDegradedNotice } from '../components/learn';
+import { SiteLearnModal, LearnDialog, LearnStatusBar, LearnDegradedNotice, LearnRecoveryDismissDialog } from '../components/learn';
 import { useLearnSession } from '../composables/use-learn-session';
 import { backgroundConversation as conversationEngine } from '../core/conversation/runtime-client';
 import { readActiveChat, rememberActiveChat } from '../core/conversation/active-session';
@@ -777,6 +787,7 @@ import {
 import { resolveDeepSearchToolIds } from '../config/deep-search-sites';
 // 网站学习成果兜底：草稿（SkillDraft）暂存 + 深链 hash（与 use-learn-session 同源）
 import { saveLearnDraft } from '@/utils/learn/learn-draft-store';
+import { useLearnRecovery } from '../composables/use-learn-recovery';
 import { asSkillDraft } from '@/utils/learn/learn-validate';
 import { learnDraftHash, type SkillDraft } from '@/utils/learn/learn-types';
 // 注册表权威源对账入口（@ / 面板开启时主动与 chrome.storage 同步，兜底跨上下文 onChanged 事件漏投）
@@ -797,6 +808,7 @@ import {
 import { showAlert, showConfirm, openDialogWithHandle, settleDialogById } from '../composables/use-app-dialog';
 import { dismissPendingInteracts } from '../composables/use-interact';
 import { toApiErrorBlock } from '../utils/stream/errors';
+import { setApiErrorRetryHandler } from '../utils/chat/api-error-retry';
 import { escapeXmlText } from '../utils/xml-entities';
 // 本轮消息体积守卫：token 口径计量（与窗口守卫/压缩触发同一估算实现）
 import { estimateMessageTokens, estimateTextTokens } from '../utils/ai/token-estimate';
@@ -1452,6 +1464,14 @@ const handleConversationEvent = (event: ConversationEvent): void => {
           t('sidepanel.chat.compactionFailed', { reason: event.error ?? '未知原因' }),
         );
       }
+      break;
+    }
+    case 'context-usage': {
+      // 引擎每轮真实测量的全量上下文用量（含运行中工具结果与压缩后复测）：
+      // 普通对话与学习/验证共用同一事件源，环上数字恒等于「最近一次请求的
+      // 真实负载」。学习运行期间底部工具栏隐藏，同一数据经 learn.contextUsage
+      // 在学习状态条呈现——两处展示口径不可能漂移。
+      contextUsage.value = event.usage;
       break;
     }
   }
@@ -2635,9 +2655,16 @@ function parseLearnDraft(raw: string | undefined | null): SkillDraft | null {
   }
 }
 
-let retryingLearnDraft = false;
+const retryingLearnDraft = ref(false);
+const learnRecoverySource = computed(() => {
+  const chatId = activeChatId.value;
+  if (!chatId) return null;
+  const draft = learn.recovery.value?.chatId === chatId ? learn.recovery.value.draft : learnRecoverableDraft.value;
+  return draft ? { chatId, draft } : null;
+});
+const learnRecoveryState = useLearnRecovery(learnRecoverySource);
 function currentLearnRecovery(): SkillDraft | null {
-  return learn.recovery.value?.chatId === activeChatId.value ? learn.recovery.value.draft : learnRecoverableDraft.value;
+  return learnRecoveryState.visible.value ? learnRecoverySource.value?.draft ?? null : null;
 }
 
 function downloadLearnRecovery(): void {
@@ -2651,17 +2678,22 @@ function downloadLearnRecovery(): void {
 
 /** Retry the same durable receipt; no empty-editor fallback when handoff fails. */
 async function retryCreateSkillFromLearn(): Promise<void> {
-  if (retryingLearnDraft) return;
-  const draft = currentLearnRecovery();
-  if (!draft) { toast.error(t('sidepanel.learn.draftSaveDegraded')); return; }
-  retryingLearnDraft = true;
+  if (retryingLearnDraft.value) return;
+  const source = learnRecoverySource.value;
+  if (!source) return;
+  retryingLearnDraft.value = true;
   try {
-    const saved = await saveLearnDraft(draft, activeChatId.value || 'recovery');
+    if (!await learnRecoveryState.canCreate(source)) {
+      if (learnRecoveryState.syncError.value) toast.error(t('sidepanel.learn.recoverySyncFailed'));
+      return;
+    }
+    const saved = await saveLearnDraft(source.draft, source.chatId);
     if (!saved.ok) { toast.error(t('sidepanel.learn.draftSaveDegraded')); return; }
+    if (!await learnRecoveryState.canCreate(source)) return;
     const opened = await openHubWithHash(learnDraftHash(saved.id));
     if (!opened) toast.error(t('sidepanel.learn.openHubFailed'));
     else toast.info(t('sidepanel.learn.handoffDone'));
-  } finally { retryingLearnDraft = false; }
+  } finally { retryingLearnDraft.value = false; }
 }
 
 // ==================== 历史会话抽屉 ====================
@@ -2690,9 +2722,8 @@ const loadHistorySessionData = async (chatId: string) => {
 
     activeChatId.value = chatId;
     // 站点学习会话：把会话里持久化的技能草稿（submit_skill 的提交体）读回来。
-    // 它是「草稿暂存失败」降级路径的兜底（暂存只在收尾那一刻有效、跨会话不随行），
-    // 用户重新打开该会话即可取回成果、继续手动创建技能。
-    // 正常路径下暂存的草稿已在管理中心消耗，此处读回只是冗余副本，不会重复创建
+    // 转录仅提供恢复副本；是否待创建由共享交接回执决定。
+    // 已保存或明确忽略的成果不会因为重开历史会话再次显示恢复入口。
     activeSessionIsLearn = meta.kind === 'site-learn';
     learnRecoverableDraft.value = activeSessionIsLearn
       ? parseLearnDraft(effective.systemPromptSuffix)
@@ -3486,7 +3517,7 @@ const sendMessageInner = async () => {
     // --- 6.5 当前消息体积防御：本轮用户消息的 token 估算超过「阈值 − systemPrompt」
     // 时，ContextWindowGuard 的从新到旧保留策略会把它整组丢弃——模型将收不到
     // 当前消息。此处前置拦截：还原输入与附件并明确告知。计量与窗口守卫同用
-    // token-estimate（图片按固定 1800 token/张，与 base64 体积解耦）---
+    // token-estimate（图片按固定 1200 token/张，与 base64 体积解耦）---
     {
       const currentUserMessage = composeLlmUserMessage(
         runtime.userInput,
@@ -3694,6 +3725,47 @@ const sendMessage = async () => {
 voiceRecordingDeps.sendMessage = sendMessage;
 // 绑定语音助手 composable 的 sendMessage 回调
 voiceAssistantDeps.sendMessage = sendMessage;
+
+/**
+ * API 错误卡片「重试」回调（渲染层委托见 utils/chat/api-error-retry.ts）。
+ *
+ * 错误卡片经 v-html 注入，无法走 Vue 事件；渲染层只转发点击，重试语义在此收敛：
+ * 重试 = 以当前输入重走发送流程——失败后输入框通常为空，即引擎的「空输入续跑」
+ * （runtime.initialContext 非空时 run 不抛 EmptyRunInputError，也不重复入档
+ * 用户消息），模型以失败前的完整历史继续会话（finalize 已写入失败状态说明，
+ * 模型据此接续或重答）。输入框有残留草稿时（装配失败已还原的场景），
+ * 重试等价于重新发送该草稿。消息列表恒为当前会话视图，可见卡片必属当前
+ * 会话上下文，无需逐卡定位归属。
+ */
+const retryFromErrorCard = (): void => {
+  if (isAiResponding.value || sendInFlight.value) {
+    pushSystemNotice(t('sidepanel.chat.apiErrorRetryBusy'));
+    return;
+  }
+  if (activeSessionIsLearn) {
+    // 学习/验证会话由 use-learn-session 直接驱动引擎（不经过 sendMessage，
+    // 见其注释），普通发送会破坏学习状态机；失败恢复走学习流程自己的入口
+    pushSystemNotice(t('sidepanel.chat.apiErrorRetryLearnBlocked'));
+    return;
+  }
+  if (!modelRegistry.configured) {
+    showSettingsModal.value = true;
+    return;
+  }
+  if (
+    !userInput.value.trim() &&
+    (!activeChatId.value || !messages.value.some(message => message.role === 'user'))
+  ) {
+    // 空输入续跑的前提是会话里有已入档的用户消息：引擎每次运行都先入档
+    // 用户消息再创建助手记录，视图里没有用户消息 ⟺ 没有任何可继续的历史
+    // （如会话建立后、首条消息入档前即失败的空会话）。此时续跑只会让引擎
+    // 抛 EmptyRunInputError 再叠一张错误卡——引导正常输入即可
+    pushSystemNotice(t('sidepanel.chat.apiErrorRetryNoContext'));
+    return;
+  }
+  void sendMessage();
+};
+setApiErrorRetryHandler(retryFromErrorCard);
 
 // 工具调用展开/收起功能
 // 双写策略：列表项（messages.value 中的副本，立即生效）+ 运行源对象

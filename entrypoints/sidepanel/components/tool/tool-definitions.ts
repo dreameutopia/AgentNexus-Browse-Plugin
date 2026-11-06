@@ -268,103 +268,9 @@ export const categories: ToolCategory[] = [
           }
         },
         required: []
-      },
-      {
-        name: 'baidu_result_scraper',
-        description: '解析百度搜索结果页面，提取搜索结果为Markdown表格格式',
-        category: 'analyse',
-        version: '1.0.0',
-        parameters: {},
-        required: []
-      },
-      {
-        name: 'bing_result_scraper',
-        description: '解析Bing搜索结果页面，提取搜索结果为Markdown表格格式',
-        category: 'analyse',
-        version: '1.0.0',
-        parameters: {},
-        required: []
-      },
-      {
-        name: 'bilibili_search_result_scraper',
-        description: '解析Bilibili搜索结果页面，提取视频信息为Markdown表格格式',
-        category: 'analyse',
-        version: '3.0.0',
-        parameters: {},
-        required: []
-      },
-      {
-        name: 'cnki_result_scraper',
-        description: '解析知网搜索结果页面，提取论文信息为Markdown表格格式',
-        category: 'analyse',
-        version: '1.0.0',
-        parameters: {},
-        required: []
-      },
-      {
-        name: 'csdn_result_scraper',
-        description: '解析CSDN搜索结果页面，提取文章信息为Markdown表格格式',
-        category: 'analyse',
-        version: '1.0.0',
-        parameters: {},
-        required: []
-      },
-      {
-        name: 'xiaohongshu_result_scraper',
-        description: '解析小红书搜索结果页面，提取笔记信息为JSON格式',
-        category: 'analyse',
-        version: '1.0.0',
-        parameters: {
-          formatOutput: {
-            type: 'boolean',
-            description: '是否格式化输出JSON字符串',
-            default: true
-          }
-        },
-        required: []
-      },
-      {
-        name: 'github_result_scraper',
-        description: '解析GitHub搜索结果页面，提取仓库信息为JSON格式',
-        category: 'analyse',
-        version: '1.0.0',
-        parameters: {
-          formatOutput: {
-            type: 'boolean',
-            description: '是否格式化输出JSON字符串',
-            default: true
-          }
-        },
-        required: []
-      },
-      {
-        name: 'mooc_result_scraper',
-        description: '解析MOOC搜索结果页面，提取课程信息为JSON格式',
-        category: 'analyse',
-        version: '1.0.0',
-        parameters: {
-          formatOutput: {
-            type: 'boolean',
-            description: '是否格式化输出JSON字符串',
-            default: true
-          }
-        },
-        required: []
-      },
-      {
-        name: 'zhihu_result_scraper',
-        description: '解析知乎搜索结果页面，提取问答信息为JSON格式',
-        category: 'analyse',
-        version: '1.0.0',
-        parameters: {
-          formatOutput: {
-            type: 'boolean',
-            description: '是否格式化输出JSON字符串',
-            default: true
-          }
-        },
-        required: []
       }
+      // 原 9 个平台搜索结果抓取工具（*_result_scraper）已并入统一 web_search
+      //（搜索工具组，website 枚举区分平台），本组不再单列
     ]
   },
   {
@@ -829,130 +735,36 @@ export const categories: ToolCategory[] = [
     icon: '🔍',
     tools: [
       {
-        name: 'baidu_search',
-        description: '使用百度搜索引擎搜索信息',
+        name: 'web_search',
+        description:
+          '统一多平台集成搜索：一次调用完成「导航到平台搜索结果页 → 等待加载 → 解析结构化结果 → Markdown 表格」。' +
+          '⚠ 自带页面导航（效果等同 browser_navigate），禁止同一轮并发调用；返回 navigation（是否成功 + 当前网址）与 results（条目与 Markdown 表，解析失败时用 browser_get_page_text 自行解析）',
         category: 'search',
         version: '1.0.0',
         parameters: {
+          website: {
+            type: 'string',
+            description:
+              '目标搜索平台（枚举）：baidu=百度、bing=Bing、zhihu=知乎、github=GitHub、csdn=CSDN、mooc=中国大学MOOC、xiaohongshu=小红书、cnki=中国知网、bilibili=Bilibili',
+            placeholder: 'bing'
+          },
           query: {
             type: 'string',
-            description: '搜索查询关键词',
+            description: '搜索查询关键词（必填，最长 300 字符）',
             placeholder: '输入搜索内容'
+          },
+          newTab: {
+            type: 'boolean',
+            description: '是否在新标签页打开搜索结果（默认 true；连续搜索可传 false 复用当前标签页）',
+            default: true
+          },
+          waitTime: {
+            type: 'integer',
+            description: '页面加载完成后的额外等待毫秒数（0-10000，默认 3000）',
+            default: 3000
           }
         },
-        required: ['query']
-      },
-      {
-        name: 'bing_search',
-        description: '使用Bing搜索引擎搜索信息',
-        category: 'search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索查询关键词',
-            placeholder: '输入搜索内容'
-          }
-        },
-        required: ['query']
-      },
-      {
-        name: 'bilibili_search',
-        description: '在B站搜索视频内容',
-        category: 'search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索查询关键词',
-            placeholder: '输入搜索内容'
-          }
-        },
-        required: ['query']
-      },
-      {
-        name: 'zhihu_search',
-        description: '在知乎搜索问答内容',
-        category: 'search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索查询关键词',
-            placeholder: '输入搜索内容'
-          }
-        },
-        required: ['query']
-      },
-      {
-        name: 'github_search',
-        description: '在GitHub搜索代码仓库',
-        category: 'search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索查询关键词',
-            placeholder: '输入搜索内容'
-          }
-        },
-        required: ['query']
-      },
-      {
-        name: 'csdn_search',
-        description: '在CSDN搜索技术文章',
-        category: 'search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索查询关键词',
-            placeholder: '输入搜索内容'
-          }
-        },
-        required: ['query']
-      },
-      {
-        name: 'mooc_search',
-        description: '在中国大学MOOC搜索课程',
-        category: 'search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索查询关键词',
-            placeholder: '输入搜索内容'
-          }
-        },
-        required: ['query']
-      },
-      {
-        name: 'xiaohongshu_search',
-        description: '在小红书搜索笔记内容',
-        category: 'search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索查询关键词',
-            placeholder: '输入搜索内容'
-          }
-        },
-        required: ['query']
-      },
-      {
-        name: 'cnki_search',
-        description: '在知网搜索学术论文',
-        category: 'search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索查询关键词',
-            placeholder: '输入搜索内容'
-          }
-        },
-        required: ['query']
+        required: ['website', 'query']
       }
     ]
   },
@@ -1372,193 +1184,6 @@ export const categories: ToolCategory[] = [
           }
         },
         required: ['time']
-      }
-    ]
-  },
-  {
-    id: 'integrated-search',
-    name: '集成搜索',
-    icon: '🔍',
-    tools: [
-      {
-        name: 'bing_integrated_search',
-        description: 'Bing集成搜索 - 自动跳转、等待加载并提取搜索结果（Markdown表格）',
-        category: 'integrated-search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索关键词',
-            placeholder: '人工智能最新发展'
-          },
-          waitTime: {
-            type: 'number',
-            description: '页面加载后额外等待时间（毫秒）',
-            placeholder: '3000',
-            default: 3000
-          }
-        },
-        required: ['query']
-      },
-      {
-        name: 'baidu_integrated_search',
-        description: '百度集成搜索 - 自动跳转、等待加载并提取搜索结果（Markdown表格）',
-        category: 'integrated-search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索关键词',
-            placeholder: 'TypeScript 最佳实践'
-          },
-          waitTime: {
-            type: 'number',
-            description: '页面加载后额外等待时间（毫秒）',
-            placeholder: '3000',
-            default: 3000
-          }
-        },
-        required: ['query']
-      },
-      {
-        name: 'bilibili_integrated_search',
-        description: 'Bilibili集成搜索 - 自动跳转、等待加载并提取视频搜索结果（Markdown表格）',
-        category: 'integrated-search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索关键词',
-            placeholder: 'Vue3教程'
-          },
-          waitTime: {
-            type: 'number',
-            description: '页面加载后额外等待时间（毫秒）',
-            placeholder: '3000',
-            default: 3000
-          }
-        },
-        required: ['query']
-      },
-      {
-        name: 'zhihu_integrated_search',
-        description: '知乎集成搜索 - 自动跳转、等待加载并提取问答搜索结果（Markdown表格）',
-        category: 'integrated-search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索关键词',
-            placeholder: '如何学习编程'
-          },
-          waitTime: {
-            type: 'number',
-            description: '页面加载后额外等待时间（毫秒）',
-            placeholder: '3000',
-            default: 3000
-          }
-        },
-        required: ['query']
-      },
-      {
-        name: 'github_integrated_search',
-        description: 'GitHub集成搜索 - 自动跳转、等待加载并提取仓库搜索结果（Markdown表格）',
-        category: 'integrated-search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索关键词',
-            placeholder: 'machine learning python'
-          },
-          waitTime: {
-            type: 'number',
-            description: '页面加载后额外等待时间（毫秒）',
-            placeholder: '3000',
-            default: 3000
-          }
-        },
-        required: ['query']
-      },
-      {
-        name: 'csdn_integrated_search',
-        description: 'CSDN集成搜索 - 自动跳转、等待加载并提取技术文章搜索结果（Markdown表格）',
-        category: 'integrated-search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索关键词',
-            placeholder: 'React Hooks 最佳实践'
-          },
-          waitTime: {
-            type: 'number',
-            description: '页面加载后额外等待时间（毫秒）',
-            placeholder: '3000',
-            default: 3000
-          }
-        },
-        required: ['query']
-      },
-      {
-        name: 'mooc_integrated_search',
-        description: '中国大学MOOC集成搜索 - 自动跳转、等待加载并提取课程搜索结果（Markdown表格）',
-        category: 'integrated-search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索关键词',
-            placeholder: '数据结构与算法'
-          },
-          waitTime: {
-            type: 'number',
-            description: '页面加载后额外等待时间（毫秒）',
-            placeholder: '3000',
-            default: 3000
-          }
-        },
-        required: ['query']
-      },
-      {
-        name: 'xiaohongshu_integrated_search',
-        description: '小红书集成搜索 - 自动跳转、等待加载并提取笔记搜索结果（Markdown表格）',
-        category: 'integrated-search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索关键词',
-            placeholder: '旅游攻略'
-          },
-          waitTime: {
-            type: 'number',
-            description: '页面加载后额外等待时间（毫秒）',
-            placeholder: '3000',
-            default: 3000
-          }
-        },
-        required: ['query']
-      },
-      {
-        name: 'cnki_integrated_search',
-        description: '知网(CNKI)集成搜索 - 自动跳转、等待加载并提取学术文献搜索结果（Markdown表格）',
-        category: 'integrated-search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索关键词',
-            placeholder: '深度学习图像识别'
-          },
-          waitTime: {
-            type: 'number',
-            description: '页面加载后额外等待时间（毫秒）',
-            placeholder: '5000',
-            default: 5000
-          }
-        },
-        required: ['query']
       }
     ]
   },

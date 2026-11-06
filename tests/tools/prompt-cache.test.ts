@@ -139,12 +139,15 @@ try {
   assert.equal(interrupted[0].content, 'unfinished reasoning result');
   assert.equal(interrupted[1].tool_call_id, 'pending');
   assert.equal(JSON.parse(interrupted[1].content as string).success, false);
-  const beforeCompression = record('user', 'original evidence stays in the transcript');
+  // 头部内容需达 user-boundary 的实质可压体量（USER_BOUNDARY_MIN_HEAD_TOKENS），
+  // 否则边界规划会降级 group-boundary（零收益压缩防护），与本用例无关
+  const beforeContent = 'original evidence stays in the transcript\n' + '详'.repeat(2600);
+  const beforeCompression = record('user', beforeContent);
   const latestInput = record('user', 'latest actual request');
   const compactedRecord = record('assistant'); compactedRecord.modelMessages = [];
   const latestMessage: ChatMessage = { role: 'user', content: latestInput.content };
   latestInput.modelMessages = await storeProtocolMessages([latestMessage]);
-  contextCompactor.compact = async () => ({ summary: 'task and original evidence retained', originalTokens: 10000, summaryTokens: 10, droppedOldest: 0 });
+  contextCompactor.compact = async () => ({ summary: 'task and original evidence retained', originalTokens: 10000, summaryTokens: 10 });
   const compactHandle: any = { history: [{ role: 'user', content: beforeCompression.content }, latestMessage], runUserMessage: latestMessage,
     record: compactedRecord, abortController: new AbortController(), emit: () => {} };
   assert.equal(await engine.tryCompactHistory({ ...runtime, priorMaxSeq: 0 }, compactHandle), true);
@@ -156,7 +159,7 @@ try {
   assert.ok((compressedReplay[0].content as string).includes('task and original evidence retained'));
   assert.equal(compressedReplay[1].content, latestInput.content);
   assert.equal(compressedReplay[2].content, 'completed after compression');
-  assert.equal(beforeCompression.content, 'original evidence stays in the transcript');
+  assert.equal(beforeCompression.content, beforeContent, '压缩绝不改写用户面转录原文');
   assert.deepEqual(contextEngine.toProtocolMessages([], { summary: 'legacy summary' }), contextEngine.toProtocolMessages([], { summary: 'legacy summary' }), 'missing legacy compaction time must not regenerate a timestamp');
 
   aiUsageMetrics.reset();
@@ -218,7 +221,8 @@ try {
     { role: 'user', content: 'FIRST_FACT:' + '中'.repeat(15000) + ':LAST_FACT' },
     { role: 'user', content: [{ type: 'text', text: 'visual evidence' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,YQ==', detail: 'high' } }] },
   ] });
-  assert.equal(summarized.droppedOldest, 0, 'hierarchical compaction must process all original records');
+  assert.ok(summarized.originalTokens > summarized.summaryTokens, 'hierarchical compaction must process all original records');
+  assert.ok(!('droppedOldest' in summarized), 'compaction never drops oldest messages');
   const allCompactionText = JSON.stringify(compactionInputs);
   assert.ok(allCompactionText.includes('FIRST_FACT:') && allCompactionText.includes(':LAST_FACT'));
   assert.ok(compactionInputs.some(messages => messages.some(m => Array.isArray(m.content) && m.content.some(part => part.type === 'image_url'))), 'summarizer must see actual visual evidence');

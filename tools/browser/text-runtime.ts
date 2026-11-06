@@ -2,6 +2,14 @@ import { exclusiveGui } from '../vision/gui-driver';
 import { cdpSession } from './cdp-session';
 import { isRestrictedUrl } from '@/common/constants';
 
+/** Preserve useful diagnostics even when a dependency throws null or a plain object. */
+export function readableTextError(error: unknown): string {
+  try {
+    if (error && typeof error === 'object' && 'message' in error) return String(error.message).slice(0, 2000);
+    return String(error).slice(0, 2000);
+  } catch { return 'Unserializable error value'; }
+}
+
 /** Text tools never capture images or accept guessed coordinates. */
 export async function textTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });

@@ -63,23 +63,23 @@ assert.ok(textOf(result).includes('共 3 项，已完成 0'), 'read 正文含计
 // edit：缺 id 拒绝
 result = await planTool.execute({ action: 'edit', status: 'done' }, { chatId });
 assert.equal(result.success, false);
-assert.ok(result.error.includes('缺少参数 id'), '缺 id 给可读错误');
+assert.ok(result.error?.includes('缺少参数 id'), '缺 id 给可读错误');
 
 // edit：非法 status 拒绝
 result = await planTool.execute({ action: 'edit', id: '1', status: 'ok' }, { chatId });
 assert.equal(result.success, false);
-assert.ok(result.error.includes('status 必须为'), '非法 status 给可读错误');
+assert.ok(result.error?.includes('status 必须为'), '非法 status 给可读错误');
 
 // edit：failed 无 message 硬校验拒绝
 result = await planTool.execute({ action: 'edit', id: '1', status: 'failed' }, { chatId });
 assert.equal(result.success, false);
-assert.ok(result.error.includes('message 必填'), 'failed 必填 message');
+assert.ok(result.error?.includes('message 必填'), 'failed 必填 message');
 
 // edit：未知 id → 错误正文回显当前清单（自纠路径）
 result = await planTool.execute({ action: 'edit', id: '99', status: 'done' }, { chatId });
 assert.equal(result.success, false);
-assert.ok(result.error.includes('目标不存在'), '未知 id 报目标不存在');
-assert.ok(result.error.includes('检索平台A'), '未知 id 错误回显当前清单');
+assert.ok(result.error?.includes('目标不存在'), '未知 id 报目标不存在');
+assert.ok(result.error?.includes('检索平台A'), '未知 id 错误回显当前清单');
 
 // edit：done 附成果 → 改回 in_progress 不带 message → 旧标注作废
 result = await planTool.execute(
@@ -124,12 +124,12 @@ const prevActiveChat = '';
 setActivePlanChat(prevActiveChat);
 result = await planTool.execute({ action: 'read' });
 assert.equal(result.success, false);
-assert.ok(result.error.includes('会话上下文缺失'), '无上下文给可读错误');
+assert.ok(result.error?.includes('会话上下文缺失'), '无上下文给可读错误');
 
 // 非法 action
 result = await planTool.execute({ action: 'unknown' }, { chatId });
 assert.equal(result.success, false);
-assert.ok(result.error.includes('action 必须为'), '非法 action 给可读错误');
+assert.ok(result.error?.includes('action 必须为'), '非法 action 给可读错误');
 
 // ==================== 2. plan-reminder 纯函数 ====================
 
@@ -161,7 +161,7 @@ const reminderInput = (overrides: Partial<PlanReminderInput>): PlanReminderInput
 // 触发：开放项 + 本轮有实际工作 + 未维护计划 + 间隔满足
 assert.equal(needsPlanReminder(reminderInput({})), true, '标准触发场景');
 assert.equal(
-  needsPlanReminder(reminderInput({ roundCalls: ['bing_search'] })),
+  needsPlanReminder(reminderInput({ roundCalls: ['web_search'] })),
   true,
   '字符串调用形态同样判定',
 );

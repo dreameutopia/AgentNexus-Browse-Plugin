@@ -5,7 +5,7 @@ export async function textTargetPayload(
   phase: 'focus' | 'verify' | 'type' | 'scroll',
   id: string,
   deltaX = 0,
-  deltaY = 0
+  deltaY = 0,
 ) {
   const registry = (document as ReferenceDocument).__agentNexusReferences;
   const node = (
@@ -47,8 +47,12 @@ export async function textTargetPayload(
     };
   }
   if (
-    node.matches(':disabled,[aria-disabled="true"]') ||
-    node.closest('[inert]')
+    (registry?.isRendered && !registry.isRendered(node)) ||
+    registry?.describe?.(node).states.disabled ||
+    node.matches(':disabled') ||
+    node.closest(
+      '[inert],[aria-disabled="true"],[data-disabled]:not([data-disabled="false"])',
+    )
   )
     return { error: 'NOT_ACTIONABLE：目标不可操作' };
   if (phase === 'focus') {
@@ -62,7 +66,9 @@ export async function textTargetPayload(
   if (
     phase === 'type' &&
     (!(node.isContentEditable || node.matches('textarea,input')) ||
-      node.matches('[readonly],[aria-readonly="true"]') ||
+      node.matches('[readonly]') ||
+      registry?.describe?.(node).states.readonly ||
+      node.closest('[aria-readonly="true"]') ||
       (node.localName === 'input' &&
         ![
           'text',
@@ -115,10 +121,26 @@ export function focusedTextPayload(invalidate = false) {
       node.getAttribute('placeholder') ||
       ''
     ).slice(0, 500),
-    editable: !!(
-      (node as HTMLElement).isContentEditable ||
-      node.matches('textarea:not([readonly]),input:not([readonly])')
-    ),
+    editable:
+      !node.matches(':disabled,[readonly]') &&
+      !node.closest(
+        '[inert],[aria-disabled="true"],[aria-readonly="true"],[data-disabled]:not([data-disabled="false"])',
+      ) &&
+      !!(
+        (node as HTMLElement).isContentEditable ||
+        node.localName === 'textarea' ||
+        (node.localName === 'input' &&
+          [
+            'text',
+            'search',
+            'email',
+            'password',
+            'url',
+            'tel',
+            'number',
+          ].includes(input.type))
+      ),
+    category: registry.describe?.(node).category,
     ...(input.type === 'password'
       ? {}
       : 'value' in node

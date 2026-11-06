@@ -215,13 +215,13 @@ onBeforeUnmount(() => {
 }
 
 .learn-picker__trigger:hover {
-  border-color: var(--learn-accent, #667eea);
+  border-color: var(--learn-accent, #292824);
 }
 
 .learn-picker__trigger:focus-visible,
 .learn-picker--open .learn-picker__trigger {
-  border-color: var(--learn-accent, #667eea);
-  box-shadow: 0 0 0 3px var(--learn-accent-soft, rgba(102, 126, 234, 0.12));
+  border-color: var(--learn-accent, #292824);
+  box-shadow: 0 0 0 3px var(--learn-accent-soft, #eeece7);
   outline: none;
 }
 
@@ -325,12 +325,12 @@ onBeforeUnmount(() => {
 }
 
 .learn-picker__option:focus-visible {
-  outline: 2px solid var(--learn-accent, #667eea);
+  outline: 2px solid var(--learn-accent, #292824);
   outline-offset: -2px;
 }
 
 .learn-picker__option[aria-selected='true'] {
-  background: var(--learn-accent-soft, rgba(102, 126, 234, 0.12));
+  background: var(--learn-accent-soft, #eeece7);
 }
 
 .learn-picker__option-text {
@@ -358,7 +358,7 @@ onBeforeUnmount(() => {
 
 .learn-picker__check {
   flex: 0 0 auto;
-  color: var(--learn-accent, #667eea);
+  color: var(--learn-accent, #292824);
 }
 
 /* ──── 视觉徽标 ──── */
@@ -366,8 +366,8 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   padding: 1px 6px;
   border-radius: 999px;
-  background: var(--learn-accent-soft, rgba(102, 126, 234, 0.12));
-  color: var(--learn-accent-deep, #4f46e5);
+  background: var(--learn-accent-soft, #eeece7);
+  color: var(--learn-accent-deep, #292824);
   font-size: 10.5px;
   font-weight: 600;
   line-height: 1.6;

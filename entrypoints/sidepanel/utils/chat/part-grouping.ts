@@ -13,11 +13,14 @@
  * 不被折叠遮蔽。没有任何文本片段时（如中止于纯工具轮），前奏收纳全部
  * 过程内容、正文为空——折叠条单独成立。
  *
- * ── 直播态分段（buildLivePartSegments）──
- * 直播中连续的过程片段（工具调用 / 推理 / 截图）达到阈值后折叠成一条
- * 「小折叠」摘要条（对标 Claude Code / Codex / Copilot：最新活动恒可见、
- * 被取代的旧活动收拢成组）。消息末尾的簇保留最新一项在条外直接可见，
- * 中段（后面已有正文/注记接续）的簇整组收拢。
+ * ── 连续过程小折叠（buildLivePartSegments）──
+ * 直播中与结束态（含展开的前奏折叠内部）共用的过程收拢：**只有连续的
+ * 工具调用与思考（含 vision 截图）才收拢**，两项即成簇（对标 Claude
+ * Code / Codex / Copilot：最新活动恒可见、被取代的旧活动收拢成组）。
+ * 正文文本是正式输出，不参与收拢——它恒可见，并作为簇间隔离：一旦
+ * 出现非思考输出，过程连续即被隔断，两侧各自成簇。notice（终态注记）
+ * 同样恒可见且切断簇；抵达片段流末尾的簇保留最新一项直接可见（直播中
+ * 的当前活动不被折叠遮住），其余整组收拢。
  */
 
 import type { IndexedMessagePart } from '../../types/chat';
@@ -88,9 +91,9 @@ export function groupAnswerParts(
   };
 }
 
-// ==================== 直播态分段（连续过程小折叠） ====================
+// ==================== 连续过程小折叠（直播态 + 结束态前奏内部通用） ====================
 
-/** 直播簇摘要计数 */
+/** 簇摘要计数 */
 export interface ClusterCounts {
   tools: number;
   reasoning: number;
@@ -120,16 +123,17 @@ export interface LivePartEntry {
 
 export type LiveRenderEntry = LiveClusterBarEntry | LivePartEntry;
 
-/**
- * 触发小折叠的簇规模下限：簇内片段数达到该值才收拢
- * （末尾簇收拢前 n-1 项、保留最新 1 项；中段簇整组收拢）。
- * 低于该值的簇按原样逐项渲染——为一两个片段立折叠条只会增加点击成本。
- */
-export const MIN_LIVE_CLUSTER_PARTS = 3;
-
 /** 过程片段（参与连续过程簇的片段类型） */
 const isProcessPart = (part: IndexedMessagePart['part']): boolean =>
   part.type === 'tool' || part.type === 'reasoning' || part.type === 'image';
+
+/**
+ * 簇间断片段：**正文文本（正式输出）**与 notice（终态注记）恒可见、绝不
+ * 参与收拢，并隔离两侧的簇——一旦出现非思考输出，工具/思考的连续即被
+ * 隔断，两侧各自成簇。未来的未知片段类型同样按断片处理（fail-open，
+ * 宁可多展示不隐藏）。
+ */
+const isBreakerPart = (part: IndexedMessagePart['part']): boolean => !isProcessPart(part);
 
 const countParts = (items: IndexedMessagePart[]): ClusterCounts => {
   const counts: ClusterCounts = { tools: 0, reasoning: 0, images: 0 };
@@ -151,31 +155,46 @@ const sumToolDuration = (items: IndexedMessagePart[]): number => {
 };
 
 /**
- * 直播片段流 → 渲染项序列：把连续过程片段（工具/推理/截图）收拢为
- * 「小折叠」摘要条。collapse=false（结束态分组、非直播上下文）时退化为
- * 原样逐项输出，行为与未引入簇之前完全一致。
+ * 片段流 → 渲染项序列：把**连续的工具调用 / 思考 / 截图**收拢为「小折叠」
+ * 摘要条。直播与结束态（含展开的前奏折叠内部）同一规则；正文文本与
+ * notice 作为簇间断片恒可见（隔离语义见 isBreakerPart）。
  *
- * 簇的两种形态：
- *   - 末尾簇（片段流终止于该簇）：保留最新一项在条外直接可见——
- *     直播中的当前活动（运行中的工具 / 正在流出的思考）不能被折叠遮住；
- *   - 中段簇（后续已有正文/注记接续）：整组收拢——后面出现了更新的
- *     内容，簇内全部片段都已被取代。
+ * 折叠条件与形态：
+ *   - 连续过程片段 ≥2 才收拢：单个工具/思考本身就是一行紧凑容器，
+ *     为它立折叠条只增加点击成本；
+ *   - 簇抵达片段流末尾（其后没有任何片段）→ 收拢前 n-1 项、保留最新
+ *     一项直接可见——直播中的当前活动（运行中的工具 / 正在流出的思考）
+ *     不能被折叠遮住；
+ *   - 簇其后还有内容（正文 / notice / 后续簇）→ 整组收拢——已有更新的
+ *     内容接续，簇内全部片段都已被取代。
  */
-export function buildLivePartSegments(
-  indexed: IndexedMessagePart[],
-  options: { collapse: boolean },
-): LiveRenderEntry[] {
+export function buildLivePartSegments(indexed: IndexedMessagePart[]): LiveRenderEntry[] {
   const entries: LiveRenderEntry[] = [];
-  let run: IndexedMessagePart[] = [];
+  const total = indexed.length;
+  let cursor = 0;
 
-  const flush = (trailing: boolean): void => {
-    if (run.length === 0) return;
-    if (!options.collapse || run.length < MIN_LIVE_CLUSTER_PARTS) {
-      for (const item of run) entries.push({ kind: 'part', item });
-      run = [];
-      return;
+  while (cursor < total) {
+    if (isBreakerPart(indexed[cursor].part)) {
+      entries.push({ kind: 'part', item: indexed[cursor] });
+      cursor += 1;
+      continue;
     }
-    const grouped = trailing ? run.slice(0, -1) : run.slice();
+    // 连续过程片段段 [start, end)
+    const start = cursor;
+    let end = start;
+    while (end < total && !isBreakerPart(indexed[end].part)) end += 1;
+    const run = indexed.slice(start, end);
+
+    // 单个过程片段：一行紧凑容器，不立折叠条
+    if (run.length < 2) {
+      for (const item of run) entries.push({ kind: 'part', item });
+      cursor = end;
+      continue;
+    }
+
+    // 抵达片段流末尾的簇保留最新一项在条外直接可见，其余整组收拢
+    const reachesStreamEnd = end === total;
+    const grouped = reachesStreamEnd ? run.slice(0, -1) : run;
     const key = `cluster-${grouped[0].index}`;
     const version = grouped.length;
     entries.push({
@@ -188,18 +207,9 @@ export function buildLivePartSegments(
     for (const item of grouped) {
       entries.push({ kind: 'part', item, clusterKey: key, clusterVersion: version });
     }
-    if (trailing) entries.push({ kind: 'part', item: run[run.length - 1] });
-    run = [];
-  };
-
-  for (const item of indexed) {
-    if (isProcessPart(item.part)) {
-      run.push(item);
-      continue;
-    }
-    flush(false);
-    entries.push({ kind: 'part', item });
+    if (reachesStreamEnd) entries.push({ kind: 'part', item: run[run.length - 1] });
+    cursor = end;
   }
-  flush(true);
   return entries;
 }
+

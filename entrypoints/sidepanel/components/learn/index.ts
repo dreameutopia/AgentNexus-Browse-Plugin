@@ -15,3 +15,4 @@ export { default as LearnStatusBar } from './LearnStatusBar.vue';
 export { default as LearnHintPopover } from './LearnHintPopover.vue';
 export { default as LearnModelPicker } from './LearnModelPicker.vue';
 export { default as LearnDegradedNotice } from './LearnDegradedNotice.vue';
+export { default as LearnRecoveryDismissDialog } from './LearnRecoveryDismissDialog.vue';

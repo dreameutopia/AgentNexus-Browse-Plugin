@@ -422,56 +422,79 @@ h1 {
 
 /* ──── 网站学习 ──── */
 
-/* 配置/确认阶段的提示条：学习态的浅靛紫底与通用禁用提示（橙色）区分，
-   让「正在走学习流程」与「API 未配置」不共用一套配色语义 */
+/* Learning follows the same warm neutral surfaces as the rest of the panel. */
 .learn-input-notice {
-  background: linear-gradient(135deg, rgba(102, 126, 234, 0.12) 0%, rgba(102, 126, 234, 0.06) 100%);
-  color: #4f46e5;
+  background: var(--surface-soft, #f3f1ed);
+  color: var(--ink-secondary, #787671);
 }
 
 .learn-input-notice:hover {
-  background: linear-gradient(135deg, rgba(102, 126, 234, 0.18) 0%, rgba(102, 126, 234, 0.1) 100%);
+  background: var(--surface-soft, #f3f1ed);
   box-shadow: none; /* 提示态无动作可执行，不给 hover 放大反馈 */
 }
 
-/* 成果兜底条（站点学习会话读回草稿）：学习配色（靛紫）+ 右侧动作按钮。
-   与「API 未配置」提示（橙色）刻意区分——两者可能同时出现（配置正常时
-   兜底条与输入框并存），配色必须一眼分清「学习成果待处理」与「配置问题」。
-   体量也刻意收窄：它是输入区上的次级提示条，不该占满一条大横幅。 */
+/* Independent card: never inherit the disabled-input banner's flex/min-size. */
 .learn-recover-notice {
-  gap: 4px;
-  font-size: 13px;
-  padding: 8px 12px;
-  min-height: 0;
-  background: linear-gradient(135deg, rgba(102, 126, 234, 0.12) 0%, rgba(102, 126, 234, 0.06) 100%);
-  color: #4f46e5;
+  container-type: inline-size;
+  min-width: 0;
+  box-sizing: border-box;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 12px;
+  background: var(--surface-soft, #f3f1ed);
+  color: var(--ink-secondary, #787671);
 }
-
-.learn-recover-notice:hover {
-  background: linear-gradient(135deg, rgba(102, 126, 234, 0.18) 0%, rgba(102, 126, 234, 0.1) 100%);
-  box-shadow: none;
+.learn-recover-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.6;
 }
-
+.learn-recover-summary svg { flex: 0 0 auto; margin-top: 2px; }
+.learn-recover-summary span { min-width: 0; overflow-wrap: anywhere; }
+.learn-recover-sync-error { margin: 8px 0 0; color: var(--ink-secondary, #787671); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.learn-recover-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
 .learn-recover-btn {
-  margin-left: 8px;
-  padding: 6px 14px;
-  border: none;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--line-soft, #e4e2de);
   border-radius: 8px;
-  background: #667eea;
-  color: #fff;
-  font-size: 12.5px;
-  font-weight: 600;
+  background: var(--surface-card, #fff);
+  color: var(--ink-primary, #292824);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
   cursor: pointer;
-  transition: background 0.15s ease;
-  flex: 0 0 auto;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.learn-recover-btn:hover { background: var(--surface-hover, #eeece7); }
+.learn-recover-btn--primary { background: var(--ink-primary, #292824); border-color: var(--ink-primary, #292824); color: #fff; }
+.learn-recover-btn--primary:hover { background: #44413c; border-color: #44413c; }
+.learn-recover-btn:focus-visible { outline: 2px solid var(--ink-secondary, #787671); outline-offset: 2px; }
+.learn-recover-btn:disabled { opacity: .5; cursor: not-allowed; }
+.learn-recover-btn--ignore { grid-column: 1 / -1; background: transparent; color: var(--ink-secondary, #787671); }
+@container (max-width: 420px) {
+  .learn-recover-actions { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 480px) {
+  .learn-recover-actions { grid-template-columns: minmax(0, 1fr); }
 }
 
-.learn-recover-btn:hover {
-  background: #5a67d8;
-}
-
-/* 网站学习入口按钮（工具栏内、已选智能体胶囊条左侧；图标 + 「学习」文字同体）。
-   配色与侧边栏主色（#667eea 靛紫）同源，与胶囊条并列时视觉成组 */
+/* Learning entry uses the shared neutral toolbar treatment. */
 .learn-entry-btn {
   display: inline-flex;
   align-items: center;
@@ -479,10 +502,10 @@ h1 {
   flex: 0 0 auto;
   height: 24px;
   padding: 0 10px 0 8px;
-  border: 1px solid rgba(102, 126, 234, 0.35);
+  border: 1px solid var(--line-soft, #e4e2de);
   border-radius: 999px;
-  background: rgba(102, 126, 234, 0.1);
-  color: #5a67d8;
+  background: var(--surface-soft, #f3f1ed);
+  color: var(--ink-secondary, #787671);
   font-size: 11.5px;
   font-weight: 600;
   line-height: 1;
@@ -492,9 +515,9 @@ h1 {
 }
 
 .learn-entry-btn:hover:not(:disabled) {
-  background: rgba(102, 126, 234, 0.18);
-  border-color: rgba(102, 126, 234, 0.55);
-  color: #4f46e5;
+  background: var(--surface-hover, #eeece7);
+  border-color: var(--line-soft, #e4e2de);
+  color: var(--ink-primary, #292824);
 }
 
 .learn-entry-btn:disabled {

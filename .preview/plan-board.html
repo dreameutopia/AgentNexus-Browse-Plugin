@@ -37,6 +37,24 @@
         padding: 12px 16px;
         gap: 8px;
       }
+      /* 模拟面板上方的消息列表（展开浮层会覆盖它们，且它们位置不动） */
+      .mock-messages {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .mock-bubble {
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: #f1f5f9;
+        color: #94a3b8;
+        font-size: 12px;
+      }
+      .mock-bubble.self {
+        align-self: flex-end;
+        background: #e2e8f0;
+      }
       .message-input {
         font-size: 14px;
         color: #9ca3af;
@@ -59,23 +77,25 @@
     <div class="stage">
       <h3>折叠态（默认视图：位于输入容器正上方）</h3>
       <div class="plan-board">
-        <button class="plan-board__header">
-          <span class="plan-board__mark">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-              <path d="M4 5H10V11H4V5Z M4 13H10V19H4V13Z M12 6H20V8H12V6Z M12 10H20V12H12V10Z M12 16H20V18H12V16Z M12 14H20V15H12V14Z" fill="currentColor" />
+        <div class="plan-board__card">
+          <button class="plan-board__header">
+            <span class="plan-board__mark">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+                <path d="M4 5H10V11H4V5Z M4 13H10V19H4V13Z M12 6H20V8H12V6Z M12 10H20V12H12V10Z M12 16H20V18H12V16Z M12 14H20V15H12V14Z" fill="currentColor" />
+              </svg>
+            </span>
+            <span class="plan-board__title">任务计划</span>
+            <span class="plan-board__counter">2<span class="plan-board__counter-sep">/</span>5</span>
+            <span class="plan-board__current">
+              <span class="plan-board__current-label">进行中：</span>遍历搜索结果列表并核对覆盖范围
+            </span>
+            <svg class="plan-board__chevron" width="10" height="10" viewBox="0 0 24 24" fill="none">
+              <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
-          </span>
-          <span class="plan-board__title">任务计划</span>
-          <span class="plan-board__counter">2<span class="plan-board__counter-sep">/</span>5</span>
-          <span class="plan-board__current">
-            <span class="plan-board__current-label">进行中：</span>遍历搜索结果列表并核对覆盖范围
-          </span>
-          <svg class="plan-board__chevron" width="10" height="10" viewBox="0 0 24 24" fill="none">
-            <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-        </button>
-        <div class="plan-board__track">
-          <span class="plan-board__track-fill" style="width: 40%"></span>
+          </button>
+          <div class="plan-board__track">
+            <span class="plan-board__track-fill" style="width: 40%"></span>
+          </div>
         </div>
       </div>
       <div class="input-container">
@@ -87,25 +107,33 @@
     </div>
 
     <div class="stage">
-      <h3>展开态（全量计划项 + 状态徽标 + 标注信息）</h3>
+      <h3>展开态（向上覆盖式浮层：盖住上方消息，布局不被挤占）</h3>
+      <div class="mock-messages">
+        <div class="mock-bubble self">帮我采集这个网站的搜索结果</div>
+        <div class="mock-bubble">好的，我先制定一个五步计划，然后逐步执行采集任务。</div>
+        <div class="mock-bubble self">注意分页和去重，登录失效就停下来。</div>
+        <div class="mock-bubble">收到，计划已建立，正在按步骤执行中…</div>
+      </div>
       <div class="plan-board is-expanded">
-        <button class="plan-board__header">
-          <span class="plan-board__mark">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-              <path d="M4 5H10V11H4V5Z M4 13H10V19H4V13Z M12 6H20V8H12V6Z M12 10H20V12H12V10Z M12 16H20V18H12V16Z M12 14H20V15H12V14Z" fill="currentColor" />
+        <div class="plan-board__card">
+          <button class="plan-board__header">
+            <span class="plan-board__mark">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+                <path d="M4 5H10V11H4V5Z M4 13H10V19H4V13Z M12 6H20V8H12V6Z M12 10H20V12H12V10Z M12 16H20V18H12V16Z M12 14H20V15H12V14Z" fill="currentColor" />
+              </svg>
+            </span>
+            <span class="plan-board__title">任务计划</span>
+            <span class="plan-board__counter">2<span class="plan-board__counter-sep">/</span>5</span>
+            <span class="plan-board__current">
+              <span class="plan-board__current-label">进行中：</span>遍历搜索结果列表并核对覆盖范围
+            </span>
+            <svg class="plan-board__chevron is-open" width="10" height="10" viewBox="0 0 24 24" fill="none">
+              <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
-          </span>
-          <span class="plan-board__title">任务计划</span>
-          <span class="plan-board__counter">2<span class="plan-board__counter-sep">/</span>5</span>
-          <span class="plan-board__current">
-            <span class="plan-board__current-label">进行中：</span>遍历搜索结果列表并核对覆盖范围
-          </span>
-          <svg class="plan-board__chevron is-open" width="10" height="10" viewBox="0 0 24 24" fill="none">
-            <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-        </button>
-        <div class="plan-board__track">
-          <span class="plan-board__track-fill" style="width: 40%"></span>
+          </button>
+          <div class="plan-board__track">
+            <span class="plan-board__track-fill" style="width: 40%"></span>
+          </div>
         </div>
         <div class="plan-board__list">
           <div class="plan-item is-done">

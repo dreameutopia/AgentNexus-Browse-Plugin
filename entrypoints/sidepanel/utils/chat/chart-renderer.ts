@@ -32,6 +32,7 @@
 import { t } from '@/utils/i18n';
 import { escapeHtml } from './html-escape';
 import { sanitizeEchartsOptionJson } from './echarts-option-sanitizer';
+import { parseRichEnvelope, deriveChartOption } from './rich-components';
 
 /** 消息协议常量（与 entrypoints/chart-sandbox/main.ts 严格对齐） */
 const PARENT_SOURCE = 'an-chart-parent';
@@ -241,6 +242,26 @@ function sweepDetachedEntries(): void {
   }
 }
 
+// ==================== 信封输入路径（envelope → 派生 → 净化） ====================
+
+/**
+ * 统一信封源码 → 净化后的 option JSON。
+ * 三步串联：信封解析（容错归一）→ 图表派生（宿主决策，结构保证）→
+ * ECharts 净化（资源上限兜底）。任一步失败都以可读原因返回，
+ * 渲染层据此降级为源码展示——模型原始输出对用户仍可见。
+ */
+function sanitizeDerivedOption(code: string): { ok: true; json: string } | { ok: false; error: string } {
+  const parsed = parseRichEnvelope(code);
+  if (!parsed.ok) {
+    return { ok: false, error: `组件数据解析失败：${parsed.error}` };
+  }
+  const derived = deriveChartOption(parsed.envelope);
+  if (!derived.ok) {
+    return { ok: false, error: `图表派生失败：${derived.error}` };
+  }
+  return sanitizeEchartsOptionJson(JSON.stringify(derived.option));
+}
+
 // ==================== 对外入口 ====================
 
 /**
@@ -258,11 +279,18 @@ export function processCharts(root: ParentNode): void {
     '.chart-block[data-chart-state="pending"]',
   );
   for (const block of pending) {
-    if (block.closest('[data-streaming]')) continue;
+    // 直播跳过（带稳定区豁免）：活动尾部（[data-streaming] 且不在冻结段内）
+    // 的块会被下一个 token 重写，挂载即被销毁——跳过等待流结束；MarkdownText
+    // 增量渲染的 [data-md-stable] 冻结段不受尾部重写影响，围栏一闭合即可挂载
+    if (block.closest('[data-streaming]') && !block.closest('[data-md-stable]')) continue;
     if (block.dataset.chartId) continue; // 已排队（扫描幂等保护）
 
     const code = block.querySelector('.chart-source code')?.textContent ?? '';
-    const sanitized = sanitizeEchartsOptionJson(code);
+    // 输入模式：envelope = 统一信封（列式数据 → 派生 option）；option = legacy
+    // 直连（源码即 option）。两条路径最终都过同一净化器——防御纵深不变
+    const sanitized = block.dataset.chartInput === 'envelope'
+      ? sanitizeDerivedOption(code)
+      : sanitizeEchartsOptionJson(code);
     if (!sanitized.ok) {
       block.dataset.chartState = 'error';
       const body = block.querySelector<HTMLElement>('.chart-body');

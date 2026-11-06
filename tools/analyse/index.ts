@@ -1,34 +1,18 @@
 /**
  * 分析工具集合
  * 包含各种内容分析和提取工具
+ *
+ * 原 9 个平台搜索结果抓取工具（*_result_scraper）已并入统一搜索工具
+ * web_search（tools/search，website 枚举区分平台，导航 + 解析一步完成），
+ * 本目录不再注册任何搜索结果抓取工具。
  */
 
 import { toolRegistry } from '../registry';
 import { GetPageMarkdownTool } from './get-page-markdown-tool';
-import { BaiduResultScraperTool } from './baidu-result-scraper';
-import { BingResultScraperTool } from './bing-result-scraper';
-import { BilibiliSearchResultScraperTool } from './bilibili-search-result-scraper';
-import { CNKIResultScraperTool } from './cnki-result-scraper';
-import { CSDNResultScraperTool } from './csdn-result-scraper';
-import { XiaohongshuResultScraperTool } from './xiaohongshu-result-scraper';
-import { GitHubResultScraperTool } from './github-result-scraper';
-import { MoocResultScraperTool } from './mooc-result-scraper';
-import { ZhihuResultScraperTool } from './zhihu-result-scraper';
 
 // 创建分析工具实例
 function createAnalyseTools() {
-  return [
-    new GetPageMarkdownTool(),
-    new BaiduResultScraperTool(),
-    new BingResultScraperTool(),
-    new BilibiliSearchResultScraperTool(),
-    new CNKIResultScraperTool(),
-    new CSDNResultScraperTool(),
-    new XiaohongshuResultScraperTool(),
-    new GitHubResultScraperTool(),
-    new MoocResultScraperTool(),
-    new ZhihuResultScraperTool()
-  ];
+  return [new GetPageMarkdownTool()];
 }
 
 // 注册函数
@@ -39,15 +23,4 @@ export function registerAnalyseTools() {
   });
 }
 
-export {
-  GetPageMarkdownTool,
-  BaiduResultScraperTool,
-  BingResultScraperTool,
-  BilibiliSearchResultScraperTool,
-  CNKIResultScraperTool,
-  CSDNResultScraperTool,
-  XiaohongshuResultScraperTool,
-  GitHubResultScraperTool,
-  MoocResultScraperTool,
-  ZhihuResultScraperTool
-};
+export { GetPageMarkdownTool };

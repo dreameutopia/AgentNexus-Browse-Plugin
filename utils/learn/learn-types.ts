@@ -316,6 +316,8 @@ export interface LearnDraftTransfer {
   draft: SkillDraft;
   status: 'pending' | 'saved' | 'discarded';
   savedSkillId?: string;
+  /** User dismissed recovery/reminders; retain original and any open Hub editor. */
+  recoveryDismissed?: boolean;
   editorState?: LearnDraftEditorState;
 }
 
@@ -324,9 +326,8 @@ export interface LearnDraftEditorState {
   editorMode: 'simple' | 'advanced';
   preservedFrontmatterLines: string[];
   resourceFiles: Record<string, string>;
-  resourceEditorOpen: boolean;
-  resourceEditingPath: string | null;
-  resourceForm: { path: string; content: string };
+  /** 高级模式当前打开的文件（'SKILL.md' 或资源文件相对路径）；新建/重命名等瞬时输入态不持久化 */
+  selectedFile: string;
 }
 
 /** 旧版草稿载荷，仅用于迁移。 */

@@ -920,35 +920,87 @@
 
 /* ==================== API 错误卡片（<api-error>，对话流内嵌） ====================
    发射侧：utils/stream/errors.ts 的 toApiErrorBlock；渲染侧：markdown-renderer。
-   覆盖超时 / 429 限流 / 401·403 鉴权失效 / 5xx / 网络断链 / 流内错误等全部分类 */
+   覆盖超时 / 429 限流 / 401·403 鉴权失效 / 5xx / 网络断链 / 流内错误等全部分类。
+
+   分类配色（卡片根节点带 kind-* 修饰类）：颜色以三个自定义属性下发——
+     --ae-accent：空格分隔的 RGB 三元组（rgb(var(--ae-accent) / α) 合成各级
+       透明度；必须是空格分隔——逗号三元组代入斜杠透明度语法是非法 CSS，
+       整条声明会被静默丢弃）
+     --ae-ink：深主色（标题 / 徽章 / 按钮文字）
+     --ae-ink-deep：正文深色（摘要）
+   语义映射（与徽章分类 apiErrorBadgeLabel 一一对应）：
+     http（默认红）/ timeout（琥珀：等待）/ network（石板：连接）/
+     inband（紫：流内服务端）/ protocol（青：流协议）/ error（中性：未分类） */
 
 .api-error-card {
+  /* 默认 = http：服务端明确拒绝/出错，红 */
+  --ae-accent: 239 68 68;
+  --ae-ink: #b91c1c;
+  --ae-ink-deep: #7f1d1d;
   margin: 10px 0;
   border-radius: 10px;
-  border: 1px solid rgba(239, 68, 68, 0.25);
-  background: rgba(239, 68, 68, 0.045);
-  overflow: hidden;
+  border: 1px solid rgb(var(--ae-accent) / 0.25);
+  background: rgb(var(--ae-accent) / 0.045);
+  /* 「请求模型」浮层卡要溢出卡片边界（自顶栏下方展开），故此处不裁剪；
+     圆角改由自带背景的子元素（顶栏 / 原始响应）各自承担 */
+  overflow: visible;
+}
+
+.api-error-card.kind-timeout {
+  --ae-accent: 217 119 6;
+  --ae-ink: #92400e;
+  --ae-ink-deep: #78350f;
+}
+
+.api-error-card.kind-network {
+  --ae-accent: 100 116 139;
+  --ae-ink: #334155;
+  --ae-ink-deep: #1e293b;
+}
+
+.api-error-card.kind-inband {
+  --ae-accent: 124 58 237;
+  --ae-ink: #6d28d9;
+  --ae-ink-deep: #4c1d95;
+}
+
+.api-error-card.kind-protocol {
+  --ae-accent: 13 148 136;
+  --ae-ink: #0f766e;
+  --ae-ink-deep: #134e4a;
+}
+
+.api-error-card.kind-error {
+  --ae-accent: 120 113 108;
+  --ae-ink: #57534e;
+  --ae-ink-deep: #44403c;
 }
 
 .api-error-head {
   display: flex;
   align-items: center;
   gap: 7px;
+  /* 窄侧边栏放不下时整组操作按钮换行，状态标题不会被挤没 */
+  flex-wrap: wrap;
+  row-gap: 6px;
   padding: 8px 12px;
-  background: rgba(239, 68, 68, 0.07);
+  background: rgb(var(--ae-accent) / 0.07);
+  /* 浮层卡以顶栏为定位基准（top: 100% 即顶栏下沿） */
+  position: relative;
+  border-radius: 9px 9px 0 0;
 }
 
 .api-error-icon {
   display: flex;
   align-items: center;
-  color: #ef4444;
+  color: rgb(var(--ae-accent));
   flex-shrink: 0;
 }
 
 .api-error-title {
   font-size: 12.5px;
   font-weight: 600;
-  color: #b91c1c;
+  color: var(--ae-ink);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
@@ -959,28 +1011,182 @@
   flex-shrink: 0;
   font-size: 11px;
   font-weight: 600;
-  color: #b91c1c;
-  background: rgba(239, 68, 68, 0.12);
-  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: var(--ae-ink);
+  background: rgb(var(--ae-accent) / 0.14);
+  border: 1px solid rgb(var(--ae-accent) / 0.3);
   border-radius: 6px;
   padding: 1px 6px;
 }
 
-.api-error-provider {
+/* 顶栏右侧的操作组（请求模型 + 重试 + 复制）：整体右对齐，放不下时整组换行 */
+.api-error-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   margin-left: auto;
   flex-shrink: 0;
-  font-size: 10.5px;
-  color: #fca5a5;
+}
+
+/* 「请求模型」按钮：协议 / 模型 / 端点的入口。
+   这三项原先平铺在顶栏右侧，长端点 URL 会把顶栏撑开、把状态徽章挤到换行，
+   现收进点开可见的浮层卡，顶栏只保留状态与操作 */
+.api-error-model {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.api-error-model-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgb(var(--ae-accent) / 0.28);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.65);
+  color: var(--ae-ink);
+  font-size: 11px;
+  font-weight: 600;
+  /* 与同行重试/复制按钮等高（均不设 line-height，靠默认行高 + 相同字号对齐） */
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.api-error-model-btn:hover {
+  background: rgba(255, 255, 255, 0.95);
+  border-color: rgb(var(--ae-accent) / 0.45);
+}
+
+.api-error-model-btn:focus-visible {
+  outline: 2px solid rgb(var(--ae-accent) / 0.45);
+  outline-offset: 1px;
+}
+
+.api-error-model.is-open .api-error-model-btn {
+  background: #ffffff;
+  border-color: rgb(var(--ae-accent) / 0.5);
+}
+
+.api-error-model-icon {
+  flex-shrink: 0;
+  opacity: 0.75;
+}
+
+.api-error-model-chevron {
+  flex-shrink: 0;
+  opacity: 0.65;
+  transition: transform 0.18s ease;
+}
+
+.api-error-model.is-open .api-error-model-chevron {
+  transform: rotate(180deg);
+}
+
+/* 浮层卡：协议 / 模型 / 端点三行定位信息 */
+.api-error-model-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  width: max-content;
+  /* 不超过顶栏宽度：窄侧边栏里浮层也不会溢出消息容器（容器横向溢出会被裁掉） */
+  max-width: min(268px, 100%);
+  padding: 10px 12px 11px;
+  border-radius: 12px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  background: var(--surface, #ffffff);
+  box-shadow: 0 10px 28px rgba(28, 25, 23, 0.16);
+  text-align: left;
+  cursor: default;
+}
+
+.api-error-model-panel-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ink-primary, #292824);
+  margin-bottom: 8px;
+}
+
+.api-error-model-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.api-error-model-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+
+.api-error-model-key {
+  margin: 0;
+  font-size: 11px;
+  color: var(--ink-secondary, #787671);
+}
+
+.api-error-model-val {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-primary, #292824);
+  overflow-wrap: anywhere;
+}
+
+.api-error-model-mono {
   font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, Consolas, monospace;
+  font-size: 11.5px;
+}
+
+/* 协议 id：与展示名不同时并列（如 OpenAI / openai-responses），排查时两样都在 */
+.api-error-model-id {
+  margin-left: 6px;
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--ink-secondary, #787671);
+}
+
+/* 重试（主操作）：重新发起请求以继续会话；点击经 document 级委托转发到
+   App.vue 的重试回调（api-error-retry.ts）。比复制/请求模型更重的底色
+   （accent 高透明度 + 加粗），随分类配色走 */
+.api-error-retry-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgb(var(--ae-accent) / 0.55);
+  border-radius: 6px;
+  background: rgb(var(--ae-accent) / 0.16);
+  color: var(--ae-ink);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 9px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.api-error-retry-btn:hover {
+  background: rgb(var(--ae-accent) / 0.26);
+  border-color: rgb(var(--ae-accent) / 0.7);
+}
+
+.api-error-retry-btn:focus-visible {
+  outline: 2px solid rgb(var(--ae-accent) / 0.45);
+  outline-offset: 1px;
+}
+
+.api-error-retry-btn svg {
+  flex-shrink: 0;
 }
 
 /* 一键复制结构化错误报告（issue 友好）；与代码块复制按钮同一套委托与反馈样式 */
 .api-error-copy-btn {
   flex-shrink: 0;
-  border: 1px solid rgba(239, 68, 68, 0.3);
+  border: 1px solid rgb(var(--ae-accent) / 0.3);
   border-radius: 6px;
-  background: rgba(239, 68, 68, 0.1);
-  color: #b91c1c;
+  background: rgb(var(--ae-accent) / 0.1);
+  color: var(--ae-ink);
   font-size: 11px;
   font-weight: 600;
   padding: 2px 8px;
@@ -989,7 +1195,7 @@
 }
 
 .api-error-copy-btn:hover {
-  background: rgba(239, 68, 68, 0.18);
+  background: rgb(var(--ae-accent) / 0.18);
 }
 
 .api-error-copy-btn.copied {
@@ -1002,7 +1208,27 @@
   padding: 8px 12px;
   font-size: 12.5px;
   line-height: 1.55;
-  color: #7f1d1d;
+  color: var(--ae-ink-deep);
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* 解析失败兜底：<api-error> 块结构损坏时原文展示。独立中性样式，不依赖
+   .api-error-card 上的 --ae-* 分类配色变量（脱离卡片容器时变量不存在，
+   rgb(var(--ae-accent) / α) 类声明会被 CSS 静默丢弃） */
+.api-error-fallback {
+  margin: 10px 0;
+  padding: 8px 12px 10px;
+  border: 1px solid rgba(120, 113, 108, 0.35);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.55);
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-secondary, #787671);
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
 }
@@ -1010,7 +1236,9 @@
 .api-error-raw {
   margin: 0;
   padding: 8px 12px 10px;
-  border-top: 1px dashed rgba(239, 68, 68, 0.2);
+  border-top: 1px dashed rgb(var(--ae-accent) / 0.2);
+  /* 卡片不再裁剪（浮层要溢出），底角圆角由本元素自行承担 */
+  border-radius: 0 0 9px 9px;
   background: rgba(255, 255, 255, 0.55);
   font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, Consolas, monospace;
   font-size: 11px;
@@ -1143,12 +1371,13 @@
   margin: 2px 0 6px;
 }
 
-/* ==================== 直播态「连续过程小折叠」条 ====================
-   直播流中连续的工具调用 / 推理 / 截图达到阈值（MIN_LIVE_CLUSTER_PARTS）
-   后收拢为一条摘要：左侧堆叠图标 + 计数摘要，右侧合计耗时 + 展开箭头；
-   最新一项活动保留在条外直接可见（见 utils/chat/part-grouping）。
+/* ==================== 「连续过程小折叠」条 ====================
+   连续的工具调用 / 推理 / 截图收拢为一条摘要：左侧堆叠图标 + 计数摘要，
+   右侧合计耗时 + 展开箭头；抵达片段流末尾的簇保留最新一项活动在条外
+   直接可见。正文文本与 notice 恒可见并隔离簇（见 utils/chat/part-grouping）。
+   直播与结束态（含展开的前奏折叠内部）同一规则。
    视觉语言与前奏收起条同源（muted 色 + 悬浮弱底 + chevron 旋转），尺寸
-   收小半号以区分层级：小折叠是直播中的过程收拢，前奏条是终态的过程归档 */
+   收小半号以区分层级：小折叠是过程收拢，前奏条是终态的过程归档 */
 .cluster-bar {
   display: flex;
   align-items: center;
@@ -1930,4 +2159,277 @@
   font-weight: 600;
   color: #059669;
   white-space: nowrap;
+}
+
+/* ==================== 信封组件（```component：table / timeline / tree）====================
+   结构契约见 rich-components/component-blocks.ts（校验 + 全量转义的可信 HTML）：
+   .component-block(.component-table-block|.component-timeline-block|.component-tree-block)
+     ├─ .component-block-title（可选，来自信封 title）
+     └─ 类型专属主体（表格 / 时间轴 / 结构树）
+   stat 信封复用 .stat-card-block 既有样式；diff 为原生围栏独立块。 */
+
+.component-block {
+  margin: 12px 0;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px 12px;
+  overflow: hidden;
+}
+
+.component-block-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-secondary, #787671);
+  letter-spacing: 0.02em;
+  margin-bottom: 8px;
+}
+
+/* —— 富表格：数值列右对齐等宽；状态单元格按关键词命中着色 —— */
+
+.component-table-scroll {
+  overflow-x: auto;
+}
+
+table.component-data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+table.component-data-table th,
+table.component-data-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line-soft, #e4e2de);
+  text-align: left;
+  white-space: nowrap;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+table.component-data-table th {
+  font-weight: 600;
+  color: var(--ink-secondary, #787671);
+  background: var(--surface-hover, #eeece7);
+  position: sticky;
+  top: 0;
+}
+
+table.component-data-table td.num,
+table.component-data-table th.num {
+  text-align: right;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', 'Menlo', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+table.component-data-table td.st-good { color: #059669; font-weight: 600; }
+table.component-data-table td.st-warn { color: #9a6700; font-weight: 600; }
+table.component-data-table td.st-bad { color: #cf222e; font-weight: 600; }
+table.component-data-table td.st-doing { color: #0969da; font-weight: 600; }
+
+/* —— 时间轴：状态点着色（done 实心绿 / active 呼吸蓝 / todo 空心 / fail 红 / warn 黄）—— */
+
+.component-timeline-block .tl-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.component-timeline-block .tl-item {
+  position: relative;
+  display: flex;
+  gap: 10px;
+  padding: 0 0 14px 22px;
+}
+
+.component-timeline-block .tl-item:last-child {
+  padding-bottom: 2px;
+}
+
+/* 连接线：节点间竖线，末节点不出线 */
+.component-timeline-block .tl-item::before {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 14px;
+  bottom: -2px;
+  width: 2px;
+  background: var(--line-soft, #e4e2de);
+}
+
+.component-timeline-block .tl-item:last-child::before {
+  display: none;
+}
+
+.component-timeline-block .tl-dot {
+  position: absolute;
+  left: 0;
+  top: 4px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--ink-secondary, #787671);
+  background: #ffffff;
+  box-sizing: border-box;
+}
+
+.component-timeline-block .tl-item.done .tl-dot {
+  border-color: #059669;
+  background: #059669;
+}
+
+.component-timeline-block .tl-item.active .tl-dot {
+  border-color: #0969da;
+  background: #0969da;
+  animation: tl-pulse 1.4s ease-in-out infinite;
+}
+
+.component-timeline-block .tl-item.fail .tl-dot {
+  border-color: #cf222e;
+  background: #cf222e;
+}
+
+.component-timeline-block .tl-item.warn .tl-dot {
+  border-color: #9a6700;
+  background: #fff8c5;
+}
+
+@keyframes tl-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(9, 105, 218, 0.35); }
+  50% { box-shadow: 0 0 0 5px rgba(9, 105, 218, 0); }
+}
+
+.component-timeline-block .tl-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.component-timeline-block .tl-title {
+  font-size: 13px;
+  color: var(--ink-primary, #292824);
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.component-timeline-block .tl-meta {
+  font-size: 11px;
+  color: var(--ink-secondary, #787671);
+}
+
+.component-timeline-block .tl-meta-sep {
+  margin: 0 4px;
+  opacity: 0.6;
+}
+
+/* —— 结构树：平铺行 + 宿主计算缩进；分支行加层级符 —— */
+
+.component-tree-block .tree-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--ink-primary, #292824);
+}
+
+.component-tree-block .tree-glyph {
+  flex: none;
+  width: 12px;
+  color: var(--ink-secondary, #787671);
+  font-size: 11px;
+}
+
+.component-tree-block .tree-branch .tree-glyph::before {
+  content: '▸';
+}
+
+.component-tree-block .tree-row:not(.tree-branch) .tree-glyph::before {
+  content: '·';
+  font-weight: 700;
+}
+
+.component-tree-block .tree-branch .tree-label {
+  font-weight: 600;
+}
+
+.component-tree-block .tree-note {
+  font-size: 11px;
+  color: var(--ink-secondary, #787671);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ==================== diff 块（```diff 原生围栏）====================
+   结构契约见 rich-components/component-blocks.ts（buildDiffBlock）：
+   .diff-block > .diff-header（.diff-label + .diff-stats）+ .diff-body（行级 span） */
+
+.diff-block {
+  margin: 12px 0;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.diff-block .diff-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--surface-hover, #eeece7);
+  border-bottom: 1px solid var(--line-soft, #e4e2de);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ink-secondary, #787671);
+}
+
+.diff-block .diff-stats {
+  display: flex;
+  gap: 8px;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', 'Menlo', monospace;
+  font-size: 11px;
+}
+
+.diff-block .diff-add-count { color: #059669; }
+.diff-block .diff-del-count { color: #cf222e; }
+
+.diff-block .diff-body {
+  margin: 0;
+  padding: 10px 0;
+  overflow-x: auto;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', 'Menlo', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.diff-block .diff-line {
+  display: block;
+  padding: 0 14px;
+  white-space: pre;
+}
+
+.diff-block .diff-line.add { background: #dafbe1; color: #116329; }
+.diff-block .diff-line.del { background: #ffebe9; color: #82071e; }
+.diff-block .diff-line.meta { color: var(--ink-secondary, #787671); background: var(--surface-soft, #f3f1ed); }
+
+/* ==================== 流式增量冻结段（MarkdownText 直播渲染）====================
+   MarkdownText 直播态把内容切为「冻结稳定区 + 活动尾部」：
+   .md-seg-stable[data-md-stable] —— 已闭合前缀的追加式段落，渲染一次后
+     不再触碰（图表 / Mermaid 等异步产物挂载后不被 token 重写销毁）；
+   .md-live-tail[data-streaming] —— 活动尾部，120ms 节流整段重渲染，
+     异步渲染器按 [data-streaming] 契约跳过其中尚未闭合的块。
+   display:contents：包裹层不产生布局盒子，段内元素与历史一次性渲染的
+   DOM 结构在样式选择器眼中完全等价（后代选择器 / 边距折叠均不受影响）。 */
+
+.md-seg-stable,
+.md-live-tail {
+  display: contents;
 }

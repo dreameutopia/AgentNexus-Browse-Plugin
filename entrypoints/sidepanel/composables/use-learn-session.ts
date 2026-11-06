@@ -38,6 +38,7 @@ import {
   conversationEngine,
   sessionDeletionEngine,
   type ChatMessageRecord,
+  type ContextUsage,
   type ConversationEvent,
   type RunSummary,
   type ToolApprovalRequest,
@@ -280,6 +281,13 @@ export interface LearnSessionApi {
   elapsedMs: ReadonlyRef<number>;
   /** 本阶段已发起的工具调用数（状态条展示） */
   toolCalls: ReadonlyRef<number>;
+  /**
+   * 本阶段最近一次请求的真实上下文用量（引擎每轮测量经 context-usage 事件
+   * 外发，与普通对话的用量环同一数据源）。学习运行期间底部工具栏隐藏，
+   * 用量环不可见——状态条据此呈现「距离阈值还有多远」，压缩触发前用户
+   * 可预判长任务的窗口压力。null = 尚未发起任何请求。
+   */
+  contextUsage: ReadonlyRef<ContextUsage | null>;
   /** 是否处于学习态（含配置与收尾——这些阶段同样不接受普通输入） */
   isLearnActive: ReadonlyRef<boolean>;
   /** 是否正在运行（决定是否显示终止按钮） */
@@ -327,6 +335,8 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
   const sessionChatId = ref('');
   const elapsedMs = ref(0);
   const toolCalls = ref(0);
+  /** 本阶段真实上下文用量（引擎 context-usage 事件驱动；阶段开始时复位） */
+  const contextUsage = ref<ContextUsage | null>(null);
   /**
    * 配置面板表单重置纪元：openModal（新的学习意图）递增，组件 watch 它清空表单；
    * 「返回修改」（confirming → configuring）不递增——用户点返回是为了改内容，
@@ -610,6 +620,11 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     const calls = new Map<string, string>();
     return (event: ConversationEvent): void => {
       deps.observer(event);
+      // 用量快照先于阶段门过滤：它是引擎对「最近一次真实请求负载」的客观陈述，
+      // 与业务阶段流转（弹窗顶替、收尾轮切换）无关；按会话过滤防跨会话串扰。
+      if (event.type === 'context-usage' && event.chatId === chatId) {
+        contextUsage.value = event.usage;
+      }
       if (event.chatId !== chatId || phase.value !== kind || aborting || terminating) return;
       if (event.type === 'tool-call') {
         toolCalls.value += 1;
@@ -826,6 +841,9 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
       forceSubmitting.value = forceSubmit;
       if (!forceSubmit) {
         toolCalls.value = 0;
+        // 阶段计量复位：上一阶段（含失败重学）的用量不属于本阶段，
+        // 残留数字会让状态条在首轮请求前误报窗口压力
+        contextUsage.value = null;
         // 用户决定标记按阶段复位：新阶段开始时用户尚未表达任何停止意图
         runEndedByUser = false;
         startTicker();
@@ -1175,6 +1193,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     report.value = null;
     failure.value = null;
     toolCalls.value = 0;
+    contextUsage.value = null;
     // 新一轮开跑：上次交付遗留的降级说明不再适用（其成果已由本轮接替）
     degradedNotice.value = false;
 
@@ -1271,6 +1290,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     settleDialog();
     sessionChatId.value = '';
     toolCalls.value = 0;
+    contextUsage.value = null;
     draft.value = null;
     report.value = null;
     failure.value = null;
@@ -1309,6 +1329,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     dialog,
     elapsedMs: elapsedMs as ReadonlyRef<number>,
     toolCalls: toolCalls as ReadonlyRef<number>,
+    contextUsage: contextUsage as ReadonlyRef<ContextUsage | null>,
     isLearnActive,
     isLearnRunning: isLearnRunningFlag,
     isForceSubmitting: forceSubmitting as ReadonlyRef<boolean>,

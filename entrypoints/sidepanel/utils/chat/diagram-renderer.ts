@@ -319,7 +319,9 @@ export function processDiagrams(root: ParentNode): void {
 
   const pending = root.querySelectorAll<HTMLElement>('.diagram-block[data-diagram-state="pending"]');
   for (const block of pending) {
-    if (block.closest('[data-streaming]')) continue;
+    // 直播跳过（带稳定区豁免，同 chart-renderer）：活动尾部的块会被 token
+    // 重写销毁；MarkdownText 冻结段（[data-md-stable]）内的围栏闭合即渲染
+    if (block.closest('[data-streaming]') && !block.closest('[data-md-stable]')) continue;
     // renderDiagramBlock 的同步前缀会立即把状态推进到 rendering，
     // 去抖期间再次扫描不会重复渲染同一块
     void renderDiagramBlock(block);

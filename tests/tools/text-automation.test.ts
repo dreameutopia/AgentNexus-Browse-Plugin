@@ -7,13 +7,13 @@ import { resolveTextKeys } from '../../tools/browser/text-keys';
 
 export async function testTextAutomation(
   check: (c: boolean, label: string, detail?: unknown) => void,
-  eq: (a: unknown, b: unknown, label: string) => void
+  eq: (a: unknown, b: unknown, label: string) => void,
 ) {
   for (const os of ['win', 'linux', 'mac']) {
     eq(
       resolveTextKeys(['Mod', 'A'], os).map((k) => k.key),
       [os === 'mac' ? 'Meta' : 'Control', 'a'],
-      `Mod+A 正确映射 ${os} 且不隐式加 Shift`
+      `Mod+A 正确映射 ${os} 且不隐式加 Shift`,
     );
   }
   for (const [alias, key] of Object.entries({
@@ -34,7 +34,7 @@ export async function testTextAutomation(
     eq(
       resolveTextKeys([`f${i}`])[0].windowsVirtualKeyCode,
       111 + i,
-      `功能键 F${i}`
+      `功能键 F${i}`,
     );
   for (const key of [
     'ContextMenu',
@@ -55,7 +55,7 @@ export async function testTextAutomation(
   for (const key of 'abcdefghijklmnopqrstuvwxyz0123456789`~!@#$%^&*()-_=+[]{}\\|;:\'",.<>/? ')
     check(
       !!resolveTextKeys([key]).find((k) => !k.modifier),
-      `ASCII 键位 ${key}`
+      `ASCII 键位 ${key}`,
     );
   for (const bad of [
     ['Ctrl', 'Control', 'a'],
@@ -156,9 +156,9 @@ export async function testTextAutomation(
     check(
       !SCENARIO_PRESETS.automation.some(
         (id) =>
-          id.startsWith('vision_') || id.includes('screenshot') || id === 'ocr'
+          id.startsWith('vision_') || id.includes('screenshot') || id === 'ocr',
       ),
-      '文本通用助手 工具集不含视觉能力'
+      '文本通用助手 工具集不含视觉能力',
     );
     const observe = new BrowserObserveTool(),
       interact = new BrowserInteractTool(),
@@ -168,13 +168,38 @@ export async function testTextAutomation(
     check(
       commands.findIndex((c) => c.method === 'Accessibility.enable') <
         commands.findIndex((c) => c.method === 'Accessibility.getFullAXTree'),
-      '读取 AX 树前启用域以保持节点编号稳定'
+      '读取 AX 树前启用域以保持节点编号稳定',
     );
     eq(data(first).elements[0].name, name, 'AX 语义被返回');
+    eq(data(first).elements[0].category, 'button', 'AX 输出统一语义类别');
+    const typedAX = await observe.execute({
+      view: 'accessibility',
+      categories: ['button'],
+    });
+    eq(data(typedAX).totalElements, 1, 'AX 类别严格筛选');
+    check(
+      !(
+        await observe.execute({
+          snapshotId: data(typedAX).snapshotId,
+          categories: ['checkbox'],
+        })
+      ).success,
+      'AX 类别变更不能复用快照',
+    );
+    eq(
+      data(
+        await observe.execute({
+          view: 'accessibility',
+          categories: ['checkbox'],
+        }),
+      ).totalElements,
+      0,
+      'AX 无匹配返回空集合',
+    );
     const ref = data(first).elements[0].elementId;
     check(
       typeof ref === 'string' && ref.startsWith('ax:'),
-      'AX 操作引用独立于 DOM 行号'
+      'AX 操作引用独立于 DOM 行号',
     );
     check(
       !(
@@ -184,11 +209,11 @@ export async function testTextAutomation(
           regex: 'changed',
         })
       ).success,
-      'AX 快照过滤条件不可混用'
+      'AX 快照过滤条件不可混用',
     );
     check(
       (await observe.execute({ snapshotId: data(first).snapshotId })).success,
-      'AX 快照可自动路由续读'
+      'AX 快照可自动路由续读',
     );
     check(
       !(
@@ -197,7 +222,7 @@ export async function testTextAutomation(
           snapshotId: data(first).snapshotId,
         })
       ).success,
-      'AX/DOM 视图快照不能混用'
+      'AX/DOM 视图快照不能混用',
     );
     const keys = await interact.execute({
       action: 'keys',
@@ -216,11 +241,11 @@ export async function testTextAutomation(
         ['keyUp', 'j'],
         ['keyUp', 'Control'],
       ],
-      '修饰键按正确顺序按下并反序释放'
+      '修饰键按正确顺序按下并反序释放',
     );
     check(
       !(await observe.execute({ snapshotId: data(first).snapshotId })).success,
-      '交互后旧 AX 分页失效'
+      '交互后旧 AX 分页失效',
     );
     const fresh = await observe.execute({ view: 'accessibility' }),
       freshRef = data(fresh).elements[0].elementId;
@@ -233,7 +258,7 @@ export async function testTextAutomation(
           description: '进入编辑',
         })
       ).success,
-      '纯文本原生键盘支持 F2'
+      '纯文本原生键盘支持 F2',
     );
     check(
       (
@@ -244,12 +269,12 @@ export async function testTextAutomation(
           description: '输入编辑内容',
         })
       ).success,
-      '原生文本插入不依赖图片'
+      '原生文本插入不依赖图片',
     );
     eq(
       commands.find((c) => c.method === 'Input.insertText')?.params.text,
       '中文🙂',
-      'Unicode 文本完整交给浏览器'
+      'Unicode 文本完整交给浏览器',
     );
     for (const [names, expectedKey, mask] of [
       [['Ctrl', 'A'], 'a', 2],
@@ -272,12 +297,12 @@ export async function testTextAutomation(
           (c) =>
             c.method === 'Input.dispatchKeyEvent' &&
             c.params.type === 'keyDown' &&
-            c.params.key === expectedKey
+            c.params.key === expectedKey,
         );
       eq(main?.params.modifiers, mask, `主键语义与修饰位 ${names.join('+')}`);
       check(
         main?.params.text === undefined,
-        '带 Control/Alt 的组合键不额外插入文字'
+        '带 Control/Alt 的组合键不额外插入文字',
       );
     }
     const before = commands.length;
@@ -290,7 +315,7 @@ export async function testTextAutomation(
           description: '错误组合',
         })
       ).success,
-      '拒绝多个主键混成组合键'
+      '拒绝多个主键混成组合键',
     );
     eq(commands.length, before, '参数错误不触发协议副作用');
     check(
@@ -303,7 +328,7 @@ export async function testTextAutomation(
           description: '错误参数',
         } as any)
       ).success,
-      '拒绝不属于 action 的参数'
+      '拒绝不属于 action 的参数',
     );
     focused = false;
     check(
@@ -315,7 +340,7 @@ export async function testTextAutomation(
           description: '测试焦点',
         })
       ).success,
-      '焦点不匹配停止原生输入'
+      '焦点不匹配停止原生输入',
     );
     focused = true;
     name = '删除按钮';
@@ -327,7 +352,7 @@ export async function testTextAutomation(
           description: '打开',
         })
       ).success,
-      'AX 名称变化使旧引用失效'
+      'AX 名称变化使旧引用失效',
     );
     name = '执行按钮';
     loader = 'doc-b';
@@ -339,7 +364,7 @@ export async function testTextAutomation(
           description: '打开',
         })
       ).success,
-      '同 URL 新文档不能复用 AX 引用'
+      '同 URL 新文档不能复用 AX 引用',
     );
     const newDoc = await observe.execute({ view: 'accessibility' }),
       newRef = data(newDoc).elements[0].elementId;
@@ -352,7 +377,7 @@ export async function testTextAutomation(
           description: '打开',
         })
       ).success,
-      'AX 引用拒绝跨 tab 使用'
+      'AX 引用拒绝跨 tab 使用',
     );
     tabId = 1;
     failOnKey = true;
@@ -368,9 +393,9 @@ export async function testTextAutomation(
         (c) =>
           c.method === 'Input.dispatchKeyEvent' &&
           c.params.type === 'keyUp' &&
-          c.params.key === 'Control'
+          c.params.key === 'Control',
       ),
-      '按下不确定时仍尝试释放修饰键'
+      '按下不确定时仍尝试释放修饰键',
     );
     failRelease = true;
     const cleanupObserve = await observe.execute({ view: 'accessibility' });
@@ -383,7 +408,7 @@ export async function testTextAutomation(
     });
     check(
       !cleanup.success && !cdpSession.hasSession(1),
-      '释放失败会脱离不确定的调试会话'
+      '释放失败会脱离不确定的调试会话',
     );
     failOnKey = false;
     failRelease = false;
@@ -391,7 +416,7 @@ export async function testTextAutomation(
     aborted.abort();
     const afterDetach = await observe.execute({ view: 'accessibility' });
     const beforeAbort = commands.filter((c) =>
-      c.method.startsWith('Input.')
+      c.method.startsWith('Input.'),
     ).length;
     check(
       !(
@@ -402,15 +427,15 @@ export async function testTextAutomation(
             keys: ['Enter'],
             description: '取消测试',
           },
-          { signal: aborted.signal }
+          { signal: aborted.signal },
         )
       ).success,
-      '取消信号停止操作'
+      '取消信号停止操作',
     );
     eq(
       commands.filter((c) => c.method.startsWith('Input.')).length,
       beforeAbort,
-      '取消后不派发原生输入'
+      '取消后不派发原生输入',
     );
 
     const parallel = await Promise.all([
@@ -420,7 +445,7 @@ export async function testTextAutomation(
     eq(
       parallel.filter((r) => r.success).length,
       1,
-      '并发启动同 tab 捕获只能成功一个'
+      '并发启动同 tab 捕获只能成功一个',
     );
     const captureId = data(parallel.find((r) => r.success)).captureId;
     captureIds.push(captureId);
@@ -450,41 +475,41 @@ export async function testTextAutomation(
     check(!!data(read).entries[0].dataRef?.id, '真实响应正文进入 dataRef');
     check(
       String(data(read).entries[0].preview).includes('A1'),
-      '返回受限正文预览'
+      '返回受限正文预览',
     );
     check(
       !(await network.execute({ action: 'read', captureId, limit: 21 }))
         .success,
-      '网络读取分页容量防御'
+      '网络读取分页容量防御',
     );
     check(
       !(await network.execute({ action: 'read', captureId: 'missing' }))
         .success,
-      '未知捕获引用明确失败'
+      '未知捕获引用明确失败',
     );
     check(
       (await network.execute({ action: 'stop', captureId })).success,
-      '停止真实 Network domain'
+      '停止真实 Network domain',
     );
     check(
       (await network.execute({ action: 'read', captureId })).success,
-      '停止后可读取已有捕获结果'
+      '停止后可读取已有捕获结果',
     );
     const restarted = await network.execute({ action: 'start' });
     check(restarted.success, '停止后可启动新捕获');
     captureIds.push(data(restarted).captureId);
     const disables = commands.filter(
-      (c) => c.method === 'Network.disable'
+      (c) => c.method === 'Network.disable',
     ).length;
     await network.execute({ action: 'stop', captureId });
     eq(
       commands.filter((c) => c.method === 'Network.disable').length,
       disables,
-      '重复停止旧捕获不能关闭新捕获的 Network 域'
+      '重复停止旧捕获不能关闭新捕获的 Network 域',
     );
     check(
       !commands.some((c) => /captureScreenshot|captureSnapshot/.test(c.method)),
-      '所有新能力不调用截图或视觉通道'
+      '所有新能力不调用截图或视觉通道',
     );
   } finally {
     for (const id of captureIds)

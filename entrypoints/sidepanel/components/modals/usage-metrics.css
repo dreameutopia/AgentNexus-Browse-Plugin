@@ -315,6 +315,15 @@
   font-variant-numeric: tabular-nums;
 }
 
+.usage-error-provider {
+  flex-shrink: 0;
+  max-width: 22%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
 .usage-error-model {
   font-weight: 600;
   flex-shrink: 0;

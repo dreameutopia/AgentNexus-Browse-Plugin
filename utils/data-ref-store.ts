@@ -4,8 +4,8 @@
  * 「脚本抓取 → 暂存 → 直接导出」通道的共享底座，解决 AI 手工转抄批量数据
  * 导致的丢失/捏造/输错问题：
  *
- *   browser_page_exec(saveResult=true) ──┐
- *   （页面内全量 JSON 落暂存区）          ├──▶ dataRef（8 位 ID）
+ *   browser_page_exec（saveResult 默认开启）──┐
+ *   （页面内全量 JSON 落暂存区）               ├──▶ dataRef（8 位 ID）
  *                                          │      ├─ data_ref_tool：info/merge/list/delete
  *                                          │      └─ xlsx_tool(create_from_data)：按 ID 直接生成 Excel
  *                                          └──── 数据全程不经过模型上下文
@@ -60,12 +60,16 @@ export type SaveDataRefResult =
 const MAX_TOTAL_BYTES = 8 * 1024 * 1024;
 /** 单条目上限（超过则引导模型在脚本内先筛选/精简） */
 const MAX_ENTRY_BYTES = MAX_TOTAL_BYTES;
-/** records 字段并集上限（xlsx 单表列上限为 256，超出部分无导出意义） */
-const MAX_FIELDS = 256;
+/** records 字段并集上限（xlsx 单表列上限为 256，超出部分无导出意义）。
+ *  导出为共享常量：xlsx_tool 的 fields 校验据此判断「字段并集是否被截断」，
+ *  截断时跳过拼写校验以免误伤合法字段。 */
+export const MAX_FIELDS = 256;
 /** 预览字符数 */
 const PREVIEW_CHARS = 300;
-/** 条目存活时长：超时在下次打开时惰性清除（会话内数据，过期即失效） */
-const ENTRY_TTL_MS = 2 * 60 * 60 * 1000;
+/** 条目存活时长：超时在下次打开时惰性清除（会话内数据，过期即失效）。
+ *  12 小时：覆盖「上午抓取、下午核对/导出」的工作节奏；仍短于浏览器会话
+ *  的物理上限（session 存储浏览器退出即清），隐私边界不变。 */
+const ENTRY_TTL_MS = 12 * 60 * 60 * 1000;
 
 const STORAGE_KEY = 'agentNexusDataRefs';
 const ID_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';

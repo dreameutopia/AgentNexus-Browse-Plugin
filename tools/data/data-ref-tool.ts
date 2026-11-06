@@ -2,7 +2,8 @@
  * 数据引用管理工具（data_ref_tool）
  *
  * 「脚本抓取 → 暂存 → 直接导出」通道的中间层：管理 browser_page_exec 写入
- * 数据暂存区的批次（saveResult=true，或全量 JSON 超 2000 字符自动暂存），让模型在不接触全量数据的前提下完成：
+ * 数据暂存区的批次（saveResult 默认开启即暂存，或全量 JSON 超 2000 字符自动
+ * 暂存），让模型在不接触全量数据的前提下完成：
  *   - list  ：盘点当前所有批次（ID/标签/形态/行数/大小），规划合并与导出；
  *   - info  ：查看单个批次的字段结构与首行预览，设计 xlsx 的 fields/headers 映射；
  *   - merge ：把分页/分批抓取的多个批次按顺序拼接为一个（xlsx 一次导出）；
@@ -62,7 +63,7 @@ export class DataRefTool extends BaseTool {
     function: {
       name: 'data_ref_tool',
       description:
-        '管理批量抓取数据的暂存批次（dataRef，8 位 ID；由 browser_page_exec 产生——saveResult=true 或结果超 2000 字符自动暂存）。' +
+        '管理批量抓取数据的暂存批次（dataRef，8 位 ID；由 browser_page_exec 产生——saveResult 默认开启即暂存，或结果超 2000 字符自动暂存；浏览器会话内约 12 小时有效）。' +
         'action=list 列出全部批次的统计；action=info 查看单个批次的字段结构与首行预览（用于设计导出列映射）；' +
         'action=merge 把多个批次按给定顺序拼接成一个新批次（分页抓取后导出前必做）；' +
         'action=delete 清理批次。任何 action 都不会返回全量数据；' +
@@ -112,7 +113,7 @@ export class DataRefTool extends BaseTool {
     if (metas.length === 0) {
       return this.createSuccessResponse(
         { count: 0 },
-        '暂存区为空。用 browser_page_exec 抓取数据（saveResult=true 或结果超 2000 字符自动暂存）后会自动生成批次。',
+        '暂存区为空。用 browser_page_exec 抓取数据（saveResult 默认开启即暂存）后会自动生成批次。',
       );
     }
     const totalBytes = metas.reduce((sum, m) => sum + m.bytes, 0);
@@ -146,7 +147,7 @@ export class DataRefTool extends BaseTool {
         preview: meta.preview ?? null,
         guide:
           meta.kind === 'records'
-            ? '这是对象数组数据：xlsx_tool(create_from_data) 可用 fields 指定导出列与顺序、headers 指定表头文案。'
+            ? '这是对象数组数据：xlsx_tool(create_from_data) 可用 fields 指定导出列与顺序、headers 指定表头文案（fields 拼写错误会被校验拒绝）。注意：字段值若是嵌套对象/数组，导出时会以 JSON 文本写入单元格——需要拆列请在抓取脚本中展平字段。'
             : meta.kind === 'matrix'
               ? '这是二维数组数据：xlsx_tool(create_from_data) 可用 headers 指定表头，或 firstRowAsHeader=true 把首行当表头。'
               : '该批次不是表格形态（单值），通常无法直接导出为工作表——请在抓取脚本中返回对象数组或二维数组。',
