@@ -10,7 +10,7 @@ This project and everyone participating in it is governed by our [Code of Conduc
 
 ### Report Bugs
 
-Bug reports are tracked as [GitHub Issues](https://github.com/your-org/AgentNexus-Browse-Plugin/issues). When creating a bug report, please use the **Bug Report** template and include:
+Bug reports are tracked as [GitHub Issues](https://github.com/dreameutopia/AgentNexus-Browse-Plugin/issues). When creating a bug report, please use the **Bug Report** template and include:
 
 - **Clear title and description**
 - **Steps to reproduce** the issue
@@ -20,7 +20,7 @@ Bug reports are tracked as [GitHub Issues](https://github.com/your-org/AgentNexu
 
 ### Request Features
 
-Feature requests are also tracked as [GitHub Issues](https://github.com/your-org/AgentNexus-Browse-Plugin/issues). Please use the **Feature Request** template and describe:
+Feature requests are also tracked as [GitHub Issues](https://github.com/dreameutopia/AgentNexus-Browse-Plugin/issues). Please use the **Feature Request** template and describe:
 
 - **The problem** you're trying to solve
 - **Your proposed solution**
@@ -56,7 +56,7 @@ Feature requests are also tracked as [GitHub Issues](https://github.com/your-org
 
 ```bash
 # Clone the repo
-git clone https://github.com/your-org/AgentNexus-Browse-Plugin.git
+git clone https://github.com/dreameutopia/AgentNexus-Browse-Plugin.git
 cd AgentNexus-Browse-Plugin
 
 # Install dependencies
@@ -148,7 +148,7 @@ chore: update dependencies
 
 ## 💬 Questions?
 
-Feel free to open a [Discussion](https://github.com/your-org/AgentNexus-Browse-Plugin/discussions) for any questions.
+Feel free to open a [Discussion](https://github.com/dreameutopia/AgentNexus-Browse-Plugin/discussions) for any questions.
 
 ---
 

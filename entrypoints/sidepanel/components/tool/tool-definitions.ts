@@ -246,31 +246,29 @@ export const categories: ToolCategory[] = [
     ]
   },
   {
-    id: 'analyse',
-    name: '分析工具',
-    icon: '📊',
+    id: 'upload-file',
+    name: '上传文件工具',
+    icon: '📎',
     tools: [
       {
-        name: 'getPageMarkdown',
-        description: '智能提取页面内容并转换为 AI 友好的 Markdown 格式，自动识别并保留标题、表格、列表、代码块等结构。支持提取当前页面、单个URL或多个URL（批量并行处理，最多3个并发）。',
-        category: 'analyse',
-        version: '2.0.0',
+        name: 'read_file',
+        description: '分页读取用户上传的文件（会话文件库，全文持久化）',
+        category: 'upload-file',
+        version: '1.0.0',
         parameters: {
-          urls: {
-            type: 'array',
-            description: '目标页面URL。可以是单个URL或URL数组。默认为"current"表示当前页面。多个URL将并行处理（最多3个同时进行）。',
-            placeholder: '["https://example1.com", "https://example2.com"] 或单个URL字符串'
+          file_id: {
+            type: 'string',
+            description: '8 位文件短 id（<upload_file> 信封或工具返回值中的真实 id）',
+            placeholder: '例如：a1b2c3d4'
           },
-          includeMetadata: {
-            type: 'boolean',
-            description: '是否包含页面元数据（标题、URL 等）',
-            default: true
+          page: {
+            type: 'number',
+            description: '页码（1 起；信封已内联第 1 页）',
+            placeholder: '2'
           }
         },
-        required: []
+        required: ['file_id']
       }
-      // 原 9 个平台搜索结果抓取工具（*_result_scraper）已并入统一 web_search
-      //（搜索工具组，website 枚举区分平台），本组不再单列
     ]
   },
   {
@@ -775,14 +773,29 @@ export const categories: ToolCategory[] = [
     tools: [
       {
         name: 'browser_get_page_text',
-        description: '获取当前页面的可见文本内容',
+        description: '读取页面为结构化 Markdown：保留标题层级/表格/列表/代码块+语言/链接/引用；覆盖全部 iframe 与可访问 shadow root；支持 url 直读与超 15000 字符 ref 分页',
         category: 'base',
-        version: '1.0.0',
+        version: '2.0.0',
         parameters: {
+          url: {
+            type: 'string',
+            description: '目标网址（可选，仅单个 http/https；后台加载提取后自动关闭）',
+            placeholder: 'https://example.com（留空读当前标签页）'
+          },
           tabId: {
             type: 'number',
-            description: '标签页ID（可选，默认当前活动标签页）',
+            description: '标签页ID（可选，默认当前活动标签页；与 url 互斥）',
             placeholder: '留空表示当前标签页'
+          },
+          ref: {
+            type: 'string',
+            description: '分页引用 ID（可选，超长响应返回的 ref；只读缓存不访问页面）',
+            placeholder: '上次响应的 ref 值'
+          },
+          page: {
+            type: 'number',
+            description: '页码（可选，默认 1；每页 15000 字符）',
+            placeholder: '1'
           }
         },
         required: []

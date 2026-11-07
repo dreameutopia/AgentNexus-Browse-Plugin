@@ -42,8 +42,16 @@ import {
   noteToolFailureFromError,
   noteNotFound,
 } from './base-note-tool';
+import { NOTE_TOOL_ID } from './note-prompt';
 
-const TOOL_NAME = 'note_tool';
+/**
+ * 工具名与注入契约同源：note-prompt.ts 是「固定 prompt + 默认工具」单一事实源
+ * （NOTE_TOOL_ID 经 CORE_SESSION_TOOL_IDS 无条件注入所有会话）。
+ * 三层分工见 note-prompt 文件头：本文件的 description 只承载调用机制
+ * （action 语义 / noteId 纪律 / delete 人审），何时记、记什么、与 plan_tool
+ * 的分工路由一律不复述（权威句在 NOTE_SYSTEM_PROMPT_SECTION）。
+ */
+const TOOL_NAME = NOTE_TOOL_ID;
 
 /** list 结果单条上限（防止超长笔记正文撑爆上下文；详情用 get 获取） */
 const LIST_PREVIEW_MAX_CHARS = 120;
@@ -72,6 +80,8 @@ export class NoteTool extends BaseNoteTool {
     tags: ['note', 'create', 'append', 'update', 'read', 'list', 'delete'],
     // 仅 delete（不可逆删除）过人审门；其余操作直接执行（见 registry 的 action 级审批契约）
     requiresApprovalActions: ['delete'],
+    // 笔记库数据操作，不触碰页面：视觉循环无需重拍
+    noVisionRecapture: true,
   };
 
   openaiSchema: OpenAITool = {
@@ -79,16 +89,15 @@ export class NoteTool extends BaseNoteTool {
     function: {
       name: TOOL_NAME,
       description:
-        '内置笔记工作区的统一操作工具（跨会话的外部记忆，沉淀知识而非跟踪任务）。通过 action 指定操作：\n' +
+        '内置笔记工作区的统一操作工具：跨会话持久保存的工作笔记（外部记忆，会话结束后依然存在）。通过 action 指定操作：\n' +
         '- create：新建笔记（title/content/category/tags 可选）→ 返回 noteId，后续操作都必须用它\n' +
-        '- append：向笔记末尾追加内容（noteId + content）——记录调研发现/中间结论/失败尝试的首选\n' +
+        '- append：向笔记末尾追加内容（noteId + content）——增量记录的首选\n' +
         '- update：更新标题/内容/分类/标签（noteId + 至少一个字段；content 整体替换原正文）\n' +
         '- get：读取笔记完整纯文本（noteId）\n' +
         '- list：按关键词列出笔记（keyword 可选）→ 返回 noteId + 标题 + 修改时间，用于找回 ID\n' +
-        '- delete：删除笔记（noteId，仅在用户明确要求时使用）\n' +
-        '记什么（重点是可复用的知识与证据，跨会话长期保留）：大范围调研中每个关键发现（一句话核心摘要 + 具体来源 URL）；任务产出的最终完整重要结果（结论、数据、有效来源清单）；实验/多轮尝试的过程与结论（含失败路径）。\n' +
-        '不记什么：任务步骤与执行进度（那是 plan_tool 的会话计划，不要用笔记做任务清单）；大段原文搬运（提炼成事实与判断后再落笔）。\n' +
-        '工作流约定：noteId 只能来自 create/list/get 的返回值，禁止凭记忆或语义臆造；追加内容忘了 ID 时先 list 查询。',
+        '- delete：删除笔记（noteId）——不可逆，需经用户放行，仅在用户明确要求时使用\n' +
+        '使用纪律：noteId 只能来自 create/list/get 的返回值，禁止凭记忆或语义臆造（标题不是 ID）；忘了先 list 查询找回，报「目标不存在」时以 list 结果核对后重试。\n' +
+        '何时记、记什么、与 plan_tool 的分工（笔记管跨会话知识沉淀，计划管会话内执行状态）见系统提示词 <note-workspace-guidelines> 分区。',
       parameters: {
         type: 'object',
         properties: {

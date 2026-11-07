@@ -4,6 +4,73 @@ import { visionReadPayload } from '../../tools/vision/read-payload';
 import { validateReadArgs, createVisionReadTools } from '../../tools/vision/read-tools';
 import { filterVisionAssistantTools, isVisionAssistantTool } from '../../utils/agents/vision-assistant-policy';
 import { needsVisionRefresh, takeVisionToolImage, withoutVisionImage } from '../../entrypoints/sidepanel/core/conversation/vision-feedback';
+import { userVisibleImageRefs } from '../../entrypoints/sidepanel/core/context/transcript-engine';
+import { ViewportImageDeduplicator } from '../../entrypoints/sidepanel/core/conversation/viewport-image-dedup';
+import { collectPriorViewportRefs } from '../../entrypoints/sidepanel/core/context/viewport-ref-collector';
+// 用户气泡底部图片区口径：只展示用户上传；vision 首截图引用留在 imageRefs
+// （GC 计数需要）但不进用户气泡，避免与助手「查看屏幕」双显
+assert.deepEqual(userVisibleImageRefs({ uploadImageRefs:['a'], imageRefs:['a','b'] }), ['a']);
+assert.deepEqual(userVisibleImageRefs({ imageRefs:['a','b'] }), ['a','b'], 'Legacy records fall back to imageRefs');
+assert.deepEqual(userVisibleImageRefs({ uploadImageRefs:[], imageRefs:['shot'] }), [], 'Engine-injected refs stay out of the user bubble');
+assert.deepEqual(userVisibleImageRefs({}), []);
+// 旧记录反推：引擎注入的视口截图必然也在助手记录里（助手消息是展示主体），
+// 据此从用户记录的引用中剔除，还原用户真正的上传
+assert.deepEqual(
+  userVisibleImageRefs({ imageRefs:['upload1','shot1'] }, new Set(['shot1'])),
+  ['upload1'],
+  'Legacy user bubble excludes engine-injected screenshots found in assistant records');
+assert.deepEqual(
+  userVisibleImageRefs({ imageRefs:['shot1'] }, new Set(['shot1'])),
+  ['shot1'],
+  'Fully engine-injected legacy record keeps its reference (no upload to fall back to)');
+assert.deepEqual(
+  userVisibleImageRefs({ imageRefs:['upload1'] }, new Set(['shot1'])),
+  ['upload1'],
+  'Unrelated assistant refs must not drop user uploads');
+
+// 历史视口图引用提取（跨轮次同图判重的输入）
+{
+  const H='a'.repeat(64);
+  const records:any[] = [
+    // 新记录：上传子集之外的引用 = 引擎注入的视口截图
+    { role:'user', imageRefs:['up1',H], uploadImageRefs:['up1'] },
+    // 助手记录：全部引用都是 vision 自动截图
+    { role:'assistant', imageRefs:[H,'b'.repeat(64)] },
+    // 旧记录：无上传子集字段 → 保守不计入（无法区分用户上传与引擎截图）
+    { role:'user', imageRefs:['legacy1'] },
+  ];
+  assert.deepEqual(
+    collectPriorViewportRefs(records),
+    [H,'b'.repeat(64)],
+    'Only engine-injected viewport refs are collected for dedup');
+  assert.deepEqual(collectPriorViewportRefs([]), [], 'Empty history yields no refs');
+  assert.deepEqual(
+    collectPriorViewportRefs([{ role:'user', imageRefs:[], uploadImageRefs:[] } as any]),
+    [],
+    'A user record without any image contributes nothing');
+  // 脏数据防御：非法引用形态（非 hex / 长度不符）被剔除，不污染判重集合
+  assert.deepEqual(
+    collectPriorViewportRefs([{ role:'assistant', imageRefs:['not-a-hash','z'.repeat(64),'b'.repeat(64)] } as any]),
+    ['b'.repeat(64)],
+    'Malformed references are dropped');
+}
+
+// 视口图判重器（内容哈希口径）：只对视口全景判重，区域图与缺失引用不判重
+{
+  const dedup = new ViewportImageDeduplicator();
+  assert.equal(dedup.isDuplicate({ ref:'h1', kind:'viewport' }), false, 'Unregistered reference is not a duplicate');
+  dedup.remember('h1');
+  assert.equal(dedup.isDuplicate({ ref:'h1', kind:'viewport' }), true, 'Same content hash is a duplicate');
+  assert.equal(dedup.isDuplicate({ ref:'h2', kind:'viewport' }), false, 'Different content is not a duplicate');
+  assert.equal(dedup.isDuplicate({ ref:'h1', kind:'region' }), false, 'Region images never dedupe against viewport evidence');
+  assert.equal(dedup.isDuplicate({ ref:null, kind:'viewport' }), false, 'Missing reference must not be treated as duplicate');
+  assert.equal(dedup.isDuplicate({ ref:'', kind:'viewport' }), false, 'Empty reference must not be treated as duplicate');
+  dedup.remember(null); dedup.remember(undefined); dedup.remember('');
+  assert.equal(dedup.size, 1, 'Invalid references never enter the registry');
+  dedup.remember('h1');
+  assert.equal(dedup.size, 1, 'remember is idempotent');
+}
+import { skillEngine } from '../../entrypoints/sidepanel/core/registry/skill-engine';
 
 assert.deepEqual(filterVisionAssistantTools(['screenshot','browser_page_exec','browser_scroll','vision_gui','vision_read','vision_read']), ['screenshot','vision_read']);
 for (const id of ['browser_navigate','browser_interact','browser_inject_script','vision_gui','vision_gui']) assert.equal(isVisionAssistantTool(id), false);
@@ -30,16 +97,27 @@ const image = takeVisionToolImage(imageResult, 0)!;
 assert.ok(image);
 assert.equal(JSON.stringify(withoutVisionImage(imageResult)).includes('base64'), false);
 assert.equal(imageResult.data.screenshot.includes('base64'), true, 'Extraction must not mutate UI result');
-const none = () => undefined;
+// noVisionRecapture 策略回调：marked 与注册表契约清单同源（tools.test.ts 有注册表级断言）
+const marked = (name: string) => ['browser_get_page_text','browser_get_page_info','browser_get_all_tabs','browser_window',
+  'browser_observe','browser_dom_explore','browser_network_capture','vision_read','vision_read_zoom',
+  'plan_tool','interact','note_tool','data_ref_tool','load_skill','read_skill_file'].includes(name);
+const none = () => false;
 assert.equal(needsVisionRefresh(['screenshot'], [image], none), false);
-assert.equal(needsVisionRefresh(['screenshot','vision_read','plan_tool'], [image], none), false);
+assert.equal(needsVisionRefresh(['screenshot','vision_read','plan_tool'], [image], marked), false);
 assert.equal(needsVisionRefresh(['screenshot','vision_gui'], [image], none), true);
 assert.equal(needsVisionRefresh(['vision_gui','screenshot'], [{...image,callIndex:1}], none), false);
 assert.equal(needsVisionRefresh(['screenshot'], [], none), true);
-assert.equal(needsVisionRefresh(['vision_read_wait'], [], ()=>'none'), true);
+assert.equal(needsVisionRefresh(['vision_read_wait'], [], none), true);
 assert.equal(needsVisionRefresh(['unknown_tool'], [], none), true);
-assert.equal(needsVisionRefresh(['vision_read_zoom'], [{...image,kind:'region'}], none), false);
-assert.equal(needsVisionRefresh(['vision_read_scroll'], [], ()=>'after'), true);
+assert.equal(needsVisionRefresh(['vision_read_zoom'], [{...image,kind:'region'}], marked), false);
+assert.equal(needsVisionRefresh(['vision_read_scroll'], [], none), true);
+// 纯读豁免（本轮修复的核心）：整批 noVisionRecapture=true 不触发重拍
+assert.equal(needsVisionRefresh(['browser_get_all_tabs'], [], marked), false);
+assert.equal(needsVisionRefresh(['browser_window'], [], marked), false);
+assert.equal(needsVisionRefresh(['browser_dom_explore','browser_network_capture'], [], marked), false);
+// 混批：任一未豁免调用（含未知工具）保守重拍
+assert.equal(needsVisionRefresh(['browser_get_page_text','unknown_tool'], [], marked), true);
+assert.equal(needsVisionRefresh([{function:{name:'browser_get_page_text',arguments:'{}'}},{function:{name:'vision_gui',arguments:'{"action":"click"}'}}], [], marked), true);
 
 // Execute serialized production payload in an independent realm.
 const dom = new JSDOM('<!doctype html><style>body{opacity:1}</style><button id="pay" disabled>Pay</button><input id="secret" type="password" value="private-secret"><div id="off">OFFSCREEN</div><div id="scroller" style="overflow-y:auto;overflow-x:auto;opacity:1"><button id="inside">Inside</button></div>', {runScripts:'outside-only'} as any);
@@ -127,15 +205,26 @@ try {
   const outcome=await visualEngine.executeToolCalls(visualRuntime,handle,calls('screenshot',{mode:'action'}),{},()=>{},Date.now()+60000);
   assert.deepEqual(captureParameters,{mode:'observe'},'Guide cannot cause debugger attachment via mode override');
   assert.equal(outcome.images.length,1);assert.equal(outcome.messages[0].content.includes('base64'),false);
-  const feedback=await visualEngine.buildVisionContinuationMessage(visualRuntime,calls('screenshot'),outcome.messages,outcome.images,new AbortController().signal);
+  const freshHandle:any={viewportDedup:new ViewportImageDeduplicator()};
+  const feedback=await visualEngine.buildVisionContinuationMessage(visualRuntime,freshHandle,calls('screenshot'),outcome.messages,outcome.images,new AbortController().signal);
   assert.equal(captures,1,'Manual screenshot must not be recaptured');
   assert.equal(feedback.message.content.filter((part:any)=>part.type==='image_url').length,1);
   assert.equal(feedback.message.content.find((part:any)=>part.type==='image_url').image_url.detail,'high');
   assert.deepEqual(feedback.imageRefs,['test-image-ref']);
-  const passive=await visualEngine.buildVisionContinuationMessage(visualRuntime,calls('vision_read'),[{role:'tool',content:'{"success":true}'}],[],new AbortController().signal);
+  // 模型可见上下文同图去重（按内容哈希判重）：同一张视口截图再次进入
+  // 上下文时只送描述文本（携带新 screenshotId），不再重复附图；归档照常
+  const dupHandle:any={viewportDedup:new ViewportImageDeduplicator()};
+  dupHandle.viewportDedup.remember('test-image-ref');
+  const dupFeedback=await visualEngine.buildVisionContinuationMessage(visualRuntime,dupHandle,calls('screenshot'),outcome.messages,outcome.images,new AbortController().signal);
+  assert.equal(captures,1,'Deduped delivery must not trigger another capture');
+  assert.equal(dupFeedback.message.content.filter((part:any)=>part.type==='image_url').length,0,'Same-content viewport must not repeat the image part');
+  assert.ok(dupFeedback.message.content.some((part:any)=>part.type==='text'&&/pixel-identical/.test(part.text)),'Deduped delivery keeps the description carrying the new screenshotId');
+  assert.deepEqual(dupFeedback.imageRefs,['test-image-ref'],'Archiving continues for deduped captures');
+  assert.equal(dupHandle.viewportDedup.size,1,'Dedup registers the delivered viewport image');
+  const passive=await visualEngine.buildVisionContinuationMessage(visualRuntime,freshHandle,calls('vision_read'),[{role:'tool',content:'{"success":true}'}],[],new AbortController().signal);
   assert.equal(passive,null);assert.equal(captures,1);
   const regionImage={...image,kind:'region' as const};
-  const regionFeedback=await visualEngine.buildVisionContinuationMessage({...visualRuntime,vision:{...visualRuntime.vision,reScreenshotAfterTools:false}},calls('vision_read_zoom'),[{role:'tool',content:'{"success":true}'}],[regionImage],new AbortController().signal);
+  const regionFeedback=await visualEngine.buildVisionContinuationMessage({...visualRuntime,vision:{...visualRuntime.vision,reScreenshotAfterTools:false}},freshHandle,calls('vision_read_zoom'),[{role:'tool',content:'{"success":true}'}],[regionImage],new AbortController().signal);
   assert.equal(regionFeedback.message.content.filter((part:any)=>part.type==='image_url').length,1);
   assert.equal(captures,1,'Read zoom must not recapture or disappear when auto-refresh is disabled');
 } finally { imageStore.putFromDataUrl=imageWrite; }
@@ -165,6 +254,20 @@ try {
   assert.equal(action.systemPrompt.split('<vision-gui-tool>').length-1,1,'Built-in action prompt carries one XML GUI guide');
   const customAction = await runtimeBuilder.build({chatId:'custom-action',userInput:'执行',agentName:null,skillNames:[],extraToolIds:['vision_gui'],priorRecords:[],agentSystemOverride:'按当前截图完成任务。'});
   assert.equal(customAction.systemPrompt.split('<vision-gui-tool>').length-1,1,'Custom agents receive the same guide');
+  // 装配不变量（承载校验后必须恒成立）：工具目录里每一项都可执行——
+  // advertisedToolIds ⊆ toolIds。三种会话形态同测（观察型 / 动作型 / 无智能体
+  // 默认对话）；此断言曾能拦下 web-research-report 携带工具进入多智能体目录
+  // 的「看得见调不了」死链（无智能体回落全部启用技能是同根因的最后漏洞）
+  for (const rt of [built, action, customAction]) {
+    assert.ok((rt.advertisedToolIds ?? []).every(id => rt.toolIds.includes(id)),
+      `advertised ⊆ toolIds（${rt.agentId || '无智能体'} 会话无死链工具）`);
+  }
+  // 无智能体会话不再回落全部启用技能：可用技能同样满足承载校验
+  //（库中存在 browser_page_exec 专属技能，旧「全部启用」行为会把它列进
+  //  仅含核心工具的默认对话——此断言在旧行为下必失败）
+  const noAgentSkills = skillEngine.resolveAvailableSkills(null, customAction.toolIds);
+  assert.ok(noAgentSkills.every(s => s.allowedTools.every(t => customAction.toolIds.includes(t))),
+    '无智能体可用技能同样满足承载校验');
   const safe=setCustomSkill({name:'guide-safe-skill',files:{'SKILL.md':'---\nname: guide-safe-skill\ndescription: Safe reading\n---\nRead current page'},allowedTools:['vision_read']});
   assert.equal(safe.ok,true);
   if(safe.ok){

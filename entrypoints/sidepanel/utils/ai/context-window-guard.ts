@@ -143,7 +143,7 @@ export function resolveContextThreshold(threshold?: number): number {
  *
  * 计量与 context-meter（用量环 + 压缩触发）同源：全部经
  * utils/ai/token-estimate 的唯一实现（文本启发式估算 + 图片固定 1200 token），
- * 环上显示的 85%/90% 判定与实际裁剪行为不会漂移。
+ * 环上显示的 80%/90% 判定与实际裁剪行为不会漂移。
  *
  * 裁剪策略保持不变：system 优先保留（超限时按 token 预算截断其正文）、
  * tool 内容传输层截断（技能类工具除外，见 SKILL_CONTEXT_TOOL_NAMES）、

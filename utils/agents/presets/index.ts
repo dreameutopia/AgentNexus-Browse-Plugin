@@ -6,7 +6,6 @@
 export { autoActionConfig } from './auto-action';
 export { dataHarvesterConfig } from './data-harvester';
 export { visionAssistantConfig } from './vision-assistant';
-export { searchAgentConfig } from './search-agent';
 export { deepSearchConfig } from './deep-search';
 export { bilibiliAgentConfig } from './bilibili-agent';
 export { mindmapAssistantConfig } from './mindmap-assistant';

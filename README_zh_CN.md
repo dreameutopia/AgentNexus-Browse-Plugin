@@ -27,8 +27,32 @@
 
 插件支持两种使用方式：
 
-1. **配合 [AgentNexus](https://github.com/your-org/AgentNexus) 主程序**（推荐）：通过 WebSocket 自动化通道接受主程序调度，适合复杂的多步骤自动化工作流。
+1. **配合 [AgentNexus](https://github.com/dreameutopia/AgentNexus) 主程序**（推荐）：通过 WebSocket 自动化通道接受主程序调度，适合复杂的多步骤自动化工作流。
 2. **独立使用**：在侧边栏聊天模式中配置自己的模型 API（OpenAI / Claude / Gemini / Ollama 等），即可脱离主程序直接对话并调用全部工具。
+
+它的目标很明确：**接手生产环境里重复且耗时的工作，让人不再把工时耗在这上面**——详见下文的[设计理念](#-设计理念)。
+
+## 🧭 设计理念
+
+### 刻意保持简单，不追求复杂设计
+本插件**有意不引入过多复杂的设计**。我们不打算在扩展内部再造一个通用工作流引擎、一个插件市场平台，或一层层层叠叠的编排系统。这里的每一项能力都必须先回答一个问题：它是浏览器扩展能**做好**的事情——读页面、操作页面、抓取页面、再把控制权交还回去。
+
+复杂度放在它该在的地方：即将发布的 **AgentNexus 应用**。本插件被定位为**该应用与浏览器之间交互的重要途径**——向应用暴露一层稳定、边界清晰的工具接口，由应用通过 WebSocket 自动化通道调度。扩展本身越薄、行为越可预期，它作为该应用可靠依赖的价值就越高。
+
+### 为生产环境里真正重复、真正耗时的事情而建
+本项目后续的重点**不是**「为了更多而更多地堆工具」，而是**完成那些在生产中真正具有重复性、真正耗时的任务**，从而把人从重复劳动里解放出来。
+
+具体来说，插件瞄准的是这类工作：
+
+| 现实中的痛点 | 插件对应的能力 |
+|---|---|
+| 在几十个页面或系统之间来回搬运数据 | 数据采集、表格提取、XLSX 读写 |
+| 反复核对同一份信息、逐个来源比对 | 多源检索、交叉验证的调研流程 |
+| 重复执行固定的填写、点击、提交流程 | 可排期、可复用的工具工作流 |
+| 把原始调研材料整理成可交付的产出物 | 调研报告技能、工作笔记、思维导图、图表渲染 |
+| 在杂乱的页面里翻找某个资源或字幕 | 资源嗅探与下载、字幕获取 |
+
+**每省下一小时的人工操作时间，就是这个项目存在的意义。** 凡是达不到这个标准的功能，都被有意排除在范围之外。
 
 ## 🔥 核心特性
 
@@ -42,7 +66,7 @@
 自研上下文引擎（上下文计量、转录引擎、上下文窗口守护）自动裁剪与压缩历史消息，配合会话数据库实现聊天记录持久化，长对话不溢出、可回溯。
 
 ### 🤖 智能体系统
-内置 8 个预置智能体：深度搜索（Deep Search）、文本通用助手（General Text Assistant）、视觉助手（Vision Assistant）、视觉通用助手（General Vision Assistant）、搜索智能体（Search Agent）、数据收割机（Data Harvester）、Bilibili 智能体、思维导图助手；预置智能体的名称、描述、分类与标签随界面语言切换；支持在管理中心自定义智能体（模型、提示词、工具集、技能挂载）。
+内置 7 个预置智能体：深度搜索（Deep Search）、文本通用助手（General Text Assistant）、视觉助手（Vision Assistant）、视觉通用助手（General Vision Assistant）、数据采集助手（Data Collection Assistant）、Bilibili 搜索助手、思维导图助手；预置智能体的名称、描述、分类与标签随界面语言切换；支持在管理中心自定义智能体（模型、提示词、工具集、技能挂载）。
 
 ### 📚 技能系统
 支持技能（Skill）加载与资源读取，内置 3 个技能：Bilibili 视频总结、网页调研报告、XLSX 创建；支持技能导入导出与可用性管理（设计理念详见下文「技能设计」）。
@@ -109,8 +133,9 @@ Markdown 渲染支持 Mermaid 图表、KaTeX 公式、PlantUML、代码高亮与
 - 内置笔记、语音识别、用量统计、双语界面
 
 ### 🔄 TODO
-- 远程查看等高级功能
-- 更多场景化工具与技能
+- **操作录屏与远程操作**已进入规划与设计阶段，但**预计会在已有功能稳定之后才开始实现**——让录制 / 远程控制这条路建在已经稳定的基础之上，而不是建在一个仍在变动的基础上。
+- **插件系统正在完善中**：打包、签名、分发与生命周期契约正在收敛，第三方插件的完整链路尚未落地。
+- 更多场景化工具与技能，优先级按「在生产环境中能省下多少重复人工操作」来排。
 
 ## 🚀 快速开始
 
@@ -140,7 +165,7 @@ npm run compile
 
 - **version（必填，用于 WS 连接）**：在 `package.json` 中修改 `version` 字段为语义化版本号（例如 `1.0.0`）。构建时 `wxt.config.ts` 会读取该值并注入到 WebSocket 连接的 `version` 查询参数中，用于后端记录与兼容性判断。
 
-- **BROWSER_UUID（推荐固定，用于后端识别浏览器实例）**：如果后端需要稳定的浏览器标识，请在 `.env` 中添加 `BROWSER_UUID=your-uuid`。我们在构建时会把该值注入到客户端（作为 `browserUuid` 查询参数）。如需生成 UUID，可使用 PowerShell 的 `[guid]::NewGuid().ToString()` 或访问 https://www.uuidgenerator.net/。
+- **BROWSER_UUID（可选，用于后端识别浏览器实例）**：普通用户浏览器场景无需任何配置 —— 扩展会在首次运行时生成唯一的 `b-<时间戳>-<随机串>` 标识并存入 `chrome.storage.local`，因此每个浏览器实例上报的标识都互不相同。只有在自建后端 / docker 场景下才需要在 `.env` 中固定该值：此时它会在构建时被注入（作为 `browserUuid` 查询参数），需在多次构建之间保持稳定。如需生成 UUID，可使用 PowerShell 的 `[guid]::NewGuid().ToString()` 或访问 https://www.uuidgenerator.net/。
 
 快速示例：
 
@@ -148,7 +173,8 @@ npm run compile
 
 ```
 CHROME_EXTENSION_KEY=YOUR_PRIVATE_KEY_HERE
-BROWSER_UUID=37e07350-f2ca-46d1-9408-acd8c3d86294
+# 仅自建后端 / docker 场景需要固定；普通用户浏览器留空即可自动生成
+BROWSER_UUID=
 ```
 
 2. 修改 `package.json` 中的 `version`：
@@ -170,6 +196,20 @@ npm run build
 ws://{host}:{port}/api/automation?browserUuid={browserUuid}&version={x.x.x}
 ```
 
+## 📦 发布
+
+日常提交只跑 CI（类型检查 + 测试 + 双浏览器构建），**不会**产生 Release。只有显式指定版本时才会发布：
+
+```bash
+# 1. 先把 package.json 的 version 改成目标版本并提交
+# 2. 打同名 tag 推送，触发构建并创建 Release
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+也可以在 Actions 里手动触发 `Release extension` 指定版本号，或把 `publish` 设为 `false` 只构建不发版。
+完整说明见 [docs/release-process.md](./docs/release-process.md)。
+
 ## 🤝 参与贡献
 
 ### ✅ 欢迎提交
@@ -184,7 +224,7 @@ ws://{host}:{port}/api/automation?browserUuid={browserUuid}&version={x.x.x}
 
 ### 🏢 商业授权
 
-如果您希望在无法兼容 AGPL-3.0 许可条款的专有软件或商业产品中使用本项目，可以获取**商业授权**。请联系我们了解授权方案和价格。
+如果您希望在无法兼容 AGPL-3.0 许可条款的专有软件或商业产品中使用本项目，可以获取**商业授权**。请通过 `13077995107@163.com` 联系我们了解授权方案和价格。
 
 ## 🙏 致谢
 
@@ -192,8 +232,8 @@ ws://{host}:{port}/api/automation?browserUuid={browserUuid}&version={x.x.x}
 
 ## 📮 联系与链接
 
-- 🐛 [问题反馈](https://github.com/your-org/AgentNexus-Browse-Plugin/issues)
-- 💬 [讨论区](https://github.com/your-org/AgentNexus-Browse-Plugin/discussions)
+- 🐛 [问题反馈](https://github.com/dreameutopia/AgentNexus-Browse-Plugin/issues)
+- 💬 [讨论区](https://github.com/dreameutopia/AgentNexus-Browse-Plugin/discussions)
 
 ---
 

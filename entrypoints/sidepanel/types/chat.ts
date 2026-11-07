@@ -21,6 +21,33 @@ export interface ToolCallUI {
 }
 
 /**
+ * 上下文压缩片段状态（type='compaction' 片段的载荷）。
+ *
+ * 渲染语义与工具调用行同一设计语言：pending（旋转图标）/ success（对勾 +
+ * 「{from} → {to} token」+ 可展开摘要全文）/ error（叉 + 行内错误摘要 +
+ * 可展开详情）。片段随 record.parts 持久化，历史会话重载后同样呈现。
+ * 状态由引擎（运行中压缩）与发送前压缩的落库结果共同写入，UI 侧经
+ * compaction 事件镜像同一份数据（compaction-part 纯函数是唯一实现）。
+ */
+export interface CompactionPartState {
+  status: 'pending' | 'success' | 'error';
+  /** 触发路径：pre-run（发送前）/ runtime（运行中 90% 触发） */
+  trigger?: 'pre-run' | 'runtime';
+  /** 被压缩原文的 token 估算量（start 时已知；done 时以压缩器实测覆盖） */
+  originalTokens?: number;
+  /** 摘要的 token 估算量（仅 success） */
+  summaryTokens?: number;
+  /** 压缩产出的摘要全文（<summary> XML；展开详情用，仅 success） */
+  summary?: string;
+  /** 失败原因（仅 error） */
+  error?: string;
+  /** 压缩耗时（毫秒；结算时写入） */
+  durationMs?: number;
+  /** 用户展开/收起意图（与 ToolCallUI.expanded 同语义） */
+  expanded?: boolean;
+}
+
+/**
  * 消息片段 - 按顺序存储文字、工具调用、推理与截屏图片
  *
  * 片段流即时间线：vision 自动截图以 type='image' 片段按**截屏发生顺序**
@@ -28,9 +55,11 @@ export interface ToolCallUI {
  * 渲染层据此把截图内联为可折叠「查看屏幕」容器，而不是统一堆在消息尾部。
  */
 export interface MessagePart {
-  type: 'text' | 'tool' | 'image' | 'reasoning' | 'notice';
+  type: 'text' | 'tool' | 'image' | 'reasoning' | 'notice' | 'compaction';
   content?: string;
   toolCall?: ToolCallUI;
+  /** 仅用于 compaction 类型：压缩进度状态（见 CompactionPartState） */
+  compaction?: CompactionPartState;
   /** 仅用于 image 类型：图片内容哈希（本体在独立图片库，片段只持引用） */
   imageRef?: string;
   /** 仅用于 reasoning 类型：是否处于收起状态 */
@@ -92,7 +121,7 @@ export interface ExtendedChatMessage extends ChatMessage {
   /** 仅用于向后兼容的 reasoning_content 收起状态 */
   _reasoningContentCollapsed?: boolean;
   /**
-   * 系统提示（循环守卫停止、压缩进度、输入超限等）：UI 据此以独立的
+   * 系统提示（循环守卫停止、输入超限等）：UI 据此以独立的
    * 系统信息条容器渲染（与工具调用行同风格），不混入正文气泡样式
    */
   isSystemNotice?: boolean;

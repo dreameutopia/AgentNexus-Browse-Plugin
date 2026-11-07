@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>用户消息气泡预览</title>
+    <link rel="stylesheet" href="../entrypoints/sidepanel/styles/global.css" />
+    <link rel="stylesheet" href="../entrypoints/sidepanel/styles/app.css" />
+    <link rel="stylesheet" href="../entrypoints/sidepanel/components/chat/chat-message-list.css" />
+    <!-- 气泡组件样式在 SFC 内 import（预览构建不走 vite 样式管线），页面直接挂源文件 -->
+    <link rel="stylesheet" href="../entrypoints/sidepanel/components/chat/user-message-bubble.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        background: #f4f5f7;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 16px;
+      }
+      .note {
+        font-size: 12px;
+        color: #6b7280;
+        max-width: 400px;
+        line-height: 1.6;
+      }
+      .stage {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 16px;
+        /* 侧边栏实际宽度量级：窄容器下换行更多，收起判定才有意义 */
+        width: 380px;
+        font-size: 14px;
+        color: #292824;
+      }
+      #verify-output {
+        font-size: 11px;
+        line-height: 1.6;
+        color: #374151;
+        white-space: pre-wrap;
+        max-width: 420px;
+      }
+    </style>
+  </head>
+  <body>
+    <p class="note">
+      用户消息气泡验证：超长正文自动收起（底缘渐隐 + 折叠高度 = 6 行 × 实测行高），
+      点击「展开全文」查看完整内容；气泡右下角常驻复制按钮。
+    </p>
+    <main id="user-bubble-host" class="stage"></main>
+    <script src="../node_modules/.cache/user-bubble-preview.js"></script>
+  </body>
+</html>

@@ -7,14 +7,15 @@
  *      任何消息引用则回收（内容寻址去重意味着同一图片可能被其它会话共享，
  *      绝不能按会话盲删）；引用权威 = 转录库 byImageRef 索引计数；
  *   3. 计划存储（plan-store）：dropPlan 落删除墓碑，防其它窗口的副本复活；
- *   4. 运行中会话：先中止在跑的对话（否则运行会话删除后继续写入，
+ *   4. 上传文件库（AgentNexusFileDB）：会话注册的全部文件整会话回收；
+ *   5. 运行中会话：先中止在跑的对话（否则运行会话删除后继续写入，
  *      产生孤儿图片与被丢弃的快照）；
- *   5. 孤儿回收（sweepOrphanImages）：覆盖「图片已入库但消息落库失败 /
+ *   6. 孤儿回收（sweepOrphanImages）：覆盖「图片已入库但消息落库失败 /
  *      运行竞态残留」的历史遗留——带创建宽限期，绝不误删在途图片。
  *
- * 顺序即正确性：先中止运行 → 采集引用 → 删除转录 → 清计划 → 按引用回收图片。
- * 每步独立容错（单步失败只告警并继续），最终以结果值汇总——删除会话这个
- * 用户意图必须尽量完成，残留在后续 sweep 中兜底。
+ * 顺序即正确性：先中止运行 → 采集引用 → 删除转录 → 清计划 → 清上传文件 →
+ * 按引用回收图片。每步独立容错（单步失败只告警并继续），最终以结果值汇总——
+ * 删除会话这个用户意图必须尽量完成，残留在后续 sweep 中兜底。
  */
 
 import { conversationEngine } from '../conversation/conversation-engine';
@@ -23,6 +24,7 @@ import { transcriptEngine } from './transcript-engine';
 import { chatDatabase } from './chat-database';
 import { imageStore, isImageRef } from '../images/image-store';
 import { dropPlan } from '@/utils/plan/plan-store';
+import { conversationFileStore } from '@/utils/conversation-files/file-store';
 
 /** 删除结果汇总（供调用方展示与埋点） */
 export interface SessionDeleteResult {
@@ -30,6 +32,8 @@ export interface SessionDeleteResult {
   transcriptDeleted: boolean;
   /** 按引用判定回收的图片数 */
   imagesDeleted: number;
+  /** 整会话回收的上传文件数（AgentNexusFileDB） */
+  filesDeleted: number;
   /** 各步骤的非致命失败原因（只告警，不阻断） */
   issues: string[];
 }
@@ -76,6 +80,14 @@ class SessionDeletionEngine {
       issues.push(`清理任务计划失败: ${this.describe(error)}`);
     }
 
+    // 4.5) 上传文件清理（会话文件库按会话隔离，整会话直接回收）
+    let filesDeleted = 0;
+    try {
+      filesDeleted = await conversationFileStore.deleteByChat(chatId);
+    } catch (error) {
+      issues.push(`清理上传文件失败: ${this.describe(error)}`);
+    }
+
     // 5) 图片按引用回收：删除后仍被其它会话引用的保留，零引用的回收
     let imagesDeleted = 0;
     try {
@@ -94,7 +106,7 @@ class SessionDeletionEngine {
     if (issues.length > 0) {
       console.warn(`[SessionDeletionEngine] 会话 ${chatId} 删除存在非致命问题:`, issues);
     }
-    return { transcriptDeleted: true, imagesDeleted, issues };
+    return { transcriptDeleted: true, imagesDeleted, filesDeleted, issues };
   }
 
   /**

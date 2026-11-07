@@ -21,7 +21,9 @@ export class WindowTool extends BaseBrowserTool {
     category: 'browser',
     version: '1.0.0',
     author: 'AgentNexus',
-    tags: ['browser', 'window', 'tabs', 'chrome']
+    tags: ['browser', 'window', 'tabs', 'chrome'],
+    // 纯读（chrome.windows.getAll 枚举）：不改变窗口/视口状态，视觉循环无需重拍
+    noVisionRecapture: true
   };
 
   openaiSchema: OpenAITool = {

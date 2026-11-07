@@ -63,13 +63,15 @@
  * 上下文用量圆环（输入栏模型选择器右侧）
  *
  * - 数据源：core/context/context-meter 的全量口径测量（systemPrompt + 工具定义
- *   + 对话消息 + 图片），与会话引擎的压缩触发（85% / 90%）与窗口守卫裁剪同源；
- * - 分级配色：<60% 绿 / 60%~85% 琥珀 / ≥85% 红（与压缩触发线对齐）；
- * - 悬浮卡片展示成分明细（系统提示词 / 工具定义 / 对话消息 / 图片）与 token 数。
+ *   + 对话消息 + 图片），与会话引擎的压缩触发（80% / 90%）与窗口守卫裁剪同源；
+ * - 分级配色：<60% 绿 / 60%~80% 琥珀 / ≥80% 红（红线直接引用
+ *   COMPACTION_PRE_RUN_RATIO——发送前压缩线。看到红色即「下次发送就会触发
+ *   压缩」，颜色与触发线同源改一处即处处跟随，不存在两处硬编码漂移）。
  */
 import { computed, ref } from 'vue';
 import { t } from '@/utils/i18n';
 import type { ContextUsage } from '../../core';
+import { COMPACTION_PRE_RUN_RATIO } from '../../core';
 
 const props = defineProps<{
   usage: ContextUsage | null;
@@ -86,7 +88,7 @@ const safeRatio = computed(() =>
 
 const barColor = computed(() => {
   const ratio = props.usage?.ratio ?? 0;
-  if (ratio >= 0.85) return '#ef4444';
+  if (ratio >= COMPACTION_PRE_RUN_RATIO) return '#ef4444';
   if (ratio >= 0.6) return '#f59e0b';
   return '#10b981';
 });

@@ -5,6 +5,7 @@ import { NavigateTool } from '../../tools/browser/navigation';
 import { CreateTabTool } from '../../tools/browser/tab-management';
 import { ConversationEngine } from '../../entrypoints/sidepanel/core/conversation/conversation-engine';
 import { imageStore } from '../../entrypoints/sidepanel/core/images/image-store';
+import { ViewportImageDeduplicator } from '../../entrypoints/sidepanel/core/conversation/viewport-image-dedup';
 import { SCENARIO_PRESETS } from '../../utils/tools/tool-presets';
 
 for (const scenario of ['automation','visionAgent','visionAssist'] as const) assert.ok(SCENARIO_PRESETS[scenario].includes('generic_wait'));
@@ -69,7 +70,8 @@ const imageWrite=imageStore.putFromDataUrl;imageStore.putFromDataUrl=async()=>nu
 const visualRuntime:any={chatId:'settle',vision:{screenshotTool:'screenshot',screenshotArgs:{},reScreenshotAfterTools:true}};
 const actionCall={id:'a',type:'function',function:{name:'vision_gui',arguments:'{"action":"click"}'}};
 try {
-  await visual.buildVisionContinuationMessage(visualRuntime,[actionCall],[{role:'tool',content:'{"success":true}'}],[],new AbortController().signal);
+  const settleHandle:any={viewportDedup:new ViewportImageDeduplicator()};
+  await visual.buildVisionContinuationMessage(visualRuntime,settleHandle,[actionCall],[{role:'tool',content:'{"success":true}'}],[],new AbortController().signal);
   assert.deepEqual(order,['delay','capture']);
   order.length=0;
   const batchEngine=new ConversationEngine({executeTool:async(name:string)=>{order.push(name);return name==='screenshot'?shot:{success:true,data:{text:'clicked'}};},requiresApproval:()=>false} as any) as any;
@@ -80,12 +82,12 @@ try {
   assert.deepEqual(order,['vision_gui','delay','screenshot'],'Explicit screenshot in the same batch must also respect the 3s gap');
   assert.equal(batchHandle.captureGapPending,false);
   order.length=0;const cancel=new AbortController();visual.interruptibleDelay=async()=>{order.push('delay');cancel.abort();};
-  assert.equal(await visual.buildVisionContinuationMessage(visualRuntime,[actionCall],[{role:'tool',content:'{"success":true}'}],[],cancel.signal),null);
+  assert.equal(await visual.buildVisionContinuationMessage(visualRuntime,settleHandle,[actionCall],[{role:'tool',content:'{"success":true}'}],[],cancel.signal),null);
   assert.deepEqual(order,['delay']);
 }finally{imageStore.putFromDataUrl=imageWrite;(globalThis as any).window=oldWindow;}
 
 // Navigation API mocks fail loudly if any path attempts to create a window.
-const originalChrome=(globalThis as any).chrome;let windowCreates=0,tabCreates:any[]=[],updated:any[]=[];
+const originalChrome=(globalThis as any).chrome;let windowCreates=0;const tabCreates:any[]=[],updated:any[]=[];
 let tabs:any[]=[{id:1,windowId:7,url:'https://old.example/',status:'complete'}],windowAvailable=true;
 (globalThis as any).chrome={runtime:{getManifest:()=>({})},windows:{
   create:async()=>{windowCreates++;throw new Error('Forbidden window creation');},

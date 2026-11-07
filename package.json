@@ -1,10 +1,18 @@
 {
   "name": "AgentNexus-Browse-Helper",
   "description": "AgentNexus官方助手",
-  "author": "hangye",
-  "license": "AGPL-3.0",
+  "author": "AgentNexus Team",
+  "license": "AGPL-3.0-or-later",
   "private": true,
   "version": "0.0.1",
+  "homepage": "https://github.com/dreameutopia/AgentNexus-Browse-Plugin#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dreameutopia/AgentNexus-Browse-Plugin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dreameutopia/AgentNexus-Browse-Plugin/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "wxt",
@@ -26,7 +34,9 @@
     "test:image-context": "node tests/image-context/run.mjs",
     "test:message-meta": "node tests/message-meta/run.mjs",
     "test:message-collapse": "node tests/message-collapse/run.mjs",
+    "test:user-bubble": "node tests/user-bubble/run.mjs",
     "test:skills": "node tests/skills/run.mjs",
+    "test:hub": "node tests/hub/run.mjs",
     "postinstall": "wxt prepare",
     "lint": "npx eslint .",
     "lint:fix": "npx eslint . --fix",
@@ -37,6 +47,7 @@
     "test:conversation-runtime": "node tests/conversation-runtime/run.mjs",
     "test:compaction": "node tests/compaction/run.mjs",
     "test:plugins": "node tests/plugins/run.mjs",
+    "test:all": "npm run test:contract && npm run test:engine && npm run test:backup && npm run test:channels && npm run test:i18n && npm run test:tools && npm run test:semantic-controls:unit && npm run test:image-context && npm run test:message-meta && npm run test:message-collapse && npm run test:user-bubble && npm run test:skills && npm run test:hub && npm run test:vision && npm run test:chat-ui && npm run test:conversation-runtime && npm run test:compaction && npm run test:plugins && npm run test:plugins:ui",
     "plugin:sdk": "node scripts/plugin-cli.mjs",
     "test:plugins:ui": "node tests/plugins/run-ui.mjs"
   },

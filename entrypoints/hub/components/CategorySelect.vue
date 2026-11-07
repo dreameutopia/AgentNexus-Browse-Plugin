@@ -200,16 +200,19 @@ const placeholder = computed(() => props.placeholder || t('hub.categoryPlacehold
 
 const maxCustomChars = AGENT_CATEGORY_MAX_CHARS;
 
-/** 分类圆点色：内置分类各配一色，自定义统一青色，未分类灰色 */
+/**
+ * 分类圆点色：中性灰阶（明度区分，不引入任何彩色——管理中心为纯黑白灰体系）。
+ * 自定义分类与未分类同族，仅以实心 / 空心与明度区分。
+ */
 const BUILTIN_DOT_COLORS: Record<string, string> = {
-  automation: '#667eea',
-  search: '#0ea5e9',
-  vision: '#8b5cf6',
-  content: '#10b981',
-  media: '#f59e0b',
-  general: '#9b9790',
+  automation: '#4a4740',
+  search: '#5c584f',
+  vision: '#6e6a60',
+  content: '#807c72',
+  media: '#928e83',
+  general: '#a5a09a',
 };
-const CUSTOM_DOT_COLOR = '#14b8a6';
+const CUSTOM_DOT_COLOR = '#78746b';
 const EMPTY_DOT_COLOR = '#d8d4cc';
 
 function dotColorFor(id: string): string {

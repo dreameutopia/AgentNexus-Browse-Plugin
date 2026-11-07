@@ -43,6 +43,13 @@ export interface SkillRecord {
   allowedTools: string[];
   /** 相对路径 → 文本内容；必须包含 'SKILL.md'（原始全文，含 frontmatter） */
   files: Record<string, string>;
+  /**
+   * 显式目录（可能为空目录）：相对路径，以 / 分隔、无首尾斜杠。
+   * 文件路径派生的目录不在此列（由 files 隐含）；此列只承载「用户显式创建、
+   * 尚未放入文件」的目录——技能包按文件组织，空目录若不单独记录就会在
+   * 保存后消失，故作为一等字段持久化。
+   */
+  folders?: string[];
   /** SKILL.md 正文（frontmatter 之后），激活时注入上下文 */
   body: string;
   /**
@@ -93,6 +100,25 @@ export const SKILL_DESCRIPTION_MAX_CHARS = 1024;
 
 /** 资源文件相对路径长度上限（编辑器与导入共用的防御；规范建议引用保持一层目录深度） */
 export const SKILL_PATH_MAX_CHARS = 200;
+
+/**
+ * 归一化显式目录列表：只保留合法的相对目录路径。
+ * 规则与资源文件路径同源（去空白 / 反斜杠 / 尾斜杠 / './' 前缀），
+ * 逐段拒绝 ''、'.'、'..'，超长丢弃，并去重保序。
+ * 外部输入（存储层反序列化、导入）共用此归一化，避免脏形态进入模型。
+ */
+export function normalizeFolderList(folders: unknown): string[] {
+  if (!Array.isArray(folders)) return [];
+  const result: string[] = [];
+  for (const raw of folders) {
+    if (typeof raw !== 'string') continue;
+    const path = raw.replace(/\\/g, '/').trim().replace(/^\.\/+/, '').replace(/\/+$/, '');
+    if (!path || path.length > SKILL_PATH_MAX_CHARS) continue;
+    if (path.split('/').some(segment => segment === '' || segment === '.' || segment === '..')) continue;
+    if (!result.includes(path)) result.push(path);
+  }
+  return result;
+}
 
 // ──── 导入 / 导出防护上限 ────
 

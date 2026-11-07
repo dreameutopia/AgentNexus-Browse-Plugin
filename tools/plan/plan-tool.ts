@@ -3,7 +3,9 @@
  *
  * 会话级任务计划的唯一操作入口：长难任务的步骤清单与执行状态跟踪。
  * action 语义（与 plan-store 的存储操作一一对应）：
- *   - create：建立计划（每会话一份；已有则整体替换并丢失旧状态）；
+ *   - create：建立计划；已有计划时为覆写式重建（一次调用原子替换整份计划；
+ *     何时允许覆写的判定标准由 plan-prompt 的「计划重建」小节统一定义，
+ *     机制与后果的权威句在本文件工具描述——三层分工见 plan-prompt 文件头）；
  *   - add：追加步骤（计划不存在时自动建立）；
  *   - edit：标注单项状态（pending / in_progress / done / failed；failed 必填
  *     message 记录失败原因——硬校验，错误信息可读可自纠）；
@@ -126,6 +128,8 @@ export class PlanTool extends BaseTool {
     author: 'AgentNexus',
     tags: ['plan', 'todo', 'task-tracking'],
     // 全部操作均为会话内可逆状态变更，无需人审
+    // 会话内存数据操作，不触碰页面：视觉循环无需重拍
+    noVisionRecapture: true,
   };
 
   openaiSchema: OpenAITool = {
@@ -134,12 +138,12 @@ export class PlanTool extends BaseTool {
       name: TOOL_NAME,
       description:
         '管理当前会话的任务计划（步骤清单 + 执行状态），用于长难任务的方向保持与进度外显。通过 action 指定操作：\n' +
-        '- create：建立计划（steps 为步骤文本数组）→ 返回全部计划项及各自 id。每会话一份；已有计划会被整体替换并丢失旧状态，优先用 add/edit 演进\n' +
+        '- create：建立计划（steps 为步骤文本数组）→ 返回全部计划项及各自 id。每会话一份；已有计划时为覆写式重建——一次调用原子替换整份计划（不要先 delete 清空再 create），原条目、状态与标注立即永久丢失、不可恢复，旧 id 全部失效且不会与新 id 冲突（id 只增不复用），已完成的工作本身不受影响。仅当计划前提整体失效（目标变更 / 路径整体坍塌）时选用，判定标准见系统提示词「计划重建」小节；计划大体仍对时一律 add/edit/delete 局部演进\n' +
         '- add：追加步骤（steps 数组）→ 返回新增项及 id\n' +
         '- edit：标注单项状态（id + status: pending/in_progress/done/failed；message 可选）。failed 时 message 必填，写清失败原因；done 时 message 简要写明成果\n' +
         '- delete：删除条目（ids 为 id 数组）\n' +
         '- read：读取全量计划（每项含 id、状态与标注信息）\n' +
-        '更新纪律（硬性）：开始一项先标 in_progress；一项有结果（成功或失败皆算）后，下一步动作前必须先 edit 标注——done 附简要成果、failed 必附失败原因；失败也要立即标注，严禁攒到最后批量补标或提前标记未执行项；跨轮沿用既有计划（先 read 再按 id edit，create 会整体替换并丢失旧状态）；id 只用工具返回值或错误信息回显值，edit 报「目标不存在」时按回显清单修正重试；3 步以上的多步任务才建计划。执行中若收到 <plan-status-reminder> 状态回显，先核对补标再继续。',
+        '更新纪律（硬性）：开始一项先标 in_progress；一项有结果（成功或失败皆算）后，下一步动作前必须先 edit 标注——done 附简要成果、failed 必附失败原因；失败也要立即标注，严禁攒到最后批量补标或提前标记未执行项；跨轮沿用既有计划（先 read 再按 id edit；create 是覆写式重建，仅限计划前提整体失效时）；id 只用工具返回值或错误信息回显值，edit 报「目标不存在」时按回显清单修正重试；3 步以上的多步任务才建计划。执行中若收到 <plan-status-reminder> 状态回显，先核对补标再继续。',
       parameters: {
         type: 'object',
         properties: {
@@ -233,7 +237,8 @@ export class PlanTool extends BaseTool {
     }
   }
 
-  // ── create：整体重建（旧状态丢失，结果中显式提示） ──
+  // ── create：覆写式重建（判定标准见 plan-prompt「计划重建」小节；
+  //    结果正文显式提示后果，保留测试锚「已重建计划」/「不要再次整体重建」） ──
 
   private handleCreate(chatId: string, steps: readonly unknown[]): ToolResult {
     const { items, replaced, droppedCount } = createPlan(chatId, steps);
@@ -246,7 +251,7 @@ export class PlanTool extends BaseTool {
       );
     }
     const header = replaced
-      ? `已重建计划（原计划及其全部状态被替换，共 ${items.length} 项）。后续优先用 add/edit/delete 演进，不要再次整体重建。`
+      ? `已重建计划（覆写创建：原计划及其全部状态被替换且不可恢复，共 ${items.length} 项；旧 id 已全部失效，只用本次返回的新 id 继续）。后续优先用 add/edit/delete 演进，不要再次整体重建。`
       : `计划已建立（共 ${items.length} 项）。`;
     const droppedNote =
       droppedCount > 0 ? `\n注意：${droppedCount} 条步骤因重复、为空或超出上限被丢弃。` : '';

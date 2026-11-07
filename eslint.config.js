@@ -44,8 +44,12 @@ export default defineConfig([
     },
   },
   {
-    // 测试运行器（tests/**/*.mjs）在 Node 环境执行，需要 Node 全局变量
-    files: ['tests/**/*.mjs', 'scripts/**/*.mjs'],
+    // Node 环境执行的脚本需要 Node 全局变量：测试运行器（tests/**/*.mjs）、
+    // 构建脚本（scripts/）、预览服务器与预览构建（.preview/）、
+    // 插件目录构建脚本（docs/plugin-registry/）。
+    // .mjs / .cjs 即 Node ESM / CommonJS，按扩展名统一覆盖，
+    // 避免新增 Node 脚本时再次出现 'process' is not defined。
+    files: ['**/*.mjs', '**/*.cjs'],
     languageOptions: {
       globals: {
         ...globals.node,

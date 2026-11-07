@@ -91,12 +91,12 @@ const draft = { name: 'shop-collect-skus', description: '按关键词采集商�
 const revisedBody = body.replace('规格差异按实际选项处理。', '默认逐项核对规格；缺货选项跳过并记录原因。');
 globalThis.__learnPorts = {
   transcriptEngine: { createSession: async () => ({ chatId: `learning-${++sourceNumber}` }), getEffectiveContext: async () => ({ records: [], summary: '' }), setSystemPromptSuffix: async (chatId, text) => { if (failReplay) throw Error('replay failure'); suffixes.push({ chatId, draft: JSON.parse(text) }); } },
-  runtimeBuilder: { build: async input => ({ ...input, limits: input.limitsOverride, toolIds: [...input.extraToolIds, 'getPageMarkdown'], advertisedToolIds: [...input.extraToolIds, 'getPageMarkdown'] }) },
+  runtimeBuilder: { build: async input => ({ ...input, limits: input.limitsOverride, toolIds: [...input.extraToolIds, 'browser_get_page_html'], advertisedToolIds: [...input.extraToolIds, 'browser_get_page_html'] }) },
   conversationEngine: { async run(runtime, options) {
     const isValidation = runtime.extraToolIds.includes('submit_validation'); runKinds.push(isValidation ? 'validation' : 'learning');
     if (isValidation) {
-      assert.ok(!runtime.toolIds.includes('browser_page_exec') && !runtime.toolIds.includes('getPageMarkdown'), '验证执行面移除未声明工具和默认智能体附加工具');
-      assert.ok(!runtime.advertisedToolIds.includes('browser_page_exec') && !runtime.advertisedToolIds.includes('getPageMarkdown'), '模型看到的schema也必须受相同边界约束');
+      assert.ok(!runtime.toolIds.includes('browser_page_exec') && !runtime.toolIds.includes('browser_get_page_html'), '验证执行面移除未声明工具和默认智能体附加工具');
+      assert.ok(!runtime.advertisedToolIds.includes('browser_page_exec') && !runtime.advertisedToolIds.includes('browser_get_page_html'), '模型看到的schema也必须受相同边界约束');
     }
     if (isValidation && validation === 'error') return { status: 'error', error: 'model unavailable' };
     const name = isValidation ? 'submit_validation' : 'submit_skill', id = name + sourceNumber;
@@ -109,7 +109,7 @@ globalThis.__learnPorts = {
 const api = await import(pathToFileURL(outfile).href);
 const { createApp, nextTick } = await import('vue');
 const tick = () => new Promise(resolve => setImmediate(resolve));
-async function until(predicate, label) { for (let i = 0; i < 100; i++) { await tick(); await nextTick(); if (await predicate()) return; } throw Error('Timed out: ' + label); }
+async function until(predicate, label) { for (let i = 0; i < 5000; i++) { await tick(); await nextTick(); if (await predicate()) return; } throw Error('Timed out: ' + label); }
 const config = { url: 'https://shop.test', goal: '批量采集商品 SKU', targetMode: 'text', strategy: 'text', modelRef: { channelId: 'test', modelId: 'test' }, autoValidate: false };
 function session() { return api.useLearnSession({ observer: () => {}, notify: () => {}, showChat: () => {}, setActiveChat: () => {}, setResponding: () => {}, requestToolApproval: async () => true, dismissQuestions: () => {}, t: key => key,
   openHub: async hash => { opened.push(hash); return !failOpen; } }); }

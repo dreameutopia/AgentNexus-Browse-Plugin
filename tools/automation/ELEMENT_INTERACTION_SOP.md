@@ -1,6 +1,6 @@
 # 纯文本网页交互协议
 
-文本通用助手不配置视觉模型、截图或坐标动作。工具参数契约以工具 schema 为准；动作智能体和数据收割机使用 utils/agents/element-interaction-sop.ts，网站学习/验证独立维护任务指南。
+文本通用助手不配置视觉模型、截图或坐标动作。工具参数契约以工具 schema 为准；动作智能体和数据采集助手使用 utils/agents/element-interaction-sop.ts，网站学习/验证独立维护任务指南。
 
 ## 工具分工
 
@@ -13,9 +13,9 @@
 | --- | --- | --- |
 | browser_observe | DOM 控件、输入、表格结构、选项、滚动容器、当前焦点、浏览器辅助功能树 | 未加载内容或整张工作簿的完整数据 |
 | browser_interact | click/fill/focus/keys/type/scroll，按节点引用操作 | 页面业务已保存、任意画布均可编辑 |
-| browser_network_capture | start/read/stop，被动观察真实请求及文本响应，完整正文进入 dataRef（**仅数据收割 / 网站学习 / 技能验证场景具备；文本通用助手与视觉通用助手 不携带**） | 全历史网络记录、二进制协议解码、接口写权限 |
+| browser_network_capture | start/read/stop，被动观察真实请求及文本响应，完整正文进入 dataRef（**仅数据采集 / 网站学习 / 技能验证场景具备；文本通用助手与视觉通用助手 不携带**） | 全历史网络记录、二进制协议解码、接口写权限 |
 | browser_page_exec | 指定 tab/frame 的脚本与 dataRef 数据通道 | 任意闭包、Worker、跨域 frame 自动可读 |
-| browser_get_page_text | 顶层及可注入 frame、可访问 shadow root 的有界文本 | 对 Canvas 像素的识别 |
+| browser_get_page_text | 全部可注入 frame、可访问 shadow root 的结构化 Markdown 正文（标题/表格/列表/代码块/链接；超 15000 字符 ref 分页，url= 可直读指定页） | 对 Canvas 像素的识别 |
 
 页面菜单和少量编辑用交互；批量取数优先使用已确认且有权限的数据接口/导出。当前没有凭据配置的厂商 API 不作为可用工具承诺。
 

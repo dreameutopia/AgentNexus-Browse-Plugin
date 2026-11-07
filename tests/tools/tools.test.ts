@@ -8,7 +8,8 @@
  *   4. 文档防漂移：TOOL_REGISTRATION_STATUS.md 分类表的名称、数量、总数与注册表一致
  *   5. 命名常量对齐：TOOL_NAMES 每个规范名必须指向已注册工具或内联处理消息
  *   6. 数据暂存区：JSON 校验先于容量淘汰（非法数据不得误删旧批次）、形态分析、
- *      合并/删除、不可序列化值报错、超限拒绝
+ *      合并/删除、按字段去重（dedupe）与信封路径提取（extract）、
+ *      不可序列化值报错、超限拒绝
  *   7. 实际节点引用与显式快照：分页唯一性、过滤条件、跨页面/frame 生命周期与二次核验
  *   8. 注入荷载真实行为：源码在干净作用域求值（验证序列化自包含）+ jsdom DOM——
  *      buttons/inputs 两模式采集与评分、regex 命中置顶、容器级 xpath 祖先链、
@@ -24,6 +25,17 @@
  *  11. browser_dom_explore：parent/children/siblings/similar 荷载行为、
  *      重复模式两种形态与生成选择器、noPattern、visibleOnly/depth、
  *      宿主分页快照（40/页/STALE 语义/参数防御）（见 ./dom-explore.test.ts）
+ *  12. browser_get_page_text：结构化荷载序列化自包含 + jsdom DOM 行为
+ *      （标题/表格 rowspan·colspan/列表/代码块/链接/shadow·slot/噪声剔除）、
+ *      宿主流程（短文全量、多 frame 组装、超 15k 自动 dataRef 缓存 + ref/page
+ *      分页含代理项跨页配对、url 后台标签页模式、参数互斥与越界防御）
+ *  13. 数据通道治理 + xlsx 数据源统一：dedupe/extract 领域契约与工具动作契约、
+ *      xlsx 混排（dataRef 表 + 手写公式表）、数据来源二选一/字段误用/空表/
+ *      失效引用的精准报错、openaiSchema 数据源声明（见 ./xlsx-dataref.test.ts）
+ *  14. 上传文件体系：会话文件库（注册/分页/隔离/级联删除）、read_file 契约
+ *      （信封第 1 页一致性/越界自纠/跨会话拒绝）、信封装配（结构/转义/预算
+ *      封顶）、压缩引擎纯函数（GIF 动画判定/头部尺寸/触发矩阵）
+ *      （见 ./upload-file.test.ts）
  *
  * 运行：node tests/tools/run.mjs   （或 npm run test:tools）
  */
@@ -57,11 +69,17 @@ const memoryLocal = new Map<string, unknown>();
 const memorySession = new Map<string, unknown>();
 
 function createStorageArea(memory: Map<string, unknown>) {
+  // 同时支持 Promise 风格（data-ref-store 等 await 调用）与回调风格
+  // （file-manager 等 chrome.storage 原生回调调用）——回调不触发会永久挂起。
   return {
-    async get(keys: unknown): Promise<Record<string, unknown>> {
+    async get(
+      keys: unknown,
+      callback?: (items: Record<string, unknown>) => void,
+    ): Promise<Record<string, unknown>> {
       const out: Record<string, unknown> = {};
       if (keys === null || keys === undefined) {
         for (const [k, v] of memory) out[k] = structuredClone(v);
+        callback?.(out);
         return out;
       }
       const list = Array.isArray(keys) ? keys : [keys];
@@ -70,19 +88,26 @@ function createStorageArea(memory: Map<string, unknown>) {
           out[key] = structuredClone(memory.get(key));
         }
       }
+      callback?.(out);
       return out;
     },
-    async set(items: Record<string, unknown>): Promise<void> {
+    async set(
+      items: Record<string, unknown>,
+      callback?: () => void,
+    ): Promise<void> {
       for (const [k, v] of Object.entries(items)) memory.set(k, structuredClone(v));
+      callback?.();
     },
-    async remove(keys: unknown): Promise<void> {
+    async remove(keys: unknown, callback?: () => void): Promise<void> {
       const list = Array.isArray(keys) ? keys : [keys];
       for (const key of list) {
         if (typeof key === 'string') memory.delete(key);
       }
+      callback?.();
     },
-    async clear(): Promise<void> {
+    async clear(callback?: () => void): Promise<void> {
       memory.clear();
+      callback?.();
     },
   };
 }
@@ -151,7 +176,7 @@ function installGlobalStubs(): void {
     onChanged: { addListener: () => undefined },
   };
   stub.permissions = { contains: async () => true, request: async () => true };
-  stub.windows = { getAll: async () => ({ id: 1, state: 'normal' }) };
+  stub.windows = { getAll: async () => ({ id: 1, state: 'normal' }), getLastFocused: async () => ({ id: 1, type: 'normal' }) };
 
   (globalThis as Record<string, unknown>).chrome = stub;
   // WXT 自动导入的 browser 别名：部分模块按扩展环境引用，桩等同 chrome
@@ -164,7 +189,7 @@ installGlobalStubs();
 
 const { toolRegistry, registerAllTools } = await import('../../tools/index');
 const { TOOL_NAMES } = await import('../../common/constants');
-const { SCENARIO_PRESETS, CORE_PAGE_TOOL_IDS } = await import('../../utils/tools/tool-presets');
+const { SCENARIO_PRESETS, CORE_PAGE_TOOL_IDS, CORE_SESSION_TOOL_IDS } = await import('../../utils/tools/tool-presets');
 const { categories: catalogCategories } = await import(
   '../../entrypoints/sidepanel/components/tool/tool-definitions'
 );
@@ -248,6 +273,44 @@ registerAllTools();
   for (const id of CORE_PAGE_TOOL_IDS) {
     check(registered.has(id), `核心页面工具 ${id} 已注册`);
   }
+  // 核心会话工具契约：四个全局工具（interact / 正文 / 计划 / 笔记）全部真实注册——
+  // note_tool 升级核心层后，场景清单不再登记 note，此处是「它恒定可用」的唯一测试锚
+  for (const id of CORE_SESSION_TOOL_IDS) {
+    check(registered.has(id), `核心会话工具 ${id} 已注册`);
+  }
+  check(CORE_SESSION_TOOL_IDS.includes('plan_tool') && CORE_SESSION_TOOL_IDS.includes('note_tool'),
+    'plan_tool 与 note_tool 同为核心层无条件注入');
+
+  // —— 视觉重拍豁免契约（noVisionRecapture 单一事实源）——
+  // 豁免 = true 的准入：纯读不碰像素/视口/活动标签页，且不替换 GUI 截图身份。
+  // 漏标只是多一次重拍（安全），错标会让模型拿失效截图坐标继续操作（危险），
+  // 因此本清单收紧/扩张都必须同步 needsVisionRefresh 语义评审。
+  const NO_RECAPTURE_TOOLS = [
+    'browser_get_page_text', 'browser_get_page_info', 'browser_get_all_tabs', 'browser_window',
+    'browser_observe', 'browser_dom_explore', 'browser_network_capture',
+    'vision_read', 'vision_read_zoom',
+    'plan_tool', 'interact', 'note_tool', 'data_ref_tool', 'load_skill', 'read_skill_file', 'read_file',
+  ];
+  for (const id of NO_RECAPTURE_TOOLS) {
+    check(toolRegistry.getTool(id)?.metadata.noVisionRecapture === true, `纯读工具 ${id} 声明 noVisionRecapture=true`);
+  }
+  // 必须保守重拍的高危反例：改页面 / 等待变化 / 内部自拍替换截图身份 /
+  // 名单特例工具（screenshot、vision_read_wait、vision_gui 由 needsVisionRefresh
+  // 按名字单独处理，不依赖字段）；get_page_html 属自定义组合扩展组，未经
+  // 确认保持缺省保守
+  for (const id of ['web_search', 'generic_wait', 'wait_page_load', 'browser_interact', 'browser_navigate',
+    'browser_switch_tab', 'browser_page_exec', 'vision_read_scroll', 'vision_read_wait', 'screenshot',
+    'vision_gui', 'ocr', 'extract_data', 'ai_locate', 'browser_console', 'file_uploader', 'browser_get_page_html']) {
+    check(toolRegistry.getTool(id)?.metadata.noVisionRecapture !== true, `工具 ${id} 保持保守重拍（未豁免）`);
+  }
+  // 未声明字段的存在性防御：字段缺省（undefined）即为 false 语义
+  check(toolRegistry.getTool('browser_interact')?.metadata.noVisionRecapture === undefined || toolRegistry.getTool('browser_interact')?.metadata.noVisionRecapture === false,
+    '未声明豁免的工具按缺省 false 处理');
+  // 笔记固定分区契约：与 plan 的分工路由 + 独立 XML 标签（三层分工见 note-prompt 文件头）
+  const { NOTE_SYSTEM_PROMPT_SECTION } = await import('../../tools/note/note-prompt');
+  check(NOTE_SYSTEM_PROMPT_SECTION.includes('note-workspace-guidelines'), '笔记分区使用独立 XML 标签');
+  check(NOTE_SYSTEM_PROMPT_SECTION.includes('与 plan_tool 的分工'), '笔记分区含与计划的分工路由');
+  check(NOTE_SYSTEM_PROMPT_SECTION.includes('选择口诀'), '笔记分区含无歧义选择口诀');
 }
 
 // ==================== 2b. 统一搜索工具 web_search 契约 ====================
@@ -279,7 +342,7 @@ registerAllTools();
     (tool.openaiSchema.function.description ?? '').includes('browser_navigate'),
     '工具描述明确声明自带导航（引用 browser_navigate）',
   );
-  check(tool.metadata.visionRefresh === 'after', 'web_search 声明 visionRefresh=after（搜索改变页面）');
+  check(tool.metadata.noVisionRecapture !== true, 'web_search 未标记 noVisionRecapture（搜索改变页面，视觉循环须重拍）');
 
   // —— 参数防御（不触导航即返回错误） ——
   const badPlatform = await tool.execute({ website: 'google', query: 'x' });
@@ -1158,6 +1221,289 @@ await testTextAutomation(check, eq);
   resetTabStub();
 }
 
+// ==================== 12. browser_get_page_text：结构化正文 + url + 分页 ====================
+
+{
+  const { GetPageTextTool } = await import('../../tools/base/page-info-tool');
+  const { structuredPagePayload } = await import('../../tools/browser/structured-page-payload');
+  const tool = new GetPageTextTool();
+
+  // —— 12a. 荷载序列化自包含（干净作用域求值，闭包逃逸会在此 ReferenceError）——
+  const serializedPayload = (0, eval)(`(${structuredPagePayload.toString()})`) as typeof structuredPagePayload;
+  check(typeof serializedPayload === 'function', '结构化荷载序列化后可求值为函数');
+
+  // —— 12b. 荷载真实行为（jsdom DOM）——
+  {
+    const { JSDOM } = await import('jsdom');
+    const dom = new JSDOM(
+      `<!DOCTYPE html><html><body>
+        <h1>主标题</h1>
+        <p>段落一 <b>加粗</b> 与 <a href="https://example.com/x">链接</a>。</p>
+        <div style="display:none">隐藏内容不应出现</div>
+        <svg>SVGTEXT</svg>
+        <table>
+          <caption>价格表</caption>
+          <tr><th rowspan="2">项目</th><th colspan="2">规格</th></tr>
+          <tr><td>A</td><td>a|b</td></tr>
+        </table>
+        <ul><li>普通项<ol start="3"><li>嵌套</li></ol></li><li>尾项</li></ul>
+        <menu><li>m1</li><li>m2</li></menu>
+        <pre><code class="language-ts">const x = 1;</code></pre>
+        <blockquote>引用文本</blockquote>
+        <button>提交</button><input type="text" placeholder="搜索关键词">
+        <img src="data:image/png;base64,AAAA" alt="噪声"><img src="/real.png" alt="图">
+        <div data-host><span slot="x">被分发内容</span></div>
+        <p>${'A'.repeat(250)}</p>
+        <p>${'-'.repeat(80)}</p>
+        <p data-noise></p>
+        <table><caption>外层表</caption><tr><th>外A</th><th>外B</th></tr><tr><td data-outer-cell>外1<table><tr><td>内1</td></tr></table></td><td>外2</td></tr></table>
+        <details open><summary>更多</summary><p>详情内容</p></details>
+      </body></html>`,
+      { pretendToBeVisual: true, url: 'https://fixture.example/page' },
+    );
+    const win = dom.window;
+    const doc = win.document;
+    const host = doc.querySelector('[data-host]') as HTMLElement;
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<p>影子内容</p><slot name="x"></slot>';
+    // 带 shadow 的 h2（规范允许的 shadow 宿主）：宿主标题语义必须套用在 shadow 内容上
+    const headingHost = doc.createElement('h2');
+    doc.body.appendChild(headingHost);
+    headingHost.attachShadow({ mode: 'open' }).innerHTML = '<span>影子标题</span>';
+    // 直接经 DOM API 注入的文本不做解析期归一：验证 \r 与 PUA/零宽清洗
+    const crlfCode = doc.createElement('pre');
+    crlfCode.innerHTML = '<code class="language-py"></code>';
+    (crlfCode.firstChild as HTMLElement).textContent = 'a\r\nb\r\nc';
+    doc.body.appendChild(crlfCode);
+    (doc.querySelector('[data-noise]') as HTMLElement).textContent = 'XY​Z W';
+
+    const GLOBAL_KEYS = ['document', 'window', 'Node', 'Element', 'getComputedStyle'] as const;
+    const savedGlobals = GLOBAL_KEYS.map(key => ({
+      key,
+      had: Object.prototype.hasOwnProperty.call(globalThis, key),
+      value: (globalThis as Record<string, unknown>)[key],
+    }));
+    for (const key of GLOBAL_KEYS) (globalThis as Record<string, unknown>)[key] = (win as unknown as Record<string, unknown>)[key];
+    try {
+      const payload = serializedPayload();
+      const md = payload.markdown;
+      check(payload.url === 'https://fixture.example/page' && typeof payload.title === 'string', '荷载返回 frame 元数据');
+      check(md.includes('# 主标题'), '标题层级保留');
+      check(md.includes('**加粗**') && md.includes('[链接](https://example.com/x)'), '强调与链接目标保留');
+      check(!md.includes('隐藏内容'), 'display:none 子树剔除');
+      check(!md.includes('SVGTEXT'), 'svg 子树剔除');
+      check(md.includes('**价格表**') && md.includes('| 项目 | 规格 |'), '表格 caption 与表头保留');
+      check(md.includes('a\\|b'), '单元格竖线转义');
+      check(md.includes('| --- | --- | --- |'), '表格分隔行生成');
+      check(md.includes('- 普通项') && md.includes('3. 嵌套'), '列表嵌套与有序起始序号保留');
+      check(md.includes('```ts\nconst x = 1;\n```'), '代码块语言识别');
+      check(md.includes('> 引用文本'), '引用保留');
+      check(md.includes('[提交]') && md.includes('[输入框: 搜索关键词]'), '按钮与输入框占位符保留');
+      check(!md.includes('base64,AAAA') && !md.includes('![噪声]') && md.includes('/real.png'), 'data: 图片剔除、真实图片保留');
+      check(md.includes('影子内容') && md.includes('被分发内容'), 'shadow root 与 slot 分发内容覆盖');
+      check(md.includes('## 影子标题'), 'shadow 宿主的标题语义保留在 shadow 内容上');
+      check(md.includes('```py\na\nb\nc\n```') && !md.includes('\r'), '代码块内 CRLF 归一为 LF');
+      check(md.includes('XYZ W') && !md.includes(String.fromCharCode(0xE000)) && !md.includes(String.fromCharCode(0x2028)), 'PUA 剔除、零宽剔除、行分隔符归一为空格');
+      check(md.includes('- m1') && md.includes('- m2'), 'menu 标签按无序列表处理');
+      check((md.match(/^\|/gm) ?? []).length === 6 && md.includes('外1内1'), '嵌套表格不污染外层网格（两表各 3 行管线，内层数据并入所在单元格而非独立行）', md.match(/^\|.*$/gm));
+      check(md.includes('［长编码串省略］') && !md.includes('A'.repeat(200)), '长编码串折叠');
+      check(!md.includes('-'.repeat(60)) && md.includes('-…'), '同字符长连排收敛');
+      check(md.includes('**更多**') && md.includes('详情内容'), 'details/summary 保留');
+      check(!/\n\n\n/.test(md), '连续空行已收敛');
+      check(!/ {3,}/.test(md.replace(/```[\s\S]*?```/g, '')), '围栏外连续空格已收敛');
+    } finally {
+      for (const item of savedGlobals) {
+        if (item.had) (globalThis as Record<string, unknown>)[item.key] = item.value;
+        else delete (globalThis as Record<string, unknown>)[item.key];
+      }
+    }
+  }
+
+  // —— 12c. 工具宿主行为（桩替换 executeScript / tabs）——
+  const chromeStub = (globalThis as Record<string, unknown>).chrome as Record<string, unknown>;
+  const tabsStub = chromeStub.tabs as Record<string, unknown>;
+  const scriptingStub = chromeStub.scripting as Record<string, unknown>;
+  const originalTabs = { ...tabsStub };
+  const originalExecuteScript = scriptingStub.executeScript;
+  const frameResult = (markdown: string, extra: Record<string, unknown> = {}) => ({
+    frameId: 0,
+    result: { markdown, truncated: false, shadowRoots: 0, url: 'https://example.com/', title: '', ...extra },
+  });
+  try {
+    await dataRefStore.remove('all');
+    scriptingStub.executeScript = (async () => [frameResult('# 短文\n\n正文段落。')]) as typeof scriptingStub.executeScript;
+
+    // 短文：全量返回，不暂存
+    resetTabStub();
+    const short = await tool.execute({});
+    const shortData = dataOf(short);
+    check(short.success === true && shortData.textContent === '# 短文\n\n正文段落。', '短文全量返回');
+    eq(shortData.page, 1, '短文页码为 1');
+    eq(shortData.totalPages, 1, '短文总页数为 1');
+    eq(shortData.totalChars, '# 短文\n\n正文段落。'.length, '短文 totalChars 准确');
+    eq(shortData.ref, undefined, '短文不产生缓存引用');
+    eq(shortData.hasMore, false, '短文无下一页');
+    eq((await dataRefStore.list()).length, 0, '短文不污染暂存区');
+    check(Array.isArray(shortData.coverage?.frames) && shortData.coverage.frames.length === 1, 'coverage.frames 保留');
+    check(String(shortData.hint ?? '').includes('结构化'), '响应携带结构化说明 hint');
+
+    // 多 frame：主 frame 置首 + FrameId 标头
+    resetTabStub();
+    scriptingStub.executeScript = (async () => [
+      { frameId: 7, result: { markdown: 'iframe 正文', truncated: false, shadowRoots: 0, url: 'https://embed.example/', title: '嵌入' } },
+      frameResult('主框架正文', { title: '主页面' }),
+    ]) as typeof scriptingStub.executeScript;
+    const multi = await tool.execute({});
+    const multiData = dataOf(multi);
+    check(
+      String(multiData.textContent).startsWith('# 主页面') &&
+        String(multiData.textContent).includes('[FrameId=0 | https://example.com/]') &&
+        String(multiData.textContent).includes('[FrameId=7 | https://embed.example/]') &&
+        String(multiData.textContent).indexOf('主框架正文') < String(multiData.textContent).indexOf('iframe 正文'),
+      '多 frame：标题 + FrameId 标头 + 主 frame 置首',
+      multiData.textContent?.slice(0, 120),
+    );
+
+    // 空 frame 不进入正文段：只剩一个有内容的 frame 时不加 FrameId 标头
+    resetTabStub();
+    scriptingStub.executeScript = (async () => [
+      frameResult('唯一有内容的 frame 正文', { title: '页' }),
+      { frameId: 3, result: { markdown: '', truncated: false, shadowRoots: 0, url: 'https://empty.example/', title: '' } },
+    ]) as typeof scriptingStub.executeScript;
+    const withEmpty = await tool.execute({});
+    const withEmptyData = dataOf(withEmpty);
+    check(
+      String(withEmptyData.textContent).startsWith('# 页') && !String(withEmptyData.textContent).includes('[FrameId='),
+      '空 frame 不产生标头：唯一内容 frame 直接输出正文',
+      withEmptyData.textContent?.slice(0, 80),
+    );
+    check(withEmptyData.coverage?.frames?.length === 2, 'coverage 仍保留空 frame 记录');
+
+    // 超长：自动缓存 ref + 分页（含代理项边界：页界恰逢增补平面前半）
+    resetTabStub();
+    const emojiDoc = 'a'.repeat(14999) + '🙂'.repeat(10) + 'b'.repeat(1000);
+    scriptingStub.executeScript = (async () => [frameResult(emojiDoc)]) as typeof scriptingStub.executeScript;
+    const long1 = await tool.execute({});
+    const long1Data = dataOf(long1);
+    check(typeof long1Data.ref === 'string' && long1Data.ref.length === 8, '超长正文返回 8 位 ref');
+    eq(long1Data.totalPages, 2, '超长正文总页数为 2');
+    eq(long1Data.page, 1, '默认返回第 1 页');
+    eq(long1Data.hasMore, true, '第 1 页 hasMore=true');
+    eq(long1Data.nextPage, 2, 'nextPage=2');
+    eq(long1Data.textContent, emojiDoc.slice(0, 14999), '第 1 页在代理项边界回退（不含半个 🙂）');
+    check(String(long1Data.refGuide ?? '').includes('page=2'), 'refGuide 给出续读调用');
+    eq((await dataRefStore.list()).length, 1, '超长正文已入暂存区');
+
+    // ref 分页续读：不访问页面（executeScript 抛错也不影响）
+    scriptingStub.executeScript = (async () => { throw new Error('ref 模式不应注入页面'); }) as typeof scriptingStub.executeScript;
+    const long2 = await tool.execute({ ref: long1Data.ref as string, page: 2 });
+    const long2Data = dataOf(long2);
+    check(long2.success === true && long2Data.source === 'ref', 'ref 模式读取成功且标记 source=ref');
+    eq(long2Data.page, 2, 'ref 模式返回指定页');
+    eq(long2Data.hasMore, false, '末页 hasMore=false');
+    eq(
+      (long1Data.textContent as string) + (long2Data.textContent as string),
+      emojiDoc,
+      '两页拼接无损还原全文（代理项跨页配对）',
+    );
+
+    // 直接指定 page>1（现场提取 + 缓存后返回该页）
+    resetTabStub();
+    scriptingStub.executeScript = (async () => [frameResult(emojiDoc)]) as typeof scriptingStub.executeScript;
+    const page2Direct = await tool.execute({ page: 2 });
+    check(page2Direct.success === true && dataOf(page2Direct).page === 2, '直接指定页码返回该页');
+    eq(dataOf(page2Direct).textContent, emojiDoc.slice(14999), '第 2 页从被回退的代理项前半开始');
+
+    // 参数与模式互斥防御
+    const conflicts = [
+      [{ ref: 'abcd1234', url: 'https://example.com/' }, /互斥/],
+      [{ ref: 'abcd1234', tabId: 1 }, /互斥/],
+      [{ url: 'https://example.com/', tabId: 1 }, /互斥/],
+      [{ url: 'ftp://example.com/' }, /http\/https/],
+      [{ url: ['https://example.com/'] }, /单个 URL/],
+      [{ url: 'https://example.com/' + 'a'.repeat(9000) }, /url 过长/],
+      [{ ref: 123 }, /字符串/],
+      [{ page: 0 }, /≥1/],
+      [{ page: 'abc' }, /≥1/],
+      [{ tabId: -1 }, /非负整数/],
+      [[1, 2], /参数必须是对象/],
+      [null, /参数必须是对象/],
+      ['x', /参数必须是对象/],
+    ] as const;
+    for (const [badArgs, pattern] of conflicts) {
+      const rejected = await tool.execute(badArgs as never);
+      check(rejected.success === false && pattern.test(rejected.error ?? ''), `参数防御：${JSON.stringify(badArgs)}`, rejected.error);
+    }
+
+    // 页码越界：现场与缓存两条路径都给出可自纠的范围提示
+    resetTabStub();
+    scriptingStub.executeScript = (async () => [frameResult('# 短文')]) as typeof scriptingStub.executeScript;
+    const outOfRange = await tool.execute({ page: 5 });
+    check(outOfRange.success === false && /超出范围/.test(outOfRange.error ?? ''), '现场页码越界报错', outOfRange.error);
+    const refOutOfRange = await tool.execute({ ref: long1Data.ref as string, page: 99 });
+    check(refOutOfRange.success === false && /超出范围/.test(refOutOfRange.error ?? ''), '缓存页码越界报错', refOutOfRange.error);
+
+    // ref 指向非本工具批次（records 数据）与不存在的引用
+    const alien = await dataRefStore.save([{ a: 1 }], '脚本批次');
+    if (alien.ok) {
+      const wrongKind = await tool.execute({ ref: alien.meta.id });
+      check(wrongKind.success === false && /不是 browser_get_page_text 的页面正文批次/.test(wrongKind.error ?? ''), '拒绝读取其它工具的数据批次', wrongKind.error);
+    }
+    const missingRef = await tool.execute({ ref: 'zzzzzzzz' });
+    check(missingRef.success === false && /不存在或已过期/.test(missingRef.error ?? ''), '不存在的 ref 报错', missingRef.error);
+
+    // url 模式：后台建标签页 → 提取 → 关闭
+    resetTabStub();
+    let createdTabId = 0;
+    const removedTabIds: number[] = [];
+    let injectedTabId = 0;    tabsStub.create = (async (props: { url?: string }) => {
+      createdTabId = 99;
+      return { id: 99, url: props.url, status: 'complete' };
+    }) as typeof tabsStub.create;
+    tabsStub.get = (async (tabId: number) => ({ id: tabId, url: 'https://target.example/', status: 'complete' })) as typeof tabsStub.get;
+    tabsStub.remove = (async (tabId: number) => { removedTabIds.push(tabId); }) as typeof tabsStub.remove;
+    scriptingStub.executeScript = (async (options: { target?: { tabId?: number } }) => {
+      injectedTabId = options?.target?.tabId ?? 0;
+      return [frameResult('# 目标页\n\n内容', { url: 'https://target.example/' })];
+    }) as typeof scriptingStub.executeScript;
+    const byUrl = await tool.execute({ url: 'https://target.example/' });
+    const byUrlData = dataOf(byUrl);
+    check(
+      byUrl.success === true && createdTabId === 99 && injectedTabId === 99 && removedTabIds.includes(99),
+      'url 模式：后台标签页提取后关闭',
+      { createdTabId, injectedTabId, removedTabIds },
+    );
+    check(String(byUrlData.textContent).includes('# 目标页') && byUrlData.url === 'https://target.example/', 'url 模式正文与元数据正确');
+
+    // url 与当前活动标签页完全同址：直接读当前页，不开重复后台标签页
+    resetTabStub();
+    let dedupCreated = 0, dedupInjected = 0;
+    tabsStub.create = (async () => { dedupCreated++; return { id: 55, url: 'about:blank' }; }) as typeof tabsStub.create;
+    tabsStub.remove = (async () => undefined) as typeof tabsStub.remove;
+    scriptingStub.executeScript = (async (options: { target?: { tabId?: number } }) => {
+      dedupInjected = options?.target?.tabId ?? 0;
+      return [frameResult('# 当前页', { title: '当前页' })];
+    }) as typeof scriptingStub.executeScript;
+    const dedup = await tool.execute({ url: 'https://example.com/' });
+    check(
+      dedup.success === true && dedupCreated === 0 && dedupInjected === 1,
+      'url 与当前页同址时去重：不开后台标签页、直接注入当前标签页',
+      { dedupCreated, dedupInjected },
+    );
+
+    // 受限页面（chrome://）拒绝注入
+    resetTabStub();
+    tabStub.tabs = [{ id: 1, url: 'chrome://settings/', status: 'complete', windowId: 1 }];
+    const restricted = await tool.execute({});
+    check(restricted.success === false && /restricted URL/.test(restricted.error ?? ''), '受限页面拒绝并提示', restricted.error);
+  } finally {
+    Object.assign(tabsStub, originalTabs);
+    scriptingStub.executeScript = originalExecuteScript;
+    await dataRefStore.remove('all');
+    resetTabStub();
+  }
+}
+
 // ==================== 汇总 ====================
 await import('./wait-navigation.test');
 await import('./vision-gui.test');
@@ -1166,7 +1512,12 @@ await import('./vision-assistant.test');
 await import('./prompt-cache.test');
 await import('./agent-i18n.test');
 await import('./agent-image.test');
+await import('./domain-credibility.test');
 await import('./plan.test');
+await import('./vision-context-e2e.test');
+await import('./vision-capability-guard.test');
+await import('./xlsx-dataref.test');
+await import('./upload-file.test');
 
 console.log(`\n[tools] 通过 ${passed} 项，失败 ${failures.length} 项`);
 if (failures.length > 0) {

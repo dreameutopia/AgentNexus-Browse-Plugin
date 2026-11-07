@@ -38,13 +38,15 @@
     </div>
 
     <!-- 聊天模式 -->
-    <ChatMessageList 
-      :messages="messages" 
-      :show-chat-mode="showChatMode" 
+    <ChatMessageList
+      :messages="messages"
+      :show-chat-mode="showChatMode"
       :is-ai-responding="isAiResponding"
+      :live-message-id="liveAssistantMessageId"
       @toggle-tool-call-expansion="toggleToolCallExpansion"
       @toggle-reasoning-collapse="toggleReasoningCollapse"
       @toggle-reasoning-content-collapse="toggleReasoningContentCollapse"
+      @toggle-compaction-collapse="toggleCompactionCollapse"
       @feedback-change="handleFeedbackChange"
     />
 
@@ -271,6 +273,7 @@
         :count="pendingGuard?.count"
         :minutes="pendingGuard?.minutes"
         :seconds-left="guardSecondsLeft"
+        :total-seconds="GUARD_AUTO_STOP_SECONDS"
         @continue="settleGuard(true)"
         @stop="settleGuard(false)"
       />
@@ -354,9 +357,6 @@
               </button>
             </div>
           </TransitionGroup>
-          <div v-if="attachmentBudgetCap > 0" class="attachment-budget">
-            {{ t('sidepanel.attachments.budgetUsage', { used: formatCharsK(attachmentManager.totalChars.value), cap: formatCharsK(attachmentBudgetCap) }) }}
-          </div>
         </div>
         
         <!-- 会话计划面板（plan_tool 产物实时刷新；输入容器上方常驻，
@@ -375,7 +375,22 @@
           @stop="learn.requestAbort()"
         />
 
-        <div v-else class="input-container">
+        <div
+          v-else
+          class="input-container"
+          :class="{ 'drag-over': isFileDragging }"
+          @dragenter.prevent="onFileDragEnter"
+          @dragover.prevent="onFileDragOver"
+          @dragleave="onFileDragLeave"
+          @drop.prevent="onFileDrop"
+        >
+          <!-- 拖拽放置提示（绝对定位覆盖层，不挤占布局；松开即走附件守卫链） -->
+          <div v-if="isFileDragging" class="file-drop-hint">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z" fill="currentColor"/>
+            </svg>
+            <span>{{ t('sidepanel.attachments.dropHint') }}</span>
+          </div>
           <!-- 输入框：已配置且非学习态。
                注意：下面三条提示各自独立判定（互不构成 v-if/v-else 链）——
                「未配置」提示必须带上 !isChatInputEnabled，若写成 v-else
@@ -575,35 +590,14 @@
           </div>
         </div>
 
-        <!-- 技能选择卡片（/ 触发，多选；系统内全部启用技能，关联给当前智能体的排前；
-             搜索在卡片内搜索框完成，输入框继续打字即收起） -->
+        <!-- 技能选择卡片（/ 触发，多选；可选范围 = 当前智能体在 hub 编辑页显式
+             关联的启用技能。未选智能体 → 引导先选智能体；已选 → 卡片内搜索 +
+             列表 + 底部关联范围提示（未显示的技能需先在 hub 关联）；
+             输入框继续打字即收起） -->
         <div v-if="showSkillSelector" class="agent-selector skill-selector" @keydown="handleSkillSelectorKeyDown">
-          <div class="selector-search">
-            <svg class="selector-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.44,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.44C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5Z" fill="currentColor"/>
-            </svg>
-            <input
-              v-model="skillSelectorQuery"
-              type="text"
-              class="selector-search-input"
-              :placeholder="t('sidepanel.app.skillSearchPlaceholder')"
-              autocomplete="off"
-            />
-          </div>
-          <div 
-            v-for="(skill, index) in filteredSkills" 
-            :key="skill.id"
-            :class="['agent-option', 'skill-option', { 'selected': selectedSkillIndex === index, 'skill-active': selectedSkills.includes(skill.id) }]"
-            @click="selectSkill(skill.id)"
-            @mouseenter="selectedSkillIndex = index"
-          >
-            <div class="agent-info">
-              <div class="agent-name">{{ skillCardLabel(skill) }}</div>
-              <div class="agent-desc">{{ skill.description }}</div>
-            </div>
-          </div>
-          <div v-if="!filteredSkills.length" class="skill-empty">
-            <span class="skill-empty-text">{{ t('sidepanel.app.noSkillsHint') }}</span>
+          <!-- 未选智能体：引导态（无搜索框——此刻没有可搜的集合，搜索框只会误导） -->
+          <div v-if="!selectedAgent" class="skill-empty">
+            <span class="skill-empty-text">{{ t('sidepanel.app.skillNeedAgentHint') }}</span>
             <button
               type="button"
               class="selector-dismiss-btn"
@@ -615,6 +609,54 @@
               </svg>
             </button>
           </div>
+          <template v-else>
+            <div class="selector-search">
+              <svg class="selector-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.44,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.44C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5Z" fill="currentColor"/>
+              </svg>
+              <input
+                v-model="skillSelectorQuery"
+                type="text"
+                class="selector-search-input"
+                :placeholder="t('sidepanel.app.skillSearchPlaceholder')"
+                autocomplete="off"
+              />
+            </div>
+            <div
+              v-for="(skill, index) in filteredSkills"
+              :key="skill.id"
+              :class="['agent-option', 'skill-option', { 'selected': selectedSkillIndex === index, 'skill-active': selectedSkills.includes(skill.id) }]"
+              @click="selectSkill(skill.id)"
+              @mouseenter="selectedSkillIndex = index"
+            >
+              <div class="agent-info">
+                <div class="agent-name">{{ skillCardLabel(skill) }}</div>
+                <div class="agent-desc">{{ skill.description }}</div>
+              </div>
+            </div>
+            <!-- 空态分岔：搜索词非空 = 过滤无果；搜索词为空 = 智能体尚无关联技能 -->
+            <div v-if="!filteredSkills.length" class="skill-empty">
+              <span class="skill-empty-text">{{ skillSelectorQuery.trim() ? t('sidepanel.app.noSkillsHint') : t('sidepanel.app.agentNoLinkedSkillsHint') }}</span>
+              <button
+                type="button"
+                class="selector-dismiss-btn"
+                v-tip="t('common.close')"
+                @click="dismissSkillSelector"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z" fill="currentColor"/>
+                </svg>
+              </button>
+            </div>
+            <!-- 底部关联范围提示：sticky 常驻（与顶部搜索框对称），
+                 「去关联」直达 hub 智能体管理分区；hub 保存后经存储同步实时刷新列表 -->
+            <div class="skill-scope-hint">
+              <span class="skill-scope-hint-text">{{ t('sidepanel.app.skillLinkScopeHint') }}</span>
+              <button type="button" class="skill-scope-hint-action" @click="openAgentSkillLinking">
+                {{ t('sidepanel.app.skillLinkManageAction') }}
+              </button>
+            </div>
+          </template>
         </div>
       </div>
     </div>
@@ -743,6 +785,8 @@ import { SiteLearnModal, LearnDialog, LearnStatusBar, LearnDegradedNotice, Learn
 import { useLearnSession } from '../composables/use-learn-session';
 import { backgroundConversation as conversationEngine } from '../core/conversation/runtime-client';
 import { readActiveChat, rememberActiveChat } from '../core/conversation/active-session';
+// 用户气泡底部图片区展示口径（只含用户上传；vision 截图走助手内联「查看屏幕」）
+import { userVisibleImageRefs } from '../core/context/transcript-engine';
 import { SettingsModal, AsrConfigPrompt, DeepSearchWarning } from '../components/modals';
 import { VoiceAssistantCard, VoiceAssistantSettings, VoiceRecordingModal } from '../components/voice';
 import { AiProcessingOverlay, AppDialog, InteractDialog, MessageContainer, WebSocketStatusBar } from '../components/feedback';
@@ -781,6 +825,7 @@ import {
   type SkillRecord,
   type ToolApprovalRequest,
   type GuardKind,
+  type PreRunCompactionPayload,
 } from '../core';
 // Deep Search 站点注册表：站点开关列表与动态工具注入的单一事实来源
 // （站点启用态与 UI 开关在 use-deep-search-sites 单例，见「已登录网站」注释）
@@ -794,6 +839,7 @@ import { learnDraftHash, type SkillDraft } from '@/utils/learn/learn-types';
 import { restoreCustomAgentsFromStorage } from '@/utils/agents/agent-store';
 import { restoreCustomSkillsFromStorage } from '@/utils/skills/skill-store';
 import { findDuplicateSkillNames } from '@/utils/skills/skill-types';
+import { resolveAgentLinkedSkills } from '@/utils/skills/skill-availability';
 // 会话计划（plan_tool 产物）：活跃会话绑定 / 删除级联 / chrome.storage 对账
 import { setActivePlanChat, dropPlan, restorePlansFromStorage } from '@/utils/plan/plan-store';
 import { convertAudioToText } from '../utils/ai/voice-to-text';
@@ -802,14 +848,46 @@ import { ATTACHMENT_ACCEPT } from '../utils/chat/attachment-parser';
 import {
   createAttachmentManager,
   formatBytes,
-  TOTAL_BUDGET_RATIO,
   type ChatAttachment,
 } from '../composables/use-attachments';
-import { showAlert, showConfirm, openDialogWithHandle, settleDialogById } from '../composables/use-app-dialog';
+// 会话文件库：文本附件发送时注册（8 位短 id + 确定性分页），read_file 按页续读
+import { conversationFileStore } from '@/utils/conversation-files/file-store';
+import {
+  buildUploadFileEnvelope,
+  type UploadFileEnvelopeEntry,
+} from '@/utils/conversation-files/upload-file-envelope';
+import { showAlert, showConfirm, showAction, openDialogWithHandle, settleDialogById, type AppDialogResult } from '../composables/use-app-dialog';
+// 视觉能力守卫：模型 / 智能体 / 图片附件 三方一致性的判定单一事实源
+import {
+  evaluateVisionGuard,
+  agentRequiresVision,
+  type VisionCapabilityContext,
+  type VisionGuardContext,
+  type VisionGuardScenario,
+} from '../utils/chat/vision-capability-guard';
 import { dismissPendingInteracts } from '../composables/use-interact';
 import { toApiErrorBlock } from '../utils/stream/errors';
 import { setApiErrorRetryHandler } from '../utils/chat/api-error-retry';
-import { escapeXmlText } from '../utils/xml-entities';
+// 直播消息的片段流装配（占位建立 / 占位转真实消息 / 截图按序入流）：
+// 单一事实源，规则见 utils/chat/live-parts
+import {
+  startLiveMessage,
+  beginLiveMessage,
+  appendLiveImage,
+  hasVisibleLiveContent,
+} from '../utils/chat/live-parts';
+// 压缩片段生命周期（推送/结算/中断收拢/展开切换）：引擎侧 record.parts 与
+// UI 侧直播消息双写共用的唯一实现，保证终态按索引合并时片段流不错位
+import {
+  pushCompactionPart,
+  settleCompactionPart,
+  settlePendingCompactionParts,
+  createCompactionPart,
+  toggleCompactionExpanded,
+  historyDisplayParts,
+} from '../utils/chat/compaction-part';
+// 行内数值格式化共享实现（token K 口径 / 行内耗时标签；见 utils/chat/format）
+import { formatTokensK as sharedFormatTokensK } from '../utils/chat/format';
 // 本轮消息体积守卫：token 口径计量（与窗口守卫/压缩触发同一估算实现）
 import { estimateMessageTokens, estimateTextTokens } from '../utils/ai/token-estimate';
 // 导入工具注册模块以确保工具被正确注册
@@ -870,6 +948,28 @@ const contextUsage = ref<ContextUsage | null>(null);
 const isCompacting = ref(false);
 
 /**
+ * 当前直播消息 id（运行中的助手记录）。
+ *
+ * 交给 ChatMessageList 做直播态精确判定：此前按「最后一条消息」判定，
+ * 任何运行期间追加到列表尾部的消息（压缩进度气泡、错误卡片）都会把
+ * 流式消息挤成「已结束」渲染——大折叠提前出现、复制/赞/踩按钮在运行中
+ * 即可点击、data-streaming 标记被摘除。按 id 命中后这一整类翻转消失；
+ * 运行终态（完成/出错/中止）清空，回落到非直播渲染。
+ */
+const liveAssistantMessageId = ref<string | null>(null);
+
+/**
+ * 发送前压缩（pre-run）结果缓冲（chatId → 结算态载荷）。
+ *
+ * 发送前压缩发生在助手记录创建之前（无 messageId 可挂接）：done/failed
+ * 事件先缓冲在这里，assistant-start 建立直播占位时把缓冲种子为消息的
+ * 首个压缩片段；引擎侧经 runtime.preRunCompaction 把同一载荷写入
+ * record.parts 持久化——两条路径同一来源，时间线落成同一形态。
+ * 运行落定（settled）时清理，防准备失败场景下的陈旧种子。
+ */
+const preRunCompactionSeed = new Map<string, PreRunCompactionPayload>();
+
+/**
  * 会话有效上下文缓存（chatId → 压缩摘要 + 记录）。
  *
  * 用途：选择变化（智能体/技能/模型）时即时重算上下文预算，不能每次都读 IndexedDB——
@@ -920,15 +1020,16 @@ const formatCharsK = (chars: number): string =>
 /**
  * token 数人性化展示（K = 1024 token，与上下文阈值 256K = 262144 同一换算，
  * 保证「压缩前后」「消息体积 vs 预算」等对比文案与圆环读数量纲一致）。
+ * 实现共享自 utils/chat/format（≤0 / 非有限值返回空串——展示隐藏语义）；
+ * 告警文案需要「0」的调用点以 || '0' 兜底。
  */
-const formatTokensK = (tokens: number): string => {
-  if (!Number.isFinite(tokens) || tokens <= 0) return '0';
-  return tokens < 1024 ? `${Math.round(tokens)}` : `${(tokens / 1024).toFixed(1)}K`;
-};
+const formatTokensK = (tokens: number): string => sharedFormatTokensK(tokens) || '0';
 
 /**
  * 推送一条轻量系统通知到对话流（仅 UI 展示，不入转录/不入模型上下文）。
- * 用于输入超限与压缩进度等用户可感知事件。
+ * 用于输入超限、运行中止反馈等用户可感知事件。
+ * 注意：运行期间追加的任何顶层消息都会使「最后一条」启发式下的直播消息
+ * 翻成终态渲染——运行期进度（工具/压缩）一律走消息内片段，不走此入口。
  * 消息标记 isSystemNotice 且 parts 为 notice 类型：渲染层据此以独立的
  * 系统信息条容器展示（与工具调用行同风格），不混用正文气泡样式。
  */
@@ -1059,8 +1160,9 @@ const requestToolApproval = (request: ToolApprovalRequest): Promise<boolean> =>
       cancelText: t('sidepanel.chat.toolApprovalDeny'),
     });
     pendingToolApproval = { dialogId: handle.id, finish };
-    // result 永不 reject（use-app-dialog 契约：任何路径都 resolve），无拒绝分支
-    void handle.result.then(approved => finish(approved));
+    // result 永不 reject（use-app-dialog 契约：任何路径都 resolve），无拒绝分支。
+    // 三态收敛为布尔：仅 'confirm' 视为允许，其余（取消 / 遮罩 / 定向收敛）均拒绝
+    void handle.result.then(result => finish(result === 'confirm'));
   });
 
 /** Ordinary chat and learning share one cleanup path for user questions. */
@@ -1113,6 +1215,30 @@ const runningAssistantMessages = new Map<string, RunningAssistantMessage>();
  */
 const pendingImageRefs = new Map<string, { chatId: string; refs: string[] }>();
 
+/**
+ * 会话级 UI 状态复位（会话切换 / 新建 / 回到主页 / 学习切换的共同收尾）。
+ *
+ * 收敛为一处是因为这组状态**必须同生共死**：漏复位任一项都会留下与当前
+ * 视图不符的悬停态——漏 `isCompacting` 会让新会话的圆环永远呼吸在「正在
+ * 压缩对话记忆…」（旧会话的压缩事件被会话守卫丢弃，永远等不到收尾信号）；
+ * 漏 `liveAssistantMessageId` 会让新消息被当作直播消息渲染。
+ *
+ * 字段口径：
+ *   - runningAssistantMessages：运行源（流式刷新的唯一数据源）
+ *   - liveAssistantMessageId：直播消息登记（直播态精确判定的依据）
+ *   - preRunCompactionSeed：发送前压缩种子缓冲（跨会话无意义）
+ *   - isCompacting：压缩感知（圆环呼吸 / 学习状态条提示）
+ *   - contextUsage：上下文用量——默认保留（历史会话加载后即刻按新会话
+ *     重算，提前清空只会让圆环闪一下空态）；仅新建/切换场景显式清空。
+ */
+const resetSessionScopedUiState = (options?: { clearContextUsage?: boolean }): void => {
+  runningAssistantMessages.clear();
+  liveAssistantMessageId.value = null;
+  preRunCompactionSeed.clear();
+  isCompacting.value = false;
+  if (options?.clearContextUsage) contextUsage.value = null;
+};
+
 /** 按事件定位/创建 UI 助手消息：首个内容事件到达时把「思考中」占位转换为真实消息 */
 const ensureAssistantMessage = (messageId: string, isThinkingConversion = false): RunningAssistantMessage | null => {
   let uiMessage = runningAssistantMessages.get(messageId);
@@ -1122,7 +1248,13 @@ const ensureAssistantMessage = (messageId: string, isThinkingConversion = false)
 
   if (isThinkingConversion && uiMessage.isThinking) {
     uiMessage.isThinking = false;
-    uiMessage.parts = [];
+    // 占位转真实消息：空正文占位丢弃，**截图片段保留**（首截图是本轮已
+    // 发生的事实，丢弃即从时间线消失、只剩引用 → 渲染层回退到消息底部
+    // 的关联图片区，表现为「截图挂在消息最后」而非按发生顺序内联）
+    uiMessage.parts = beginLiveMessage({
+      parts: uiMessage.parts,
+      imageRefs: uiMessage.imageRefs ?? [],
+    }).parts;
     uiMessage.toolCalls = [];
     uiMessage.content = '';
     uiMessage.reasoning_content = '';
@@ -1161,7 +1293,11 @@ const refreshUiMessage = (messageId: string): void => {
   pendingUiRefresh.set(messageId, {
     ...source,
     content: source.content,
-    parts: source.parts.map(p => (p.type === 'tool' && p.toolCall ? { ...p, toolCall: { ...p.toolCall } } : p)),
+    parts: source.parts.map(p => (p.type === 'tool' && p.toolCall
+      ? { ...p, toolCall: { ...p.toolCall } }
+      : p.type === 'compaction' && p.compaction
+        ? { ...p, compaction: { ...p.compaction } }
+        : p)),
     toolCalls: source.toolCalls.map(tc => ({ ...tc })),
   });
   if (!uiRefreshScheduled) {
@@ -1187,9 +1323,11 @@ const handleConversationEvent = (event: ConversationEvent): void => {
         timestamp: event.record.createdAt,
         parts: [{ type: 'text', content: event.record.content }],
         toolCalls: [],
-        // 用户上传图片以引用形态随消息展示（可查看 / 放大 / 下载）
-        ...(event.record.imageRefs && event.record.imageRefs.length > 0
-          ? { imageRefs: [...event.record.imageRefs] }
+        // 用户上传图片以引用形态随消息展示（可查看 / 放大 / 下载）。
+        // 展示口径走 userVisibleImageRefs（只含用户上传）——引擎随后注入的
+        // vision 首截图引用不在此列，避免同一截图在用户气泡与助手「查看屏幕」双显
+        ...(userVisibleImageRefs(event.record).length > 0
+          ? { imageRefs: userVisibleImageRefs(event.record) }
           : {}),
       });
       break;
@@ -1199,28 +1337,37 @@ const handleConversationEvent = (event: ConversationEvent): void => {
       // 由运行终态回调结束，避免流式内容被提前当作已完成消息折叠并显示反馈按钮。
       isAiResponding.value = true;
       messages.value = messages.value.filter(message => message.id !== event.messageId);
+      // 直播消息登记（ChatMessageList 按 id 精确判定直播态，见 liveAssistantMessageId）
+      liveAssistantMessageId.value = event.messageId;
       // 「思考中」占位（与旧实现一致的 UI 状态）
-      const thinking: RunningAssistantMessage = {
-        id: event.messageId,
-        role: 'assistant',
-        content: '',
-        timestamp: Date.now(),
-        parts: [{ type: 'text', content: '' }],
-        toolCalls: [],
-        isThinking: true,
-      };
       // 首截图的 message-image 事件先于 assistant-start 到达（引擎准备阶段顺序）：
       // 此时 UI 消息尚不存在，事件被缓冲在 pendingImageRefs，这里合并落地。
       // 部件置于片段流最前——首截图发生在任何正文与工具调用之前
       const pending = pendingImageRefs.get(event.messageId);
       pendingImageRefs.delete(event.messageId);
-      if (pending && pending.refs.length > 0) {
-        thinking.imageRefs = [...pending.refs];
-        thinking.parts = [
-          ...pending.refs.map(ref => ({ type: 'image' as const, imageRef: ref })),
-          ...thinking.parts,
-        ];
-      }
+      const started = startLiveMessage(pending?.refs ?? []);
+      // 发送前压缩结果种子：压缩发生在本轮一切内容之前，片段置于流最前
+      // （早于首截图）；无压缩时缓冲为空，不产生片段。
+      // 种子构造与引擎侧共用 compaction-part.createCompactionPart，
+      // 两侧承载同一份数据（trigger 恒为 pre-run，两侧各自补齐）。
+      const preRunCompaction = preRunCompactionSeed.get(event.chatId);
+      preRunCompactionSeed.delete(event.chatId);
+      const seededParts: MessagePart[] = [
+        ...(preRunCompaction
+          ? [createCompactionPart({ trigger: 'pre-run', ...preRunCompaction })]
+          : []),
+        ...started.parts,
+      ];
+      const thinking: RunningAssistantMessage = {
+        id: event.messageId,
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        parts: seededParts,
+        toolCalls: [],
+        isThinking: true,
+        ...(started.imageRefs.length > 0 ? { imageRefs: started.imageRefs } : {}),
+      };
       runningAssistantMessages.set(event.messageId, thinking);
       messages.value.push(thinking);
       break;
@@ -1253,11 +1400,14 @@ const handleConversationEvent = (event: ConversationEvent): void => {
       ) {
         break;
       }
-      const current = target.imageRefs ?? [];
-      if (!current.includes(event.imageRef)) {
-        target.imageRefs = [...current, event.imageRef];
-      }
-      target.parts.push({ type: 'image', imageRef: event.imageRef });
+      // 截图按发生顺序追加到片段流末尾（引用集合去重保序、片段流不去重：
+      // 同一张图的两次截屏是两次真实发生，时间线必须保留两条）
+      const appended = appendLiveImage(
+        { parts: target.parts, imageRefs: target.imageRefs ?? [] },
+        event.imageRef,
+      );
+      target.parts = appended.parts;
+      target.imageRefs = appended.imageRefs;
       refreshUiMessage(event.messageId);
       break;
     }
@@ -1342,6 +1492,10 @@ const handleConversationEvent = (event: ConversationEvent): void => {
         if (part.type === 'reasoning' && uiPart?.type === 'reasoning' && uiPart.userToggled) {
           return { ...part, collapsed: uiPart.collapsed, userToggled: true };
         }
+        // 压缩片段：用户在流式期间展开的摘要详情同样保留（与工具展开同语义）
+        if (part.type === 'compaction' && part.compaction && uiPart?.type === 'compaction' && uiPart.compaction?.expanded) {
+          return { ...part, compaction: { ...part.compaction, expanded: true } };
+        }
         return part;
       });
       const finalToolCalls = record.toolCalls.map(call => {
@@ -1381,6 +1535,7 @@ const handleConversationEvent = (event: ConversationEvent): void => {
       if (index === -1) messages.value.push(finalMessage);
       else messages.value.splice(index, 1, finalMessage);
       runningAssistantMessages.delete(record.id);
+      if (liveAssistantMessageId.value === record.id) liveAssistantMessageId.value = null;
       // 终态兜底：正常路径下缓冲已在 assistant-start 合并，此处保证异常时序也不滞留
       pendingImageRefs.delete(record.id);
       break;
@@ -1389,6 +1544,9 @@ const handleConversationEvent = (event: ConversationEvent): void => {
       const uiMessage = ensureAssistantMessage(event.messageId, true);
       if (!uiMessage) break;
       const errorText = `\n\n${event.error}`;
+      // 压缩中断结算：错误可能发生在压缩请求进行中（压缩器失败已自行结算，
+      // 其余路径由引擎 finalize 兜底）——UI 侧同一收敛，杜绝旋转态残留
+      settlePendingCompactionParts(uiMessage.parts, t('sidepanel.chat.compactionInterrupted'));
       const lastPart = uiMessage.parts.length > 0 ? uiMessage.parts[uiMessage.parts.length - 1] : null;
       if (lastPart && lastPart.type === 'text') lastPart.content = (lastPart.content || '') + errorText;
       else uiMessage.parts.push({ type: 'text', content: errorText });
@@ -1400,6 +1558,7 @@ const handleConversationEvent = (event: ConversationEvent): void => {
       if (event.durationMs !== undefined) uiMessage.durationMs = event.durationMs;
       refreshUiMessage(event.messageId);
       runningAssistantMessages.delete(event.messageId);
+      if (liveAssistantMessageId.value === event.messageId) liveAssistantMessageId.value = null;
       pendingImageRefs.delete(event.messageId);
       break;
     }
@@ -1411,15 +1570,23 @@ const handleConversationEvent = (event: ConversationEvent): void => {
       pushSystemNotice(t('sidepanel.chat.stoppedByUser'));
       const uiMessage = runningAssistantMessages.get(event.messageId);
       runningAssistantMessages.delete(event.messageId);
+      if (liveAssistantMessageId.value === event.messageId) liveAssistantMessageId.value = null;
       pendingImageRefs.delete(event.messageId);
       if (!uiMessage) break;
+      // 压缩中断结算（引擎 finalize 已对 record.parts 做同一收敛）
+      settlePendingCompactionParts(uiMessage.parts, t('sidepanel.chat.compactionInterrupted'));
       const index = messages.value.findIndex(msg => msg.id === event.messageId);
       if (index === -1) break;
       const contentText = typeof uiMessage.content === 'string' ? uiMessage.content : '';
-      const hasVisibleContent =
-        !!contentText.trim() ||
-        !!uiMessage.reasoning_content?.trim() ||
-        uiMessage.toolCalls.length > 0;
+      // 可见内容判定：正文 / 思考 / 工具调用 / **截图片段**——只截了屏还
+      // 没来得及说话就被中止的轮次，截图本身就是这一轮唯一的产出，
+      // 移除消息等于把它连同记录一起丢掉
+      const hasVisibleContent = hasVisibleLiveContent({
+        content: contentText,
+        reasoningContent: uiMessage.reasoning_content,
+        toolCallCount: uiMessage.toolCalls.length,
+        parts: uiMessage.parts,
+      });
       if (!hasVisibleContent) {
         messages.value.splice(index, 1);
         break;
@@ -1446,24 +1613,57 @@ const handleConversationEvent = (event: ConversationEvent): void => {
       break;
     }
     case 'compaction': {
-      // 运行时压缩进度（发送前压缩由 sendMessage 直接通知，不经引擎事件）
-      if (event.phase === 'start') {
-        pushSystemNotice(t('sidepanel.chat.compactionStart'));
-        isCompacting.value = true;
-      } else if (event.phase === 'done') {
-        isCompacting.value = false;
-        pushSystemNotice(
-          t('sidepanel.chat.compactionDone', {
-            from: formatTokensK(event.originalTokens ?? 0),
-            to: formatTokensK(event.summaryTokens ?? 0),
-          }),
-        );
-      } else {
-        isCompacting.value = false;
-        pushSystemNotice(
-          t('sidepanel.chat.compactionFailed', { reason: event.error ?? '未知原因' }),
-        );
+      // 压缩进度写入直播消息的时间线（与引擎侧 record.parts 双写同一状态，
+      // compaction-part 纯函数是两侧共用的唯一实现）。
+      // 此前的独立气泡方案已废弃——气泡追加到列表尾部会把流式消息挤成
+      // 「已结束」渲染（不再是最后一条 → isLive=false → 大折叠 + 复制/赞/踩
+      // 提前出现），且气泡不随记录持久化、不支持展开查看压缩结果。
+      isCompacting.value = event.phase === 'start';
+      if (event.trigger === 'pre-run') {
+        // 发送前压缩发生在助手记录创建之前（无 messageId）：缓冲结算结果，
+        // assistant-start 时种子进新消息；引擎侧经 runtime.preRunCompaction
+        // 持久化同一数据（载荷形状见 core/types 的 PreRunCompactionPayload）。
+        // start 阶段无内容可缓冲（等待 done/failed 覆盖）。
+        if (event.phase === 'done') {
+          preRunCompactionSeed.set(event.chatId, {
+            status: 'success',
+            originalTokens: event.originalTokens,
+            summaryTokens: event.summaryTokens,
+            summary: event.summary,
+            durationMs: event.durationMs,
+          });
+        } else if (event.phase === 'failed') {
+          preRunCompactionSeed.set(event.chatId, {
+            status: 'error',
+            error: event.error,
+            durationMs: event.durationMs,
+          });
+        }
+        break;
       }
+      // 运行中压缩：直播消息存在（assistant-start 先于任何运行中压缩），
+      // 缺失时按异常时序安静跳过——引擎侧 record.parts 已承载同一状态，
+      // 终态覆盖与历史重载都会还原压缩行
+      const messageId = event.messageId;
+      const compactingUi = messageId ? runningAssistantMessages.get(messageId) : undefined;
+      if (!messageId || !compactingUi) break;
+      if (event.phase === 'start') {
+        compactingUi.parts = pushCompactionPart(compactingUi.parts, {
+          trigger: 'runtime',
+          originalTokens: event.originalTokens,
+        });
+      } else if (event.phase === 'done') {
+        settleCompactionPart(compactingUi.parts, {
+          status: 'success',
+          originalTokens: event.originalTokens,
+          summaryTokens: event.summaryTokens,
+          summary: event.summary,
+          durationMs: event.durationMs,
+        });
+      } else {
+        settleCompactionPart(compactingUi.parts, { status: 'error', error: event.error, durationMs: event.durationMs });
+      }
+      refreshUiMessage(messageId);
       break;
     }
     case 'context-usage': {
@@ -1494,20 +1694,48 @@ const recordMetaOf = (
   ...(record.feedback ? { feedback: record.feedback } : {}),
 });
 
+/**
+ * 会话内助手记录持有的全部图片引用（用于旧记录的用户上传反推）。
+ *
+ * 引擎注入的视口截图必然同时出现在对应的助手记录里（助手消息是它的
+ * 展示主体）；旧记录没有 uploadImageRefs 字段，只能靠这个集合把
+ * 「用户上传」与「引擎注入的截图」区分开。
+ */
+const assistantImageRefsOf = (records: readonly ChatMessageRecord[]): Set<string> => {
+  const refs = new Set<string>();
+  for (const record of records) {
+    if (record.role !== 'assistant') continue;
+    for (const ref of record.imageRefs ?? []) refs.add(ref);
+  }
+  return refs;
+};
+
 /** ChatMessageRecord（历史会话加载）→ UI 消息 */
-const recordToUiMessage = (record: ChatMessageRecord): ExtendedChatMessage => ({
-  id: record.id,
-  role: record.role,
-  content: record.content,
-  timestamp: record.createdAt,
-  parts: record.parts,
-  toolCalls: record.toolCalls,
-  reasoning_content: record.reasoning,
-  // 执行时长与反馈随记录还原：耗时展示 / 赞踩状态跨重启持久（缺失 = 旧记录，隐藏展示）
-  ...recordMetaOf(record),
-  // 关联图片（用户上传 / vision 自动截图）随记录还原，渲染层据此展示图片区
-  ...(record.imageRefs && record.imageRefs.length > 0 ? { imageRefs: [...record.imageRefs] } : {}),
-});
+const recordToUiMessage = (
+  record: ChatMessageRecord,
+  assistantImageRefs?: ReadonlySet<string>,
+): ExtendedChatMessage => {
+  // 关联图片随记录还原，渲染层据此展示图片区。用户消息走 userVisibleImageRefs
+  // （只含用户上传）：落库归一化会把 modelMessages 里的 vision 首截图引用并入
+  // imageRefs（GC 需要，不可去掉），直接展示会让同一截图在用户气泡底部与
+  // 助手内联「查看屏幕」各出现一次——重载会话后尤为明显。
+  // 助手消息保持完整 imageRefs（截图是它的合法展示主体）。
+  const visibleImageRefs = record.role === 'user'
+    ? userVisibleImageRefs(record, assistantImageRefs)
+    : [...(record.imageRefs ?? [])];
+  return {
+    id: record.id,
+    role: record.role,
+    content: record.content,
+    timestamp: record.createdAt,
+    parts: record.parts,
+    toolCalls: record.toolCalls,
+    reasoning_content: record.reasoning,
+    // 执行时长与反馈随记录还原：耗时展示 / 赞踩状态跨重启持久（缺失 = 旧记录，隐藏展示）
+    ...recordMetaOf(record),
+    ...(visibleImageRefs.length > 0 ? { imageRefs: visibleImageRefs } : {}),
+  };
+};
 // Escape 关闭面板后记住被忽略的触发符，直到触发序列中断（输入空格/删除），
 // 避免 continues 输入过滤词时面板反复弹开
 let dismissedTrigger: '@' | '/' | null = null;
@@ -1564,13 +1792,12 @@ const learn = useLearnSession({
     // 学习使用新建的独立会话：切换 ID 的同时清空旧会话的展示与运行缓存，
     // 否则新会话的 user-message 会直接追加在上一会话的消息列表后面。
     pendingUiRefresh.clear();
-    runningAssistantMessages.clear();
     pendingImageRefs.clear();
     messages.value = [];
     activeSystemPromptSuffix.value = '';
     learnRecoverableDraft.value = null;
-    contextUsage.value = null;
-    isCompacting.value = false;
+    // 会话级 UI 状态复位（运行源 / 直播登记 / 压缩种子与感知 / 用量）
+    resetSessionScopedUiState({ clearContextUsage: true });
     isAiResponding.value = false;
     activeChatId.value = chatId;
     // 学习会话刚创建：其补充段此后只承载草稿回放数据（非 LLM 输入），
@@ -1579,7 +1806,11 @@ const learn = useLearnSession({
     activeSessionIsLearn = true;
   },
   setResponding: (chatId, responding) => {
-    if (activeChatId.value === chatId) isAiResponding.value = responding;
+    if (activeChatId.value !== chatId) return;
+    isAiResponding.value = responding;
+    // 学习路径不经 sendMessage 的统一收尾：阶段运行结束即兜底回落压缩
+    // 感知（正常由 done/failed 事件先行复位，此处只兜事件丢失的异常时序）
+    if (!responding) isCompacting.value = false;
   },
   requestToolApproval,
   dismissQuestions: chatId => {
@@ -1653,17 +1884,182 @@ const activeChatModel = computed(() => activeOption.value?.label ?? '');
 /** 当前生效模型引用（装配 / 会话落库使用；null = 让注册表按回落链解析） */
 const activeModelRef = computed<ModelRef | null>(() => activeOption.value?.ref ?? null);
 
+// ==================== 视觉能力守卫（三条交互链路的统一引导） ====================
+//
+// 需求：模型未声明视觉能力时，涉及图片 / 视觉智能体的操作必须先提示用户。
+// 三条链路：上传图片、切换模型、选择智能体。判定口径集中在
+// utils/chat/vision-capability-guard（单一事实源），此处只负责：
+//   1. 采集三方状态（模型视觉声明 / 图片计数 / 智能体视觉需求）；
+//   2. 按场景构造 i18n 文案；
+//   3. 弹窗与用户选择的后续动作（含「前往设置」打开渠道与模型分区）。
+//
+// 用户选择语义（统一）：
+//   - 'confirm'   → 执行用户原本的动作（上传 / 切换 / 选中）
+//   - 'cancel'    → 放弃该动作，状态保持不变
+//   - 'alternate' → 打开「渠道与模型」设置分区（引导用户补齐视觉声明），
+//                   并放弃本次动作（设置完成后用户可重新发起）
+
+/** 历史会话中用户上传的图片数量（0 = 无）。
+ *  口径：用户消息的 imageRefs 已经过 userVisibleImageRefs 过滤，
+ *  只含用户上传图（不含 vision 截图）——只有用户上传图才需要视觉能力。 */
+const historyImageCount = computed<number>(() =>
+  messages.value.reduce(
+    (total, message) =>
+      message.role === 'user' ? total + (message.imageRefs?.length ?? 0) : total,
+    0,
+  ),
+);
+
+/** 当前选中的智能体是否需要视觉能力（AgentConfig.vision 存在即需要） */
+const selectedAgentRequiresVision = computed<boolean>(() => {
+  const name = selectedAgent.value.trim();
+  if (!name) return false;
+  const agent = agentEngine.get(name) ?? agentEngine.getById(name);
+  return agentRequiresVision(agent?.vision);
+});
+
+/** 当前选中的智能体展示名（提示文案用） */
+const selectedAgentLabel = computed<string>(() => {
+  const name = selectedAgent.value.trim();
+  if (!name) return '';
+  const agent = agentEngine.get(name) ?? agentEngine.getById(name);
+  return agent ? displayNameOf(agent) : name;
+});
+
+/** 采集三方状态（守卫判定输入） */
+const visionGuardContext = (
+  overrides: Partial<VisionCapabilityContext> = {},
+): VisionCapabilityContext => ({
+  modelHasVision: activeOption.value?.vision ?? false,
+  modelLabel: activeOption.value?.label ?? '',
+  pendingImageCount: pendingAttachments.value.filter(att => att.kind === 'image').length,
+  historyImageCount: historyImageCount.value,
+  agentHasVision: selectedAgentRequiresVision.value,
+  agentLabel: selectedAgentLabel.value,
+  ...overrides,
+});
+
+/** 按场景构造提示文案（i18n 单一事实源；场景差异在文案而非判定） */
+const visionGuardMessage = (
+  scenario: VisionGuardScenario,
+  context: VisionGuardContext,
+): string => {
+  // 模型名缺省（未配置 / 引用失效）用既有的「未配置模型」文案，
+  // 不新造措辞——避免同一概念在两处表达不一致
+  const model = context.modelLabel || t('sidepanel.app.noModelConfigured');
+  switch (scenario) {
+    case 'upload-image':
+      return t('sidepanel.attachments.visionUploadNoVision', { model });
+    case 'switch-model': {
+      // 上下文说明：图片与视觉智能体按实际存在情况组合，避免堆砌无关提示
+      const hasImages = context.imageCount > 0;
+      const agent = context.agentLabel || '';
+      const contextKey = hasImages && context.agentHasVision
+        ? 'sidepanel.attachments.visionSwitchContextBoth'
+        : hasImages
+          ? 'sidepanel.attachments.visionSwitchContextImages'
+          : 'sidepanel.attachments.visionSwitchContextAgent';
+      const contextText = t(contextKey, { count: context.imageCount, agent });
+      return t('sidepanel.attachments.visionSwitchNoVision', { model, context: contextText });
+    }
+    case 'select-agent':
+      return t('sidepanel.attachments.visionAgentNoVision', {
+        model,
+        agent: context.agentLabel || t('common.unknown'),
+      });
+    default:
+      return t('sidepanel.attachments.visionUploadNoVision', { model });
+  }
+};
+
+/** 打开「渠道与模型」设置分区（视觉声明的修正入口） */
+const openChannelSettings = (): void => {
+  showSettingsModal.value = true;
+  settingsInitialSection.value = 'channels';
+};
+
+/**
+ * 视觉能力引导弹窗（三态结果）。
+ *
+ * @param scenario 交互场景
+ * @param context 三方状态（可覆盖默认值）
+ * @returns 用户选择：'confirm' 执行 / 'cancel' 放弃 / 'alternate' 去设置
+ */
+const requestVisionGuard = async (
+  scenario: VisionGuardScenario,
+  context: VisionCapabilityContext = visionGuardContext(),
+): Promise<AppDialogResult> => {
+  const verdict = evaluateVisionGuard(scenario, context, visionGuardMessage);
+  if (!verdict.needsWarning) return 'confirm';
+  const result = await showAction(
+    verdict.message,
+    t('sidepanel.attachments.visionGuardTitle'),
+    'warn',
+    scenario === 'upload-image'
+      ? {
+          confirmText: t('sidepanel.attachments.visionUploadConfirm'),
+          cancelText: t('sidepanel.attachments.visionUploadCancel'),
+          alternateText: t('sidepanel.attachments.visionOpenSettings'),
+        }
+      : scenario === 'switch-model'
+        ? {
+            confirmText: t('sidepanel.attachments.visionSwitchConfirm'),
+            cancelText: t('sidepanel.attachments.visionSwitchCancel'),
+          }
+        : {
+            confirmText: t('sidepanel.attachments.visionAgentConfirm'),
+            cancelText: t('sidepanel.attachments.visionAgentCancel'),
+          },
+  );
+  if (result === 'alternate') openChannelSettings();
+  return result;
+};
+
 // ==================== 附件栏（守卫流程与状态见 composables/use-attachments） ====================
-// 图片准入与文本预算都以「当前生效模型」为基准（模型级阈值），经注入回调保持解耦
+// 图片准入以「当前生效模型」的视觉能力声明为基准，经注入回调保持解耦；
+// 压缩等长时操作的进度反馈走系统通知条
 const attachmentManager = createAttachmentManager({
   isCurrentModelVision: () => activeOption.value?.vision ?? false,
-  getContextThreshold: () => activeOption.value?.contextThreshold ?? CONTEXT_THRESHOLD_DEFAULT,
+  notify: message => pushSystemNotice(message),
+  // 视觉能力引导：模型无视觉能力时弹三按钮确认（仍然上传 / 取消上传 / 前往设置）
+  confirmImageWithoutVision: async modelLabel =>
+    requestVisionGuard('upload-image', visionGuardContext({ modelLabel })),
+  currentModelLabel: () => activeOption.value?.label ?? '',
 });
 const pendingAttachments = attachmentManager.attachments;
-/** 文本附件累计预算上限（字符；随当前生效模型的上下文阈值联动，50% 口径） */
-const attachmentBudgetCap = computed(() =>
-  Math.floor((activeOption.value?.contextThreshold ?? CONTEXT_THRESHOLD_DEFAULT) * TOTAL_BUDGET_RATIO),
-);
+
+// ── 输入区拖拽上传（dragenter/dragleave 计数器：子元素间移动不闪烁） ──
+// 仅响应「文件」拖拽（dataTransfer.types 含 Files）；文本选区拖动等
+// 其它形态不激活高亮，也不拦截默认行为
+const fileDragDepth = ref(0);
+const isFileDragging = computed(() => fileDragDepth.value > 0);
+const dragHasFiles = (event: DragEvent): boolean =>
+  Array.from(event.dataTransfer?.types ?? []).includes('Files');
+
+const onFileDragEnter = (event: DragEvent): void => {
+  if (!dragHasFiles(event)) return;
+  fileDragDepth.value += 1;
+};
+const onFileDragOver = (event: DragEvent): void => {
+  if (!dragHasFiles(event)) return;
+  // preventDefault 是允许 drop 的必要条件（否则浏览器直接打开文件）
+  event.preventDefault();
+};
+const onFileDragLeave = (event: DragEvent): void => {
+  if (!dragHasFiles(event)) return;
+  fileDragDepth.value = Math.max(0, fileDragDepth.value - 1);
+};
+const onFileDrop = (event: DragEvent): void => {
+  event.preventDefault();
+  fileDragDepth.value = 0;
+  // 与附件按钮同口径：学习配置/运行期间输入区不可附加文件（学习面板承载全部交互）
+  if (learn.isLearnActive.value || learn.isLearnRunning.value) return;
+  if (attachmentManager.isAdding.value) return; // 解析/压缩进行中：丢弃本次放置（与选择器入口同口径）
+  const files = Array.from(event.dataTransfer?.files ?? []);
+  if (files.length > 0) {
+    void attachmentManager.addFiles(files);
+  }
+};
 
 // ==================== 模型品牌图标映射 ====================
 // 规则：模型名（转小写）包含任一关键词即命中对应图标；关键词互不重叠，命中顺序无关
@@ -1728,35 +2124,36 @@ const toggleModelSelectorMenu = () => {
  * 选择会话模型：立即生效并写回应用设置（全局默认引用 activeModelRef）
  * - 当次请求通过 runtime.modelRef 显式传入（不依赖保存时序）
  * - 写回全局默认：新会话、一次性 AI 工具（工作流）随之使用该模型
- * - 图片附件守卫：目标模型未声明视觉能力且存在图片附件时弹窗二选一——
- *   确认（切换并移除图片）或取消（保留图片、维持当前模型）
+ * - 视觉能力守卫：目标模型未声明视觉能力，且当前会话存在图片（待发送附件
+ *   或历史用户上传图）或已选中视觉智能体时，弹窗二次确认——
+ *   「仍然切换」执行切换（附件全部保留，由用户自行处置），
+ *   「取消切换」维持当前模型。
  */
 const selectChatModel = async (option: ModelOption) => {
   if (!modelOptions.value.some(item => item.key === option.key)) return;
 
-  // 图片守卫仅在「切到不同模型」时需要：点击当前生效模型视觉状态不变
+  // 守卫仅在「切到不同模型」时需要：点击当前生效模型视觉状态不变
   if (option.key !== activeModelKey.value && !option.vision) {
-    const imageCount = pendingAttachments.value.filter(att => att.kind === 'image').length;
-    if (imageCount > 0) {
-      const dropAndSwitch = await showConfirm(
-        t('sidepanel.attachments.switchModelDropsImages', { name: option.label, count: imageCount }),
-        t('sidepanel.attachments.promptTitle'),
-        'warn',
-        {
-          confirmText: t('sidepanel.attachments.switchDropImages'),
-          cancelText: t('sidepanel.attachments.switchKeepImages'),
-        },
+    // 守卫异常（弹窗层故障）不得让切换失控：保守按「取消切换」处理并告警，
+    // 用户可再次点击重试
+    let decision: AppDialogResult = 'cancel';
+    try {
+      // 上下文默认值即当前会话状态（图片计数 / 已选智能体视觉需求），
+      // 此处只需覆盖目标模型的两项
+      decision = await requestVisionGuard(
+        'switch-model',
+        visionGuardContext({ modelHasVision: false, modelLabel: option.label }),
       );
-      showModelSelectorMenu.value = false;
-      if (!dropAndSwitch) {
-        // 用户选择保留图片：维持当前模型，本轮切换取消
-        console.log(`[ModelSelector] 用户保留图片附件，取消切换到 ${option.label}`);
-        return;
-      }
-      const removed = attachmentManager.removeImageAttachments();
-      console.log(`[ModelSelector] 切换到无视觉模型 ${option.label}，已移除 ${removed} 张图片附件`);
-      pushSystemNotice(t('sidepanel.attachments.switchModelImagesRemoved', { count: removed }));
+    } catch (error) {
+      console.warn('[ModelSelector] 视觉能力守卫异常，取消本次切换:', error);
     }
+    showModelSelectorMenu.value = false;
+    if (decision !== 'confirm') {
+      // 用户取消切换（或选择「前往设置」后放弃本次切换）：维持当前模型
+      console.log(`[ModelSelector] 用户取消切换到 ${option.label}，维持当前模型`);
+      return;
+    }
+    console.warn(`[ModelSelector] 用户确认切换到无视觉模型 ${option.label}（附件全部保留）`);
   }
 
   activeModelKey.value = option.key;
@@ -1993,7 +2390,11 @@ const agentOptionIndexes = computed<number[]>(() =>
 /** 按扁平下标选中（落在分组标题上时忽略） */
 const selectAgentAtIndex = (index: number): void => {
   const item = agentSelectorItems.value[index];
-  if (item && item.type === 'agent') selectAgent(item.agent.plugin ? item.agent.id : item.agent.name);
+  if (item && item.type === 'agent') {
+    // 异步（视觉能力守卫可能弹窗）：显式 void 吞掉 Promise，
+    // 内部异常已在 selectAgent 内收敛，不会逃逸成未处理拒绝
+    void selectAgent(item.agent.plugin ? item.agent.id : item.agent.name);
+  }
 };
 
 /** 上下移动高亮（自动跳过分组标题，到边界后停住） */
@@ -2014,33 +2415,19 @@ const moveAgentSelection = (delta: 1 | -1): void => {
 };
 
 /**
- * 技能面板列表 = 系统内全部启用技能（内置 + 用户创建 / 导入），
- * 关联给当前智能体的技能排在最前（用户意图优先，保持声明顺序），
- * 其余按注册表顺序（内置在前，自定义按名称稳定排序）。
+ * 技能面板可选集合 = 当前智能体在 hub 编辑页**显式关联**的启用技能
+ * （声明顺序、按 id 去重；未选智能体 → 空数组，面板呈现「先选智能体」引导）。
  *
  * 与 runtime-builder 的「可用技能」口径刻意不同：面板回答「能选什么」，
- * 装配回答「注入什么」。预选技能经合成 load_skill 轮注入、不受可用清单限制，
- * 因此这里必须放开到全量——否则用户刚导入的技能（未必被当前智能体的工具集
- * 承载）在面板里根本选不到。
+ * 装配回答「注入什么」。预选技能经合成 load_skill 轮注入、不受可用清单
+ * 限制，但可选范围收敛到智能体关联集——技能与智能体绑定选择，未关联的
+ * 技能需先在 hub 智能体编辑页关联（面板底部常驻指引 + 「去关联」直达）。
  */
 const selectableSkills = computed<SkillRecord[]>(() => {
   // 引擎读取非响应式：读一次 registryVersion 建立依赖，注册表任何同步后重算
   void registryVersion.value;
-  const enabled = skills.value.filter(s => s.enabled);
   const agent = selectedAgent.value ? agentEngine.get(selectedAgent.value) : null;
-  const refs = agent?.skills;
-  if (!Array.isArray(refs) || refs.length === 0) return enabled;
-
-  const linkedIds = new Set<string>();
-  const linked: SkillRecord[] = [];
-  for (const ref of refs) {
-    const skill = skillEngine.get(ref);
-    if (!skill || !skill.enabled || linkedIds.has(skill.id)) continue;
-    linkedIds.add(skill.id);
-    linked.push(skill);
-  }
-  if (linked.length === 0) return enabled;
-  return [...linked, ...enabled.filter(s => !linkedIds.has(s.id))];
+  return resolveAgentLinkedSkills(agent?.skills);
 });
 
 /** 技能面板过滤列表（面板内搜索框按名称/描述过滤；输入框不再按字过滤） */
@@ -2196,6 +2583,16 @@ const dismissAgentSelector = (): void => closeAgentSelector();
 const dismissSkillSelector = (): void => closeSkillSelector();
 
 /**
+ * 技能卡片底部「去关联」：直达 hub 智能体管理分区（复用学习交付的标签页策略：
+ * 已有 hub 标签则聚焦并更新 hash，没有才新建）。卡片保持展开——hub 保存关联后
+ * 经存储同步触发 handleRegistryChange，列表与选中态实时刷新，无需手动重开。
+ */
+const openAgentSkillLinking = async (): Promise<void> => {
+  const opened = await openHubWithHash('#agents');
+  if (!opened) toast.error(t('sidepanel.app.openHubFailed'));
+};
+
+/**
  * 处理输入变化：@ 唤起智能体卡片，/ 唤起技能卡片。
  *
  * 触发符之后继续打字 = 用户正在输入正文，此时直接收起卡片（而不是按字过滤）
@@ -2289,8 +2686,12 @@ const handleKeyDown = (event: KeyboardEvent) => {
     event.preventDefault();
     if (showAgentSelector.value && agentOptionIndexes.value.length > 0) {
       selectAgentAtIndex(selectedAgentIndex.value);
-    } else if (showSkillSelector.value && filteredSkills.value.length > 0) {
-      selectCurrentSkill();
+    } else if (showSkillSelector.value) {
+      // 技能面板开启期间回车一律由面板消费：列表非空选中高亮项，空列表
+      //（未选智能体 / 无关联技能 / 搜索无果）静默忽略——绝不落入 sendMessage，
+      // 否则输入框里残留的触发符「/」会被当作正文发出（与卡片内搜索框
+      // 「无条件拦下回车」的口径一致）
+      if (filteredSkills.value.length > 0) selectCurrentSkill();
     } else {
       sendMessage();
     }
@@ -2326,8 +2727,42 @@ const stripActiveTrigger = () => {
   userInput.value = userInput.value.replace(/[@/][^@/\s]*$/, '');
 };
 
-// 选择智能体（单选，再次选择即切换）
-const selectAgent = (agentName: string) => {
+/**
+ * 选择智能体（单选，再次选择即切换）
+ *
+ * 视觉能力守卫：当前模型未声明视觉能力、而所选智能体需要视觉能力时，
+ * 弹窗二次确认——「仍然选中」执行选中，「取消选中」维持原选择。
+ * 守卫判定用「所选智能体」自身的视觉需求（不是当前已选智能体的）。
+ */
+const selectAgent = async (agentName: string) => {
+  const agent = agentEngine.get(agentName) ?? agentEngine.getById(agentName);
+  if (agent && agentRequiresVision(agent.vision)) {
+    // 守卫异常（弹窗层故障）不得让选择彻底失败：保守按「维持原选择」处理，
+    // 并告警——用户可再次点击重试，绝不静默改变行为
+    let decision: AppDialogResult = 'cancel';
+    try {
+      // 模型两项与默认值一致（当前生效模型）；覆盖的是目标智能体的视觉状态
+      decision = await requestVisionGuard(
+        'select-agent',
+        visionGuardContext({
+          agentHasVision: true,
+          agentLabel: displayNameOf(agent),
+        }),
+      );
+    } catch (error) {
+      console.warn('[AgentSelector] 视觉能力守卫异常，取消本次选择:', error);
+      return;
+    }
+    if (decision !== 'confirm') {
+      console.log(`[AgentSelector] 用户取消选中智能体 ${agentName}，维持原选择`);
+      return;
+    }
+    console.warn(`[AgentSelector] 用户确认选中需要视觉能力的智能体 ${agentName}（当前模型无视觉能力）`);
+  }
+  // 技能选择与智能体绑定：切换到不同智能体时已选技能全部取消——
+  // 各智能体的关联集合独立，跨智能体保留选中只会留下「选了但已不可选」的悬挂态；
+  // 重复选择当前智能体不视为切换，已选技能保持
+  if (selectedAgent.value !== agentName) selectedSkills.value = [];
   selectedAgent.value = agentName;
   stripActiveTrigger();
   dismissedTrigger = null;
@@ -2336,6 +2771,12 @@ const selectAgent = (agentName: string) => {
 
 // 选择技能（多选：面板中再次点击已选技能视为取消；值为技能 id）
 const selectSkill = (skillId: string) => {
+  // 防御：只接受当前智能体关联集合内的技能。面板本身只渲染关联技能，
+  // 此处拦截的是竞态（点击瞬间注册表同步换掉关联集）与未来的误用调用
+  if (!selectableSkills.value.some(skill => skill.id === skillId)) {
+    console.warn(`[SkillSelector] 技能 "${skillId}" 不在当前智能体的关联集合内，忽略本次选择`);
+    return;
+  }
   const idx = selectedSkills.value.indexOf(skillId);
   if (idx === -1) {
     selectedSkills.value.push(skillId);
@@ -2347,9 +2788,10 @@ const selectSkill = (skillId: string) => {
   showSkillSelector.value = false;
 };
 
-// 移除选中的智能体
+// 移除选中的智能体（无智能体即无合法技能选择——与面板「先选智能体再激活技能」同口径）
 const removeSelectedAgent = () => {
   selectedAgent.value = '';
+  selectedSkills.value = [];
 };
 
 // 移除单个选中的技能（徽标上的 ×；入参为技能 id）
@@ -2619,10 +3061,8 @@ const goHome = async (options?: { force?: boolean }): Promise<boolean> => {
   activeChatId.value = '';
   // 缓存随之清空，避免已结束会话的记录常驻内存（会话删除场景由 handleSessionDeleted 传入 chatId 精准清理）
   clearSessionContextCache();
-  runningAssistantMessages.clear();
-  // 新会话尚无请求，上下文用量清空（环回到空态；选择变化后由 watcher 重新给出预估值）
-  contextUsage.value = null;
-  isCompacting.value = false;
+  // 会话级 UI 状态复位（运行源 / 直播登记 / 压缩种子与感知 / 用量）
+  resetSessionScopedUiState({ clearContextUsage: true });
   return true;
 };
 
@@ -2733,8 +3173,19 @@ const loadHistorySessionData = async (chatId: string) => {
     //   - 学习会话：库里是草稿回放数据（非 LLM 输入），装配一律用空，
     //     否则草稿 JSON 会被拼进 systemPrompt 污染请求
     activeSystemPromptSuffix.value = activeSessionIsLearn ? '' : effective.systemPromptSuffix;
-    runningAssistantMessages.clear();
-    messages.value = effective.records.map(recordToUiMessage);
+    // 会话级 UI 状态复位（含压缩感知——压缩事件按 chatId 投递，切到别的会话
+    // 后旧会话的 done/failed 会被会话守卫丢弃，不显式复位则新会话的圆环
+    // 会永远呼吸在「正在压缩对话记忆…」）
+    resetSessionScopedUiState();
+    // 旧记录的用户上传反推需要全会话的助手引用集合（一次性计算后逐条映射）
+    const assistantRefs = assistantImageRefsOf(effective.records);
+    // 展示归一：运行中压缩的 pending 片段可能随 2s 快照落库后进程崩溃，
+    // 历史加载时结算为可读的中断说明（零拷贝快路径见 historyDisplayParts；
+    // 仍在运行的会话走 attach 的引擎快照，不经此归一）
+    messages.value = effective.records.map(record => {
+      const ui = recordToUiMessage(record, assistantRefs);
+      return { ...ui, parts: historyDisplayParts(ui.parts ?? [], t('sidepanel.chat.compactionInterrupted')) };
+    });
     showChatMode.value = messages.value.length > 0;
     showHistoryDrawer.value = false;
     // 切换到的会话与输入区附件草稿无关：清空避免「附件跟着切换」的错位
@@ -2748,12 +3199,16 @@ const loadHistorySessionData = async (chatId: string) => {
     selectedAgent.value = boundAgent ? (boundAgent.plugin ? boundAgent.id : boundAgent.name) : '';
     // 技能回显：历史会话可能存技能 id（v2）或技能名（v1），统一经 resolveSkill
     // 三态解析为当前记录，取其 id 存入选中态（停用/已删除的静默剔除）；
-    // 同一技能的多形态引用（id 与名称/模型标识并存）解析后按 id 去重，
-    // 避免重复胶囊、选择签名漂移与「取消一次删不干净」的边缘问题
+    // 并按当前智能体的关联集合过滤（回显口径与面板可选口径一致：未关联的
+    // 技能不回显，旧会话在新规则下不制造悬挂选中）；同一技能的多形态引用
+    //（id 与名称/模型标识并存）解析后按 id 去重，避免重复胶囊、
+    // 选择签名漂移与「取消一次删不干净」的边缘问题
+    const linkedIds = new Set(resolveAgentLinkedSkills(boundAgent?.skills).map(skill => skill.id));
     const restoredSkillIds = new Set<string>();
     selectedSkills.value = (Array.isArray(meta.skillNames) ? meta.skillNames : [])
       .map(ref => skillEngine.get(ref))
       .filter((skill): skill is SkillRecord => !!skill && skill.enabled)
+      .filter(skill => linkedIds.has(skill.id))
       .filter(skill => {
         if (restoredSkillIds.has(skill.id)) return false;
         restoredSkillIds.add(skill.id);
@@ -2803,11 +3258,14 @@ const loadHistorySession = async (chatId: string) => {
       // Replace a possibly newer disk snapshot with the atomic attach snapshot;
       // buffered events then advance it exactly once, in their original order.
       const record = snapshot.record;
+      // 助手记录：保留完整 imageRefs（截图是它的合法展示主体）；
+      // 旧记录反推集合只影响用户消息，此处不需要
       const live = recordToUiMessage(record) as RunningAssistantMessage;
       live.parts ??= [];
       live.toolCalls ??= [];
       live.isThinking = !record.content && !record.reasoning && !record.toolCalls.length;
       runningAssistantMessages.set(record.id, live);
+      if (snapshot.running) liveAssistantMessageId.value = record.id;
       const index = messages.value.findIndex(message => message.id === record.id);
       if (index < 0) messages.value.push(live);
       else messages.value.splice(index, 1, live);
@@ -2819,9 +3277,14 @@ const loadHistorySession = async (chatId: string) => {
 };
 
 conversationEngine.onSettled = (chatId, summary, error) => {
+  // 发送前压缩缓冲清理：运行已落定，未消费的种子（如引擎准备失败、
+  // assistant-start 未发出）不再属于任何消息，防止种进同会话的下一次运行。
+  // 清理不设活跃会话门槛——后台会话的种子同样会滞留内存。
+  preRunCompactionSeed.delete(chatId);
   if (activeChatId.value !== chatId) return;
   isAiResponding.value = false;
   isCompacting.value = false;
+  liveAssistantMessageId.value = null;
   settleGuard(false);
   dismissConversationQuestions();
   if (error && !sendInFlight.value) pushSystemNotice(error);
@@ -2916,6 +3379,9 @@ const handleSessionDeleted = (chatId: string) => {
     settleGuard(false);
   }
   clearSessionContextCache(chatId);
+  // 发送前压缩的种子缓冲一并清除：被删会话的 assistant-start 永远不会到达，
+  // 残留条目只会在内存里滞留（onSettled 的清理按活跃会话过滤，覆盖不到这里）
+  preRunCompactionSeed.delete(chatId);
   // 缓冲区里该会话的首截图引用一并清除（assistant-start 尚未到达的竞态窗口）
   for (const [messageId, entry] of pendingImageRefs) {
     if (entry.chatId === chatId) pendingImageRefs.delete(messageId);
@@ -2962,7 +3428,7 @@ const handleContainerClick = () => {
 };
 
 // 处理文件上传
-/** 附件 chip 悬浮提示：文件名 + 提取形态 + 体积/字符数 */
+/** 附件 chip 悬浮提示：文件名 + 提取形态 + 体积/页数（图片含压缩前后体积） */
 const attachmentChipTitle = (att: ChatAttachment): string => {
   const kindText =
     att.source === 'office'
@@ -2970,16 +3436,21 @@ const attachmentChipTitle = (att: ChatAttachment): string => {
       : att.source === 'image'
         ? t('sidepanel.attachments.sourceImage')
         : t('sidepanel.attachments.sourceText');
-  return `${att.name}\n${kindText} · ${formatBytes(att.sizeBytes)}${
-    att.kind === 'text' ? ` · ${att.chars} ${t('sidepanel.attachments.charsUnit')}` : ''
-  }`;
+  if (att.kind === 'text') {
+    return `${att.name}\n${kindText} · ${formatBytes(att.sizeBytes)} · ${att.totalPages ?? '?'} ${t('sidepanel.attachments.pagesUnit')} · ${formatCharsK(att.chars)} ${t('sidepanel.attachments.charsUnit')}`;
+  }
+  const compressed =
+    att.displayBytes !== undefined && att.displayBytes !== att.sizeBytes
+      ? ` → ${formatBytes(att.displayBytes)}（${t('sidepanel.attachments.compressedTag')}）`
+      : '';
+  return `${att.name}\n${kindText} · ${formatBytes(att.sizeBytes)}${compressed}`;
 };
 
-/** 附件 chip 元信息：文本类显示字符数（K 缩写），图片显示体积 */
+/** 附件 chip 元信息：文本类显示页数，图片显示（压缩后）体积 */
 const attachmentChipMeta = (att: ChatAttachment): string =>
   att.kind === 'text'
-    ? `${formatCharsK(att.chars)}${t('sidepanel.attachments.charsUnit')}`
-    : formatBytes(att.sizeBytes);
+    ? `${att.totalPages ?? '?'} ${t('sidepanel.attachments.pagesUnit')}`
+    : formatBytes(att.displayBytes ?? att.sizeBytes);
 
 const handleFileUpload = () => {
   if (attachmentManager.isAdding.value) return;
@@ -3282,17 +3753,24 @@ const sendMessageInner = async () => {
       return;
     }
 
-    // 附件守卫：图片附件存在而当前模型未声明视觉能力（上传后模型被切换的场景）——
-    // 阻断发送，用户可切换回视觉模型或移除图片附件后重试
+    // 视觉能力兜底提示：图片附件存在而当前模型未声明视觉能力时，告知本次
+    // 请求的图片可能无法被识别——但**不阻断发送**。
+    //
+    // 口径说明：用户在上传图片时已做过二次确认（「仍然上传 / 取消上传 /
+    // 前往设置」），选择放行即表示接受「带图请求会被拒绝」的后果；此处的
+    // 提示只覆盖「未经该确认路径」的带图情形（如历史会话恢复的附件、
+    // 切换模型后残留的附件），保证后果始终可见，但不重复阻断用户已决断的操作。
     const hasImageAttachment = pendingAttachments.value.some(att => att.kind === 'image');
     if (hasImageAttachment && !(activeOption.value?.vision ?? false)) {
-      console.warn(`[SendMessage] 当前模型 ${activeChatModel.value || '(未配置)'} 无视觉能力，存在图片附件，阻断发送`);
-      await showAlert(
-        t('sidepanel.attachments.modelNoVision'),
-        t('sidepanel.attachments.promptTitle'),
-        'warn',
+      console.warn(
+        `[SendMessage] 当前模型 ${activeChatModel.value || '(未配置)'} 无视觉能力，本次请求携带图片附件（继续发送，由服务端裁决）`,
       );
-      return;
+      pushSystemNotice(
+        t('sidepanel.attachments.visionSendNoVision', {
+          model: activeChatModel.value || t('sidepanel.app.noModelConfigured'),
+          count: pendingAttachments.value.filter(att => att.kind === 'image').length,
+        }),
+      );
     }
 
     // 同一会话同时只允许一个运行
@@ -3322,6 +3800,18 @@ const sendMessageInner = async () => {
       if (defaultAgent) {
         selectedAgent.value = defaultAgent.name;
         console.info(`[SendMessage] 未选择智能体，已自动选中默认智能体 "${defaultAgent.name}"`);
+        // 视觉能力兜底：默认智能体需要视觉而当前模型未声明视觉能力时告知后果。
+        // 系统自动选中路径没有经过用户的显式确认（selectAgent 的守卫不覆盖此处），
+        // 与发送兜底同口径——通知不阻断，用户可切换模型或换智能体后重试
+        if (agentRequiresVision(defaultAgent.vision) && !(activeOption.value?.vision ?? false)) {
+          console.warn(`[SendMessage] 默认智能体 ${defaultAgent.name} 需要视觉能力，当前模型无视觉声明`);
+          pushSystemNotice(
+            t('sidepanel.attachments.visionDefaultAgentNoVision', {
+              agent: displayNameOf(defaultAgent),
+              model: activeChatModel.value || t('sidepanel.app.noModelConfigured'),
+            }),
+          );
+        }
       } else {
         console.warn('[SendMessage] 默认智能体不可用，本轮以无智能体模式发送');
       }
@@ -3341,7 +3831,10 @@ const sendMessageInner = async () => {
         return;
       }
 
-      // 自动建工作笔记，笔记信息作为提示词后缀注入（不再原地修改智能体共享配置）
+      // 自动建工作笔记，笔记信息作为提示词后缀注入（不再原地修改智能体共享配置）。
+      // 站点清单显式并入后缀：预设提示词要求「website 只在 <supplementary-context>
+      // 列出的已开启站点中选择」——此前清单只写进笔记正文，模型必须先读笔记才能
+      // 知道可用平台，属传递断链；此处补齐（笔记正文保留清单供用户查看）
       try {
         console.log('Deep Search智能体：自动触发 note_tool 创建工作笔记');
         const createNoteResult = await openaiToolsConverter.executeTool('note_tool', {
@@ -3350,7 +3843,9 @@ const sendMessageInner = async () => {
           content: `用户查询: ${userInput.value}\n\n搜索时间: ${new Date().toLocaleString()}\n\n已开启的搜索平台: ${enabledWebsites.value.map(site => site.name).join('、')}\n\n---\n\n`
         });
         if (createNoteResult && !createNoteResult.isError) {
-          systemPromptSuffix = firstTextContent(createNoteResult.content) || '';
+          const noteInfo = firstTextContent(createNoteResult.content) || '';
+          const enabledSiteLine = `已开启的搜索平台（web_search 的 website 只能从中选择）：${enabledWebsites.value.map(site => site.id).join('、')}`;
+          systemPromptSuffix = noteInfo ? `${noteInfo}\n${enabledSiteLine}` : enabledSiteLine;
         } else {
           console.error('note_tool 创建笔记失败:', createNoteResult);
         }
@@ -3435,26 +3930,23 @@ const sendMessageInner = async () => {
     userInput.value = '';
     attachmentManager.clearAttachments();
 
-    // 附件派生（两条通道，与既有「时间戳只进模型侧」的口径一致）：
+    // 附件派生（三条通道，与既有「时间戳只进模型侧」的口径一致）：
     //   - 转录可见摘要标记：并入 userInput 落库（用户能查到本轮带了哪些附件）
-    //   - 模型侧全文块 attachmentPrompt：文本附件全文（Office 已解析），只进 LLM 请求
+    //   - 模型侧 <upload_file> 信封 attachmentPrompt：文本附件注册会话文件库
+    //     （8 位短 id + 确定性分页）后只内联第 1 页（预算封顶，见
+    //     upload-file-envelope），全文由 read_file 按页续读；信封只进 LLM
+    //     请求，转录侧不落信封本体
     //   - 图片附件：data URL 列表走多模态 image_url（模型可见、转录不落库）
     const attachmentSummaryLines = currentAttachments.map(att =>
       att.kind === 'image'
         ? `[图片附件] ${att.name}`
-        : `[附件] ${att.name}（${att.chars} 字符${att.source === 'office' ? '，已解析为文本' : ''}）`,
+        : `[附件] ${att.name}（共 ${att.totalPages ?? '?'} 页，AI 可按页读取全文）`,
     );
     const attachmentSummary = attachmentSummaryLines.length
       ? `\n\n${attachmentSummaryLines.join('\n')}`
       : '';
     const transcriptInput = `${currentInput}${attachmentSummary}`;
     const textAttachmentBlocks = currentAttachments.filter(att => att.kind === 'text');
-    const attachmentPrompt =
-      textAttachmentBlocks.length > 0
-        ? `<attachments>\n${textAttachmentBlocks
-            .map(att => `<attachment name="${escapeXmlText(att.name)}">\n${att.text ?? ''}\n</attachment>`)
-            .join('\n')}\n</attachments>`
-        : '';
     const currentUserImages = currentAttachments
       .filter(att => att.kind === 'image' && typeof att.dataUrl === 'string')
       .map(att => att.dataUrl as string);
@@ -3465,17 +3957,51 @@ const sendMessageInner = async () => {
         messageTextarea.value.style.height = 'auto';
     }
 
-    // --- 5. runtime 装配（systemPrompt XML 分区 + 工具 Set 去重 + 模型配置 + AI 面历史上下文） ---
-    // 装配封装为函数：发送前压缩成功后需以「摘要 + 空记录」重建 runtime。
-    // 装配可能抛错（智能体被并发删除 / 模型配置残缺）：此时消息尚未进入引擎，
-    // 用户输入已在第 4 步被清空——先还原输入再上抛，由外层 sendMessage 兜底
-    // catch 呈现错误，用户不必为一次可修复的装配失败重新敲一遍全文
-    const buildRuntime = () =>
-      runtimeBuilder.build({
+    // --- 5. 文件注册 + runtime 装配（systemPrompt XML 分区 + 工具 Set 去重 + 模型配置 + AI 面历史上下文） ---
+    // 装配封装为函数：文本附件先注册进会话文件库（分配 8 位短 id + 分页元
+    // 信息），再装配 <upload_file> 信封（只内联第 1 页，预算封顶）并构建
+    // runtime。注册 / 装配可能抛错（存储不可用 / 智能体被并发删除 / 模型
+    // 配置残缺）：此时消息尚未进入引擎，用户输入已在第 4 步被清空——先还原
+    // 输入再上抛，由外层 sendMessage 兜底 catch 呈现错误，用户不必为一次
+    // 可修复的失败重新敲一遍全文
+    const registerFilesAndBuildRuntime = async (): Promise<ConversationRuntime> => {
+      let envelopePrompt = '';
+      if (textAttachmentBlocks.length > 0) {
+        const envelopeEntries: UploadFileEnvelopeEntry[] = [];
+        for (const att of textAttachmentBlocks) {
+          const record = await conversationFileStore.register(
+            runChatId,
+            {
+              name: att.name,
+              ext: att.ext,
+              source: att.source === 'office' ? 'office' : 'plain',
+              mimeType: att.mimeType,
+              sizeBytes: att.sizeBytes,
+            },
+            att.text ?? '',
+          );
+          envelopeEntries.push({
+            id: record.id,
+            name: record.name,
+            ext: record.ext,
+            source: record.source,
+            totalPages: record.totalPages,
+            page1: att.page1 ?? '',
+          });
+          console.log(`[SendMessage] 文件已注册: ${record.id}（${att.name}，共 ${record.totalPages} 页）`);
+        }
+        // 信封预览预算按当前生效模型的上下文阈值封顶（与运行链路同源的
+        // 模型级阈值；硬兜底仍是发送前的消息体积守卫）
+        envelopePrompt = buildUploadFileEnvelope(
+          envelopeEntries,
+          activeOption.value?.contextThreshold ?? CONTEXT_THRESHOLD_DEFAULT,
+        );
+      }
+      return runtimeBuilder.build({
         chatId: runChatId,
         userInput: transcriptInput,
         userImages: currentUserImages,
-        attachmentPrompt,
+        attachmentPrompt: envelopePrompt,
         agentName: selectedAgent.value || null,
         skillNames: selectedSkills.value,
         modelRef: activeModelRef.value,
@@ -3485,19 +4011,20 @@ const sendMessageInner = async () => {
         contextSummary: effective.summary || undefined,
         contextSummaryAt: effective.compactedAt || undefined,
       });
+    };
     let runtime: ConversationRuntime;
     try {
-      runtime = await buildRuntime();
+      runtime = await registerFilesAndBuildRuntime();
     } catch (error) {
       if (!userInput.value.trim()) userInput.value = currentInput;
-      // 附件一并还原：装配失败时消息尚未进入引擎，用户不必重新选择文件
+      // 附件一并还原：注册/装配失败时消息尚未进入引擎，用户不必重新选择文件
       if (pendingAttachments.value.length === 0) pendingAttachments.value = currentAttachments;
       throw error;
     }
 
     // --- 6. 上下文用量测量（全量口径）；发送前压缩由后台统一执行 ---
-    // 本轮用户消息按真实请求口径计量（正文 + 附件全文 + 系统时间戳 + 图片体积，
-    // 与引擎构造的 LLM 消息逐字同源，图片以 data URL 形态计入 JSON 序列化长度）
+    // 本轮用户消息按真实请求口径计量（正文 + <upload_file> 信封 + 系统时间戳
+    // + 图片体积，与引擎构造的 LLM 消息逐字同源，图片按固定 token 计量）
     const measureCurrent = () =>
       measureContextUsage({
         systemPrompt: runtime.systemPrompt,
@@ -3669,6 +4196,9 @@ const sendMessageInner = async () => {
       // （自然完成 / 出错 / 用户停止 / 会话切换）都完整清理
       if (preRunAbortController === preRunAbort) preRunAbortController = null;
       isAiResponding.value = false;
+      // 压缩感知兜底回落：正常路径由 done/failed 事件复位；此处兜住「事件
+      // 丢失」的异常时序（如通道在压缩进行中断裂），绝不让呼吸动画悬停
+      isCompacting.value = false;
       removePageGlow();
       stopBorderEffectManagement().catch(error => {
         console.warn('停止边框效果管理失败:', error);
@@ -3815,6 +4345,27 @@ const toggleToolCallExpansion = (messageId: string, toolCallId: string) => {
 };
 
 /**
+ * 压缩片段展开/收起（partIndex 定位 message.parts 原始下标）。
+ * 与工具展开同一双写策略：列表副本（已结束消息，立即生效）+ 运行源对象
+ * （直播消息，流式刷新以源为准）。展开状态随 record.parts 持久化，
+ * 历史会话重载后还原。
+ */
+const toggleCompactionCollapse = (messageId: string, partIndex: number) => {
+  const source = runningAssistantMessages.get(messageId);
+  if (source && toggleCompactionExpanded(source.parts, partIndex)) {
+    refreshUiMessage(messageId);
+    return;
+  }
+  const index = messages.value.findIndex(msg => msg.id === messageId);
+  if (index === -1) return;
+  const message = messages.value[index];
+  if (!message.parts || !toggleCompactionExpanded(message.parts, partIndex)) return;
+  // 深拷贝触发响应式（parts 数组内的片段对象是列表项快照）
+  const updatedParts = message.parts.map((p, i) => (i === partIndex ? { ...p } : p));
+  messages.value.splice(index, 1, { ...messages.value[index], parts: updatedParts });
+};
+
+/**
  * 切换 reasoning part 的收起/展开状态。
  * userToggled 标记：置位后流式期间到达的新内容（正文/工具调用）不再
  * 自动收起该片段——用户明确要看的过程内容优先于自动收起约定。
@@ -3911,6 +4462,20 @@ const handleRegistryChange = () => {
   });
   if (validSkillRefs.length !== selectedSkills.value.length) {
     selectedSkills.value = validSkillRefs;
+  }
+  // 关联性修剪：hub 编辑智能体的技能关联后，已选技能可能已不属于当前智能体
+  //（含上方「智能体被删除 → 清空选择」后的整体非法态）。按当前关联集合修剪，
+  // 维持「选中 ⊆ 当前智能体关联集」不变量——registryVersion 已自增，
+  // selectableSkills 在此处读到的必然是新注册表下的结果
+  if (selectedSkills.value.length > 0) {
+    const linkedIds = new Set(selectableSkills.value.map(skill => skill.id));
+    const stillLinked = selectedSkills.value.filter(id => linkedIds.has(id));
+    if (stillLinked.length !== selectedSkills.value.length) {
+      console.warn(
+        `[RegistrySync] ${selectedSkills.value.length - stillLinked.length} 个已选技能不再关联当前智能体，自动取消选中`,
+      );
+      selectedSkills.value = stillLinked;
+    }
   }
 };
 

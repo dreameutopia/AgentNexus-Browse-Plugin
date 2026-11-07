@@ -18,9 +18,12 @@ dist/
 # ========================
 # Environment & Secrets
 # ========================
+# 覆盖全部变体：.env / .env.local / .env.production / .env.staging / .env.development ...
+# （任一未覆盖的变体都可能被 `git add .` 带进公开仓库）
 .env
-.env.local
-.env.*.local
+.env.*
+# 仅放行无敏感值的示例文件
+!.env.example
 
 # ========================
 # IDE & Editor
@@ -93,16 +96,16 @@ tmp/
 temp/
 
 # ========================
-# Java / Maven (legacy, keep excluded)
+# Java / Maven (legacy)
 # ========================
+# 本项目不使用 Maven / Gradle；以下规则为历史模板遗留，仅保留对
+# 误提交的构建产物的兜底（target/、build/ 等）。
 HELP.md
 target/
 .mvn/
 mvnw
 mvnw.cmd
 .mvn/wrapper/maven-wrapper.jar
-src/main/
-src/test/
 pom.xml
 .apt_generated
 .factorypath
@@ -122,7 +125,100 @@ build/
 # public/models/*.bin
 
 ### VS Code ###
-.vscode/
+# 注意：此处不要写 .vscode/ —— 整体排除目录会让上方的 ! 例外失效。
+# 上方 `.vscode/*` + `!` 例外已足够：只放行需要共享的四个文件。
 
 # Plugin publisher private keys
 *.publisher-key.json
+
+# ========================
+# 密钥 / 证书 / 凭据文件
+# ========================
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+*.cer
+*.der
+*.asc
+*.gpg
+id_rsa
+id_ed25519
+.netrc
+.npmrc
+.pypirc
+
+# ========================
+# 本地数据库 / 数据转储
+# ========================
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.har
+*.hprof
+
+# ========================
+# 部署平台本地元数据（含 project id、组织标识）
+# ========================
+.vercel/
+.netlify/
+.wrangler/
+.dev.vars
+dev.vars
+
+# ========================
+# 备份 / 合并残留 / 临时文件
+# ========================
+*.bak
+*.orig
+*.rej
+*.tmp
+*.temp
+logs/
+
+# ========================
+# Claude Code 本地设置（含本机路径与权限配置）
+# ========================
+.claude/settings.local.json
+
+# ========================
+# 预览截图产物
+# ========================
+.preview/shots/
+
+# ========================
+# 内部 / 隐私文档（仅本地保留，永不进入公开仓库）
+# ========================
+# 收录真实会话记录、个人环境信息、第三方站点内部结构等不适合公开的分析文档。
+# 公开仓库只保留 docs/analysis/ 下的通用设计规范。
+docs/private/
+
+# ========================
+# Python / Jupyter
+# ========================
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# ========================
+# 测试报告产物
+# ========================
+playwright-report/
+test-results/
+blob-report/
+.playwright/
+
+# ========================
+# 包管理器缓存
+# ========================
+.pnpm-store/
+.yarn/cache
+.yarn/install-state.gz

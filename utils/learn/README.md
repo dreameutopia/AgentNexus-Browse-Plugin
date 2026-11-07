@@ -217,7 +217,7 @@ storage 事件即时同步，页面重新获得焦点/可见及点击创建前�
 - `browser_page_exec`：常规观察不足时探测页面结构或组件作用域。
 - `browser_get_page_text`（核心注入）、`browser_get_page_info`、`browser_navigate`、`wait_page_load`、`browser_go_back_or_forward`。
 - `browser_get_all_tabs`、`browser_switch_tab`、`browser_network_capture`、`web_search`、`generic_wait`。
-- `plan_tool` 与交互征询工具（核心注入）、`note_tool`、学习终止工具 `submit_skill`。
+- `plan_tool`、`note_tool` 与交互征询工具（同为 CORE_SESSION_TOOL_IDS 核心注入，所有会话恒定可用，学习域逐步留痕/记录卡点的用法由 learn-prompts 约束）、学习终止工具 `submit_skill`。
 
 视觉目标组合额外具备：`vision_gui`（10 个 action，参数由 schema 与学习域自有的 `<vision-gui-tool>` 分区描述）、`screenshot`、`browser_window`；文本目标×视觉策略仅额外具备 `screenshot`。
 

@@ -144,6 +144,12 @@ export class NetworkObserverTool extends BaseBrowserTool {
       '实际观察网络请求与文本响应，统一启动/读取/停止；完整正文进入 dataRef',
     category: 'browser',
     version: '6.0.0',
+    // 被动观察：复用 cdpSession 既有调试会话（epoch 不变，GUI 截图身份不被
+    // 替换），也不改变页面像素——视觉循环无需重拍。
+    // 不变量（勿轻易改动）：本工具经 textCommand → cdpSession.attach 复用会话；
+    // action 快照存活期内会话被 retainUntil 保留，不会新增 attach、不递增
+    // epoch、不触发调试提示条导致的视口变化——「豁免重拍」不会作废截图凭据。
+    noVisionRecapture: true,
   };
   openaiSchema: OpenAITool = {
     type: 'function',

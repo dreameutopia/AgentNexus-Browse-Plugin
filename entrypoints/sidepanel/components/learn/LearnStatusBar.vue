@@ -12,6 +12,7 @@
 import { computed } from 'vue';
 import { t } from '@/utils/i18n';
 import type { ContextUsage } from '@/entrypoints/sidepanel/core';
+import { COMPACTION_PRE_RUN_RATIO } from '@/entrypoints/sidepanel/core';
 import './learn-theme.css';
 
 const props = defineProps<{
@@ -37,8 +38,15 @@ const contextPercent = computed(() =>
     : null,
 );
 
-/** 逼近压缩线（85%）即转警示色——早于 90% 触发线给用户留出反应余量 */
-const contextHigh = computed(() => (contextPercent.value ?? 0) >= 85);
+/**
+ * 逼近压缩线即转警示色——阈值直接引用 COMPACTION_PRE_RUN_RATIO（发送前
+ * 压缩线），保证「变红 = 已到压缩触发线」与引擎判定恒一致，不各自硬编码。
+ * 学习路径无发送前压缩（压缩只发生在运行中 90% 线），此处取较早的一条线
+ * 作为「即将触发压缩」的提前预警，给用户留出反应余量。
+ */
+const contextHigh = computed(
+  () => (contextPercent.value ?? 0) >= COMPACTION_PRE_RUN_RATIO * 100,
+);
 
 /** mm:ss */
 function formatElapsed(ms: number): string {

@@ -86,7 +86,7 @@ for (const action of VISION_GUI_ACTIONS) {
     function: { name: "vision_gui", arguments: JSON.stringify({ action }) },
   };
   assert.equal(
-    needsVisionRefresh([call], [], () => "none"),
+    needsVisionRefresh([call], [], () => true),
     !["inspect", "zoom", "check"].includes(action),
     `${action} lifecycle overrides whole-tool metadata`,
   );
@@ -213,7 +213,7 @@ const call = (action: string) => ({
   function: { name: "vision_gui", arguments: JSON.stringify({ action }) },
 });
 assert.equal(
-  needsVisionRefresh([call("click"), call("check")], [], () => "none"),
+  needsVisionRefresh([call("click"), call("check")], [], () => true),
   true,
   "Read after gesture must not cancel pending capture",
 );
@@ -221,7 +221,7 @@ assert.equal(
   needsVisionRefresh(
     [{ function: { name: "vision_gui", arguments: "{" } }],
     [],
-    () => "none",
+    () => true,
   ),
   true,
 );
@@ -242,7 +242,7 @@ assert.equal(
   needsVisionRefresh(
     [call("click"), call("zoom")],
     [{ callIndex: 1, image: "crop", description: "crop", kind: "region" }],
-    () => "none",
+    () => true,
   ),
   true,
 );

@@ -66,24 +66,42 @@
       </div>
     </div>
 
-    <!-- 编辑视图（左右布局：左列基础信息与分类标签，右列工具组与视觉声明） -->
-    <form v-else class="hub-editor" @submit.prevent="save">
+    <!-- 编辑视图（左右两张等高卡片：左卡基础信息（整卡内部滚动），右卡清单区（各区占比限高、区内滚动）） -->
+    <form v-else class="hub-editor is-fill" @submit.prevent="save">
       <div class="hub-editor-head">
-        <h2>{{ editingExisting ? t('hub.editAgent') : t('hub.newAgent') }}</h2>
-        <button type="button" class="hub-btn" @click="cancelEdit">{{ t('hub.backToList') }}</button>
+        <div class="hub-editor-head-main">
+          <h2>{{ editingExisting ? t('hub.editAgent') : t('hub.newAgent') }}</h2>
+        </div>
+        <!-- 头部动作区：返回列表 / 取消 / 保存（取消与保存在返回列表右侧） -->
+        <div class="hub-editor-head-actions">
+          <button type="button" class="hub-btn" @click="cancelEdit">{{ t('hub.backToList') }}</button>
+          <button type="button" class="hub-btn" @click="cancelEdit">{{ t('common.cancel') }}</button>
+          <button type="submit" class="hub-btn hub-btn-primary">{{ t('common.save') }}</button>
+        </div>
       </div>
 
-      <div class="hub-editor-split">
-        <!-- 左列：头像 / 名称 / 描述 / 分类 / 标签 / 系统提示词 -->
-        <div class="hub-editor-col">
-          <!-- 头像：上传图片（智能裁剪 + 压缩至 1MB 内）或点选 emoji 卡片；置于名称上方 -->
-          <div class="hub-field">
+      <div class="hub-editor-split hub-editor-split--agent">
+        <!-- 左卡：头像 / 名称 / 视觉声明 / 描述 / 分类 / 标签 / 系统提示词。
+             短字段走双列栅格（同一行并排），长字段（系统提示词）独占整行并吃满余高 -->
+        <div class="hub-editor-col hub-editor-col--form">
+          <!-- 头像：上传图片（智能裁剪 + 压缩至 1MB 内）或点选 emoji 卡片。
+               预览占位刻意压到最小（emoji 26px / 图片 36px），
+               图片形态可点开放大查看并下载 -->
+          <div class="hub-field hub-avatar-field">
             <span class="hub-field-label">{{ t('hub.fieldAvatar') }}</span>
             <div class="hub-avatar-picker">
               <div class="hub-avatar-current">
-                <span class="hub-avatar-preview">
-                  <AgentAvatar :avatar="form.avatar" :size="52" :label="form.name" />
-                </span>
+                <component
+                  :is="isImageAvatar ? 'button' : 'span'"
+                  class="hub-avatar-preview"
+                  :class="{ 'is-image': isImageAvatar, 'is-emoji': !isImageAvatar }"
+                  :type="isImageAvatar ? 'button' : undefined"
+                  :title="isImageAvatar ? t('hub.avatarPreviewTitle') : undefined"
+                  :aria-label="isImageAvatar ? t('hub.avatarPreviewTitle') : undefined"
+                  @click="isImageAvatar && openAvatarPreview()"
+                >
+                  <AgentAvatar :avatar="form.avatar" :size="isImageAvatar ? 36 : 26" :label="form.name" />
+                </component>
                 <div class="hub-avatar-actions">
                   <label class="hub-btn hub-avatar-upload" :title="t('hub.fieldAvatarHint')">
                     {{ t('hub.avatarUpload') }}
@@ -111,142 +129,272 @@
                 v-if="showEmojiPicker"
                 :selected="form.avatar?.type === 'emoji' ? form.avatar.value : ''"
                 @select="onEmojiPicked"
+                @close="showEmojiPicker = false"
               />
               <p class="hub-hint">{{ t('hub.fieldAvatarHint') }}</p>
               <p v-if="avatarError" class="hub-error">{{ avatarError }}</p>
             </div>
           </div>
 
-          <label class="hub-field" :class="{ 'is-invalid': nameInvalid }">
-            <span class="hub-field-label">{{ t('hub.fieldName') }}<span class="hub-required" aria-hidden="true">*</span></span>
-            <input v-model.trim="form.name" type="text" :maxlength="AGENT_NAME_MAX_CHARS" :placeholder="t('hub.fieldNamePlaceholder')" />
-          </label>
+          <!-- 名称 + 描述：两个单行输入并排（宽度足够时） -->
+          <div class="hub-form-row">
+            <label class="hub-field" :class="{ 'is-invalid': nameInvalid }">
+              <span class="hub-field-label">{{ t('hub.fieldName') }}<span class="hub-required" aria-hidden="true">*</span></span>
+              <input v-model.trim="form.name" type="text" :maxlength="AGENT_NAME_MAX_CHARS" :placeholder="t('hub.fieldNamePlaceholder')" />
+            </label>
 
-          <label class="hub-field" :class="{ 'is-invalid': descriptionInvalid }">
-            <span class="hub-field-label">{{ t('hub.fieldDescription') }}<span class="hub-required" aria-hidden="true">*</span></span>
-            <input v-model.trim="form.description" type="text" :maxlength="AGENT_DESCRIPTION_MAX_CHARS" :placeholder="t('hub.fieldDescriptionPlaceholder')" />
-          </label>
-
-          <!-- 分类：自定义下拉（内置分类 + 智能体/技能中已有自定义分类可复用）；
-               选择「新建自定义分类」时，新分类名称输入框与选择器位于同一行，
-               保存前经 normalizeCategory 归一化为稳定 id -->
-          <div class="hub-field" :class="{ 'is-invalid': customCategoryInvalid }">
-            <span class="hub-field-label">
-              {{ t('hub.fieldCategory') }}<span v-if="form.category === CATEGORY_CUSTOM_VALUE" class="hub-required" aria-hidden="true">*</span>
-            </span>
-            <CategorySelect
-              v-model="form.category"
-              v-model:custom="form.customCategory"
-              :allow-uncategorized="true"
-              :invalid="customCategoryInvalid"
-            />
-            <p class="hub-hint">{{ t('hub.fieldCategoryHint') }}</p>
+            <label class="hub-field" :class="{ 'is-invalid': descriptionInvalid }">
+              <span class="hub-field-label">{{ t('hub.fieldDescription') }}<span class="hub-required" aria-hidden="true">*</span></span>
+              <input v-model.trim="form.description" type="text" :maxlength="AGENT_DESCRIPTION_MAX_CHARS" :placeholder="t('hub.fieldDescriptionPlaceholder')" />
+            </label>
           </div>
 
-          <!-- 标签：多选；回车 / 逗号 / 空格分隔逐个添加（提示与上限反馈由组件内置） -->
-          <div class="hub-field">
-            <span class="hub-field-label">{{ t('hub.fieldTags') }}</span>
-            <TagInput v-model="form.tags" />
-          </div>
-
-          <label class="hub-field" :class="{ 'is-invalid': systemInvalid }">
-            <span class="hub-field-label">{{ t('hub.fieldSystem') }}<span class="hub-required" aria-hidden="true">*</span></span>
-            <textarea v-model="form.system" rows="14" :placeholder="t('hub.fieldSystemPlaceholder')"></textarea>
-          </label>
-        </div>
-
-        <!-- 右列：工具组选择 + 视觉声明 -->
-        <div class="hub-editor-col">
-          <div class="hub-field">
-            <div class="hub-groups-head">
-              <span class="hub-field-label">{{ t('hub.fieldToolGroups') }}<span class="hub-required" aria-hidden="true">*</span></span>
-              <span class="hub-groups-count">{{ t('hub.selectedToolCount', { count: selectedToolCount, max: MAX_TOOLS_PER_AGENT }) }}</span>
-            </div>
-            <div class="hub-groups-scroll" :class="{ 'is-invalid': groupsInvalid }">
-              <div class="hub-groups">
-                <label
-                  v-for="group in toolGroups"
-                  :key="group.id"
-                  class="hub-group"
-                  :class="{ checked: form.groups.includes(group.id), locked: isGroupLocked(group.id) }"
-                >
-                  <input
-                    class="hub-check"
-                    type="checkbox"
-                    :value="group.id"
-                    :checked="form.groups.includes(group.id)"
-                    :disabled="isGroupLocked(group.id)"
-                    @change="toggleGroup(group.id)"
-                  />
-                  <span class="hub-group-name">{{ t(group.nameKey) }}</span>
-                  <span class="hub-group-desc">{{ t(group.descKey) }}</span>
-                  <span v-if="isGroupLocked(group.id)" class="hub-group-lock">{{ t('hub.pythonNotReady') }}</span>
-                </label>
-              </div>
-            </div>
-            <p v-if="showLimitHint" class="hub-error">{{ t('hub.toolLimitHint', { max: MAX_TOOLS_PER_AGENT }) }}</p>
-            <p v-else-if="extraTools.length > 0" class="hub-hint">{{ t('hub.extraToolsHint', { count: extraTools.length }) }}</p>
-          </div>
-
-          <ExternalToolsPicker v-model="form.extraToolIds" :count="selectedToolCount" :max="MAX_TOOLS_PER_AGENT" />
-          <!-- 关联技能：多选（可用清单 = 显式关联 ∪ 工具映射兜底；见 utils/skills/skill-availability） -->
-          <div class="hub-field">
-            <div class="hub-groups-head">
-              <span class="hub-field-label">{{ t('hub.fieldAgentSkills') }}</span>
-              <span class="hub-groups-count">{{ t('hub.selectedSkillCount', { count: form.skills.length, max: AGENT_SKILLS_MAX_COUNT }) }}</span>
-            </div>
-            <div class="hub-groups-scroll">
-              <div v-if="!skills.length" class="hub-hint">{{ t('hub.noSkillsAvailable') }}</div>
-              <div v-else class="hub-groups">
-                <label
-                  v-for="skill in skills"
-                  :key="skill.id"
-                  class="hub-group"
-                  :class="{ checked: form.skills.includes(skill.id), 'is-disabled-skill': !skill.enabled }"
-                >
-                  <input
-                    class="hub-check"
-                    type="checkbox"
-                    :value="skill.id"
-                    :checked="form.skills.includes(skill.id)"
-                    :disabled="!form.skills.includes(skill.id) && form.skills.length >= AGENT_SKILLS_MAX_COUNT"
-                    @change="toggleSkill(skill.id)"
-                  />
-                  <span class="hub-group-name">{{ skillOptionLabel(skill) }}<small v-if="skill.plugin"> · {{ skill.plugin.displayName }} {{ skill.plugin.version }} · {{ skill.plugin.publisher }}</small></span>
-                  <span class="hub-group-desc">{{ skill.enabled ? skill.description : t('hub.skillDisabledMark') }}</span>
-                </label>
-              </div>
-            </div>
-            <label v-for="missing in missingSkillRefs" :key="missing" class="hub-hint"><input class="hub-check" type="checkbox" checked @change="toggleSkill(missing)" />{{ missing }} · {{ t('hub.skillDisabledMark') }}</label>
-            <p class="hub-hint">{{ t('hub.fieldAgentSkillsHint') }}</p>
-          </div>
-
-          <fieldset class="hub-field">
+          <!-- 视觉能力声明（含视觉循环开关）：横向紧凑行，紧随名称 -->
+          <fieldset class="hub-field hub-vision-field">
             <legend class="hub-field-label">{{ t('hub.fieldVision') }}</legend>
-            <HubSwitch v-model="form.visionEnabled">{{ t('hub.visionEnable') }}</HubSwitch>
-            <template v-if="form.visionEnabled">
-              <p class="hub-hint">{{ t('hub.visionCoordinatesHint') }}</p>
-              <label class="hub-inline-field hub-vision-tool">
-                <span>{{ t('hub.screenshotTool') }}</span>
+            <div class="hub-vision-row">
+              <HubSwitch v-model="form.visionEnabled">{{ t('hub.visionEnable') }}</HubSwitch>
+              <template v-if="form.visionEnabled">
                 <HubSelect
                   :model-value="form.screenshotTool"
                   :options="[{ value: 'screenshot', label: 'screenshot' }]"
                   :aria-label="t('hub.screenshotTool')"
-                  style="width: 200px"
+                  style="width: 160px"
                   @update:model-value="form.screenshotTool = 'screenshot'"
                 />
-              </label>
-              <HubSwitch v-model="form.reScreenshotAfterTools">{{ t('hub.reScreenshot') }}</HubSwitch>
-            </template>
+                <HubSwitch v-model="form.reScreenshotAfterTools">{{ t('hub.reScreenshot') }}</HubSwitch>
+              </template>
+            </div>
+            <p v-if="form.visionEnabled" class="hub-hint">{{ t('hub.visionCoordinatesHint') }}</p>
           </fieldset>
+
+          <!-- 分类 + 标签：并排 -->
+          <div class="hub-form-row">
+            <!-- 分类：自定义下拉（内置分类 + 智能体/技能中已有自定义分类可复用）；
+                 选择「新建自定义分类」时，新分类名称输入框与选择器位于同一行，
+                 保存前经 normalizeCategory 归一化为稳定 id -->
+            <div class="hub-field" :class="{ 'is-invalid': customCategoryInvalid }">
+              <span class="hub-field-label">
+                {{ t('hub.fieldCategory') }}<span v-if="form.category === CATEGORY_CUSTOM_VALUE" class="hub-required" aria-hidden="true">*</span>
+              </span>
+              <CategorySelect
+                v-model="form.category"
+                v-model:custom="form.customCategory"
+                :allow-uncategorized="true"
+                :invalid="customCategoryInvalid"
+              />
+            </div>
+
+            <!-- 标签：多选；回车 / 逗号 / 空格分隔逐个添加（提示与上限反馈由组件内置） -->
+            <div class="hub-field">
+              <span class="hub-field-label">{{ t('hub.fieldTags') }}</span>
+              <TagInput v-model="form.tags" />
+            </div>
+          </div>
+
+          <label class="hub-field hub-field--grow" :class="{ 'is-invalid': systemInvalid }">
+            <span class="hub-field-label">{{ t('hub.fieldSystem') }}<span class="hub-required" aria-hidden="true">*</span></span>
+            <textarea v-model="form.system" class="hub-field--fill" :placeholder="t('hub.fieldSystemPlaceholder')"></textarea>
+          </label>
+        </div>
+
+        <!-- 右卡：工具组（带搜索）/ 外部插件工具 / 关联技能；
+             三区各为一张独立卡片，均可展开收起，收起时把空间让给其余区 -->
+        <div class="hub-editor-col hub-editor-col--lists">
+          <!-- 工具组 -->
+          <div class="hub-section hub-section--groups" :class="{ 'is-collapsed': collapsedSections.groups }">
+            <div class="hub-section-head">
+              <button
+                type="button"
+                class="hub-section-toggle"
+                :title="collapsedSections.groups ? t('hub.sectionExpand') : t('hub.sectionCollapse')"
+                :aria-expanded="!collapsedSections.groups"
+                @click="collapsedSections.groups = !collapsedSections.groups"
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-section-toggle__chevron" :class="{ 'is-collapsed': collapsedSections.groups }">
+                  <path d="M4.5 6.2L8 9.8l3.5-3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+              <span class="hub-field-label">{{ t('hub.fieldToolGroups') }}<span class="hub-required" aria-hidden="true">*</span></span>
+              <span class="hub-groups-count">{{ t('hub.selectedToolCount', { count: selectedToolCount, max: MAX_TOOLS_PER_AGENT }) }}</span>
+            </div>
+            <div class="hub-section-body">
+              <div class="hub-section-body-inner">
+                <!-- 工具组搜索：按显示名 / 描述过滤（清单较长，搜索是主要定位手段） -->
+                <div class="hub-search hub-search--fill">
+                  <svg class="hub-search__icon" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M11.1 10.2a4.6 4.6 0 1 0-.9.9l3 3 .9-.9-3-3zm-4.1.3a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z" fill="currentColor" />
+                  </svg>
+                  <input v-model="groupQuery" type="text" class="hub-list-search" :placeholder="t('hub.groupSearchPlaceholder')" />
+                </div>
+                <div class="hub-groups-scroll" :class="{ 'is-invalid': groupsInvalid }">
+                  <div v-if="!filteredToolGroups.length" class="hub-hint">{{ t('hub.groupSearchEmpty') }}</div>
+                  <div v-else class="hub-groups">
+                    <div
+                      v-for="group in filteredToolGroups"
+                      :key="group.id"
+                      class="hub-group"
+                      :class="{ checked: form.groups.includes(group.id), locked: isGroupLocked(group.id) }"
+                    >
+                      <input
+                        class="hub-check"
+                        type="checkbox"
+                        :value="group.id"
+                        :checked="form.groups.includes(group.id)"
+                        :disabled="isGroupLocked(group.id)"
+                        @change="toggleGroup(group.id)"
+                      />
+                      <!-- 标题与描述上下布局：描述限两行，右侧「查看」按钮弹出完整信息 -->
+                      <button
+                        type="button"
+                        class="hub-group-body"
+                        :title="t('hub.groupViewDetail')"
+                        @click="openGroupDetail(group)"
+                      >
+                        <span class="hub-group-name">{{ t(group.nameKey) }}</span>
+                        <span class="hub-group-desc">{{ t(group.descKey) }}</span>
+                      </button>
+                      <span v-if="isGroupLocked(group.id)" class="hub-group-lock">{{ t('hub.pythonNotReady') }}</span>
+                      <button
+                        type="button"
+                        class="hub-group-info"
+                        :title="t('hub.groupViewDetail')"
+                        :aria-label="t('hub.groupViewDetail')"
+                        @click.stop="openGroupDetail(group)"
+                      >
+                        <svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <p v-if="showLimitHint" class="hub-error">{{ t('hub.toolLimitHint', { max: MAX_TOOLS_PER_AGENT }) }}</p>
+                <p v-else-if="extraTools.length > 0" class="hub-hint">{{ t('hub.extraToolsHint', { count: extraTools.length }) }}</p>
+              </div>
+            </div>
+          </div>
+
+          <ExternalToolsPicker
+            v-model="form.extraToolIds"
+            :count="selectedToolCount"
+            :max="MAX_TOOLS_PER_AGENT"
+            :collapsed="collapsedSections.external"
+            @toggle-collapse="collapsedSections.external = !collapsedSections.external"
+          />
+
+          <!-- 关联技能：多选（可用清单 = 显式关联 ∪ 工具映射兜底；见 utils/skills/skill-availability） -->
+          <div class="hub-section hub-section--skills" :class="{ 'is-collapsed': collapsedSections.skills }">
+            <div class="hub-section-head">
+              <button
+                type="button"
+                class="hub-section-toggle"
+                :title="collapsedSections.skills ? t('hub.sectionExpand') : t('hub.sectionCollapse')"
+                :aria-expanded="!collapsedSections.skills"
+                @click="collapsedSections.skills = !collapsedSections.skills"
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-section-toggle__chevron" :class="{ 'is-collapsed': collapsedSections.skills }">
+                  <path d="M4.5 6.2L8 9.8l3.5-3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+              <span class="hub-field-label">{{ t('hub.fieldAgentSkills') }}</span>
+              <span class="hub-groups-count">{{ t('hub.selectedSkillCount', { count: form.skills.length, max: AGENT_SKILLS_MAX_COUNT }) }}</span>
+            </div>
+            <div class="hub-section-body">
+              <div class="hub-section-body-inner">
+                <!-- 关联技能搜索：按名称 / 描述过滤（可用技能可能很多） -->
+                <div class="hub-search hub-search--fill">
+                  <svg class="hub-search__icon" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M11.1 10.2a4.6 4.6 0 1 0-.9.9l3 3 .9-.9-3-3zm-4.1.3a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z" fill="currentColor" />
+                  </svg>
+                  <input v-model="skillQuery" type="text" class="hub-list-search" :placeholder="t('hub.skillSearchPlaceholder')" />
+                </div>
+                <div class="hub-groups-scroll">
+                  <div v-if="!skills.length" class="hub-hint">{{ t('hub.noSkillsAvailable') }}</div>
+                  <div v-else-if="!filteredSkills.length" class="hub-hint">{{ t('hub.skillSearchEmpty') }}</div>
+                  <div v-else class="hub-groups">
+                    <div
+                      v-for="skill in filteredSkills"
+                      :key="skill.id"
+                      class="hub-group"
+                      :class="{ checked: form.skills.includes(skill.id), 'is-disabled-skill': !skill.enabled }"
+                    >
+                      <input
+                        class="hub-check"
+                        type="checkbox"
+                        :value="skill.id"
+                        :checked="form.skills.includes(skill.id)"
+                        :disabled="!form.skills.includes(skill.id) && form.skills.length >= AGENT_SKILLS_MAX_COUNT"
+                        @change="toggleSkill(skill.id)"
+                      />
+                      <button
+                        type="button"
+                        class="hub-group-body"
+                        :title="t('hub.skillViewDetail')"
+                        @click="openSkillDetail(skill)"
+                      >
+                        <span class="hub-group-name">{{ skillOptionLabel(skill) }}</span>
+                        <span class="hub-group-desc">{{ skill.enabled ? skill.description : t('hub.skillDisabledMark') }}</span>
+                      </button>
+                      <button
+                        type="button"
+                        class="hub-group-info"
+                        :title="t('hub.skillViewDetail')"
+                        :aria-label="t('hub.skillViewDetail')"
+                        @click.stop="openSkillDetail(skill)"
+                      >
+                        <svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <label v-for="missing in missingSkillRefs" :key="missing" class="hub-hint"><input class="hub-check" type="checkbox" checked @change="toggleSkill(missing)" />{{ missing }} · {{ t('hub.skillDisabledMark') }}</label>
+                <p class="hub-hint">{{ t('hub.fieldAgentSkillsHint') }}</p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
       <div class="hub-editor-footer">
         <span v-if="errorMessage" class="hub-error">{{ errorMessage }}</span>
-        <div class="hub-editor-actions">
-          <button type="button" class="hub-btn" @click="cancelEdit">{{ t('common.cancel') }}</button>
-          <button type="submit" class="hub-btn hub-btn-primary">{{ t('common.save') }}</button>
+      </div>
+
+      <!-- 工具组 / 技能的完整信息悬浮窗卡片 -->
+      <div
+        v-if="detailCard"
+        class="hub-detail-card"
+        role="dialog"
+        :aria-label="detailCard.title"
+        @click.self="detailCard = null"
+      >
+        <div class="hub-detail-card__panel">
+          <div class="hub-detail-card__head">
+            <strong class="hub-detail-card__title">{{ detailCard.title }}</strong>
+            <button type="button" class="hub-icon-btn" :title="t('common.close')" @click="detailCard = null">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+          <p v-if="detailCard.description" class="hub-detail-card__desc">{{ detailCard.description }}</p>
+          <dl v-if="detailCard.rows.length" class="hub-detail-card__rows">
+            <div v-for="row in detailCard.rows" :key="row.label" class="hub-detail-card__row">
+              <dt>{{ row.label }}</dt>
+              <dd>{{ row.value }}</dd>
+            </div>
+          </dl>
+          <div v-if="detailCard.items.length" class="hub-detail-card__items">
+            <span class="hub-detail-card__items-label">{{ detailCard.itemsLabel }}</span>
+            <div class="hub-detail-card__chips">
+              <span v-for="item in detailCard.items" :key="item" class="hub-detail-card__chip">{{ item }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 图片头像放大查看（点缩略图打开；支持下载原图） -->
+      <div v-if="avatarPreviewImage" class="hub-image-lightbox" role="dialog" @click.self="avatarPreviewImage = ''">
+        <img class="hub-image-lightbox__image" :src="avatarPreviewImage" :alt="t('hub.fieldAvatar')" />
+        <div class="hub-image-lightbox__bar">
+          <a class="hub-btn" :href="avatarPreviewImage" :download="avatarFileName">{{ t('hub.avatarDownload') }}</a>
+          <button type="button" class="hub-btn" @click="avatarPreviewImage = ''">{{ t('common.close') }}</button>
         </div>
       </div>
     </form>
@@ -256,7 +404,10 @@
 <script setup lang="ts">
 /**
  * 智能体管理：预置（只读展示）+ 自定义（新建/编辑/删除）。
- * 编辑器为左右布局：左列头像/名称/描述/分类/标签/系统提示词，右列工具组（上限 30 个工具）与视觉声明。
+ * 编辑器为左右两张等高卡片：左卡（整卡内部滚动）头像 / 名称 / 视觉声明 / 描述 /
+ * 分类 / 标签 / 系统提示词；右卡（各区占比限高、区内滚动）工具组（带搜索，上限
+ * 30 个工具）/ 外部插件工具 / 关联技能。emoji 头像选择为悬浮卡片，选中或点击
+ * 外部自动收起；图片头像可点开放大查看并下载。
  * 采样参数（temperature / maxTokens）与流式开关已移除——统一取用户全局 API 配置，流式恒开。
  * 写入经 utils/agents/agent-store（chrome.storage 权威源），跨上下文实时同步到 sidepanel。
  */
@@ -319,8 +470,10 @@ interface ToolGroupMeta {
 const toolGroups: ReadonlyArray<ToolGroupMeta> = [
   { id: 'chat', nameKey: 'hub.groupChat', descKey: 'hub.groupChatDesc' },
   { id: 'automation', nameKey: 'hub.groupAutomation', descKey: 'hub.groupAutomationDesc' },
-  { id: 'note', nameKey: 'hub.groupNote', descKey: 'hub.groupNoteDesc' },
-  { id: 'searchAgent', nameKey: 'hub.groupSearch', descKey: 'hub.groupSearchDesc' },
+  // note 组已移除：note_tool 与 plan_tool 同为 CORE_SESSION_TOOL_IDS 无条件注入的
+  // 核心工具，对所有智能体恒定可用，作为可选工具组展示只会制造「勾选才有」的歧义；
+  // 存量自定义智能体 tools 里的 note_tool 依然有效（deriveGroupsFromTools 未覆盖项
+  // 自动落入 extra，编辑保存不丢失）
   { id: 'webSearch', nameKey: 'hub.groupWebSearch', descKey: 'hub.groupWebSearchDesc' },
   { id: 'pageRead', nameKey: 'hub.groupPageRead', descKey: 'hub.groupPageReadDesc' },
   { id: 'domInteract', nameKey: 'hub.groupDomInteract', descKey: 'hub.groupDomInteractDesc' },
@@ -457,6 +610,90 @@ function toggleSkill(skillId: string): void {
   }
 }
 
+// ──── 工具组 / 关联技能搜索（按当前语言的显示名 / 描述过滤；搜索词不参与保存） ────
+
+const groupQuery = ref('');
+const filteredToolGroups = computed(() => {
+  const query = groupQuery.value.trim().toLowerCase();
+  if (!query) return toolGroups;
+  return toolGroups.filter(
+    group =>
+      t(group.nameKey).toLowerCase().includes(query) ||
+      t(group.descKey).toLowerCase().includes(query),
+  );
+});
+
+const skillQuery = ref('');
+const filteredSkills = computed(() => {
+  const query = skillQuery.value.trim().toLowerCase();
+  if (!query) return skills.value;
+  return skills.value.filter(skill => {
+    const haystack = [
+      skillOptionLabel(skill),
+      skill.description,
+      skill.plugin?.displayName ?? '',
+      skill.plugin?.publisher ?? '',
+      ...skill.tags,
+    ]
+      .join(' ')
+      .toLowerCase();
+    return haystack.includes(query);
+  });
+});
+
+// ──── 右卡三区的展开 / 收起（收起后把空间让给其余区） ────
+
+const collapsedSections = reactive({ groups: false, external: false, skills: false });
+
+// ──── 工具组 / 技能详情悬浮窗卡片 ────
+
+/** 详情卡片的展示模型（标题 + 描述 + 键值行 + 标签列表） */
+interface DetailCard {
+  title: string;
+  description?: string;
+  rows: { label: string; value: string }[];
+  itemsLabel: string;
+  items: string[];
+}
+
+const detailCard = ref<DetailCard | null>(null);
+
+/** 工具组详情：完整说明 + 组内工具清单 */
+function openGroupDetail(group: ToolGroupMeta): void {
+  const toolIds = groupToolSets.get(group.id) ?? [];
+  detailCard.value = {
+    title: t(group.nameKey),
+    description: t(group.descKey),
+    rows: [
+      { label: t('hub.detailToolCount'), value: String(toolIds.length) },
+    ],
+    itemsLabel: t('hub.detailToolList'),
+    items: [...toolIds],
+  };
+}
+
+/** 技能详情：完整说明 + 分类 / 标签 / 来源 / 预授权工具 / 资源文件 */
+function openSkillDetail(skill: SkillRecord): void {
+  const filePaths = Object.keys(skill.files ?? {});
+  detailCard.value = {
+    title: skillOptionLabel(skill),
+    description: skill.enabled ? skill.description : t('hub.skillDisabledMark'),
+    rows: [
+      { label: t('hub.detailSkillCategory'), value: categoryLabel(skill.category) },
+      { label: t('hub.detailSkillTags'), value: skill.tags.length ? skill.tags.join('、') : '—' },
+      {
+        label: t('hub.detailSkillSource'),
+        value: skill.plugin
+          ? `${skill.plugin.displayName} ${skill.plugin.version} · ${skill.plugin.publisher}`
+          : t('hub.custom'),
+      },
+      { label: t('hub.detailSkillFiles'), value: String(filePaths.length) },
+    ],
+    itemsLabel: t('hub.detailSkillTools'),
+    items: skill.allowedTools.length ? [...skill.allowedTools] : filePaths,
+  };
+}
+
 // ──── 编辑态 ────
 
 const editing = ref(false);
@@ -494,17 +731,37 @@ const form = reactive({
 const showEmojiPicker = ref(false);
 /** 头像处理失败的可读文案（空串 = 无错误） */
 const avatarError = ref('');
+/** 图片头像放大查看的 data URL（空串 = 未打开） */
+const avatarPreviewImage = ref('');
 
-/** 从 emoji 卡片点选：写入 emoji 形态头像（与图片形态互斥） */
+/** 当前头像是否为图片形态（决定预览尺寸：图片可点开放大，emoji 保持最小占位） */
+const isImageAvatar = computed(() => form.avatar?.type === 'image');
+
+/** 下载文件名：沿用智能体名（非法字符回落 avatar） */
+const avatarFileName = computed(() => {
+  const name = form.name.trim() || 'avatar';
+  return `${name.replace(/[^\w.-]+/g, '_')}.png`;
+});
+
+/** 打开图片头像的放大查看层 */
+function openAvatarPreview(): void {
+  const avatar = form.avatar;
+  if (!avatar || avatar.type !== 'image') return;
+  avatarPreviewImage.value = avatar.src;
+}
+
+/** 从 emoji 悬浮卡片点选：写入 emoji 形态头像（与图片形态互斥）并收起卡片 */
 function onEmojiPicked(emoji: string): void {
   form.avatar = { type: 'emoji', value: emoji };
   avatarError.value = '';
+  showEmojiPicker.value = false;
 }
 
 /** 清除头像：回到无头像状态（UI 回退默认 emoji） */
 function clearAvatar(): void {
   form.avatar = undefined;
   avatarError.value = '';
+  avatarPreviewImage.value = '';
 }
 
 /**
@@ -606,6 +863,13 @@ function resetForm(): void {
   attempted.value = false;
   showEmojiPicker.value = false;
   avatarError.value = '';
+  avatarPreviewImage.value = '';
+  groupQuery.value = '';
+  skillQuery.value = '';
+  detailCard.value = null;
+  collapsedSections.groups = false;
+  collapsedSections.external = false;
+  collapsedSections.skills = false;
 }
 
 function startCreate(): void {

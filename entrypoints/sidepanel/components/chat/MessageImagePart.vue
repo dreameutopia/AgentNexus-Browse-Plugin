@@ -1,6 +1,7 @@
 <template>
   <div class="screen-container" :class="{ collapsed: !expanded }">
-    <!-- 折叠头：默认收起（与推理容器同形态），点击展开具体截屏 -->
+    <!-- 折叠头：默认收起；视觉对齐工具调用行（tool-row）的无边框紧凑设计语言，
+         点击展开具体截屏 -->
     <button
       type="button"
       class="screen-header"
@@ -9,14 +10,16 @@
       @click="expanded = !expanded"
     >
       <span class="screen-icon" aria-hidden="true">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M20,3H4C2.9,3 2,3.9 2,5V15A2,2 0 0,0 4,17H6V20H8V17H16V20H18V17H20A2,2 0 0,0 22,15V5C22,3.9 21.1,3 20,3M20,15H4V5H20V15M12,7A3,3 0 0,1 15,10A3,3 0 0,1 12,13A3,3 0 0,1 9,10A3,3 0 0,1 12,7Z" fill="#6366f1"/>
         </svg>
       </span>
       <span class="screen-title">{{ t('sidepanel.chat.viewScreen') }}</span>
-      <svg class="screen-expand-icon" :class="{ collapsed: !expanded }" width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z" fill="currentColor"/>
-      </svg>
+      <span class="screen-right">
+        <svg class="screen-chevron" :class="{ expanded }" width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M9,6L8,7L14,12L8,17L9,18L16,12L9,6Z" fill="currentColor"/>
+        </svg>
+      </span>
     </button>
 
     <!-- 展开体：具体截屏文件；点击图片进入共享看图层（放大 / 下载） -->
@@ -51,7 +54,8 @@
 /**
  * 内联截屏片段（MessageImagePart）—— vision 自动截图的「查看屏幕」容器
  *
- * 形态对标推理容器（reasoning-container）：折叠头 + 展开体，按截屏发生
+ * 形态对齐工具调用行（tool-row）的无边框紧凑设计语言（图标 + 标题 +
+ * 右侧箭头的单行收起条，展开体 26px 缩进），按截屏发生
  * 顺序内联在消息片段流中（首截图在消息最前、每轮工具后的重截图紧跟其
  * 轮次），多轮截屏因此按时间线排列，而不是统一堆在消息尾部。
  *

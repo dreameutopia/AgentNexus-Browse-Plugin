@@ -3,13 +3,14 @@
  * 壳（头部/侧导航/内容容器）复用设置弹窗的 settings-modal.css（api-config-* 类），
  * 本文件承载页面级覆写与各管理器（智能体/技能/插件）自身的卡片、编辑器样式。
  *
- * 设计语言：向插件侧边栏对齐 + Apple 液态玻璃（Liquid Glass）材质。
+ * 设计语言：向插件侧边栏对齐 + 玻璃材质（中性色 + 半透明白面）。
  *   - 中性色一律走下方镜像 token（值取自 entrypoints/sidepanel/styles/app.css
  *     顶部的 surface/ink 组与 styles/global.css 的字体/强调色组）。侧边栏共享
  *     样式文件不可改动，故在此镜像同一组值——调整设计时两处需同步。
+ *   - 配色为纯黑白灰体系：**不含任何蓝紫**（强调一律走中性墨色 --primary-color
+ *     / --primary-gradient），语义色（成功 / 警告 / 错误）仅用于状态表达。
  *   - 玻璃材质 = 半透明白面 + backdrop-filter(blur + saturate) + 内侧顶部高光
- *     （specular）+ 分层柔影；画布铺一层取自 sidepanel 品牌渐变
- *     （#667eea → #764ba2 → #f093fb）的低饱和极光，让玻璃有可折射的内容。
+ *     （specular）+ 分层柔影；画布铺一层极淡的中性灰光斑，让玻璃有可折射的内容。
  *   - 交互运动统一走弹性缓动 --ease-spring（cubic-bezier(0.32, 0.72, 0, 1)），
  *     并在 prefers-reduced-motion 下整体关闭。
  *   - 所有表单控件（输入框 / 复选框 / 开关 / 选择框）均为自定义外观：
@@ -29,12 +30,17 @@
   --ink-secondary: #787671;
   --ink-muted: #9b9790;
   --focus-ring: #a5a09a;
-  /* 强调色与语义色：与 sidepanel global.css 同源 */
-  --primary-color: #667eea;
-  --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  /* 强调色：中性墨色体系（与侧边栏黑白灰观感一致，不含任何蓝紫） */
+  --primary-color: #3b3934;
+  --primary-gradient: linear-gradient(135deg, #45423b 0%, #2b2925 100%);
   --error-color: #ef4444;
   --success-color: #10b981;
   --warning-color: #f59e0b;
+  /* 中性染层：替代原品牌靛紫的各类高亮 / 悬停 / 焦点着色 */
+  --accent-soft: rgba(41, 40, 36, 0.06);
+  --accent-soft-strong: rgba(41, 40, 36, 0.12);
+  --accent-line: rgba(41, 40, 36, 0.26);
+  --accent-ink: #3b3934;
   /* ink 系阴影与焦点光环（对齐 sidepanel .input-container 手法） */
   --shadow-hairline: 0 1px 3px rgb(41 40 36 / 4%);
   --shadow-hover: 0 4px 12px rgb(41 40 36 / 10%);
@@ -53,8 +59,8 @@
   --glass-shadow: 0 2px 6px rgb(41 40 36 / 4%), 0 12px 32px rgb(41 40 36 / 9%);
   --glass-shadow-lift: 0 4px 10px rgb(41 40 36 / 6%),
     0 20px 48px rgb(41 40 36 / 14%);
-  /* 品牌色焦点光环（表单控件聚焦） */
-  --ring-primary: 0 0 0 3.5px rgba(102, 126, 234, 0.16);
+  /* 品牌色焦点光环（表单控件聚焦）→ 中性墨色光环 */
+  --ring-primary: 0 0 0 3.5px rgba(41, 40, 36, 0.12);
   /* ── 运动 ── */
   --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
@@ -77,13 +83,12 @@ body {
     'Helvetica Neue', Arial, sans-serif;
   color: var(--ink-primary, #292824);
   font-size: 14px;
-  /* 极光画布：取 sidepanel 品牌渐变三色（靛紫/紫/粉）做低饱和大光斑，
-     铺在暖纸底色上——玻璃材质由此获得可折射的色彩层。
+  /* 极光画布 → 中性灰光斑（纯黑白灰观感，玻璃由此获得可折射的明暗层次）。
      background-attachment: fixed 使光斑不随内容滚动。 */
   background:
-    radial-gradient(1100px 780px at -8% 22%, rgba(102, 126, 234, 0.16), transparent 62%),
-    radial-gradient(1000px 720px at 88% -12%, rgba(240, 147, 251, 0.13), transparent 60%),
-    radial-gradient(1200px 900px at 52% 118%, rgba(118, 75, 162, 0.12), transparent 62%),
+    radial-gradient(1100px 780px at -8% 22%, rgba(41, 40, 36, 0.05), transparent 62%),
+    radial-gradient(1000px 720px at 88% -12%, rgba(41, 40, 36, 0.04), transparent 60%),
+    radial-gradient(1200px 900px at 52% 118%, rgba(41, 40, 36, 0.035), transparent 62%),
     var(--surface-canvas, #faf9f7);
   background-attachment: fixed;
 }
@@ -96,116 +101,211 @@ body {
   /* 固定视口高（子元素 height:100% 需要确定高度的父级，min-height 会让百分比失效） */
   height: 100vh;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  /* 四周留隙压至约 1%：中心卡片占满视口总宽高的 95% 以上，边缘露出极光画布 */
-  padding: 8px 10px;
+  padding: 12px;
 }
 
-/* ──── 壳卡片覆写：整壳改为一块大液态玻璃 ──── */
+/* ──── 壳：左右两张独立卡片（左导航卡 + 右内容卡） ──── */
 
-/* 复用 .api-config-modal 布局骨架；覆写为页面级尺寸 + 玻璃材质（双类特异性，
-   不受加载顺序影响）。原基类为白底，此处半透明 + 背后极光透出。 */
-.api-config-modal.hub-shell {
-  width: 100%;
-  max-width: none;
-  height: 100%;
-  max-height: none;
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.62),
-    rgba(255, 255, 255, 0.46)
-  );
+.hub-layout {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+}
+
+/* 左：导航卡（标题 + 分区入口 + 语言切换） */
+.hub-sidebar {
+  width: 176px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 12px 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  background: var(--glass-tint-strong);
   backdrop-filter: var(--glass-blur-strong);
   -webkit-backdrop-filter: var(--glass-blur-strong);
-  border: 1px solid var(--glass-border);
-  border-radius: 20px;
-  box-shadow: var(--glass-inset), 0 24px 64px rgb(41 40 36 / 16%);
+  box-shadow: var(--glass-inset), var(--glass-shadow);
 }
 
-/* 头部：玻璃通栏，暖色发丝线分隔 */
-.hub-shell .api-config-header {
-  background: rgba(255, 255, 255, 0.34);
-  border-bottom: 1px solid rgba(41 40 36 / 6%);
-  backdrop-filter: blur(10px) saturate(140%);
-  -webkit-backdrop-filter: blur(10px) saturate(140%);
-}
-
-.hub-shell .api-config-title {
-  color: var(--ink-primary, #292824);
+/* 标题：管理中心的名字就在左卡顶部，不再占右侧内容卡的顶栏 */
+.hub-sidebar-title {
+  margin: 0;
+  padding: 0 8px;
+  font-size: 15px;
+  font-weight: 650;
   letter-spacing: -0.01em;
+  color: var(--ink-primary, #292824);
 }
 
-/* 语言切换：玻璃药丸分段（沿用基类结构，仅换材质） */
-.hub-shell .api-config-locale {
-  background: rgba(255, 255, 255, 0.5);
-  border-color: transparent;
-  backdrop-filter: blur(10px) saturate(140%);
-  -webkit-backdrop-filter: blur(10px) saturate(140%);
-  box-shadow: var(--glass-inset), 0 1px 4px rgb(41 40 36 / 6%);
+.hub-sidebar-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.hub-shell .api-config-locale-btn {
+.hub-nav-item {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 9px;
+  padding: 8px 6px;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.4;
   color: var(--ink-secondary, #787671);
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
 }
 
-.hub-shell .api-config-locale-btn.active {
+.hub-nav-label {
+  text-align: center;
+  display: block;
+}
+
+.hub-nav-item:hover {
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--ink-primary, #292824);
+}
+
+.hub-nav-item.active {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(41, 40, 36, 0.14);
+  color: var(--ink-primary, #292824);
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(41 40 36 / 10%);
+}
+
+.hub-sidebar-foot {
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid rgba(41 40 36 / 7%);
+}
+
+/* 语言切换：中性药丸分段（贴在左卡底部） */
+.hub-locale {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgba(41, 40, 36, 0.05);
+  border: 1px solid var(--line-soft, #e4e2de);
+}
+
+.hub-locale-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  border-radius: 7px;
+  padding: 4px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--ink-secondary, #787671);
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+
+.hub-locale-btn.active {
   background: #ffffff;
   color: var(--ink-primary, #292824);
   box-shadow: 0 1px 3px rgb(41 40 36 / 12%), inset 0 1px 0 #ffffff;
 }
 
-/* 侧导航：去掉基类的冷灰渐变，改为透明轨道 + 玻璃胶囊项 */
-.hub-shell .api-config-nav {
-  background: transparent;
-  border-right: 1px solid rgba(41 40 36 / 6%);
+/* 右：内容卡（分区内容 + 内部滚动） */
+.hub-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  background: var(--glass-tint-strong);
+  backdrop-filter: var(--glass-blur-strong);
+  -webkit-backdrop-filter: var(--glass-blur-strong);
+  box-shadow: var(--glass-inset), var(--glass-shadow);
+  overflow: hidden;
 }
 
-.hub-shell .api-nav-item {
-  color: var(--ink-secondary, #787671);
-  background: transparent;
-  border: 1px solid transparent;
-  transition: all 0.22s var(--ease-spring);
-}
-
-.hub-shell .api-nav-item:hover {
-  background: rgba(255, 255, 255, 0.55);
-  color: var(--ink-primary, #292824);
-}
-
-.hub-shell .api-nav-item.active {
-  background: rgba(255, 255, 255, 0.86);
-  border-color: rgba(102, 126, 234, 0.35);
-  color: #4f46e5;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 3px 12px rgba(102, 126, 234, 0.16);
-}
-
-/* 内容主体：透明（让壳玻璃透出极光），并补上页面级内边距
-   （settings-forms.css 的 .api-config-body padding 不被 hub 引入） */
-.hub-shell .api-config-body {
+/* 内容滚动区：卡片内部滚动，页面本身不出现竖向滚动条。
+   同时建立「编辑器填满」的弹性链：body → api-section → hub-panel → hub-editor.is-fill，
+   各级 flex + min-height:0 让 is-fill 编辑器精确吃到剩余高度（不出滚动条）；
+   非填满视图（列表 / 简单模式表单）按自然高度增长，滚动仍由本容器承接。 */
+.hub-content-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
   padding: 16px 20px 20px;
 }
 
+.hub-content-body > .api-section {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.hub-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.hub-list-view {
+  flex: none;
+}
+
+/* 填满态编辑器：吃满 hub-panel 的剩余高度（编辑器自身与内部 split 都不产生外层滚动） */
+.hub-editor.is-fill {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.hub-editor.is-fill .hub-editor-split {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 智能体编辑器的左右两卡布局规则见下方「编辑器左右布局」区块（紧跟
+   .hub-editor-split 基类之后声明——基类的 align-items:start / gap / 列宽
+   会以源顺序反杀同特异性的事先声明，必须放在其后，见该处注释）。 */
+
 /* 壳内滚动条：细而透明，玻璃风格 */
-.hub-shell ::-webkit-scrollbar {
+.hub ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
 
-.hub-shell ::-webkit-scrollbar-track {
+.hub ::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.hub-shell ::-webkit-scrollbar-thumb {
+.hub ::-webkit-scrollbar-thumb {
   background: rgba(41 40 36 / 18%);
   border-radius: 8px;
   border: 3px solid transparent;
   background-clip: padding-box;
 }
 
-.hub-shell ::-webkit-scrollbar-thumb:hover {
+.hub ::-webkit-scrollbar-thumb:hover {
   background-color: rgba(41 40 36 / 32%);
+}
+
+/* ──── 备份分区弹窗的次级按钮（settings-forms.css 未被 hub 引入，此处补齐） ──── */
+
+.api-sub-btn {
+  padding: 8px 16px;
+  font-size: 13px;
+  border-radius: 8px;
 }
 
 /* ──── 列表 ──── */
@@ -330,7 +430,7 @@ body {
   align-items: center;
 }
 
-/* 徽章：玻璃药丸（色相保留语义，透明度适配玻璃面） */
+/* 徽章：玻璃药丸（中性灰体系：仅以墨色深浅区分语义，不使用任何彩色） */
 .hub-badge {
   flex-shrink: 0;
   font-size: 10px;
@@ -341,22 +441,25 @@ body {
   -webkit-backdrop-filter: blur(6px) saturate(130%);
 }
 
+/* 预置：浅底 + 淡边（弱化，提示「系统自带」） */
 .hub-badge-preset {
-  color: #4f46e5;
-  background: rgba(102, 126, 234, 0.12);
-  border-color: rgba(102, 126, 234, 0.32);
+  color: var(--ink-secondary, #787671);
+  background: rgba(41, 40, 36, 0.05);
+  border-color: rgba(41, 40, 36, 0.14);
 }
 
+/* 自定义：深墨字 + 中性底（与预置拉开层级） */
 .hub-badge-custom {
-  color: #047857;
-  background: rgba(16, 185, 129, 0.12);
-  border-color: rgba(16, 185, 129, 0.32);
+  color: var(--ink-primary, #292824);
+  background: rgba(41, 40, 36, 0.1);
+  border-color: rgba(41, 40, 36, 0.2);
 }
 
+/* 视觉能力：实心墨色（能力开关类徽章需要一眼可辨） */
 .hub-badge-vision {
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.14);
-  border-color: rgba(245, 158, 11, 0.38);
+  color: #ffffff;
+  background: var(--ink-primary, #292824);
+  border-color: transparent;
 }
 
 /* 分类与标签徽章 */
@@ -368,9 +471,9 @@ body {
 }
 
 .hub-badge-category {
-  color: #0369a1;
-  background: rgba(14, 165, 233, 0.12);
-  border-color: rgba(14, 165, 233, 0.32);
+  color: var(--ink-primary, #292824);
+  background: rgba(41, 40, 36, 0.07);
+  border-color: rgba(41, 40, 36, 0.16);
 }
 
 .hub-badge-tag {
@@ -397,15 +500,25 @@ body {
 .hub-search__icon {
   position: absolute;
   left: 10px;
-  width: 14px;
-  height: 14px;
-  color: var(--ink-muted, #9b9790);
+  width: 15px;
+  height: 15px;
+  color: var(--ink-secondary, #787671);
   pointer-events: none;
   transition: color 0.18s ease;
 }
 
+/* 卡片内的搜索框：占满父容器宽度（默认 .hub-list-search 是列表页的定宽框） */
+.hub-search--fill {
+  display: flex;
+  width: 100%;
+}
+
+.hub-search--fill .hub-list-search {
+  width: 100%;
+}
+
 .hub-search:focus-within .hub-search__icon {
-  color: var(--primary-color, #667eea);
+  color: var(--ink-primary, #292824);
 }
 
 .hub-list-search {
@@ -430,7 +543,7 @@ body {
 }
 
 .hub-list-search:focus {
-  border-color: rgba(102, 126, 234, 0.55);
+  border-color: rgba(41, 40, 36, 0.32);
   background: rgba(255, 255, 255, 0.82);
   box-shadow: var(--ring-primary);
 }
@@ -487,7 +600,7 @@ body {
 .hub-op {
   border: none;
   background: none;
-  color: #667eea;
+  color: var(--ink-secondary, #787671);
   font-size: 12px;
   font-family: inherit;
   cursor: pointer;
@@ -497,7 +610,8 @@ body {
 }
 
 .hub-op:hover {
-  background: rgba(102, 126, 234, 0.1);
+  background: rgba(41, 40, 36, 0.07);
+  color: var(--ink-primary, #292824);
 }
 
 .hub-op-danger {
@@ -525,8 +639,8 @@ body {
 }
 
 .hub-icon-btn:hover {
-  color: var(--primary-color, #667eea);
-  background: rgba(102, 126, 234, 0.1);
+  color: var(--ink-primary, #292824);
+  background: rgba(41, 40, 36, 0.07);
 }
 
 .hub-icon-btn:active {
@@ -547,6 +661,7 @@ body {
 /* ──── 编辑器 ──── */
 
 .hub-editor {
+  position: relative;
   background: var(--glass-tint-strong);
   backdrop-filter: var(--glass-blur-strong);
   -webkit-backdrop-filter: var(--glass-blur-strong);
@@ -562,14 +677,35 @@ body {
 
 .hub-editor-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 16px;
 }
 
 .hub-editor-head h2 {
   margin: 0;
   font-size: 16px;
   letter-spacing: -0.01em;
+}
+
+/* 标题区：标题 + 模式说明（模式切换控件本身在标题栏右侧） */
+.hub-editor-head-main {
+  min-width: 0;
+}
+
+.hub-editor-mode-hint {
+  margin: 4px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-muted, #9b9790);
+}
+
+/* 标题栏右侧动作组：模式切换分段控件 + 返回列表 */
+.hub-editor-head-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 /* ──── 编辑器左右布局：左列基础信息，右列工具组与视觉声明 ──── */
@@ -583,13 +719,27 @@ body {
 
 /* 技能编辑器双模式各自的列宽：
    简单模式左窄右宽（元信息表单 / 大段提示词正文）；
-   高级模式左树右码（文件树固定起步宽 / 编辑器吃满余宽，VS Code 式比例） */
+   高级模式左树右码（文件树固定起步宽 / 编辑器吃满余宽，VS Code 式比例）。
+   高级模式额外分两行：上行 = 文件树 + 文件编辑器（两者等高），下行 = 状态条
+   （实时校验 / 资源文件说明），横向通栏。 */
 .hub-editor-split--skill-simple {
   grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  /* 单行网格：列高 = 容器高（由 is-fill 弹性链给出），
+     右列「提示词（技能正文）」据此占满窗口剩余空间 */
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* 简单模式两列：内容超高时列内滚动（不让整页出现滚动条） */
+.hub-editor-split--skill-simple .hub-editor-col {
+  overflow-y: auto;
 }
 
 .hub-editor-split--skill-advanced {
-  grid-template-columns: minmax(232px, 3fr) minmax(0, 10fr);
+  grid-template-columns: minmax(228px, 268px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  /* 高度来自 is-fill 弹性链：吃满编辑器剩余空间，文件树与编辑器顶到底；
+     状态条（实时校验）作为末行贴在最底部 */
+  height: auto;
 }
 
 .hub-editor-col {
@@ -605,12 +755,198 @@ body {
   align-items: stretch;
 }
 
-/* 模式切换行：分段控件 + 说明文字 */
-.hub-editor-mode {
+/* ──── 智能体编辑器：左右两张等高卡片 ────
+   层叠约定：本区块必须位于 .hub-editor-split 基类**之后**。基类声明的
+   align-items:start / gap / grid 列宽与这里的覆写同特异性，源顺序在后者胜——
+   曾因把 agent 覆写放在基类之前，导致 start 反杀 stretch、左卡按内容自身
+   高度溢出行轨道，把外层内容卡顶出滚动条。因此：
+     1. 本区块物理上保持在基类之后；
+     2. 关键声明用双类选择器（.hub-editor-split.hub-editor-split--agent，
+        特异性 0-2-0 > 基类 0-1-0）再上一道保险，即使日后被挪走也不会被反杀。
+   布局用 flex 而非 grid：两列 flex:1 1 0 均分且高度严格受限于容器
+   （min-height:0 + align-items:stretch），从语义上根除行轨道解析这一层。 */
+.hub-editor-split.hub-editor-split--agent {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+}
+
+.hub-editor-split--agent .hub-editor-col {
+  flex: 1 1 0;
+  min-height: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+/* 左卡（表单）：整卡内部滚动——字段天然较高，卡片级滚动即可 */
+.hub-editor-split--agent .hub-editor-col--form {
+  overflow-y: auto;
+}
+
+/* 右卡（清单）：自身不滚——空间由三个清单区按占比瓜分（flex-grow 比例 ≈ 高度占比） */
+.hub-editor-split--agent .hub-editor-col--lists {
+  overflow: hidden;
+}
+
+/* 清单区内部列表滚动：解除基类给 .hub-groups-scroll 的 300px 上限（高窗下会截短） */
+.hub-editor-split--agent .hub-section .hub-groups-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+}
+
+/* ──── 右卡分区：独立卡片 + 左侧折叠按钮 + 收起动画 ──── */
+
+/*
+   三区（工具组 / 外部插件工具 / 关联技能）各自一张独立卡片：
+     · 卡片边界：浅灰描边 + 圆角 + 半透明白底，与右卡背景区分开；
+     · 标题行：折叠按钮在**最左**（与标题基线对齐），标题紧随其后，
+       计数靠右——按钮不再漂在右侧角落；
+     · 收起动画：折叠按钮箭头旋转 90°，卡片内容区高度由 grid-template-rows
+       1fr → 0fr 过渡（内容淡出 + 高度收拢），卡片自身高度随之平滑变化。
+*/
+.hub-editor-split--agent .hub-section {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  align-items: flex-start;
+  min-height: 0;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  overflow: hidden;
+  transition: flex-grow 0.28s var(--ease-spring), min-height 0.28s var(--ease-spring),
+    box-shadow 0.2s ease;
+}
+
+/* 展开态：按 flex-grow 比例瓜分右卡高度（34 : 26 : 34 ≈ 高度占比） */
+.hub-editor-split--agent .hub-section--groups,
+.hub-editor-split--agent .hub-section--skills {
+  flex: 34 1 0;
+}
+
+.hub-editor-split--agent .hub-section--external {
+  flex: 26 1 0;
+}
+
+/* 收起态：flex-grow 归零 + 保留标题行高度（min-height 同步过渡，无跳变）。
+   flex-basis 恒为 0（可过渡），收起后高度 = min-height = 标题行高度。 */
+.hub-editor-split--agent .hub-section.is-collapsed {
+  flex-grow: 0;
+  flex-basis: 0;
+  min-height: 40px;
+  box-shadow: none;
+}
+
+/* 标题行：折叠按钮（最左） + 标题 + 计数（靠右） */
+.hub-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 8px 10px;
+}
+
+/* 计数徽标：靠右对齐，与折叠按钮分居标题行两端 */
+.hub-section-head .hub-groups-count {
+  margin-left: auto;
+}
+
+/* 折叠按钮：明确可见的小方块，紧贴标题左侧并与标题垂直居中对齐 */
+.hub-section-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-left: -2px;
+  border: 1px solid rgba(41, 40, 36, 0.14);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--ink-secondary, #787671);
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease,
+    transform 0.16s var(--ease-spring);
+}
+
+.hub-section-toggle:hover {
+  background: #ffffff;
+  border-color: rgba(41, 40, 36, 0.3);
+  color: var(--ink-primary, #292824);
+}
+
+.hub-section-toggle:active {
+  transform: scale(0.94);
+}
+
+.hub-section-toggle__chevron {
+  width: 16px;
+  height: 16px;
+  transition: transform 0.28s var(--ease-spring);
+}
+
+/* 收起时箭头朝右（展开时朝下） */
+.hub-section-toggle__chevron.is-collapsed {
+  transform: rotate(-90deg);
+}
+
+/* 可折叠内容区：grid 1fr → 0fr 实现「高度未知」的平滑收起。
+   flex:1 1 0 是关键——内容区必须吃掉卡片除标题行外的剩余高度，
+   否则它只按内容高度排布（flex 默认 0 1 auto），剩余空间空着、
+   列表被 overflow:hidden 裁掉（表现为「有标题有计数却一条都没有」）。 */
+.hub-section-body {
+  flex: 1 1 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition: grid-template-rows 0.28s var(--ease-spring), opacity 0.2s ease;
+}
+
+.hub-section-body > .hub-section-body-inner {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 10px 10px;
+}
+
+.hub-section.is-collapsed .hub-section-body {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+
+/* 标题区与内容区之间的分隔线（收起后仍在，界限界定清晰） */
+.hub-section-head + .hub-section-body > .hub-section-body-inner {
+  border-top: 1px solid rgba(41, 40, 36, 0.07);
+  padding-top: 8px;
+}
+
+/* 左卡：短字段并排（名称+描述、分类+标签），提高横向空间利用率 */
+.hub-editor-split--agent .hub-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+/* 视觉声明行：开关与下拉并排 */
+.hub-vision-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+/* 窄宽度下双列回落单列（放不下就换行，不压缩） */
+@media (max-width: 1180px) {
+  .hub-editor-split--agent .hub-form-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* 列内占满剩余高度的字段（编辑器主体），内部输入域随之填满 */
@@ -632,12 +968,51 @@ body {
     grid-template-columns: 1fr;
   }
 
-  .hub-tree {
+  /* agent split 是 flex 行布局：窄屏改为纵向堆叠 */
+  .hub-editor-split.hub-editor-split--agent {
+    flex-direction: column;
+  }
+
+  .hub-editor-split--skill-advanced {
+    grid-template-rows: auto auto auto;
+    height: auto;
+  }
+
+  /* 窄屏：填满态编辑器回到自然高度，滚动交回内容卡 */
+  .hub-editor.is-fill,
+  .hub-editor.is-fill .hub-editor-split {
+    flex: 0 0 auto;
     min-height: 0;
-    max-height: 260px;
+  }
+
+  .hub-editor-split--agent .hub-editor-col {
+    flex: 0 0 auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  /* 窄屏：三张分区卡片回到自然高度（不再瓜分固定视口高） */
+  .hub-editor-split--agent .hub-section {
+    flex: 0 0 auto;
+    min-height: 0;
+  }
+
+  .hub-editor-split--agent .hub-section .hub-groups-scroll {
+    max-height: 320px;
+  }
+
+  .hub-editor-split--agent .external-tools {
+    max-height: 320px;
+    overflow-y: auto;
+  }
+
+  .hub-tree {
+    height: 260px;
+    min-height: 0;
   }
 
   .hub-code {
+    height: auto;
     min-height: 360px;
   }
 }
@@ -737,7 +1112,7 @@ body {
 .hub-field input:focus,
 .hub-field textarea:focus,
 .hub-input:focus {
-  border-color: rgba(102, 126, 234, 0.55);
+  border-color: rgba(41, 40, 36, 0.34);
   background: rgba(255, 255, 255, 0.85);
   box-shadow: var(--ring-primary), inset 0 1px 2px rgba(41 40 36 / 3%);
 }
@@ -796,14 +1171,14 @@ body {
 }
 
 .hub-check:hover:not(:disabled) {
-  border-color: rgba(102, 126, 234, 0.6);
+  border-color: rgba(41, 40, 36, 0.42);
 }
 
 .hub-check:checked {
   background: var(--primary-gradient);
   border-color: transparent;
-  box-shadow: 0 2px 6px rgba(102, 126, 234, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  box-shadow: 0 2px 6px rgba(41, 40, 36, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 .hub-check:checked::after {
@@ -812,7 +1187,7 @@ body {
 
 .hub-check:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.28);
+  box-shadow: 0 0 0 3px rgba(41, 40, 36, 0.24);
 }
 
 .hub-check:disabled {
@@ -868,7 +1243,7 @@ body {
 .hub-switch__input:checked + .hub-switch__track {
   background: var(--primary-gradient);
   box-shadow: inset 0 1px 1px rgba(41 40 36 / 14%),
-    0 1px 6px rgba(102, 126, 234, 0.35);
+    0 1px 6px rgba(41 40 36 / 0.3);
 }
 
 .hub-switch__input:checked + .hub-switch__track::after {
@@ -885,7 +1260,7 @@ body {
 }
 
 .hub-switch__input:focus-visible + .hub-switch__track {
-  box-shadow: inset 0 1px 2px rgba(41 40 36 / 14%), 0 0 0 3px rgba(102, 126, 234, 0.28);
+  box-shadow: inset 0 1px 2px rgba(41 40 36 / 14%), 0 0 0 3px rgba(41 40 36 / 0.24);
 }
 
 .hub-switch__label {
@@ -951,7 +1326,7 @@ body {
 }
 
 .hub-seg__btn.is-active {
-  color: #4f46e5;
+  color: var(--ink-primary, #292824);
 }
 
 .hub-seg__btn:focus-visible {
@@ -961,6 +1336,7 @@ body {
 /* ──── 头像选择器（预览 + 上传图片 + emoji 卡片，三者互斥择一） ──── */
 
 .hub-avatar-picker {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -969,22 +1345,75 @@ body {
 .hub-avatar-current {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 /* 预览位：玻璃圆角框，头像换新 / 清除时即时反映 */
 .hub-avatar-preview {
-  width: 60px;
-  height: 60px;
+  width: 36px;
+  height: 36px;
   flex: none;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
+  padding: 0;
   border: 1px dashed rgba(41 40 36 / 20%);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.45);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.5);
   box-shadow: var(--glass-inset);
   overflow: hidden;
+}
+
+/* emoji 形态：只是一个字符，去掉底板与描边，占位进一步压到 26px */
+.hub-avatar-preview.is-emoji {
+  width: 26px;
+  height: 26px;
+  border-style: solid;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* 图片形态：可点开放大查看 */
+.hub-avatar-preview.is-image {
+  cursor: zoom-in;
+  transition: transform 0.2s var(--ease-spring), border-color 0.18s ease;
+}
+
+.hub-avatar-preview.is-image:hover {
+  border-color: rgba(41 40 36 / 40%);
+  transform: scale(1.05);
+}
+
+/* 图片放大层：覆盖编辑器区域，居中展示原图 + 下载 / 关闭 */
+.hub-image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 32px;
+  background: rgba(24, 23, 21, 0.72);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: hubPopIn 0.16s var(--ease-out) both;
+}
+
+.hub-image-lightbox__image {
+  max-width: min(720px, 90%);
+  max-height: 76%;
+  object-fit: contain;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.42);
+}
+
+.hub-image-lightbox__bar {
+  display: flex;
+  gap: 8px;
 }
 
 .hub-avatar-actions {
@@ -992,6 +1421,12 @@ body {
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+}
+
+/* 头像操作按钮：压紧一档（省下的纵向空间给名称 / 提示词） */
+.hub-avatar-actions .hub-btn {
+  padding: 5px 11px;
+  font-size: 12px;
 }
 
 /* 上传入口：label 承载隐藏 file input，样式与普通按钮一致 */
@@ -1009,9 +1444,9 @@ body {
 
 /* emoji 选中态高亮由组件内部处理；按钮侧的展开态 */
 .hub-avatar-actions .hub-btn.is-active {
-  border-color: rgba(102, 126, 234, 0.55);
-  color: #4f46e5;
-  background: rgba(102, 126, 234, 0.1);
+  border-color: rgba(41, 40, 36, 0.34);
+  color: var(--ink-primary, #292824);
+  background: rgba(41, 40, 36, 0.08);
 }
 
 /* 网站学习成果待导入提示（编辑中收到交付信号时挂起，编辑结束自动接手） */
@@ -1026,7 +1461,7 @@ body {
   color: #92400e;
 }
 
-/* ──── 工具组（玻璃小卡，选中态品牌色染层） ──── */
+/* ──── 工具组（玻璃小卡，选中态中性墨色染层） ──── */
 
 .hub-groups {
   display: grid;
@@ -1034,30 +1469,31 @@ body {
   gap: 8px;
 }
 
+/* 清单条目卡片：勾选框 + 主体（标题/描述上下布局）+ 右侧查看图标。
+   主体是可点按钮（点击查看完整信息），勾选框仍是独立的 label 控件。 */
 .hub-group {
   display: flex;
   align-items: flex-start;
   gap: 8px;
   border: 1px solid var(--glass-border);
   border-radius: 12px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   background: rgba(255, 255, 255, 0.5);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
-  cursor: pointer;
   transition: border-color 0.18s ease, background 0.18s ease,
     box-shadow 0.18s ease, transform 0.25s var(--ease-spring);
 }
 
 .hub-group:hover:not(.locked) {
-  border-color: rgba(102, 126, 234, 0.45);
+  border-color: rgba(41, 40, 36, 0.28);
   transform: translateY(-1px);
 }
 
 .hub-group.checked {
-  border-color: rgba(102, 126, 234, 0.6);
-  background: rgba(102, 126, 234, 0.1);
+  border-color: rgba(41, 40, 36, 0.4);
+  background: rgba(41, 40, 36, 0.08);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55),
-    0 2px 8px rgba(102, 126, 234, 0.12);
+    0 2px 8px rgba(41, 40, 36, 0.1);
 }
 
 /* Python 计算组锁定态：环境未就绪，仅展示与引导 */
@@ -1079,24 +1515,83 @@ body {
 }
 
 .hub-group-lock {
-  display: block;
-  width: 100%;
-  margin-top: 2px;
+  flex: none;
+  align-self: center;
   font-size: 11px;
   color: #b45309;
+  white-space: nowrap;
+}
+
+/* 主体：标题在上、描述在下（描述限两行，超出省略） */
+.hub-group-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: none;
+  background: none;
+  padding: 0;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
 }
 
 .hub-group-name {
   font-size: 13px;
   font-weight: 600;
   display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .hub-group-desc {
-  font-size: 11px;
+  font-size: 11.5px;
+  line-height: 1.5;
   color: var(--ink-muted, #9b9790);
-  display: block;
-  margin-top: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 右侧「查看」图标：打开完整信息悬浮窗（真按钮，可点击） */
+.hub-group-info {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink-secondary, #787671);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.hub-group-info svg {
+  width: 15px;
+  height: 15px;
+}
+
+.hub-group:hover .hub-group-info,
+.hub-group:focus-within .hub-group-info {
+  opacity: 1;
+}
+
+.hub-group-info:hover {
+  color: var(--ink-primary, #292824);
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(41, 40, 36, 0.16);
 }
 
 /* 关联技能列表中的停用技能（可勾选但视觉弱化 + 说明性底色） */
@@ -1108,6 +1603,116 @@ body {
 .hub-group.is-disabled-skill .hub-group-name {
   color: var(--ink-muted, #9b9790);
 }
+
+/* ──── 详情悬浮窗卡片（工具组 / 技能完整信息） ──── */
+
+.hub-detail-card {
+  position: absolute;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: rgba(24, 23, 21, 0.28);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  animation: hubPopIn 0.16s var(--ease-out) both;
+}
+
+.hub-detail-card__panel {
+  width: min(520px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 20px 48px rgba(41 40 36 / 24%), 0 2px 6px rgba(41 40 36 / 10%);
+  animation: hubPopIn 0.2s var(--ease-out) both;
+}
+
+.hub-detail-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hub-detail-card__title {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--ink-primary, #292824);
+}
+
+.hub-detail-card__desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--ink-secondary, #787671);
+}
+
+.hub-detail-card__rows {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(41, 40, 36, 0.04);
+  border: 1px solid rgba(41, 40, 36, 0.08);
+}
+
+.hub-detail-card__row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 10px;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.hub-detail-card__row dt {
+  color: var(--ink-muted, #9b9790);
+}
+
+.hub-detail-card__row dd {
+  margin: 0;
+  color: var(--ink-primary, #292824);
+  word-break: break-word;
+}
+
+.hub-detail-card__items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hub-detail-card__items-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-muted, #9b9790);
+}
+
+.hub-detail-card__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.hub-detail-card__chip {
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  color: var(--ink-secondary, #787671);
+  background: rgba(41, 40, 36, 0.06);
+  border: 1px solid rgba(41, 40, 36, 0.1);
+}
+
+/* 右卡分区折叠按钮与箭头样式见「右卡分区：独立卡片 + 左侧折叠按钮 + 收起动画」区块 */
 
 /* 行内字段与开关 */
 
@@ -1145,8 +1750,8 @@ body {
 }
 
 .hub-btn:hover:not(:disabled) {
-  border-color: rgba(102, 126, 234, 0.55);
-  color: #4f46e5;
+  border-color: rgba(41, 40, 36, 0.34);
+  color: var(--ink-primary, #292824);
   background: rgba(255, 255, 255, 0.85);
   transform: translateY(-1px);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9),
@@ -1159,7 +1764,7 @@ body {
 
 .hub-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.28);
+  box-shadow: 0 0 0 3px rgba(41, 40, 36, 0.24);
 }
 
 .hub-btn:disabled {
@@ -1172,24 +1777,24 @@ body {
   border-color: transparent;
   color: #ffffff;
   font-weight: 600;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32),
-    0 2px 10px rgba(102, 126, 234, 0.38);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 2px 10px rgba(41 40 36, 0.3);
 }
 
 .hub-btn-primary:hover:not(:disabled) {
   background: var(--primary-gradient);
   border-color: transparent;
   color: #ffffff;
-  filter: brightness(1.07);
+  filter: brightness(1.12);
   transform: translateY(-1px);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.36),
-    0 5px 16px rgba(102, 126, 234, 0.45);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26),
+    0 5px 16px rgba(41 40 36, 0.36);
 }
 
 .hub-btn-primary:active:not(:disabled) {
   transform: translateY(0) scale(0.98);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28),
-    0 2px 8px rgba(102, 126, 234, 0.35);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    0 2px 8px rgba(41 40 36, 0.28);
 }
 
 .hub-btn-primary:disabled {
@@ -1205,6 +1810,11 @@ body {
   gap: 12px;
   border-top: 1px solid rgba(41 40 36 / 7%);
   padding-top: 14px;
+}
+
+/* 页脚只剩提示文案时不必留出边框与空白 */
+.hub-editor-footer:empty {
+  display: none;
 }
 
 .hub-editor-actions {
@@ -1274,8 +1884,19 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
   font-size: 13px;
   font-weight: 600;
+  text-align: left;
+  color: var(--ink-primary, #292824);
+  cursor: pointer;
+}
+
+.hub-validation-head:hover .hub-validation-chevron {
   color: var(--ink-primary, #292824);
 }
 
@@ -1285,19 +1906,74 @@ body {
   flex: none;
 }
 
-.hub-validation.is-ok .hub-validation-head svg {
+/* 状态图标着色（只染首枚图标，末尾的展开箭头保持中性） */
+.hub-validation.is-ok .hub-validation-head > svg:first-child {
   color: var(--success-color, #10b981);
 }
 
-.hub-validation.is-error .hub-validation-head svg {
+.hub-validation.is-error .hub-validation-head > svg:first-child {
   color: var(--error-color, #ef4444);
 }
 
+/* 折叠态的展开箭头（展开时旋转 180°） */
+.hub-validation-chevron {
+  margin-left: auto;
+  color: var(--ink-muted, #9b9790);
+  transition: transform 0.18s var(--ease-spring);
+}
+
+.hub-validation-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+/* 校验通过的徽标（折叠态也能一眼看到结果） */
+.hub-validation-ok-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #047857;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.12);
+}
+
+/* 展开态：向上弹出的悬浮卡片（锚定在状态条上方，不占布局高度） */
+.hub-validation-body {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 40;
+  padding: 12px 14px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  box-shadow: 0 -8px 28px rgba(41 40 36 / 14%), 0 1px 3px rgba(41 40 36 / 8%);
+  max-height: 280px;
+  overflow-y: auto;
+  animation: hubValidationPop 0.18s var(--ease-out) both;
+  transform-origin: bottom center;
+}
+
+/* 悬浮卡片向上展开的进场动画 */
+@keyframes hubValidationPop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 问题计数徽标：文字药丸（{count} 个问题），不再是纯数字圆点 */
 .hub-validation-count {
   margin-left: auto;
   min-width: 20px;
   height: 18px;
-  padding: 0 6px;
+  padding: 0 8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1306,7 +1982,8 @@ body {
   border: 1px solid rgba(239, 68, 68, 0.35);
   color: #b91c1c;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .hub-validation-ok-text {
@@ -1373,33 +2050,43 @@ body {
 }
 
 /* ==================== 技能高级模式：VS Code 式文件树 + 编辑器 ==================== */
+/*
+   视觉对齐 VS Code 资源管理器：
+     - 面板：文件树用浅灰面（--surface-soft），编辑器用白面（--surface-card），形成经典明暗对比；
+     - 行高固定 24px、缩进 14px/级、层级参考线（::before 竖线），行内无任何左侧色条；
+     - 选中态 = 中性灰底（不使用彩色高亮），文件图标 / 折叠箭头同为中性墨色；
+     - 行尾操作按钮仅在悬停 / 聚焦时浮现（VS Code 同款），输入行就地内联。
+   布局：文件树与文件编辑器同处网格首行（严格等高、内部各自滚动），
+   实时校验 / 资源说明作为通栏状态条置于二者下方。
+*/
 
-/* 左：文件树（强化玻璃面，独立滚动；--depth 变量驱动行缩进） */
+/* 左：文件树面板 */
 .hub-tree {
+  grid-column: 1;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
-  min-height: 460px;
-  border: 1px solid var(--glass-border);
-  border-radius: 14px;
-  background: var(--glass-tint-strong);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  box-shadow: var(--glass-inset), var(--glass-shadow);
+  min-height: 0;
+  height: 100%;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 10px;
+  background: var(--surface-soft, #f3f1ed);
   overflow: hidden;
-  animation: hubPanelIn 0.3s var(--ease-out) both;
 }
 
 .hub-tree-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid rgba(41 40 36 / 7%);
+  height: 34px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--line-soft, #e4e2de);
+  background: rgba(255, 255, 255, 0.55);
 }
 
 .hub-tree-title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--ink-primary, #292824);
 }
@@ -1408,67 +2095,124 @@ body {
   font-size: 11px;
   font-weight: 600;
   color: var(--ink-secondary, #787671);
-  padding: 1px 8px;
+  padding: 0 7px;
   border-radius: 999px;
-  background: rgba(41 40 36 / 6%);
+  background: rgba(41, 40, 36, 0.07);
+  /* 计数靠左、创建按钮靠右（新建文件 / 新建文件夹两个独立入口） */
+  margin-right: auto;
 }
 
 .hub-tree-add {
-  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+}
+
+/* 拖拽中：树头变成「放回根目录」的落点提示 */
+.hub-tree-head.is-drop-root {
+  background: rgba(41, 40, 36, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(41, 40, 36, 0.24);
+}
+
+.hub-tree-drop-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--ink-secondary, #787671);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 正在被拖动的文件行：半透明，让用户看清拖拽源 */
+.hub-tree-row.is-dragging {
+  opacity: 0.45;
 }
 
 .hub-tree-body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 8px 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
+  overflow-x: hidden;
+  padding: 4px 0 10px;
 }
 
-/* 树行通用：透明行按钮 + 悬停浮起 / 选中品牌条 */
+/* 树项容器：承载行 + 行尾操作（VS Code 的行内按钮） */
+.hub-tree-item {
+  position: relative;
+}
+
+/* 树行：固定 24px 行高（与 VS Code 一致），左侧无任何色条 */
 .hub-tree-row {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   width: 100%;
+  height: 24px;
+  min-height: 24px;
+  padding: 0 8px 0 calc(8px + var(--depth, 0) * 14px);
   border: none;
   background: none;
-  border-radius: 8px;
-  padding: 5px 8px;
-  padding-left: calc(8px + var(--depth, 0) * 16px);
   font-size: 12.5px;
   font-family: inherit;
-  color: var(--ink-secondary, #787671);
+  color: var(--ink-primary, #292824);
   text-align: left;
   cursor: pointer;
-  transition: background 0.16s var(--ease-out), color 0.16s var(--ease-out);
+  transition: background 0.12s ease;
+}
+
+/* 层级参考线（VS Code indent guide）：仅在有缩进层级时显现 */
+.hub-tree-row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(8px + (var(--depth, 0) - 1) * 14px + 7px);
+  width: 1px;
+  background: rgba(41, 40, 36, 0.12);
+  opacity: var(--depth, 0);
+  pointer-events: none;
 }
 
 .hub-tree-row:hover {
-  background: rgba(41 40 36 / 5%);
-  color: var(--ink-primary, #292824);
+  background: rgba(41, 40, 36, 0.05);
 }
 
+/* 选中态：中性灰底 + 深墨字（无彩色高亮、无左侧色条） */
 .hub-tree-row.is-active {
-  background: rgba(102, 126, 234, 0.13);
+  background: rgba(41, 40, 36, 0.11);
   color: var(--ink-primary, #292824);
-  box-shadow: inset 2.5px 0 0 var(--primary-color, #667eea);
+  font-weight: 600;
 }
 
 .hub-tree-row.is-entry {
-  color: var(--ink-primary, #292824);
   font-weight: 600;
-}
-
-.hub-tree-row.is-entry .hub-tree-file-icon {
-  color: var(--primary-color, #667eea);
 }
 
 .hub-tree-row.is-folder {
-  font-weight: 600;
-  color: var(--ink-primary, #292824);
+  font-weight: 500;
+}
+
+/* 放置目标（拖到目录上）：整行中性高亮 + 描边 */
+.hub-tree-row.is-drop-target {
+  background: rgba(41, 40, 36, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(41, 40, 36, 0.3);
+}
+
+/* 放置目标（拖到文件上）：插入位置指示线（贴在目标行上方） */
+.hub-tree-item.is-drop-before::after {
+  content: '';
+  position: absolute;
+  left: calc(8px + var(--depth, 0) * 14px);
+  right: 6px;
+  top: -1px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ink-primary, #292824);
+  z-index: 2;
+  pointer-events: none;
 }
 
 .hub-tree-name {
@@ -1484,6 +2228,7 @@ body {
   font-size: 12px;
 }
 
+/* 文件 / 目录图标：中性墨色描边 */
 .hub-tree-file-icon {
   width: 15px;
   height: 15px;
@@ -1491,17 +2236,18 @@ body {
   color: var(--ink-muted, #9b9790);
 }
 
-.hub-tree-row.is-active .hub-tree-file-icon {
-  color: var(--primary-color, #667eea);
+.hub-tree-row.is-active .hub-tree-file-icon,
+.hub-tree-row.is-entry .hub-tree-file-icon {
+  color: var(--ink-primary, #292824);
 }
 
 /* 目录折叠箭头（展开旋转 90°，弹性缓动） */
 .hub-tree-chevron {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   flex: none;
   color: var(--ink-muted, #9b9790);
-  transition: transform 0.18s var(--ease-spring);
+  transition: transform 0.16s var(--ease-spring);
 }
 
 .hub-tree-chevron:not(.is-collapsed) {
@@ -1514,8 +2260,7 @@ body {
   height: 7px;
   flex: none;
   border-radius: 50%;
-  background: var(--primary-color, #667eea);
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.14);
+  background: var(--ink-secondary, #787671);
 }
 
 .hub-tree-badge {
@@ -1525,103 +2270,125 @@ body {
   letter-spacing: 0.04em;
   padding: 1px 6px;
   border-radius: 999px;
-  color: var(--primary-color, #667eea);
-  background: rgba(102, 126, 234, 0.12);
-  border: 1px solid rgba(102, 126, 234, 0.25);
+  color: var(--ink-secondary, #787671);
+  background: rgba(41, 40, 36, 0.07);
+  border: 1px solid rgba(41, 40, 36, 0.16);
 }
 
-/* 文件行容器：行 + 行尾悬停操作（重命名 / 删除） */
-.hub-tree-branch {
-  position: relative;
-  display: flex;
-}
-
-.hub-tree-branch .hub-tree-row {
-  padding-right: 58px;
-}
-
+/* 行尾操作按钮（重命名 / 删除）：悬停或聚焦时浮现，浮于行之上 */
 .hub-tree-ops {
   position: absolute;
   right: 4px;
-  top: 50%;
-  transform: translateY(-50%);
+  top: 0;
+  height: 24px;
   display: inline-flex;
-  gap: 2px;
+  align-items: center;
+  gap: 1px;
   opacity: 0;
-  transition: opacity 0.15s var(--ease-out);
+  pointer-events: none;
+  transition: opacity 0.12s ease;
 }
 
-.hub-tree-branch:hover .hub-tree-ops,
-.hub-tree-branch:focus-within .hub-tree-ops {
+.hub-tree-item:hover .hub-tree-ops,
+.hub-tree-item:focus-within .hub-tree-ops {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .hub-tree-ops .hub-icon-btn {
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: 0 1px 4px rgb(41 40 36 / 10%);
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--surface-soft, #f3f1ed);
+}
+
+/* 文件行右侧留出操作区，避免文件名被按钮压住 */
+.hub-tree-row.is-file {
+  padding-right: 56px;
 }
 
 /* 新建 / 重命名输入行（就地内联，Enter 确认 / Esc 取消） */
 .hub-tree-input-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 6px 3px calc(6px + var(--depth, 0) * 16px);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.7);
-  border: 1px solid rgba(102, 126, 234, 0.38);
-  box-shadow: var(--ring-primary);
-  animation: hubPanelIn 0.22s var(--ease-out) both;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px 0 calc(8px + var(--depth, 0) * 14px);
+}
+
+/* 新建时的目标目录前缀（VS Code 同款：目录名 + 斜杠固定在输入框前） */
+.hub-tree-input-prefix {
+  flex: none;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  color: var(--ink-muted, #9b9790);
 }
 
 .hub-tree-input-row input {
   flex: 1;
   min-width: 0;
-  border: none;
-  background: none;
+  height: 20px;
+  border: 1px solid var(--ink-secondary, #787671);
+  border-radius: 3px;
+  background: var(--surface-card, #ffffff);
   outline: none;
   font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
   font-size: 12px;
   color: var(--ink-primary, #292824);
-  padding: 3px 2px;
+  padding: 0 4px;
+}
+
+.hub-tree-input-row input:focus {
+  border-color: var(--ink-primary, #292824);
+}
+
+.hub-tree-input-row .hub-icon-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
 }
 
 .hub-tree-error {
-  margin: 6px 4px 0;
+  margin: 6px 12px 0;
   font-size: 12px;
   line-height: 1.6;
   color: var(--error-color, #ef4444);
 }
 
 .hub-tree-empty {
-  margin: 10px 8px;
+  margin: 10px 12px;
   font-size: 12px;
   line-height: 1.7;
   color: var(--ink-muted, #9b9790);
 }
 
-/* 右：当前文件编辑器（页头路径 + 等宽编辑区 + 底部状态条） */
+/* 右：当前文件编辑器（页头路径 + 等宽编辑区） */
 .hub-code {
+  grid-column: 2;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
-  min-height: 460px;
-  border: 1px solid var(--glass-border);
-  border-radius: 14px;
-  background: var(--glass-tint-strong);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  box-shadow: var(--glass-inset), var(--glass-shadow);
+  min-height: 0;
+  height: 100%;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 10px;
+  background: var(--surface-card, #ffffff);
   overflow: hidden;
-  animation: hubPanelIn 0.3s var(--ease-out) 0.05s both;
 }
 
 .hub-code-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px;
-  border-bottom: 1px solid rgba(41 40 36 / 7%);
+  height: 34px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--line-soft, #e4e2de);
+  background: rgba(255, 255, 255, 0.6);
 }
 
 .hub-code-path {
@@ -1641,45 +2408,130 @@ body {
   white-space: nowrap;
 }
 
-/* 编辑区：无边框融入玻璃面，等宽字体；软换行对技能文档更友好 */
+/* 编辑区：无边框融入白面，等宽字体；软换行对技能文档更友好 */
 .hub-code-input {
   flex: 1 1 auto;
-  min-height: 280px;
+  min-height: 0;
   border: none;
   outline: none;
   resize: none;
   background: transparent;
-  padding: 14px 16px;
+  padding: 12px 16px;
   font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
   font-size: 12.5px;
   line-height: 1.75;
   color: var(--ink-primary, #292824);
+  tab-size: 2;
+}
+
+/* 状态条：文件树与文件编辑器下方、编辑器内容区的最底一行（实时校验 / 资源文件说明）。
+   问题明细不再内联撑高本条，而是向上弹出悬浮卡片（见 .hub-validation-body），
+   因此本条恒为一行高，把全部剩余高度留给文件树与编辑器。 */
+.hub-editor-status {
+  position: relative;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-width: 0;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 10px;
+  background: var(--surface-card, #ffffff);
+  padding: 8px 14px;
+  flex: none;
+}
+
+/* 状态条自身承载语义底色（校验通过 / 校验失败） */
+.hub-editor-status.is-ok {
+  border-color: rgba(16, 185, 129, 0.32);
+  background: rgba(236, 253, 245, 0.6);
+}
+
+.hub-editor-status.is-error {
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(255, 250, 250, 0.62);
+}
+
+/* 状态条内的校验面板：去边框去底色（底色已由状态条承载），只留标题行；
+   悬浮卡片是它的子元素，绝对定位锚到状态条（position: relative）上方 */
+.hub-editor-status .hub-validation {
+  position: static;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
+.hub-validation-body .hub-validation-items {
+  max-height: 220px;
+  overflow-y: auto;
 }
 
 .hub-code-note {
   margin: 0;
-  padding: 8px 14px;
-  border-top: 1px solid rgba(41 40 36 / 7%);
   font-size: 11.5px;
   line-height: 1.7;
   color: var(--ink-muted, #9b9790);
 }
 
-/* 校验面板嵌入编辑器底部：贴平圆角、问题列表超高滚动 */
-.hub-code .hub-validation {
-  border-radius: 0;
-  border-left: none;
-  border-right: none;
-  border-bottom: none;
-  box-shadow: none;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  margin: 0;
+/* ==================== 文件树右键菜单（自定义小菜单卡片） ==================== */
+
+/*
+   定位：菜单挂在 .hub-editor 内（编辑器是 position: relative 的定位祖先），
+   坐标由脚本按光标位置换算，避免被滚动容器裁掉。
+*/
+.hub-menu {
+  position: absolute;
+  z-index: 60;
+  min-width: 172px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  box-shadow: 0 10px 30px rgba(41 40 36 / 16%), 0 1px 3px rgba(41 40 36 / 8%);
+  animation: hubPopIn 0.14s var(--ease-out) both;
+  transform-origin: top left;
 }
 
-.hub-code .hub-validation-items {
-  max-height: 160px;
-  overflow-y: auto;
+.hub-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: none;
+  border-radius: 7px;
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--ink-primary, #292824);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.hub-menu-item:hover {
+  background: rgba(41, 40, 36, 0.08);
+}
+
+.hub-menu-item.is-danger {
+  color: var(--error-color, #ef4444);
+}
+
+.hub-menu-item.is-danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.hub-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: rgba(41, 40, 36, 0.1);
 }
 
 /* ==================== 自定义分类选择器（智能体 / 技能编辑器共用） ==================== */
@@ -1718,12 +2570,12 @@ body {
 }
 
 .cat-select-trigger:hover {
-  border-color: rgba(102, 126, 234, 0.45);
+  border-color: rgba(41, 40, 36, 0.28);
 }
 
 .cat-select.is-open .cat-select-trigger,
 .cat-select-trigger:focus-visible {
-  border-color: rgba(102, 126, 234, 0.55);
+  border-color: rgba(41, 40, 36, 0.34);
   background: rgba(255, 255, 255, 0.85);
   box-shadow: var(--ring-primary);
 }
@@ -1823,8 +2675,8 @@ body {
 }
 
 .cat-select-option.is-selected {
-  background: rgba(102, 126, 234, 0.12);
-  color: #4f46e5;
+  background: rgba(41 40 36 / 11%);
+  color: var(--ink-primary, #292824);
   font-weight: 600;
 }
 
@@ -1839,23 +2691,23 @@ body {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
-  color: #667eea;
+  color: var(--ink-primary, #292824);
 }
 
 .cat-select-plus {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
-  color: #667eea;
+  color: var(--ink-secondary, #787671);
 }
 
-/* 「新建自定义分类」项：以主色与加号图标与既有分类区分 */
+/* 「新建自定义分类」项：以加号图标与既有分类区分 */
 .cat-select-create {
-  color: #667eea;
+  color: var(--ink-primary, #292824);
 }
 
 .cat-select-create:hover {
-  background: rgba(102, 126, 234, 0.09);
+  background: rgba(41 40 36 / 9%);
 }
 
 /* 校验失败：触发器与名称输入框同步红框（与 .hub-field.is-invalid 同视觉） */
@@ -1893,12 +2745,12 @@ body {
 }
 
 .hub-select__trigger:hover:not(:disabled) {
-  border-color: rgba(102, 126, 234, 0.45);
+  border-color: rgba(41, 40, 36, 0.28);
 }
 
 .hub-select.is-open .hub-select__trigger,
 .hub-select__trigger:focus-visible {
-  border-color: rgba(102, 126, 234, 0.55);
+  border-color: rgba(41, 40, 36, 0.34);
   background: rgba(255, 255, 255, 0.85);
   box-shadow: var(--ring-primary);
 }
@@ -1975,8 +2827,8 @@ body {
 }
 
 .hub-select__option.is-selected {
-  background: rgba(102, 126, 234, 0.12);
-  color: #4f46e5;
+  background: rgba(41 40 36 / 11%);
+  color: var(--ink-primary, #292824);
   font-weight: 600;
 }
 
@@ -1992,7 +2844,7 @@ body {
   width: 14px;
   height: 14px;
   flex-shrink: 0;
-  color: #667eea;
+  color: var(--ink-primary, #292824);
 }
 
 .hub-select__empty {
@@ -2018,7 +2870,7 @@ body {
   gap: 12px 20px;
   align-items: center;
   justify-content: space-between;
-  margin: 12px 18px 0;
+  margin: 14px 20px 0;
   padding: 14px 16px;
   border: 1px solid rgba(245, 158, 11, 0.38);
   border-radius: 14px;

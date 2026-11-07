@@ -42,6 +42,8 @@ export class ReadSkillFileTool extends BaseTool {
     version: '1.1.0',
     author: 'AgentNexus',
     tags: ['skill', 'resource', 'read'],
+    // 纯读取技能资源文件，不触碰页面：视觉循环无需重拍
+    noVisionRecapture: true,
   };
 
   openaiSchema: OpenAITool = {

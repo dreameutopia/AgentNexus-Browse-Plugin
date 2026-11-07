@@ -1,0 +1,148 @@
+/* 用户消息气泡（组件自带样式，与 chat-message-list.css 解耦）
+ *
+ * 结构：
+ *   .user-bubble            气泡容器（灰底圆角）
+ *   ├── .user-bubble-body   正文区（定位上下文，供底缘渐隐层贴附）
+ *   │   ├── .user-bubble-clip   折叠层（超长时由组件加 max-height 裁剪）
+ *   │   │   └── .user-bubble-text  正文容器（不限高 → 测量到的始终是完整高度）
+ *   │   └── .user-bubble-fade    底缘渐隐（收起态提示下方还有内容）
+ *   └── .user-bubble-actions 底部操作行（左：展开/收起；右：复制）
+ */
+
+.user-bubble {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  box-sizing: border-box;
+  /* 中性灰气泡（对齐主流聊天客户端）：浅灰底 + 深色文字，
+     代码块/链接等浅色系内嵌元素无需反色适配 */
+  background: var(--surface-user, #eeece7);
+  color: var(--ink-primary, #292824);
+  border-radius: 18px;
+  padding: 10px 14px 4px;
+}
+
+/* 正文容器不再自带气泡底色与内边距——底色与内边距统一由 .user-bubble 承担，
+   否则底部操作行（复制按钮）会落在气泡之外 */
+.message.user .user-bubble .message-content {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+}
+
+.user-bubble-body {
+  position: relative;
+  min-width: 0;
+}
+
+/* 折叠层：组件按实测行高写入 max-height，这里只负责裁剪 */
+.user-bubble-clip {
+  overflow: hidden;
+}
+
+.user-bubble-text {
+  min-width: 0;
+}
+
+/* 底缘渐隐：收起态提示「下面还有内容」，避免硬切一刀的割裂感 */
+.user-bubble-fade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 26px;
+  pointer-events: none;
+  /* transparent 起点按预乘 alpha 插值，换肤后无需改这里的色值 */
+  background: linear-gradient(to bottom, transparent 0%, var(--surface-user, #eeece7) 92%);
+}
+
+/* 底部操作行：展开入口靠左、复制按钮贴右下角 */
+.user-bubble-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 2px;
+  min-height: 24px;
+}
+
+.user-bubble-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 6px 0 4px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--ink-muted, #9b9790);
+  font-size: 11.5px;
+  font-family: inherit;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.user-bubble-expand:hover {
+  background: var(--surface-hover, #e2e0db);
+  color: var(--ink-secondary, #787671);
+}
+
+.user-bubble-expand:focus-visible {
+  outline: 2px solid var(--focus-ring, #a5a09a);
+  outline-offset: -1px;
+}
+
+/* 展开箭头：收起态朝下，展开态翻转朝上 */
+.user-bubble-expand-icon {
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+
+.user-bubble-expand-icon.expanded {
+  transform: rotate(180deg);
+}
+
+.user-bubble-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 贴右下角：操作行里始终右对齐（左侧展开入口不占位时同样靠右） */
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--ink-muted, #9b9790);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.user-bubble-copy:hover {
+  background: var(--surface-hover, #e2e0db);
+  color: var(--ink-secondary, #787671);
+}
+
+.user-bubble-copy:focus-visible {
+  outline: 2px solid var(--focus-ring, #a5a09a);
+  outline-offset: -1px;
+}
+
+/* 复制成功：绿色对勾（与模型消息操作栏同一反馈语言，2 秒后复原） */
+.user-bubble-copy.copied {
+  color: #16a34a;
+}
+
+/* 无正文（空消息）：禁用而非留死按钮——点击无响应的控件是交互歧义 */
+.user-bubble-copy:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.user-bubble-copy:disabled:hover {
+  background: transparent;
+  color: var(--ink-muted, #9b9790);
+}

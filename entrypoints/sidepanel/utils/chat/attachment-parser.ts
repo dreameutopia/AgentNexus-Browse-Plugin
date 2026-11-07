@@ -6,11 +6,13 @@
  *   - classifyAttachmentFile：按扩展名（MIME 兜底）把文件分为
  *     文本 / 图片 / 可解析 Office（xlsx·docx·pptx）/ 旧版二进制 Office / 不支持；
  *   - decodeTextBuffer：文本解码阶梯（BOM → UTF-8 严格 → GBK 严格 → UTF-8 宽松）；
- *   - imageToDataUrl：图片 → data URL（多模态 image_url 直传）；
  *   - parseOfficeDocument：OOXML（zip 容器）→ 纯文本/CSV，
  *     xlsx 优先转 CSV 表格格式（多工作表 + 富文本/公式/超链接/日期单元格），
  *     docx 保留段落与表格结构，pptx 按幻灯片 × 形状提取文本；
  *   - 媒体检测：OOXML 内嵌图片（word/media 等目录）只报告存在，不提取。
+ *
+ * 图片 → data URL 的整理（含压缩引擎）在 image-compressor.ts；本模块只管
+ * 「能不能进」的分类与文本提取。
  *
  * 防御约定：
  *   - 所有解析失败抛 AttachmentParseError（用户可读消息），绝不静默返回空文本；
@@ -21,7 +23,6 @@
 
 import { unzipSync, strFromU8 } from 'fflate';
 import { t } from '@/utils/i18n';
-import { arrayBufferToBase64 } from '@/utils/shared/base64';
 
 // ==================== 类型 ====================
 
@@ -178,25 +179,6 @@ function decodeWith(encoding: string, bytes: Uint8Array, fatal: boolean): string
       t('sidepanel.attachments.decodeFailed', { encoding, reason: error instanceof Error ? error.message : String(error) }),
     );
   }
-}
-
-// ==================== 图片 → data URL ====================
-
-/** 扩展名 → MIME（file.type 缺失时兜底；默认 png） */
-const IMAGE_MIME_BY_EXT: Record<string, string> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  bmp: 'image/bmp',
-  ico: 'image/x-icon',
-};
-
-/** 图片 → data URL（多模态 image_url 直传格式；base64 编码复用共享实现） */
-export function imageToDataUrl(buffer: ArrayBuffer, ext: string, mimeType?: string): string {
-  const mime = (mimeType && mimeType !== '') || IMAGE_MIME_BY_EXT[ext] || 'image/png';
-  return `data:${mime};base64,${arrayBufferToBase64(buffer)}`;
 }
 
 // ==================== OOXML 解析 ====================

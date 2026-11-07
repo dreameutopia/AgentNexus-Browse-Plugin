@@ -81,8 +81,16 @@ assert.ok(
   '视觉操作协议必须包含通道选择准则分区',
 );
 assert.ok(
-  VISION_ACTION_SOP.includes('DOM 通道优先'),
-  '通道选择准则：结构化数据默认 DOM 通道',
+  VISION_ACTION_SOP.includes('视觉优先'),
+  '通道选择准则：视觉优先为默认执行通道',
+);
+assert.ok(
+  VISION_ACTION_SOP.includes('辅助通道'),
+  '通道选择准则：DOM/文本为辅助通道（仅视觉无法完成时使用）',
+);
+assert.ok(
+  !VISION_ACTION_SOP.includes('browser_interact 定位精确且稳定，优先使用'),
+  '通道选择准则：不得再出现 DOM 交互优先于视觉手势的表述',
 );
 assert.ok(
   VISION_ACTION_SOP.includes('vision_gui'),
@@ -96,4 +104,17 @@ const { visionActionConfig } = await import('../../utils/agents/presets/vision-a
 assert.ok(
   String(visionActionConfig.system).includes('<dom-or-vision>'),
   '视觉通用助手系统提示词携带通道选择准则（经 VISION_ACTION_SOP 注入）',
+);
+// 视觉优先改造：预设正文携带最高优先级原则；视觉 SOP 先于文本辅助规程；
+// 文本规程前有「辅助定位」框架句，防止其 17 行 DOM 流程反客为主
+const presetSystem = String(visionActionConfig.system);
+assert.ok(presetSystem.includes('视觉优先原则'), '预设正文必须声明视觉优先原则');
+assert.ok(presetSystem.includes('首要参考'), '预设正文必须强调截图是首要参考标志');
+assert.ok(
+  presetSystem.indexOf('<vision-gui-tool>') < presetSystem.indexOf('<text-interaction-sop>'),
+  '视觉 SOP 必须先于文本辅助规程注入',
+);
+assert.ok(
+  presetSystem.includes('不改变「vision_gui 是默认执行通道」的定位'),
+  '文本辅助规程前必须有辅助定位框架句',
 );

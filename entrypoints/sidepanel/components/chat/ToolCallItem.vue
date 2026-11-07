@@ -52,6 +52,7 @@
 import { computed } from 'vue';
 import { t } from '@/utils/i18n';
 import type { ToolCallUI } from '../../types/chat';
+import { formatCompactDuration } from '../../utils/chat/format';
 
 /** 详情区序列化上限（字符）：超长结果截断展示，避免渲染 64KB 级记录拖垮列表 */
 const DETAIL_PREVIEW_MAX_CHARS = 50_000;
@@ -79,12 +80,8 @@ const hasDetail = computed(() => {
   return false;
 });
 
-/** 耗时标签：<1s 显示毫秒，≥1s 保留一位小数 */
-const durationLabel = computed(() => {
-  const ms = props.toolCall.executionTime;
-  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '';
-  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
-});
+/** 耗时标签：<1s 显示毫秒，≥1s 保留一位小数（实现见 format.ts，与压缩行共用同一口径） */
+const durationLabel = computed(() => formatCompactDuration(props.toolCall.executionTime));
 
 const rowTitle = computed(() => {
   const statusLabel =

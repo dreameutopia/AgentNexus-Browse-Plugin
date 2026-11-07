@@ -1,5 +1,5 @@
 import { wireNames } from '@/utils/plugins/wire-names';
-﻿/**
+/**
  * AI对话API — 多协议统一版
  *
  * 支持 OpenAI / Ollama / Gemini / Claude / OpenAI Responses 五种协议，

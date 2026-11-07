@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>循环守卫确认条预览</title>
+    <link rel="stylesheet" href="../entrypoints/sidepanel/components/chat/plan-board.css" />
+    <style>
+      /* app-container 的 token 快照（app.css 1-20 行同口径），让 var() 与真实应用一致 */
+      body {
+        --surface-canvas: #faf9f7;
+        --surface-card: #ffffff;
+        --surface-soft: #f3f1ed;
+        --surface-hover: #eeece7;
+        --surface-user: #eeece7;
+        --line-soft: #e4e2de;
+        --ink-primary: #292824;
+        --ink-secondary: #787671;
+        --ink-muted: #9b9790;
+        --focus-ring: #a5a09a;
+        margin: 0;
+        padding: 24px;
+        background: #f4f5f7;
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        color: var(--ink-primary);
+      }
+      .stage {
+        background: var(--surface-canvas);
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 16px;
+        width: 380px;
+      }
+      .stage h3 {
+        font-size: 12px;
+        color: #9ca3af;
+        margin: 0 0 12px;
+        font-weight: 500;
+      }
+      /* 模拟 bottom-section 的侧向留白（padding: 8px 16px 16px） */
+      .bottom-section {
+        padding: 8px 16px 16px;
+      }
+      /* 模拟输入容器 */
+      .input-container {
+        display: flex;
+        flex-direction: column;
+        background: var(--surface-card);
+        border: 1px solid var(--line-soft);
+        border-radius: 20px;
+        padding: 12px 16px;
+        gap: 8px;
+      }
+      .message-input {
+        font-size: 14px;
+        color: #9ca3af;
+      }
+      .bottom-bar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .pill {
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #f1f5f9;
+        font-size: 11.5px;
+        color: #6b7280;
+      }
+
+      /* ===== GuardConfirmBar 样式（与组件 <style scoped> 同步维护）===== */
+      .guard-confirm-bar {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin: 0 0 8px;
+        padding: 9px 12px 11px;
+        border-radius: 14px;
+        border: 1px solid var(--line-soft, #e4e2de);
+        background: #ffffff;
+        box-shadow: 0 1px 2px var(--surface-soft, #f3f1ed);
+        overflow: hidden;
+      }
+      .guard-bar-main {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        min-width: 0;
+      }
+      .guard-bar-mark {
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        border-radius: 7px;
+        background: var(--surface-hover, #eeece7);
+        color: var(--ink-secondary, #787671);
+      }
+      .guard-bar-mark.is-tool-failures {
+        background: rgba(239, 68, 68, 0.1);
+        color: #b91c1c;
+      }
+      .guard-bar-text {
+        min-width: 0;
+      }
+      .guard-bar-title {
+        margin: 0;
+        font-size: 12.5px;
+        font-weight: 600;
+        color: var(--ink-primary, #292824);
+        line-height: 1.45;
+      }
+      .guard-bar-hint {
+        margin: 2px 0 0;
+        font-size: 11.5px;
+        color: var(--ink-muted, #9b9790);
+        line-height: 1.4;
+        font-variant-numeric: tabular-nums;
+      }
+      .guard-bar-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .guard-btn {
+        border: none;
+        border-radius: 8px;
+        padding: 6px 14px;
+        font-size: 12px;
+        font-weight: 600;
+        font-family: inherit;
+        cursor: pointer;
+        transition: background-color 0.15s ease, transform 0.05s ease;
+      }
+      .guard-btn:active {
+        transform: scale(0.97);
+      }
+      .guard-btn-stop {
+        color: var(--ink-secondary, #787671);
+        background: var(--surface-hover, #eeece7);
+      }
+      .guard-btn-stop:hover {
+        background: #e4e1da;
+      }
+      .guard-btn-continue {
+        color: #ffffff;
+        background: var(--ink-primary, #292824);
+      }
+      .guard-btn-continue:hover {
+        background: #44413b;
+      }
+      .guard-bar-track {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 2px;
+        background: var(--surface-soft, #f3f1ed);
+      }
+      .guard-bar-track-fill {
+        display: block;
+        height: 100%;
+        background: var(--ink-muted, #9b9790);
+        transition: width 1s linear, background-color 0.3s ease;
+      }
+      .guard-bar-track-fill.is-urgent {
+        background: #ef4444;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage">
+      <h3>轮次上限（默认 60s 倒计时起点，轨道全宽）</h3>
+      <div class="bottom-section">
+        <div class="guard-confirm-bar">
+          <div class="guard-bar-main">
+            <span class="guard-bar-mark is-max-iterations">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 5h8"/><path d="M3 12h8"/><path d="M3 19h8"/><path d="M17 9l4 3-4 3V9z"/>
+              </svg>
+            </span>
+            <div class="guard-bar-text">
+              <p class="guard-bar-title">已连续执行 30 轮工具调用，是否继续运行本次任务？</p>
+              <p class="guard-bar-hint">60 秒内未确认将自动停止</p>
+            </div>
+          </div>
+          <div class="guard-bar-actions">
+            <button type="button" class="guard-btn guard-btn-stop">停止</button>
+            <button type="button" class="guard-btn guard-btn-continue">继续运行</button>
+          </div>
+          <div class="guard-bar-track"><span class="guard-bar-track-fill" style="width: 100%"></span></div>
+        </div>
+        <div class="input-container">
+          <div class="message-input">给 Claude 发送消息…</div>
+          <div class="bottom-bar"><span class="pill">工具</span><span class="pill">发送</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <h3>时长上限（中性灰图标）</h3>
+      <div class="bottom-section">
+        <div class="guard-confirm-bar">
+          <div class="guard-bar-main">
+            <span class="guard-bar-mark is-max-duration">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="10" y1="2" x2="14" y2="2"/><line x1="12" y1="14" x2="15" y2="11"/><circle cx="12" cy="14" r="8"/>
+              </svg>
+            </span>
+            <div class="guard-bar-text">
+              <p class="guard-bar-title">本次任务已连续运行超过 20 分钟，是否继续？</p>
+              <p class="guard-bar-hint">37 秒内未确认将自动停止</p>
+            </div>
+          </div>
+          <div class="guard-bar-actions">
+            <button type="button" class="guard-btn guard-btn-stop">停止</button>
+            <button type="button" class="guard-btn guard-btn-continue">继续运行</button>
+          </div>
+          <div class="guard-bar-track"><span class="guard-bar-track-fill" style="width: 61.67%"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <h3>连续工具失败（语义红徽标）</h3>
+      <div class="bottom-section">
+        <div class="guard-confirm-bar">
+          <div class="guard-bar-main">
+            <span class="guard-bar-mark is-tool-failures">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>
+              </svg>
+            </span>
+            <div class="guard-bar-text">
+              <p class="guard-bar-title">工具调用已连续 3 轮全部失败，是否继续运行本次任务？</p>
+              <p class="guard-bar-hint">52 秒内未确认将自动停止</p>
+            </div>
+          </div>
+          <div class="guard-bar-actions">
+            <button type="button" class="guard-btn guard-btn-stop">停止</button>
+            <button type="button" class="guard-btn guard-btn-continue">继续运行</button>
+          </div>
+          <div class="guard-bar-track"><span class="guard-bar-track-fill" style="width: 86.67%"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <h3>末 10s 紧迫态（轨道转语义红）</h3>
+      <div class="bottom-section">
+        <div class="guard-confirm-bar">
+          <div class="guard-bar-main">
+            <span class="guard-bar-mark is-max-iterations">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 5h8"/><path d="M3 12h8"/><path d="M3 19h8"/><path d="M17 9l4 3-4 3V9z"/>
+              </svg>
+            </span>
+            <div class="guard-bar-text">
+              <p class="guard-bar-title">已连续执行 30 轮工具调用，是否继续运行本次任务？</p>
+              <p class="guard-bar-hint">8 秒内未确认将自动停止</p>
+            </div>
+          </div>
+          <div class="guard-bar-actions">
+            <button type="button" class="guard-btn guard-btn-stop">停止</button>
+            <button type="button" class="guard-btn guard-btn-continue">继续运行</button>
+          </div>
+          <div class="guard-bar-track"><span class="guard-bar-track-fill is-urgent" style="width: 13.33%"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <h3>与任务计划卡片同框（设计语言对齐校验）</h3>
+      <div class="bottom-section">
+        <div class="guard-confirm-bar">
+          <div class="guard-bar-main">
+            <span class="guard-bar-mark is-max-duration">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="10" y1="2" x2="14" y2="2"/><line x1="12" y1="14" x2="15" y2="11"/><circle cx="12" cy="14" r="8"/>
+              </svg>
+            </span>
+            <div class="guard-bar-text">
+              <p class="guard-bar-title">本次任务已连续运行超过 20 分钟，是否继续？</p>
+              <p class="guard-bar-hint">45 秒内未确认将自动停止</p>
+            </div>
+          </div>
+          <div class="guard-bar-actions">
+            <button type="button" class="guard-btn guard-btn-stop">停止</button>
+            <button type="button" class="guard-btn guard-btn-continue">继续运行</button>
+          </div>
+          <div class="guard-bar-track"><span class="guard-bar-track-fill" style="width: 75%"></span></div>
+        </div>
+        <div class="plan-board">
+          <div class="plan-board__card">
+            <div class="plan-board__header" style="cursor: default">
+              <span class="plan-board__mark">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+                  <path d="M4 5H10V11H4V5Z M4 13H10V19H4V13Z M12 6H20V8H12V6Z M12 10H20V12H12V10Z M12 16H20V18H12V16Z M12 14H20V15H12V14Z" fill="currentColor" />
+                </svg>
+              </span>
+              <span class="plan-board__title">任务计划</span>
+              <span class="plan-board__counter">2<span class="plan-board__counter-sep">/</span>5</span>
+              <span class="plan-board__current">
+                <span class="plan-board__current-label">进行中：</span>遍历搜索结果列表并核对覆盖范围
+              </span>
+            </div>
+            <div class="plan-board__track"><span class="plan-board__track-fill" style="width: 40%"></span></div>
+          </div>
+        </div>
+        <div class="input-container">
+          <div class="message-input">给 Claude 发送消息…</div>
+          <div class="bottom-bar"><span class="pill">工具</span><span class="pill">发送</span></div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

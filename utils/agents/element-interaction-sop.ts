@@ -1,4 +1,4 @@
-/** Shared by text/vision automation and harvesting; learning owns its guidance. */
+/** Shared by text/vision automation and data collection; learning owns its guidance. */
 export const ELEMENT_INTERACTION_SOP = `<text-interaction-sop>
 以下规则适用于文本、DOM、辅助功能和浏览器原生输入通道；视觉策略也保留这些能力。
 观察用 browser_observe，枚举、节点详情与分页的参数边界以工具说明为准。普通控件不足以理解复杂界面时换 structure/accessibility；需核对 XPath、属性或状态时读取节点详情。

@@ -10,10 +10,11 @@
           v-for="(message, index) in filteredMessages"
           :key="message.id || index"
           :message="message"
-          :is-live="isLiveMessage(index)"
+          :is-live="isLiveMessage(message, index)"
           @toggle-tool-call-expansion="forwardToolToggle"
           @toggle-reasoning-collapse="forwardReasoningToggle"
           @toggle-reasoning-content-collapse="forwardReasoningContentToggle"
+          @toggle-compaction-collapse="forwardCompactionToggle"
           @feedback-change="forwardFeedbackChange"
         />
       </div>
@@ -44,6 +45,13 @@ const props = defineProps<{
   messages: ExtendedChatMessage[];
   showChatMode: boolean;
   isAiResponding: boolean;
+  /**
+   * 当前直播消息 id（运行中的助手记录 id）。
+   * 提供时直播判定按 id 命中——任何在运行期间追加到列表尾部的其它消息
+   * （历史注记、错误卡片等）都不会再把流式消息挤成「已结束」渲染；
+   * 缺省时回退「最后一条」启发式（测试与旧调用方兼容）。
+   */
+  liveMessageId?: string | null;
 }>();
 
 const messagesContainer = ref<HTMLElement | null>(null);
@@ -264,6 +272,8 @@ const emit = defineEmits<{
   'toggle-tool-call-expansion': [messageId: string, toolCallId: string];
   'toggle-reasoning-collapse': [messageId: string, partIndex: number];
   'toggle-reasoning-content-collapse': [messageId: string];
+  /** 压缩片段展开/收起（partIndex 定位 message.parts 原始下标） */
+  'toggle-compaction-collapse': [messageId: string, partIndex: number];
   /** 模型消息反馈（赞/踩；null = 清除），由 App 落库并回写列表 */
   'feedback-change': [messageId: string, feedback: MessageFeedback | null];
 }>();
@@ -277,11 +287,23 @@ const forwardReasoningToggle = (messageId: string, partIndex: number) => {
 const forwardReasoningContentToggle = (messageId: string) => {
   emit('toggle-reasoning-content-collapse', messageId);
 };
+const forwardCompactionToggle = (messageId: string, partIndex: number) => {
+  emit('toggle-compaction-collapse', messageId, partIndex);
+};
 const forwardFeedbackChange = (messageId: string, feedback: MessageFeedback | null) => {
   emit('feedback-change', messageId, feedback);
 };
 
-/** 直播态判定：AI 正在回应且本条是最后一条消息（历史消息即使在回应期间也视为已结束） */
-const isLiveMessage = (index: number): boolean =>
-  props.isAiResponding && index === filteredMessages.value.length - 1;
+/**
+ * 直播态判定：AI 正在回应，且本条是直播消息。
+ * 优先按 liveMessageId 精确命中（运行记录 id 由 App 维护）——运行期间
+ * 追加到列表尾部的任何其它消息（压缩注记、错误卡片、别会话串扰残留）
+ * 都不再把流式消息翻成「已结束」渲染（大折叠 + 反馈按钮提前出现）。
+ * 缺省回退「最后一条」启发式（历史行为）。
+ */
+const isLiveMessage = (message: ExtendedChatMessage, index: number): boolean => {
+  if (!props.isAiResponding) return false;
+  if (props.liveMessageId) return message.id === props.liveMessageId;
+  return index === filteredMessages.value.length - 1;
+};
 </script>

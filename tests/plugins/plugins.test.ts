@@ -492,24 +492,40 @@ await test('signed catalog rejects stale sequences and verifies its independentl
     globalThis.fetch = original;
   }
 });
+const bgListeners: any[] = [],
+  bgStorage = new Map<any, any>();
+await test('official catalog constants stay well-formed in both deployment states', async () => {
+  const {
+    OFFICIAL_CATALOG_PUBLIC_KEY,
+    OFFICIAL_CATALOG_URL,
+    isOfficialCatalogConfigured,
+  } = await import('../../utils/plugins/official-catalog');
+  if (!isOfficialCatalogConfigured()) {
+    // 尚未部署：两常量必须同时为空（发现页据此优雅降级）
+    assert.equal(OFFICIAL_CATALOG_URL, '');
+    assert.equal(OFFICIAL_CATALOG_PUBLIC_KEY, '');
+  } else {
+    // 已部署：URL 为 HTTPS，公钥 Base64 解码恰为 32 字节（Ed25519）
+    assert.equal(new URL(OFFICIAL_CATALOG_URL).protocol, 'https:');
+    assert.equal(Buffer.from(OFFICIAL_CATALOG_PUBLIC_KEY, 'base64').length, 32);
+  }
+});
 await test('background protocol rejects content-script senders and supports install/export/disabled restore', async () => {
-  const listeners: any[] = [],
-    local = new Map();
   (globalThis as any).chrome = {
     runtime: {
       id: 'test',
       getURL: (p: string) => `chrome-extension://test${p}`,
-      onMessage: { addListener: (fn: any) => listeners.push(fn) },
+      onMessage: { addListener: (fn: any) => bgListeners.push(fn) },
       sendMessage: async () => undefined,
     },
     storage: {
       local: {
         get: async (k: any) =>
-          k === null ? Object.fromEntries(local) : { [k]: local.get(k) },
+          k === null ? Object.fromEntries(bgStorage) : { [k]: bgStorage.get(k) },
         set: async (v: any) =>
-          Object.entries(v).forEach(([k, v]) => local.set(k, v)),
+          Object.entries(v).forEach(([k, v]) => bgStorage.set(k, v)),
         remove: async (k: any) => {
-          for (const item of Array.isArray(k) ? k : [k]) local.delete(item);
+          for (const item of Array.isArray(k) ? k : [k]) bgStorage.delete(item);
         },
       },
     },
@@ -521,7 +537,7 @@ await test('background protocol rejects content-script senders and supports inst
     url = 'chrome-extension://test/hub.html',
   ) =>
     new Promise<any>((resolve) =>
-      listeners[0](
+      bgListeners[0](
         { type: 'agentnexus.plugins.v1', operation, payload },
         { id: 'test', url },
         resolve,
@@ -561,6 +577,100 @@ await test('background protocol rejects content-script senders and supports inst
     true,
   );
   assert.equal((await request('snapshot')).value.packages[0].enabled, true);
+});
+await test('check-updates throttles, detects newer releases and aborts on rate limits', async () => {
+  const send = (operation: string, payload: any = {}) =>
+      new Promise<any>((resolve) =>
+        bgListeners[0](
+          { type: 'agentnexus.plugins.v1', operation, payload },
+          { id: 'test', url: 'chrome-extension://test/hub.html' },
+          resolve,
+        ),
+      ),
+    bytes = await bundle('1.0.0', { id: 'update-me' }),
+    package_ = await verifyPackage(bytes, '0.0.1'),
+    newerDigest = 'ab'.repeat(32);
+  let phase: 'install' | 'newer' | 'ratelimited' = 'install',
+    apiCalls = 0;
+  const originalFetch = globalThis.fetch,
+    realNow = Date.now;
+  const release = (tag: string, digest: string) => ({
+    tag_name: tag,
+    assets: [
+      {
+        name: 'plugin.anplugin',
+        size: bytes.length,
+        digest: `sha256:${digest}`,
+        browser_download_url: `https://github.com/test/updater/releases/download/${tag}/plugin.anplugin`,
+      },
+    ],
+  });
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.startsWith('https://api.github.com/')) {
+      apiCalls++;
+      if (phase === 'ratelimited') return new Response(null, { status: 403 });
+      if (url.endsWith('/repos/test/updater'))
+        return Response.json({ id: 777, full_name: 'test/updater' });
+      if (url.includes('/releases?'))
+        return Response.json(
+          phase === 'newer'
+            ? [release('v1.0.0', package_.digest), release('v2.0.0', newerDigest)]
+            : [release('v1.0.0', package_.digest)],
+        );
+    }
+    const response = new Response(bytes as BodyInit);
+    Object.defineProperty(response, 'url', { value: url });
+    return response;
+  };
+  try {
+    // 经 github-install 安装，包记录携带 GitHub 来源（source）
+    const preview = await send('github-preview', {
+      repository: 'https://github.com/test/updater',
+    });
+    assert.equal(preview.ok, true, JSON.stringify(preview));
+    assert.equal(
+      (
+        await send('github-install', {
+          repository: 'https://github.com/test/updater',
+          key: preview.value.preview.plugin.key,
+          generation: preview.value.preview.generation,
+          digest: preview.value.preview.plugin.digest,
+        })
+      ).ok,
+      true,
+    );
+    // 跳过 github() 的 5 分钟内存缓存后目录出现 v2.0.0
+    Date.now = () => realNow() + 400_000;
+    phase = 'newer';
+    bgStorage.set('plugin-updates:lastCheck', Date.now() - 7 * 3600_000);
+    const updates = await send('check-updates');
+    assert.equal(updates.ok, true, JSON.stringify(updates));
+    assert.deepEqual(updates.value, [
+      { key: package_.key, version: '2.0.0', digest: newerDigest },
+    ]);
+    // 6 小时内静默跳过：不发任何请求
+    const calls = apiCalls;
+    bgStorage.set('plugin-updates:lastCheck', Date.now());
+    assert.deepEqual((await send('check-updates')).value, []);
+    assert.equal(apiCalls, calls);
+    // GitHub 限流（403）：首个仓库即中止批次，不继续请求其余插件
+    // （再推 400 秒让 github() 缓存过期，确保请求真正发出并被 403 拒绝）
+    Date.now = () => realNow() + 800_000;
+    phase = 'ratelimited';
+    bgStorage.set('plugin-updates:lastCheck', Date.now() - 7 * 3600_000);
+    assert.deepEqual((await send('check-updates')).value, []);
+    assert.equal(apiCalls, calls + 1);
+  } finally {
+    Date.now = realNow;
+    globalThis.fetch = originalFetch;
+  }
+  // 清理：卸载带来源的测试插件，不污染后续用例的包计数
+  const snapshot = await send('snapshot');
+  await send('uninstall', {
+    key: package_.key,
+    generation: snapshot.value.generation,
+  });
 });
 await test('MCP initialize, list and call use pinned schema and block drift', async () => {
   const bytes = await bundle('1.0.0', { id: 'remote-research', mcp: true }),

@@ -69,7 +69,7 @@ const fakeImage={success:true,data:{screenshot:'data:image/png;base64,cG5n',text
 assert.equal(takeVisionToolImage(fakeImage,0,'browser_page_exec'),null);
 const zoomImage=takeVisionToolImage(fakeImage,0,'vision_gui',{action:'zoom'})!;
 assert.equal(zoomImage.kind,'region');
-assert.equal(needsVisionRefresh([{function:{name:'vision_gui',arguments:'{"action":"zoom"}'}}],[zoomImage],()=> 'none'),false);
+assert.equal(needsVisionRefresh([{function:{name:'vision_gui',arguments:'{"action":"zoom"}'}}],[zoomImage],()=> true),false);
 for(const args of [null,{screenshotId:'s',expect:{enabled:'true'}},{screenshotId:'s',expect:{valueEquals:'x'}},{screenshotId:'s',point:{x:1,y:2},expect:{script:'alert(1)'}},{screenshotId:'s',timeoutMs:Infinity}]) assert.throws(()=>validateCheckArgs(args));
 
 // Host/CDP contract: real orchestration with mocked browser transport, no synthetic DOM fallback.
@@ -376,6 +376,9 @@ changeHeightOnCapture=true;
 const observedShot=await captureGuiScreenshot(undefined,'observe');
 assert.equal(observedShot.viewport.height,864);assert.equal(observedShot.imageSize.height,864);
 assert.equal(observedShot.timings.attempts,2);assert.equal(visibleCaptureCount,2);
+// 截图描述必须携带 grounding 指令（贴图提示：先陈述所见再行动/作答）——
+// 这是治「忽略看到了啥」的每图强化锚点，静默丢失会让视觉优先退化
+assert.ok(observedShot.text.includes('Before answering'), 'observe-mode capture text carries the grounding directive');
 assert.equal(events.length,beforeObservation);
 const {withReadSnapshot}=await import('../../tools/vision/gui-driver');
 await withReadSnapshot(observedShot.screenshotId,false,undefined,async s=>assert.equal(s.mode,'observe'));
@@ -387,6 +390,7 @@ await assert.rejects(withReadSnapshot(observedShot.screenshotId,false,undefined,
 measuredHeight=900;changeHeightOnCapture=true;
 const resizedAction=await captureGuiScreenshot();
 assert.equal(resizedAction.timings.attempts,2);assert.equal(resizedAction.viewport.height,864);
+assert.ok(resizedAction.text.includes('Before acting'), 'action-mode capture text carries the grounding directive');
 assert.ok((cdpSession as any).retainedUntil.get(tabId)>=resizedAction.expiresAt,'Session survives the entire screenshot validity window');
 const bottomHit=await executeGui('click',{screenshotId:resizedAction.screenshotId,point:{x:500,y:990}});
 assert.ok(Math.abs(bottomHit.coordinateDiagnostics.lastCssPoint.y-864*0.99)<1e-8,'Bottom-edge input uses actual settled viewport height');

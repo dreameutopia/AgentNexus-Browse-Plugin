@@ -82,5 +82,6 @@ export type {
   ConversationRuntime,
   ConversationEvent,
   RunSummary,
+  PreRunCompactionPayload,
 } from './types';
 export type { SkillRecord } from '@/utils/skills/skill-types';

@@ -117,7 +117,13 @@ export class BrowserObserveTool extends BaseBrowserTool {
       '纯文本页面观察：控件、输入、表格结构和浏览器辅助功能树，稳定引用与快照分页',
     category: 'browser',
     version: '6.0.0',
-    visionRefresh: 'none',
+    // 纯读（DOM/AX 扫描，不写 DOM、不滚动、不改变视口）：视觉循环整批纯读
+    // 时不重拍，截图身份继续有效。
+    // 不变量（勿轻易改动）：本工具经 textCommand → cdpSession.attach 复用调试
+    // 会话；action 快照存活期内会话被 retainUntil 保留（TTL 120s+30s），故不会
+    // 新增 attach、不递增 epoch、不触发调试提示条导致的视口尺寸变化——
+    // 即「豁免重拍」不会作废模型手里的截图凭据。
+    noVisionRecapture: true,
   };
   openaiSchema: OpenAITool = {
     type: 'function',

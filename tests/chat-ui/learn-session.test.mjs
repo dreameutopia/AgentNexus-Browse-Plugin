@@ -30,7 +30,10 @@ function visit(node) {
 visit(ast);
 assert.ok(switchChat && setResponding && settled, 'App learning lifecycle and runtime settlement must exist');
 const functions = ['ensureAssistantMessage', 'applyUiRefresh', 'refreshUiMessage',
-  'recordMetaOf', 'handleConversationEvent', 'requestToolApproval'];
+  'recordMetaOf', 'handleConversationEvent', 'requestToolApproval',
+  // 会话级 UI 状态复位（会话切换 / 新建 / 学习切换共用的单一收尾：
+  // 运行源 / 直播登记 / 压缩种子与感知 / 用量）
+  'resetSessionScopedUiState'];
 for (const name of functions) assert.ok(initializers.has(name), name);
 const { code } = await transform(`
   let activeSessionIsLearn = false, uiRefreshScheduled = false;
@@ -89,23 +92,61 @@ window.setTimeout = (fn, ms, ...args) => {
   return id;
 };
 window.clearTimeout = id => { approvalTimers.delete(id); nativeClear(id); };
+// 直播片段流装配：App.vue 的事件适配器直接调用这些纯函数，
+// 抽取执行时必须以真实实现注入（占位转真实消息要保留首截图片段）
+const livePartsOutput = path.resolve('node_modules/.cache/live-parts.mjs');
+await build({ stdin: { contents: "export * from './entrypoints/sidepanel/utils/chat/live-parts';", resolveDir: process.cwd(), loader: 'ts' },
+  outfile: livePartsOutput, bundle: true, platform: 'node', format: 'esm' });
+const liveParts = await import(pathToFileURL(livePartsOutput).href);
+// 压缩片段生命周期：事件适配器镜像引擎侧写入直播消息（同一实现的注入）
+const compactionPartsOutput = path.resolve('node_modules/.cache/compaction-parts-learn.mjs');
+await build({ stdin: { contents: "export * from './entrypoints/sidepanel/utils/chat/compaction-part';", resolveDir: process.cwd(), loader: 'ts' },
+  outfile: compactionPartsOutput, bundle: true, platform: 'node', format: 'esm' });
+const compactionParts = await import(pathToFileURL(compactionPartsOutput).href);
 const bindings = {
   messages: ref([{ id: 'old-user', role: 'user', content: '旧会话任务' }]),
   activeChatId: ref('old-chat'), isAiResponding: ref(false),
   pendingUiRefresh: new Map([['old-answer', { id: 'old-answer' }]]),
   runningAssistantMessages: new Map([['old-answer', {}]]),
   pendingImageRefs: new Map([['old-answer', { refs: ['old-image'] }]]),
+  liveAssistantMessageId: ref(null),
+  preRunCompactionSeed: new Map(),
   activeSystemPromptSuffix: ref('旧会话提示词'),
   learnRecoverableDraft: ref({ name: '旧草稿' }), contextUsage: ref({ total: 100 }),
   isCompacting: ref(true), requestAnimationFrame: fn => frames.push(fn),
   t: key => key, pushSystemNotice: () => {}, settleGuard: () => {},
+  // userVisibleImageRefs（App.vue 的 user-message 展示口径）为纯函数，但其
+  // 宿主模块 transcript-engine 的导入图含 chrome.storage 监听等重量级副作用，
+  // 测试沙箱按语义等价桩注入（harness 记录均无图片引用，两条路径结果一致）
+  userVisibleImageRefs: (record, assistantImageRefs) => {
+    if (record?.uploadImageRefs !== undefined) return record.uploadImageRefs;
+    const refs = record?.imageRefs ?? [];
+    if (refs.length === 0 || !assistantImageRefs || assistantImageRefs.size === 0) return refs;
+    const uploads = refs.filter(ref => !assistantImageRefs.has(ref));
+    return uploads.length > 0 ? uploads : refs;
+  },
   dismissPendingInteracts: () => {}, removePageGlow: () => {},
   stopBorderEffectManagement: async () => {}, syncSessionContextCache: async () => {},
   openDialogWithHandle: () => {
     const id = ++nextDialogId;
     return { id, result: new Promise(resolve => dialogs.set(id, resolve)) };
   },
-  settleDialogById: (id, allowed) => { dialogs.get(id)?.(allowed); dialogs.delete(id); },
+  // use-app-dialog 的结果语义已是 AppDialogResult（'confirm' | 'cancel' | ...）：
+  // 审批语义映射为「仅 confirm = 允许」（与 App.vue requestToolApproval 同一收敛规则），
+  // 测试内部继续用布尔调用，由本桥接层转换
+  settleDialogById: (id, allowed) => {
+    dialogs.get(id)?.(allowed === true ? 'confirm' : allowed === false ? 'cancel' : allowed);
+    dialogs.delete(id);
+  },
+  startLiveMessage: liveParts.startLiveMessage,
+  beginLiveMessage: liveParts.beginLiveMessage,
+  appendLiveImage: liveParts.appendLiveImage,
+  hasVisibleLiveContent: liveParts.hasVisibleLiveContent,
+  pushCompactionPart: compactionParts.pushCompactionPart,
+  settleCompactionPart: compactionParts.settleCompactionPart,
+  settlePendingCompactionParts: compactionParts.settlePendingCompactionParts,
+  createCompactionPart: compactionParts.createCompactionPart,
+  historyDisplayParts: compactionParts.historyDisplayParts,
 };
 const adapter = new Function(...Object.keys(bindings), code)(...Object.values(bindings));
 // Run the real learning orchestration function with deferred engine ports.
@@ -215,6 +256,7 @@ const errors = [];
 const app = createApp({ render: () => h(ChatMessageList, {
   messages: bindings.messages.value, showChatMode: true,
   isAiResponding: bindings.isAiResponding.value,
+  liveMessageId: bindings.liveAssistantMessageId.value,
 }) });
 app.config.errorHandler = error => errors.push(error);
 const flush = async () => { while (frames.length) frames.shift()(); await nextTick(); };
@@ -222,6 +264,17 @@ const checkLive = () => {
   assert.ok(document.querySelector('[data-streaming="1"]'), 'Latest assistant must stay live');
   assert.equal(document.querySelectorAll('.message-actions').length, 0, 'No copy/feedback during output');
   assert.equal(document.querySelectorAll('.prelude-header').length, 0, 'No final prelude collapse during output');
+};
+/** 直播翻转回归：运行期间追加的任何顶层消息（旧实现的压缩气泡正是如此）
+ * 不得把流式消息挤成「已结束」渲染——按 liveMessageId 精确命中后，
+ * 尾部追加的外来消息不影响直播态。 */
+const checkLiveWithTrailingForeign = () => {
+  bindings.messages.value.push({
+    id: `foreign-${bindings.messages.value.length}`, role: 'assistant', content: '外来消息',
+    parts: [{ type: 'notice', content: '外来消息' }], toolCalls: [], isSystemNotice: true,
+  });
+  checkLive();
+  bindings.messages.value.pop();
 };
 try {
   app.mount('#app');
@@ -243,6 +296,11 @@ try {
 
   adapter.event({ type: 'assistant-start', chatId: 'old-chat', messageId: 'late-old' });
   assert.equal(bindings.isAiResponding.value, false, 'Foreign start must not change response state');
+  // 压缩进行中切换会话：旧会话的压缩事件被会话守卫丢弃，压缩感知必须由
+  // 切换路径显式复位——否则新会话的圆环会永远呼吸在「正在压缩…」
+  bindings.isCompacting.value = true;
+  adapter.switchChat('learn-chat');
+  assert.equal(bindings.isCompacting.value, false, 'Session switch must reset the compaction indicator');
   for (const stage of ['learning', 'validating']) {
     const running = runOnce(stage);
     assert.equal(bindings.isAiResponding.value, true, 'Responding must include runtime assembly');
@@ -272,6 +330,7 @@ try {
     checkLive();
     adapter.event({ type: 'token', chatId, messageId, delta: '，继续输出' });
     await flush(); checkLive();
+    checkLiveWithTrailingForeign();
     adapter.event({ type: 'assistant-complete', chatId, record: {
       id: messageId, role: 'assistant', content: '完成', createdAt: 1,
       parts: [{ type: 'reasoning', content: '推理' }, { type: 'text', content: '完成' }], toolCalls: [],

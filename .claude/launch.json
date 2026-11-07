@@ -2,16 +2,30 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "preview",
+      "name": "preview-static-server",
       "runtimeExecutable": "node",
       "runtimeArgs": [".preview/server.mjs", ".", "4173"],
       "port": 4173
     },
     {
-      "name": "wxt-dev",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 3000
+      "name": "collapse-preview",
+      "url": "http://localhost:4173/.preview/collapse-preview.html"
+    },
+    {
+      "name": "hub-skill-editor",
+      "url": "http://localhost:4173/.preview/hub-skill-editor.html"
+    },
+    {
+      "name": "hub-agent-editor",
+      "url": "http://localhost:4173/.preview/hub-agent-editor.html"
+    },
+    {
+      "name": "skill-selector-preview",
+      "url": "http://localhost:4173/.preview/skill-selector-preview.html"
+    },
+    {
+      "name": "guard-confirm-preview",
+      "url": "http://localhost:4173/.preview/guard-confirm.html"
     }
   ]
 }

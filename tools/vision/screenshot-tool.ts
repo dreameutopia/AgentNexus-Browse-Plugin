@@ -13,7 +13,8 @@ export class ScreenshotTool extends BaseTool {
     category: 'vision',
     version: '4.0.0',
     permissions: ['scripting'],
-    visionRefresh: 'none',
+    // 截图身份由 needsVisionRefresh 名单特例管理（成功→复用产出图不重拍；
+    // 失败→恢复性重拍），不经过 noVisionRecapture 字段
   };
   openaiSchema: OpenAITool = { type: 'function', function: { name: this.name, description: this.metadata.description, parameters: { type: 'object', additionalProperties: false, properties: { mode: { type: 'string', enum: ['action','observe'], default: 'action' } }, required: [] } } };
   async execute(_parameters: Record<string, unknown> = {}, context?: ToolExecutionContext) {

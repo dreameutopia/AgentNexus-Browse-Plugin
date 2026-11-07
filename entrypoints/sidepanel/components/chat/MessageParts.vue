@@ -21,6 +21,8 @@
         <template v-if="entry.counts.reasoning > 0">{{ t('sidepanel.chat.clusterReasoning', { count: entry.counts.reasoning }) }}</template>
         <template v-if="(entry.counts.tools > 0 || entry.counts.reasoning > 0) && entry.counts.images > 0">&nbsp;·&nbsp;</template>
         <template v-if="entry.counts.images > 0">{{ t('sidepanel.chat.clusterScreenshots', { count: entry.counts.images }) }}</template>
+        <template v-if="(entry.counts.tools > 0 || entry.counts.reasoning > 0 || entry.counts.images > 0) && entry.counts.compactions > 0">&nbsp;·&nbsp;</template>
+        <template v-if="entry.counts.compactions > 0">{{ t('sidepanel.chat.clusterCompactions', { count: entry.counts.compactions }) }}</template>
       </span>
       <span class="cluster-right">
         <span v-if="entry.durationMs > 0" class="cluster-duration">{{ formatDuration(entry.durationMs) }}</span>
@@ -31,11 +33,14 @@
     </button>
 
     <!-- 归属摘要条的片段：仅在簇展开时渲染（簇默认收起；生长后自动复位收起）。
+         cluster-member 修饰类挂左侧树状引导线（样式见 chat-message-list.css
+         的「簇成员引导线」段，仅展开态存在——收起时整组不渲染，线随之消失）。
          clusterVersion 缺失时按展开处理（fail-open）——防御未来构造端形态漂移，
          绝不因字段缺失把内容永久藏在折叠条后面 -->
     <div
       v-else-if="!entry.clusterKey || entry.clusterVersion === undefined || isClusterOpen(entry.clusterKey, entry.clusterVersion)"
       class="message-part"
+      :class="{ 'cluster-member': entry.clusterKey }"
     >
       <!-- 文字部分（流式节流渲染，见 MarkdownText） -->
       <MarkdownText
@@ -54,19 +59,28 @@
         <span class="system-notice-text">{{ entry.item.part.content }}</span>
       </div>
 
-      <!-- 推理部分（内联显示在正确的顺序位置；toggle 回传原始索引，供父级定位） -->
+      <!-- 推理部分（内联显示在正确的顺序位置；toggle 回传原始索引，供父级定位）。
+           视觉对齐工具调用行（tool-row）：无边框紧凑收起条 + 展开正文 -->
       <div v-else-if="entry.item.part.type === 'reasoning' && entry.item.part.content" :class="['reasoning-container', { collapsed: entry.item.part.collapsed }]">
-        <div class="reasoning-header" @click="emit('toggle-reasoning-collapse', messageId, entry.item.index)">
-          <div class="reasoning-icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <button
+          type="button"
+          class="reasoning-header"
+          :title="t('sidepanel.chat.reasoningTitle')"
+          :aria-expanded="entry.item.part.collapsed ? 'false' : 'true'"
+          @click="emit('toggle-reasoning-collapse', messageId, entry.item.index)"
+        >
+          <span class="reasoning-icon" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M13 3C9.23 3 6.19 5.95 6 9.66l-1.92 2.53c-.24.31 0 .81.42.81H6v3c0 1.1.9 2 2 2h1v3h7v-4.69c2.37-1.12 4-3.51 4-6.31 0-3.87-3.13-7-7-7m2 11h-1v4h-3v-4H9v-3H7.23L9 8.34C9.31 5.93 11 4 13 4c2.76 0 5 2.24 5 5 0 2.04-1.23 3.81-3 4.58V14z" fill="currentColor"/>
             </svg>
-          </div>
+          </span>
           <span class="reasoning-title">{{ t('sidepanel.chat.reasoningTitle') }}</span>
-          <svg class="reasoning-expand-icon" :class="{ collapsed: entry.item.part.collapsed }" width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z" fill="currentColor"/>
-          </svg>
-        </div>
+          <span class="reasoning-right">
+            <svg class="reasoning-chevron" :class="{ expanded: !entry.item.part.collapsed }" width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M9,6L8,7L14,12L8,17L9,18L16,12L9,6Z" fill="currentColor"/>
+            </svg>
+          </span>
+        </button>
         <MarkdownText
           v-if="!entry.item.part.collapsed"
           class="reasoning-content"
@@ -84,6 +98,16 @@
         />
       </div>
 
+      <!-- 上下文压缩部分：与工具调用行同一设计语言（pending 旋转 / success
+           对勾 + 收益 + 可展开摘要 / error 叉 + 错误），见 CompactionItem -->
+      <div v-else-if="entry.item.part.type === 'compaction' && entry.item.part.compaction" class="compaction-part">
+        <CompactionItem
+          :compaction="entry.item.part.compaction"
+          :message-id="messageId"
+          @toggle-expansion="emit('toggle-compaction-collapse', messageId, entry.item.index)"
+        />
+      </div>
+
       <!-- 截屏片段（vision 自动截图）：内联「查看屏幕」可折叠容器，
            按截屏发生顺序排列在片段流中（多轮工具调用的截图各居其位） -->
       <MessageImagePart
@@ -96,7 +120,7 @@
 
 <script setup lang="ts">
 /**
- * 消息片段序列渲染（文字 / 系统注记 / 推理 / 工具调用 / 截屏，按原顺序）。
+ * 消息片段序列渲染（文字 / 系统注记 / 推理 / 工具调用 / 上下文压缩 / 截屏，按原顺序）。
  *
  * 设计要点：
  *   - 输入为「带原始索引」的片段列表（IndexedMessagePart）：visibleParts 过滤
@@ -105,10 +129,11 @@
  *   - 供 ChatMessageList 在两种形态下复用：直播态全量渲染；结束态按
  *     「过程前奏（可折叠）/ 末段正文 / 尾部」分组渲染。
  *   - 连续过程小折叠（buildLivePartSegments）在直播态与结束态同一规则：
- *     连续的工具调用 / 思考 / 截图收拢为一条摘要条，最新活动保留可见——
- *     长任务直播不再无限拉长过程行，展开前奏折叠后内部的小折叠同样生效
- *     （对标 Claude Code / Codex / Copilot 的收拢约定）。正文文本是正式
- *     输出，恒可见并作为簇间隔离——出现非思考输出时连续即被隔断。
+ *     连续的工具调用 / 思考 / 截图 / 上下文压缩收拢为一条摘要条，最新活动
+ *     保留可见——长任务直播不再无限拉长过程行，展开前奏折叠后内部的小折叠
+ *     同样生效（对标 Claude Code / Codex / Copilot 的收拢约定）。正文文本是
+ *     正式输出，恒可见并作为簇间隔离——出现非思考输出时连续即被隔断。
+ *     压缩片段是「过程」而非「输出」：它与工具调用同簇收拢，终态并入前奏。
  *   - streaming 透传给文本片段：直播中的片段按节流间隔渲染 Markdown，
  *     已结束片段直接渲染（见 MarkdownText）。
  *   - notice 片段以独立系统信息条呈现（与工具行同风格的轻量容器），
@@ -125,6 +150,7 @@ import {
   type LiveRenderEntry,
 } from '../../utils/chat/part-grouping';
 import ToolCallItem from './ToolCallItem.vue';
+import CompactionItem from './CompactionItem.vue';
 import MarkdownText from './MarkdownText.vue';
 import MessageImagePart from './MessageImagePart.vue';
 
@@ -141,6 +167,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   'toggle-tool-call-expansion': [messageId: string, toolCallId: string];
   'toggle-reasoning-collapse': [messageId: string, partIndex: number];
+  'toggle-compaction-collapse': [messageId: string, partIndex: number];
 }>();
 
 /**

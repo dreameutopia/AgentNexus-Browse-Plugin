@@ -125,12 +125,25 @@ export interface ChatMessageRecord {
   /**
    * 关联图片（内容哈希 SHA-256 hex；图片本体存于独立图片库，见 core/images）。
    * 语义按角色区分：
-   *   - user：本轮上传的图片（跨轮次派生上下文时解析回 data URL 重发给模型）；
+   *   - user：本轮上传的图片 ∪ 派生引用——落库归一化会把 modelMessages 里
+   *     的协议图片引用（如 vision 首截图）并入本字段（图片回收/GC 按「消息
+   *     是否引用」计数，必须完整反映协议历史持有的引用）；
    *   - assistant：vision 循环的自动截图（UI 查看/放大/下载）；新记录通过
    *     modelMessages 精确重放截图位置，旧截图不授权新的坐标操作。
    * 缺省 = 无图片。写入前经 normalizeImageRefs 收敛（去重/上限/形态校验）。
+   * UI 展示用户气泡底部图片区时应改用 uploadImageRefs（只含用户上传），
+   * 避免派生引用把 vision 截图重复展示为「用户发送的附属图片」。
    */
   imageRefs?: string[];
+  /**
+   * 用户消息的「主动上传」图片子集（⊆ imageRefs，内容哈希同源）。
+   * 仅 user 角色记录使用；新记录恒写入（空上传 = 空数组，与旧记录的
+   * undefined 区分——undefined 视为旧格式，UI 回退展示 imageRefs）。
+   * vision 首截图等引擎注入的引用只进 imageRefs（GC 需要），不进本字段：
+   * 用户气泡底部图片区据此只展示用户真正上传的图片，截图一律走助手消息
+   * 的内联「查看屏幕」片段展示。
+   */
+  uploadImageRefs?: string[];
   usage?: ChatMessageUsage;
   /**
    * 用户对本条模型消息的反馈（赞/踩）。
@@ -209,13 +222,27 @@ export interface ConversationRuntime {
    */
   userImages: string[];
   /**
-   * 本轮附件文本块（已格式化的完整文本，含文件名标记）。
-   * 拼入本轮模型用户消息并随 modelMessages 保留；用户可见正文仅存 userInput。
-   * 空串 = 无文本附件。
+   * 本轮上传文件信封（<upload_file> XML：文件元信息 + 第 1 页预览，预算封顶）。
+   * 文本附件发送时已注册进会话文件库（8 位短 id + 确定性分页），全文由
+   * read_file 按页续读；信封拼入本轮模型用户消息并随 modelMessages 保留，
+   * 用户可见正文仅存 userInput（摘要标记）。空串 = 无文本附件。
    */
   attachmentPrompt: string;
   /** AI 面初始上下文（历史派生，不含本轮用户消息与 system） */
   initialContext: ChatMessage[];
+  /**
+   * 初始上下文里已出现的**视口截图**内容哈希（ImageRef 列表）。
+   *
+   * 用途：模型可见上下文的唯一截图保障——历史截图以协议引用回到上下文，
+   * 其像素证据模型已持有；本轮新拍的视口图若哈希命中其中之一，则不再
+   * 重复附图（只保留描述文本与新 screenshotId）。
+   *
+   * 口径：不含用户上传图片（用户素材语义独立，即使内容相同也不复用）；
+   * 区域放大图一并计入是安全的——命中意味着模型已持有完全相同的字节
+   * （提取规则见 viewport-ref-collector）。哈希取自历史记录的图片引用，
+   * 与图片库的内容寻址完全同源。
+   */
+  priorViewportImageRefs: string[];
   /**
    * 合成激活轮：用户用 / 预选技能时，系统代发的一轮 load_skill 调用
    * （assistant tool_calls + tool 结果，见 skillEngine.buildActivationRound）。
@@ -231,6 +258,38 @@ export interface ConversationRuntime {
    * 无法用 seq 表达，一律不持久化。
    */
   priorMaxSeq: number;
+  /**
+   * 发送前压缩（后台 worker 在引擎运行前执行）的结果回执。
+   * 引擎在创建助手记录时把它种子为一条 compaction 片段（record.parts），
+   * 与 UI 侧「缓冲 pre-run 事件、assistant-start 时种子」落成同一时间线；
+   * 缺省 = 本次发送前未发生压缩。
+   *
+   * 载荷形状与压缩事件、压缩片段状态同源（不含 trigger——发送前压缩的
+   * trigger 恒为 'pre-run'，由两侧各自补齐，避免载荷与展示语义耦合）。
+   */
+  preRunCompaction?: PreRunCompactionPayload;
+}
+
+/**
+ * 发送前压缩的结果载荷（引擎回执 / UI 事件缓冲 / 压缩片段种子三处共用）。
+ *
+ * 两侧（引擎 record.parts 与 UI 直播消息）必须承载**同一份数据**——它们
+ * 在 assistant-complete 的按下标合并中互为对照，任何字段差异都会让
+ * 终态覆盖后出现「消息里是成功行、历史里是失败行」的分叉。
+ */
+export interface PreRunCompactionPayload {
+  /** 压缩是否成功（失败时 error 必填，token 数字段缺省无意义） */
+  status: 'success' | 'error';
+  /** 被压缩原文的 token 估算量 */
+  originalTokens?: number;
+  /** 摘要的 token 估算量 */
+  summaryTokens?: number;
+  /** 压缩产出的摘要全文（<summary> XML；展开详情用） */
+  summary?: string;
+  /** 失败原因（仅 error） */
+  error?: string;
+  /** 压缩耗时（毫秒） */
+  durationMs?: number;
 }
 
 // ==================== 会话引擎事件（UI 框架无关） ====================
@@ -283,14 +342,26 @@ export type ConversationEvent =
   /** 循环守卫触发（轮数/时长上限、连续工具失败）；确认交互经 RunOptions.onLimitReached */
   | { type: 'guard'; chatId: string; kind: 'max-iterations' | 'max-duration' | 'tool-failures' }
   | {
-      /** 上下文压缩进度（用户可感知）：开始 / 成功 / 失败（失败时优雅降级为窗口裁剪） */
+      /**
+       * 上下文压缩进度（用户可感知）：开始 / 成功 / 失败（失败时优雅降级为窗口裁剪）。
+       * 运行中压缩携带 messageId：UI 据此把进度写入直播消息的压缩片段
+       * （与引擎侧 record.parts 双写同一状态）；发送前压缩发生在助手记录
+       * 创建之前，无 messageId——UI 缓冲结果并在 assistant-start 时种子进消息
+       * （引擎侧经 runtime.preRunCompaction 持久化同一数据）。
+       */
       type: 'compaction';
       chatId: string;
       phase: 'start' | 'done' | 'failed';
       trigger: 'pre-run' | 'runtime';
+      /** 压缩所属的助手记录（仅 runtime 触发；pre-run 时缺省） */
+      messageId?: string;
       /** 压缩对象的 token 估算量（start）/ 摘要的 token 估算量（done） */
       originalTokens?: number;
       summaryTokens?: number;
+      /** 压缩产出的摘要全文（done；UI 展开详情与 pre-run 种子共用） */
+      summary?: string;
+      /** 压缩耗时（done/failed；UI 直播片段与 record.parts 双写同一数值） */
+      durationMs?: number;
       error?: string;
     }
   | {

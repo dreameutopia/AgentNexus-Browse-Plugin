@@ -185,10 +185,12 @@ const {
   previewGithub,
   install,
   cancelReview,
+  checkUpdates,
 } = usePluginCenter();
 
-// 挂载即刷新快照（与旧版一致：先对账存储，再展示）
+// 挂载即刷新快照（与旧版一致：先对账存储，再展示）；
+// 快照就绪后静默触发自动更新检查（后台 6 小时节流，失败无感）
 onMounted(() => {
-  void run(load);
+  void run(load).then(() => void checkUpdates());
 });
 </script>

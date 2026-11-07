@@ -24,6 +24,7 @@ import { ToolMetadata } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
 import { resultsToMarkdownTable } from '../common/markdown-table';
+import { credibilityBadge } from '@/utils/search/domain-credibility';
 import {
   SEARCH_PLATFORMS,
   SEARCH_PLATFORM_IDS,
@@ -45,8 +46,23 @@ const WAIT_TIME_MIN_MS = 0;
 const WAIT_TIME_MAX_MS = 10_000;
 const WAIT_TIME_DEFAULT_MS = 3_000;
 
-/** 导航结果（恒定封装，解析成败不影响其字段） */
-interface NavigationOutcome {
+/**
+ * 给单条搜索结果追加 credibility 字段（按链接域名评级）。
+ * 条目无链接 / 字段非字符串时原样返回，不破坏既有字段；标注只增不改。
+ */
+function annotateCredibility(item: unknown): unknown {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+  const record = item as Record<string, unknown>;
+  const link = typeof record.link === 'string' ? record.link : typeof record.url === 'string' ? record.url : '';
+  if (!link || record.credibility !== undefined) return item;
+  try {
+    return { ...record, credibility: credibilityBadge(link) };
+  } catch {
+    return item;
+  }
+}
+
+/** 导航结果（恒定封装，解析成败不影响其字段） */interface NavigationOutcome {
   success: boolean;
   /**
    * complete：status 到达 complete；timeout：等待超时但标签页存活（页面可能仍可用）；
@@ -85,8 +101,8 @@ export class WebSearchTool extends BaseTool {
     author: 'AgentNexus',
     tags: ['search', 'integrated', 'multi-platform'],
     permissions: ['tabs', 'scripting'],
-    // 搜索必然改变页面（导航到结果页）：视觉会话在工具批次后必须重拍截图
-    visionRefresh: 'after',
+    // 搜索必然改变页面（导航到结果页）：保持默认（noVisionRecapture 缺省
+    // false），视觉会话在工具批次后重拍截图
   };
 
   openaiSchema: OpenAITool = {
@@ -101,6 +117,8 @@ export class WebSearchTool extends BaseTool {
         '⚠ 本工具自带页面导航（效果等同调用 browser_navigate 打开搜索结果页，无需先手动导航）：会真实打开或跳转标签页并改变当前活动页面。' +
         '因此【禁止在同一轮里并发调用本工具】——多个导航会互相争抢活动标签页、解析到错误页面；需要搜索多个平台或换关键词时，逐个串行调用，每次依据上次返回决定下一步。\n' +
         '返回两部分：navigation（是否成功导航 + 当前实际网址）与 results（解析出的条目与 Markdown 表）。' +
+        '结果表含 credibility 列（域名可信度：A·权威=政府/学术；B·可靠=主流媒体/官方文档；C·参考=社区/百科，作唯一定论不可靠；D·谨慎=自媒体/论坛；?·未评级=未知域名）——' +
+        '可信度是「出错的先验概率」不是事实正确性：C/D/未评级来源的关键结论必须再找独立来源交叉，A/B 也建议对反常结论二次确认。' +
         'results 解析失败时 navigation 仍有效——页面已就位，用 browser_get_page_text 读取当前页自行解析即可。',
       parameters: {
         type: 'object',
@@ -300,7 +318,10 @@ export class WebSearchTool extends BaseTool {
           hint: `未解析到${platform.itemNoun}：可能无匹配结果、遇到登录墙/验证码或页面结构变化；页面已就位，可用 browser_get_page_text 读取当前页确认`,
         };
       }
-      return { success: true, count: items.length, items, markdown: resultsToMarkdownTable(items) };
+      // 可信度标注：按条目链接域名评级，追加 credibility 列（评级语义见
+      // domain-credibility.ts 与工具描述——是「出错的先验概率」，不是事实正确性）
+      const annotated = items.map(item => annotateCredibility(item));
+      return { success: true, count: items.length, items: annotated, markdown: resultsToMarkdownTable(annotated) };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       return {

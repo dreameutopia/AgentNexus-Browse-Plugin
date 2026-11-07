@@ -61,3 +61,7 @@ const richComponents = spawnSync(process.execPath, [path.resolve('tests/chat-ui/
 assert.equal(richComponents.status, 0, 'Rich components (envelope/registry/derivation/blocks) regression');
 const streamingMarkdown = spawnSync(process.execPath, [path.resolve('tests/chat-ui/streaming-markdown.test.mjs')], { stdio: 'inherit' });
 assert.equal(streamingMarkdown.status, 0, 'Streaming incremental freeze (boundary + MarkdownText host) regression');
+const visionTimeline = spawnSync(process.execPath, [path.resolve('tests/chat-ui/vision-timeline.test.mjs')], { stdio: 'inherit' });
+assert.equal(visionTimeline.status, 0, 'Vision screenshot timeline ordering regression');
+const guardConfirm = spawnSync(process.execPath, [path.resolve('tests/chat-ui/guard-confirm.test.mjs')], { stdio: 'inherit' });
+assert.equal(guardConfirm.status, 0, 'Guard confirm bar (plan-card design language) regression');

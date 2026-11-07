@@ -1,65 +1,66 @@
 <template>
   <div class="hub">
-    <!-- 壳与设置弹窗同构：复用 api-config-* 布局类（settings-modal.css），视觉完全对齐 -->
-    <div class="api-config-modal hub-shell">
-      <!-- 头部（标题居中 + 右侧语言切换，与设置弹窗一致） -->
-      <header class="api-config-header">
-        <h1 class="api-config-title">{{ t('hub.title') }}</h1>
-        <!-- 语言切换（右上角，切换即持久化并同步到全部扩展页面） -->
-        <div class="api-config-locale" role="group" :aria-label="t('common.languageLabel')">
-          <button
-            v-for="option in localeOptions"
-            :key="option.value"
-            type="button"
-            class="api-config-locale-btn"
-            :class="{ active: locale === option.value }"
-            :aria-pressed="locale === option.value"
-            @click="switchLocale(option.value)"
-          >
-            {{ option.label }}
-          </button>
-        </div>
-      </header>
-
-      <section v-if="visibleTransfers.length || handoffError || handoffNotice" class="hub-handoff" aria-live="polite">
-        <div>
-          <strong>{{ t(visibleTransfers.length ? 'hub.learnHandoffTitle' : 'hub.learnHandoffStatusTitle') }}</strong>
-          <p v-if="visibleTransfers.length">{{ t('hub.learnHandoffIntro') }}</p>
-          <p v-if="handoffNotice" role="status">{{ handoffNotice }}</p>
-          <p v-if="agentEditorOpen || skillEditorOpen" class="hub-handoff__warning">{{ t('hub.learnHandoffSaveFirst') }}</p>
-          <p v-if="handoffError" class="hub-handoff__error" role="alert">{{ handoffError }}</p>
-        </div>
-        <div class="hub-handoff__actions">
-          <HubSelect
-            v-if="visibleTransfers.length"
-            v-model="selectedTransferId"
-            :options="transferOptions"
-            :disabled="handoffBusy"
-            :aria-label="t('hub.learnHandoffSelect')"
-            style="width: min(420px, 100%)"
-          />
-          <button v-if="visibleTransfers.length" type="button" class="hub-btn hub-btn-primary" :disabled="handoffBusy || agentEditorOpen || skillEditorOpen" @click="acceptHandoff">{{ t('hub.learnHandoffAccept') }}</button>
-          <button type="button" class="hub-btn" :disabled="handoffBusy" @click="refreshPending">{{ t('hub.learnHandoffRetry') }}</button>
-        </div>
-      </section>
-
-      <!-- 左右布局：左侧导航 + 右侧内容 -->
-      <div class="api-config-layout">
-        <aside class="api-config-nav">
+    <!-- 壳：左右两张独立卡片（左导航卡 / 右内容卡），标题在左卡顶部 -->
+    <div class="hub-layout">
+      <!-- 左：导航卡（管理中心标题 + 分区入口 + 语言切换） -->
+      <aside class="hub-sidebar">
+        <h1 class="hub-sidebar-title">{{ t('hub.title') }}</h1>
+        <nav class="hub-sidebar-nav" :aria-label="t('hub.title')">
           <button
             v-for="section in sections"
             :key="section.id"
             type="button"
-            class="api-nav-item"
+            class="hub-nav-item"
             :class="{ active: activeSection === section.id }"
             @click="activeSection = section.id"
           >
-            <span class="api-nav-label">{{ t(section.labelKey) }}</span>
+            <span class="hub-nav-label">{{ t(section.labelKey) }}</span>
           </button>
-        </aside>
+        </nav>
+        <!-- 语言切换（贴在左卡底部；切换即持久化并同步到全部扩展页面） -->
+        <div class="hub-sidebar-foot">
+          <div class="hub-locale" role="group" :aria-label="t('common.languageLabel')">
+            <button
+              v-for="option in localeOptions"
+              :key="option.value"
+              type="button"
+              class="hub-locale-btn"
+              :class="{ active: locale === option.value }"
+              :aria-pressed="locale === option.value"
+              @click="switchLocale(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- 右：内容卡（分区内容，卡片内部滚动） -->
+      <main class="hub-content">
+        <section v-if="visibleTransfers.length || handoffError || handoffNotice" class="hub-handoff" aria-live="polite">
+          <div>
+            <strong>{{ t(visibleTransfers.length ? 'hub.learnHandoffTitle' : 'hub.learnHandoffStatusTitle') }}</strong>
+            <p v-if="visibleTransfers.length">{{ t('hub.learnHandoffIntro') }}</p>
+            <p v-if="handoffNotice" role="status">{{ handoffNotice }}</p>
+            <p v-if="agentEditorOpen || skillEditorOpen" class="hub-handoff__warning">{{ t('hub.learnHandoffSaveFirst') }}</p>
+            <p v-if="handoffError" class="hub-handoff__error" role="alert">{{ handoffError }}</p>
+          </div>
+          <div class="hub-handoff__actions">
+            <HubSelect
+              v-if="visibleTransfers.length"
+              v-model="selectedTransferId"
+              :options="transferOptions"
+              :disabled="handoffBusy"
+              :aria-label="t('hub.learnHandoffSelect')"
+              style="width: min(420px, 100%)"
+            />
+            <button v-if="visibleTransfers.length" type="button" class="hub-btn hub-btn-primary" :disabled="handoffBusy || agentEditorOpen || skillEditorOpen" @click="acceptHandoff">{{ t('hub.learnHandoffAccept') }}</button>
+            <button type="button" class="hub-btn" :disabled="handoffBusy" @click="refreshPending">{{ t('hub.learnHandoffRetry') }}</button>
+          </div>
+        </section>
 
         <!-- 分区内容（v-show 常驻挂载：切换不丢编辑中的表单状态） -->
-        <main class="api-config-body" :inert="handoffBusy" :aria-busy="handoffBusy">
+        <div class="hub-content-body" :inert="handoffBusy" :aria-busy="handoffBusy">
           <section v-show="activeSection === 'agents'" class="api-section">
             <AgentManager @editor-state="agentEditorOpen = $event" />
           </section>
@@ -70,16 +71,17 @@
           <section v-show="activeSection === 'backup'" class="api-section">
             <BackupSection :active="activeSection === 'backup'" />
           </section>
-        </main>
-      </div>
+        </div>
+      </main>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 /**
- * 管理中心（更多设置）外壳：与 sidepanel 设置弹窗同构的左侧导航布局。
- * 壳样式复用设置弹窗的 settings-modal.css（api-config-* 类），保证视觉对齐；
+ * 管理中心（更多设置）外壳：左右两张独立卡片（左导航卡 / 右内容卡）。
+ * 标题「管理中心」在左卡顶部，分区入口在其下方，语言切换贴在左卡底部；
+ * 右卡承载分区内容，卡片内部滚动（页面本身不出现竖向滚动条）。
  * 各分区为自包含管理组件，直接读写共享存储层（utils/agents、utils/skills），
  * 保存后经 chrome.storage 跨上下文同步实时作用于 sidepanel。
  *
@@ -88,7 +90,8 @@
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { t, useLocale, LOCALE_OPTIONS, type MessageKey } from '@/utils/i18n';
-// 复用设置弹窗壳样式（布局/头部/侧导航/分区容器），视觉与设置弹窗完全一致
+// 复用设置弹窗壳的共享按钮样式（备份分区弹窗的 api-config-btn 变体）；
+// 布局与导航样式由 hub.css 的 hub-* 类承担（左右两张独立卡片）
 import '../sidepanel/components/modals/settings-modal.css';
 import AgentManager from './agents/AgentManager.vue';
 // Hub 共享自定义选择框（学习成果下拉；全站替换原生 <select>）

@@ -1,0 +1,248 @@
+# 扩展发布：只在显式指定版本时产出 GitHub Release，普通提交永不发布。
+#
+# 触发方式（两者都要求版本号与 package.json 的 version 完全一致）：
+#   1. 推送 tag：git tag v0.1.0 && git push origin v0.1.0
+#   2. 手动触发：Actions → Release extension → Run workflow，填 version
+#
+# “只发布部分版本”的判定规则：
+#   - 版本号必须与 package.json 的 version 一致（版本单一事实源，改包不匹配则直接失败）
+#   - 预发布版本（0.1.0-rc.1）默认发布为 GitHub 预发布；
+#     仓库变量 RELEASE_PRERELEASE_MODE=skip 时，预发布版本只构建、不出 Release
+#   - 手动触发时把 publish 设为 false：只构建并上传构件，同样不出 Release
+#   - 同一 tag 重复触发不会重复建 Release：已存在则覆盖上传构件
+#
+# 可选仓库变量（Settings → Secrets and variables → Actions → Variables）：
+#   RELEASE_PRERELEASE_MODE : publish（默认）| skip
+#   RELEASE_DRAFT            : true 时先建草稿，人工确认后再点 Publish
+#   BROWSER_UUID             : 注入 __BROWSER_UUID__（与本地 .env 同义）
+# 可选仓库密钥（Settings → Secrets and variables → Actions → Secrets）：
+#   CHROME_EXTENSION_KEY     : 固定 Chrome 扩展 ID（生产发布建议配置）
+name: Release extension
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（可带 v 前缀），必须与 package.json 的 version 一致'
+        required: true
+        type: string
+      publish:
+        description: '是否创建 GitHub Release（false = 只构建并上传构件）'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: 解析并校验版本
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      publish: ${{ steps.resolve.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve and validate version
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+          PRERELEASE_MODE: ${{ vars.RELEASE_PRERELEASE_MODE }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            raw="$INPUT_VERSION"
+          else
+            raw="$REF_NAME"
+          fi
+          version="${raw#v}"
+
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::版本号格式非法：$raw（期望形如 0.1.0 或 0.1.0-rc.1）"
+            exit 1
+          fi
+
+          pkg_version=$(node -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.readFileSync("package.json","utf8")).version)')
+          if [ "$version" != "$pkg_version" ]; then
+            echo "::error::版本号 $version 与 package.json 的 $pkg_version 不一致；发布前请先改 package.json 的 version"
+            exit 1
+          fi
+
+          prerelease=false
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          fi
+
+          mode="${PRERELEASE_MODE:-publish}"
+          case "$mode" in
+            publish | skip) ;;
+            *)
+              echo "::error::RELEASE_PRERELEASE_MODE 只接受 publish 或 skip，当前为 $mode"
+              exit 1
+              ;;
+          esac
+
+          publish=true
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$INPUT_PUBLISH" != "true" ]; then
+            publish=false
+          fi
+          if [ "$prerelease" = "true" ] && [ "$mode" = "skip" ]; then
+            publish=false
+            echo "预发布版本按 RELEASE_PRERELEASE_MODE=skip 处理：只构建，不创建 Release"
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "::notice::version=$version tag=v$version prerelease=$prerelease publish=$publish"
+
+  check:
+    name: 类型检查与测试
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Prepare WXT types
+        run: npx wxt prepare
+      - name: Type check
+        run: npm run compile
+      - name: Test
+        run: npm run test:all
+
+  build:
+    name: 构建 ${{ matrix.browser }}
+    needs: [prepare, check]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - browser: chrome
+            target: chrome
+          - browser: firefox
+            target: firefox
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build and package
+        env:
+          CHROME_EXTENSION_KEY: ${{ secrets.CHROME_EXTENSION_KEY }}
+          BROWSER_UUID: ${{ vars.BROWSER_UUID }}
+        run: npx wxt zip -b ${{ matrix.target }}
+      - name: Collect artifact
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # 构建元数据里的 + 在部分文件系统上不友好，文件名统一换成 _
+          safe_version="${VERSION//+/_}"
+          src=$(ls -1 .output/*-${{ matrix.browser }}.zip | head -n 1)
+          cp "$src" "dist/agentnexus-browse-${{ matrix.browser }}-${safe_version}.zip"
+          ls -l dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agentnexus-${{ matrix.browser }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: 创建 GitHub Release
+    needs: [prepare, build]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          TARGET_SHA: ${{ github.sha }}
+          RELEASE_DRAFT: ${{ vars.RELEASE_DRAFT }}
+        run: |
+          set -euo pipefail
+
+          assets=$(find dist -name '*.zip' -type f | sort)
+          if [ -z "$assets" ]; then
+            echo "::error::没有可上传的构建产物"
+            exit 1
+          fi
+
+          title="AgentNexus Browse Helper $VERSION"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，覆盖上传构件"
+            gh release upload "$TAG" $assets --clobber
+            if [ "$PRERELEASE" = "true" ]; then
+              gh release edit "$TAG" --prerelease=true
+            fi
+            if [ "${RELEASE_DRAFT:-false}" != "true" ]; then
+              gh release edit "$TAG" --draft=false
+            fi
+          else
+            create_args=(--title "$title" --target "$TARGET_SHA" --generate-notes)
+            if [ "$PRERELEASE" = "true" ]; then
+              create_args+=(--prerelease)
+            fi
+            if [ "${RELEASE_DRAFT:-false}" = "true" ]; then
+              create_args+=(--draft)
+            fi
+            gh release create "$TAG" "${create_args[@]}"
+            gh release upload "$TAG" $assets
+            if [ "${RELEASE_DRAFT:-false}" != "true" ]; then
+              gh release edit "$TAG" --draft=false
+            fi
+          fi
+
+          # 自动生成的提交说明在前，补充下载与安装说明在后
+          body=$(gh release view "$TAG" --json body --jq .body)
+          {
+            printf '%s\n\n' "$body"
+            printf -- '---\n\n'
+            printf '下载后按浏览器解压加载：\n\n'
+            printf -- '- Chrome (MV3)：`agentnexus-browse-chrome-%s.zip`\n' "$VERSION"
+            printf -- '- Firefox (MV2)：`agentnexus-browse-firefox-%s.zip`\n' "$VERSION"
+          } > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+
+          echo "::notice::已发布 Release $TAG"

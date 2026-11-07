@@ -141,6 +141,15 @@ assert.ok(
   '工具描述携带更新纪律',
 );
 
+// 覆写创建三层契约锚（分工见 plan-prompt 文件头）：判定标准唯一权威在系统
+// 提示词「计划重建」小节；机制与后果唯一权威在工具描述；引导层只带逃生口
+assert.ok(PLAN_SYSTEM_PROMPT_SECTION.includes('计划重建'), '系统提示词含覆写判定小节');
+assert.ok(PLAN_SYSTEM_PROMPT_SECTION.includes('两种情形允许覆写'), '判定标准写明正例边界');
+const planSchemaText = planTool.openaiSchema.function.description as string;
+assert.ok(planSchemaText.includes('覆写式重建'), '工具描述写明覆写机制');
+assert.ok(planSchemaText.includes('不可恢复'), '工具描述写明后果');
+assert.ok(planSchemaText.includes('id 只增不复用'), '工具描述写明 id 后果');
+
 const openItems: PlanItem[] = [
   { id: '1', step: '打开三个平台检索来源', status: 'in_progress', updatedAt: 1 },
   { id: '2', step: '汇总有效来源', status: 'pending', updatedAt: 1 },
@@ -203,6 +212,8 @@ assert.ok(reminderText.startsWith('<plan-status-reminder>'), '提醒消息带 XM
 assert.ok(reminderText.includes('[进行中] 打开三个平台检索来源'), '含状态标签与步骤');
 assert.ok(reminderText.includes('[待执行] 汇总有效来源'), '含全部开放项');
 assert.ok(reminderText.includes('plan_tool edit'), '含补标指令');
+assert.ok(reminderText.includes('plan_tool create'), '含覆写逃生口');
+assert.ok(reminderText.includes('计划重建'), '逃生口指向权威小节');
 // 空清单 → null
 assert.equal(buildPlanReminder([]), null, '空清单返回 null');
 // 单条截断：超长步骤截到上限

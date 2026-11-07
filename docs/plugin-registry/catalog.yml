@@ -1,0 +1,82 @@
+# AgentNexus-Browse-Plugin-Registry 官方插件目录构建。
+# 复制说明：本文件来自 AgentNexus 宿主仓库 docs/plugin-registry/catalog.yml 模板，
+# 在目录仓库 .github/workflows/catalog.yml 使用。
+# 前置配置（仓库 Settings）：
+# - Variables: AGENTNEXUS_SDK_REPOSITORY（宿主 owner/repo）、AGENTNEXUS_SDK_COMMIT（40 位 SHA）、
+#   CATALOG_URL（已部署目录地址，如 https://<owner>.github.io/agentnexus-browse-plugin-registry/catalog.json）
+# - 受保护环境 catalog-signing 的 secret：CATALOG_PRIVATE_JWK（Ed25519 私钥 JWK，JSON 字符串；
+#   对应公钥 Base64 内置于扩展 utils/plugins/official-catalog.ts，私钥绝不入库）
+# - Settings → Pages：部署分支 gh-pages（首次 Action 成功后启用）
+name: Build signed catalog
+on:
+  push:
+    branches: [main]
+    paths: ['plugins/**', 'scripts/**', '.github/workflows/catalog.yml']
+  pull_request:
+    branches: [main]
+    paths: ['plugins/**', 'scripts/**', '.github/workflows/catalog.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: catalog-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate SDK pin
+        env:
+          SDK_COMMIT: ${{ vars.AGENTNEXUS_SDK_COMMIT }}
+          SDK_REPOSITORY: ${{ vars.AGENTNEXUS_SDK_REPOSITORY }}
+        run: |
+          [[ "$SDK_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$SDK_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: registry
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ vars.AGENTNEXUS_SDK_REPOSITORY }}
+          ref: ${{ vars.AGENTNEXUS_SDK_COMMIT }}
+          path: sdk
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Install pinned SDK dependencies
+        working-directory: sdk
+        run: npm ci --ignore-scripts
+      - name: Validate entries and build unsigned catalog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REGISTRY_DIR: ${{ github.workspace }}/registry
+          SDK_DIR: ${{ github.workspace }}/sdk
+          CATALOG_URL: ${{ vars.CATALOG_URL }}
+        run: node registry/scripts/build-catalog.mjs
+      # PR 只做校验，不签名不部署；push / 手动触发才发布
+      - name: Sign and publish catalog
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        environment: catalog-signing
+        env:
+          PRIVATE_JWK: ${{ secrets.CATALOG_PRIVATE_JWK }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          umask 077
+          key="$RUNNER_TEMP/catalog-key.json"
+          trap 'rm -f -- "$key"' EXIT
+          printf '%s' "$PRIVATE_JWK" > "$key"
+          unset PRIVATE_JWK
+          node sdk/scripts/plugin-cli.mjs catalog-sign registry/unsigned-catalog.json --key "$key" --out "$RUNNER_TEMP/catalog.json"
+          cd "$RUNNER_TEMP"
+          rm -rf pages && mkdir pages
+          cp catalog.json pages/catalog.json
+          cd pages
+          git init -q -b gh-pages
+          git config user.name catalog-bot
+          git config user.email catalog-bot@users.noreply.github.com
+          git add catalog.json
+          git commit -qm "Publish catalog $(date -u +%FT%TZ)"
+          # gh-pages 保持单提交历史：每次发布整体替换（序号来自已部署目录，与 git 历史无关）
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages

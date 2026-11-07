@@ -134,6 +134,8 @@ export class InteractTool extends BaseTool {
     version: '1.0.0',
     author: 'AgentNexus',
     tags: ['interact', 'ask-user', 'confirmation', 'authorization'],
+    // 纯对话工具（弹窗征询，不触碰页面）：视觉循环无需重拍
+    noVisionRecapture: true,
   };
 
   openaiSchema: OpenAITool = {

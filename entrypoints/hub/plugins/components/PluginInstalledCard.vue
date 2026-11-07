@@ -8,6 +8,13 @@
         <strong class="pc-card__name">{{ plugin.manifest.displayName }}</strong>
         <span class="pc-card__version">v{{ plugin.manifest.version }}</span>
       </div>
+      <span
+        v-if="update"
+        class="pc-badge is-update"
+        :title="t('hub.plugins.updateAvailable', { version: update.version })"
+      >
+        {{ t('hub.plugins.updateAvailable', { version: update.version }) }}
+      </span>
       <span class="pc-badge" :class="statusClass">{{ statusText }}</span>
     </header>
 
@@ -53,7 +60,11 @@
         "
       >
         <RefreshCw :size="13" aria-hidden="true" />
-        {{ t('hub.plugins.actionUpdate') }}
+        {{
+          update
+            ? t('hub.plugins.updateTo', { version: update.version })
+            : t('hub.plugins.actionUpdate')
+        }}
       </button>
       <button
         type="button"
@@ -152,6 +163,7 @@ const {
   busy,
   secrets,
   versions,
+  updates,
   toggle,
   previewGithub,
   exportPlugin,
@@ -160,6 +172,9 @@ const {
   remove,
   saveSecret,
 } = usePluginCenter();
+
+/** 自动更新检查发现的新版本（无则 undefined） */
+const update = computed(() => updates.value[props.plugin.key]);
 
 /** 状态徽章文案：blocked 原文优先（领域层给的原因串），其次启用 / 禁用 */
 const statusText = computed(() =>

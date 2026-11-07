@@ -65,7 +65,10 @@ export class VisionReadTool extends BaseTool {
     super();
     const d = definitions[action]; this.name = d.name;
     this.metadata = { name: this.name, description: d.description, category: 'vision', version: '1.0.0',
-      permissions: ['debugger','scripting'], visionRefresh: action === 'scroll' ? 'after' : 'none' };
+      permissions: ['debugger','scripting'],
+      // read/zoom 纯读不消耗源截图（zoom 产出区域图仅作阅读证据）；
+      // scroll 滚动改视口必须重拍；wait 走名单特例（成功复用产出图/失败恢复重拍）
+      noVisionRecapture: action === 'read' || action === 'zoom' };
     this.openaiSchema = { type: 'function', function: { name: this.name, description: d.description,
       parameters: { type: 'object', additionalProperties: false, properties: {
         ...(action !== 'wait' ? { screenshotId: { type: 'string', maxLength: 128 } } : {}), ...d.properties,

@@ -27,8 +27,32 @@
 
 The plugin can be used in two ways:
 
-1. **With the [AgentNexus](https://github.com/your-org/AgentNexus) main program** (recommended): scheduled by the main program over a WebSocket automation channel, ideal for complex multi-step workflows.
+1. **With the [AgentNexus](https://github.com/dreameutopia/AgentNexus) main program** (recommended): scheduled by the main program over a WebSocket automation channel, ideal for complex multi-step workflows.
 2. **Standalone**: configure your own model API (OpenAI / Claude / Gemini / Ollama, etc.) in the side panel chat mode, and chat with full tool access without the main program.
+
+Its aim is narrow and practical: **take over the work that is repetitive and time-consuming in production, so people stop spending their hours on it** — see [Design Philosophy](#-design-philosophy) below.
+
+## 🧭 Design Philosophy
+
+### Deliberately simple, not feature-maximal
+This plugin intentionally **does not chase complicated design**. There is no attempt to build a general-purpose workflow engine, a plugin marketplace platform, or a sprawling orchestration layer inside the extension. Every capability here earns its place by being something a browser extension can do *well* — read the page, act on the page, capture the page, and hand control back.
+
+Complexity lives where it belongs: in the **AgentNexus application**, which is about to be released. This plugin is designed to serve as **the primary channel through which that application drives the browser** — it exposes a stable, well-defined tool surface that the application schedules over the WebSocket automation channel. Keeping the extension thin and predictable is what makes it a dependable dependency for that app.
+
+### Built for the repetitive, time-consuming parts of real work
+The direction of travel for this project is **not** "more tools for their own sake". It is to complete the tasks that are genuinely **repetitive and time-consuming in production**, so that human operators stop spending their working hours on them.
+
+Concretely, the plugin aims at work of this shape:
+
+| Real-world pain | What the plugin does |
+|---|---|
+| Copying data between dozens of pages or systems | Data collection, table extraction, XLSX read/write |
+| Re-checking the same information across many sources | Multi-source search, cross-validation research flows |
+| Repeating a fixed sequence of form fills, clicks, submissions | Scheduled, replayable tool workflows |
+| Turning raw research into a deliverable | Research report skills, notes, mindmaps, chart rendering |
+| Hunting for that one asset or subtitle buried in a page | Resource sniffing, downloads, subtitle fetching |
+
+Every hour of manual operation removed is the point. Features that do not move that number are deliberately kept out of scope.
 
 ## 🔥 Core Features
 
@@ -42,7 +66,7 @@ Native streaming adapters for **OpenAI, OpenAI Responses, Claude, Gemini, and Ol
 A custom context engine (context metering, transcript engine, context-window guard) automatically trims and compresses history, while the chat database persists conversations — long sessions stay within limits and remain resumable.
 
 ### 🤖 Agent System
-8 preset agents: Deep Search, General Text Assistant, Vision Assistant, General Vision Assistant, Search Agent, Data Harvester, Bilibili Agent, and Mindmap Assistant. Their names, descriptions, categories and tags follow the interface language. Custom agents (model, prompt, toolset, skill mounting) can be created in the management hub.
+7 preset agents: Deep Search, General Text Assistant, Vision Assistant, General Vision Assistant, Data Collection Assistant, Bilibili Search Assistant, and Mindmap Assistant. Their names, descriptions, categories and tags follow the interface language. Custom agents (model, prompt, toolset, skill mounting) can be created in the management hub.
 
 ### 📚 Skill System
 Skill loading and resource reading tools, with 3 built-in skills: Bilibili video summary, web research report, and XLSX creator; skills support import/export and availability management (see "Skill Design" below for the design rationale).
@@ -109,8 +133,9 @@ The three built-in skills (`skills/web-research-report`, `skills/bilibili-video-
 - Built-in notes, speech recognition, usage metrics, and bilingual UI
 
 ### 🔄 TODO
-- Advanced features such as remote viewing
-- More scenario-specific tools and skills
+- **Operation recording and remote operation** are planned and currently in the design stage. Implementation is expected to **begin only after the existing feature set has stabilized**, so that the recording / remote-control path is built on a settled foundation rather than on a moving target.
+- **The plugin system is being refined** — the packaging, signing, distribution and lifecycle contracts are converging, but the third-party plugin story is not yet finished.
+- More scenario-specific tools and skills, prioritised by how much repetitive manual effort they remove in production.
 
 ## 🚀 Quick Start
 
@@ -140,7 +165,7 @@ Build output lands in `.output/chromium-mv3`; load it via "Load unpacked" on `ch
 
 - **version (required, used by the WS connection)**: set the `version` field in `package.json` to a semantic version (e.g. `1.0.0`). At build time `wxt.config.ts` reads it and injects it into the `version` query parameter of the WebSocket connection for backend logging and compatibility checks.
 
-- **BROWSER_UUID (recommended, identifies the browser instance to the backend)**: if the backend needs a stable browser identifier, add `BROWSER_UUID=your-uuid` to `.env`. It is injected at build time into the client (as the `browserUuid` query parameter). To generate a UUID, use PowerShell `[guid]::NewGuid().ToString()` or visit https://www.uuidgenerator.net/.
+- **BROWSER_UUID (optional, identifies the browser instance to the backend)**: in a normal user browser no configuration is needed — the extension generates a unique `b-<timestamp>-<random>` id on first run and persists it in `chrome.storage.local`, so every browser instance reports a different id to the backend. Only set `BROWSER_UUID` in `.env` for the self-hosted / docker scenario, where the value is injected at build time (as the `browserUuid` query parameter) and must stay stable across rebuilds. To generate a UUID, use PowerShell `[guid]::NewGuid().ToString()` or visit https://www.uuidgenerator.net/.
 
 Quick example:
 
@@ -148,7 +173,8 @@ Quick example:
 
 ```
 CHROME_EXTENSION_KEY=YOUR_PRIVATE_KEY_HERE
-BROWSER_UUID=37e07350-f2ca-46d1-9408-acd8c3d86294
+# Only needed for a self-hosted / docker backend; leave empty for normal user browsers
+BROWSER_UUID=
 ```
 
 2. Set `version` in `package.json`:
@@ -170,6 +196,21 @@ After building, the WebSocket connection uses the following format:
 ws://{host}:{port}/api/automation?browserUuid={browserUuid}&version={x.x.x}
 ```
 
+## 📦 Release
+
+Regular commits only run CI (type check + tests + builds for both browsers) and **never** create a Release.
+A Release is produced only when you name a version explicitly:
+
+```bash
+# 1. bump the version in package.json and commit
+# 2. push a matching tag to trigger the build and publish the Release
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+You can also run the `Release extension` workflow manually with a version, or set `publish` to `false`
+to build without releasing. Full details: [docs/release-process.md](./docs/release-process.md).
+
 ## 🤝 Contributing
 
 ### ✅ Welcome
@@ -184,7 +225,7 @@ This project is licensed under the **GNU Affero General Public License v3.0** �
 
 ### 🏢 Commercial License
 
-If you wish to use this project in proprietary software or commercial products that cannot comply with the AGPL-3.0 license terms, you can obtain a **commercial license**. Please contact us for licensing options and pricing.
+If you wish to use this project in proprietary software or commercial products that cannot comply with the AGPL-3.0 license terms, you can obtain a **commercial license**. Please contact us at `13077995107@163.com` for licensing options and pricing.
 
 ## 🙏 Acknowledgments
 
@@ -192,8 +233,8 @@ If you wish to use this project in proprietary software or commercial products t
 
 ## 📮 Contact & Links
 
-- 🐛 [Issue Tracker](https://github.com/your-org/AgentNexus-Browse-Plugin/issues)
-- 💬 [Discussions](https://github.com/your-org/AgentNexus-Browse-Plugin/discussions)
+- 🐛 [Issue Tracker](https://github.com/dreameutopia/AgentNexus-Browse-Plugin/issues)
+- 💬 [Discussions](https://github.com/dreameutopia/AgentNexus-Browse-Plugin/discussions)
 
 ---
 

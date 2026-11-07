@@ -1,0 +1,8 @@
+{
+  "key": "ed25519:<52字符发布者公钥base32>/web-research",
+  "name": "网页调研",
+  "description": "根据网页信息生成有引用的回答。",
+  "repository": "https://github.com/example/web-research",
+  "version": "1.0.0",
+  "digest": "<安装包的64字符SHA-256，小写十六进制>"
+}

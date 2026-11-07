@@ -171,6 +171,7 @@ export function isLearnDraftEditorState(value: unknown): value is LearnDraftEdit
   if (!state.form || !['name', 'description', 'category', 'customCategory', 'body', 'raw'].every(key => typeof (state.form as Record<string, unknown>)[key] === 'string') || !strings(state.form.tags)) return false;
   if (!['simple', 'advanced'].includes(state.editorMode) || !strings(state.preservedFrontmatterLines)) return false;
   if (!state.resourceFiles || typeof state.resourceFiles !== 'object' || Array.isArray(state.resourceFiles) || !Object.values(state.resourceFiles).every(item => typeof item === 'string')) return false;
+  if (state.resourceFolders !== undefined && !strings(state.resourceFolders)) return false;
   if (typeof state.selectedFile !== 'string') return false;
   try { return JSON.stringify(state).length <= SKILL_IMPORT_MAX_TOTAL_CHARS + 100_000; } catch { return false; }
 }

@@ -420,6 +420,42 @@ function startPluginHost(): Promise<void> {
           await chrome.storage.local.set({ [storageKey]: result.sequence });
           return result.plugins;
         }
+        case 'check-updates': {
+          // 自动更新检查：6 小时节流；单插件失败（无新版/仓库失效）不中断
+          // 批次；GitHub 限流（403/429）中止剩余检查。结果只含更高版本。
+          const throttle = 'plugin-updates:lastCheck',
+            last = (await chrome.storage.local.get(throttle))[throttle];
+          if (typeof last === 'number' && Date.now() - last < 6 * 3600_000)
+            return [];
+          const updates: { key: string; version: string; digest: string }[] =
+            [];
+          try {
+            for (const p of (await host.snapshot()).packages) {
+              if (!p.source) continue;
+              try {
+                const candidate = await githubRelease(
+                  `https://github.com/${p.source.owner}/${p.source.repo}`,
+                  p.manifest.version,
+                  p.source.repositoryId,
+                );
+                updates.push({
+                  key: p.key,
+                  version: candidate.version!,
+                  digest: candidate.digest!,
+                });
+              } catch (error) {
+                if (
+                  error instanceof Error &&
+                  /HTTP 40[13]|HTTP 429/.test(error.message)
+                )
+                  break;
+              }
+            }
+          } finally {
+            await chrome.storage.local.set({ [throttle]: Date.now() });
+          }
+          return updates;
+        }
         default:
           throw new PluginError('UNKNOWN_PLUGIN_OPERATION');
       }

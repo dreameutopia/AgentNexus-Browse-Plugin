@@ -95,6 +95,13 @@ await until(
 assert(mount.textContent?.includes('1.0.0'));
 assert(mount.textContent?.includes('Your studio'));
 const plugin = getPluginSnapshot().packages[0];
+// 发现页结构：主搜索区仅一个输入 + 一个按钮（官方目录本地过滤，无密钥输入）；
+// 自定义目录源（URL + 公钥）折叠在 details 内，不占主流程
+const searchArea = mount.querySelector('.pc-discover__search')!;
+assert.equal(searchArea.querySelectorAll('input').length, 1);
+assert.equal(searchArea.querySelectorAll('button').length, 1);
+assert.equal(mount.querySelector('.pc-catalog')?.tagName, 'DETAILS');
+assert(mount.querySelector('.pc-catalog input'));
 app.unmount();
 const selected = ref<string[]>([]),
   pickerApp = createApp({
@@ -135,6 +142,81 @@ await pluginRequest('uninstall', {
 await until(() => !!mount.querySelector('.missing'));
 assert.equal(selected.value[0], plugin.tools[0].ref);
 pickerApp.unmount();
+
+// —— 自动更新检查：打开插件中心即标出「可更新」徽章与更新按钮 ——
+const { sha256 } = await import('../../utils/plugins/package');
+const originalFetch = globalThis.fetch,
+  realNow = Date.now,
+  fixtureDigest = await sha256(bytes);
+let newerVisible = false;
+globalThis.fetch = async (input) => {
+  const url = String(input);
+  if (url.endsWith('/repos/test/ui-updater'))
+    return Response.json({ id: 888, full_name: 'test/ui-updater' });
+  if (url.includes('/releases?'))
+    return Response.json([
+      {
+        tag_name: 'v1.0.0',
+        assets: [
+          {
+            name: 'plugin.anplugin',
+            size: bytes.length,
+            digest: `sha256:${fixtureDigest}`,
+            browser_download_url:
+              'https://github.com/test/ui-updater/releases/download/v1.0.0/plugin.anplugin',
+          },
+        ],
+      },
+      ...(newerVisible
+        ? [
+            {
+              tag_name: 'v2.0.0',
+              assets: [
+                {
+                  name: 'plugin.anplugin',
+                  size: bytes.length,
+                  digest: `sha256:${'cd'.repeat(32)}`,
+                  browser_download_url:
+                    'https://github.com/test/ui-updater/releases/download/v2.0.0/plugin.anplugin',
+                },
+              ],
+            },
+          ]
+        : []),
+    ]);
+  const response = new Response(bytes as BodyInit);
+  Object.defineProperty(response, 'url', { value: url });
+  return response;
+};
+try {
+  // 经 github-install 为已装插件补上 GitHub 来源（同包同版本幂等，仅绑定来源）
+  const githubPreview = await pluginRequest('github-preview', {
+    repository: 'https://github.com/test/ui-updater',
+  });
+  await pluginRequest('github-install', {
+    repository: 'https://github.com/test/ui-updater',
+    key: githubPreview.preview.plugin.key,
+    generation: githubPreview.preview.generation,
+    digest: githubPreview.preview.plugin.digest,
+  });
+  // 新版本出现 + 越过 github() 5 分钟缓存 + 解除 6 小时节流 → 重新挂载页面
+  newerVisible = true;
+  Date.now = () => realNow() + 400_000;
+  storage.set('plugin-updates:lastCheck', Date.now() - 7 * 3600_000);
+  const updateApp = createApp(PluginManager);
+  updateApp.mount(mount);
+  await until(() => !!mount.querySelector('.pc-badge.is-update'));
+  assert(mount.querySelector('.pc-badge.is-update')?.textContent?.includes('2.0.0'));
+  assert(
+    [...mount.querySelectorAll('button')].some((b) =>
+      b.textContent?.includes('2.0.0'),
+    ),
+  );
+  updateApp.unmount();
+} finally {
+  Date.now = realNow;
+  globalThis.fetch = originalFetch;
+}
 console.log(
-  '[plugins-ui] File import, explicit consent, source/version display, external-tool selection, disable and missing-reference preservation passed.',
+  '[plugins-ui] File import, explicit consent, source/version display, external-tool selection, disable, missing-reference preservation, discover structure and update badge passed.',
 );

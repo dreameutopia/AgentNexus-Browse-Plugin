@@ -85,10 +85,28 @@
     </div>
 
     <!-- 编辑视图：简单模式（表单字段）与高级模式（完整 SKILL.md） -->
-    <form v-else class="hub-editor" :inert="saving" :aria-busy="saving" @submit.prevent="save">
+    <!-- 编辑视图：简单模式（表单字段）与高级模式（完整 SKILL.md）。
+         两种模式都走填满态（is-fill）：编辑器吃满内容卡剩余高度——
+         简单模式下右列「提示词（技能正文）」占满窗口剩余空间，不留底部空白 -->
+    <form v-else ref="editorRef" class="hub-editor is-fill" :inert="saving" :aria-busy="saving" @submit.prevent="save">
       <div class="hub-editor-head">
-        <h2>{{ editingExisting ? t('hub.editSkill') : t('hub.newSkill') }}</h2>
-        <button type="button" class="hub-btn" :disabled="saving" @click="cancelEdit">{{ t('hub.backToList') }}</button>
+        <div class="hub-editor-head-main">
+          <h2>{{ editingExisting ? t('hub.editSkill') : t('hub.newSkill') }}</h2>
+          <p class="hub-editor-mode-hint">{{ editorMode === 'simple' ? t('hub.modeSimpleHint') : t('hub.modeAdvancedHint') }}</p>
+        </div>
+        <div class="hub-editor-head-actions">
+          <!-- 模式切换（带确认语义：切换会把当前内容转换为目标形态） -->
+          <HubSegmented
+            :model-value="editorMode"
+            :options="modeOptions"
+            :aria-label="t('hub.modeSimple')"
+            @update:model-value="onModeChange"
+          />
+          <!-- 头部动作区：返回列表 / 取消 / 保存（取消与保存在返回列表右侧） -->
+          <button type="button" class="hub-btn" :disabled="saving" @click="cancelEdit">{{ t('hub.backToList') }}</button>
+          <button type="button" class="hub-btn" :disabled="saving" @click="cancelEdit">{{ t('common.cancel') }}</button>
+          <button type="submit" class="hub-btn hub-btn-primary" :disabled="!canSave || saving">{{ t('common.save') }}</button>
+        </div>
       </div>
 
       <!-- 网站学习成果确认卡（预填后内联展示；确认→直接保存，微调→关卡留在表单） -->
@@ -99,17 +117,6 @@
         @confirm="confirmDraftCreate"
         @edit="draftCard = null"
       />
-
-      <!-- 模式切换（带确认语义：切换会把当前内容转换为目标形态） -->
-      <div class="hub-editor-mode">
-        <HubSegmented
-          :model-value="editorMode"
-          :options="modeOptions"
-          :aria-label="t('hub.modeSimple')"
-          @update:model-value="onModeChange"
-        />
-        <p class="hub-hint">{{ editorMode === 'simple' ? t('hub.modeSimpleHint') : t('hub.modeAdvancedHint') }}</p>
-      </div>
 
       <!-- 左右布局：简单模式左列元信息 / 右列提示词；高级模式左列 SKILL.md 原文 / 右列实时校验与资源文件 -->
       <div
@@ -181,9 +188,18 @@
         <template v-else>
           <!-- 左：文件树 -->
           <aside class="hub-tree" :aria-label="t('hub.treeHeader')">
-            <div class="hub-tree-head">
+            <div
+              class="hub-tree-head"
+              :class="{ 'is-drop-root': dropTarget?.kind === 'root' }"
+              :title="t('hub.treeDragHint')"
+              @dragover.prevent="onDragOverRoot"
+              @drop.prevent="onDropToRoot"
+              @dragleave="onDragLeaveTarget"
+            >
               <span class="hub-tree-title">{{ t('hub.treeHeader') }}</span>
               <span class="hub-tree-count">{{ resourceFileCount + 1 }}</span>
+              <span v-if="dropTarget?.kind === 'root'" class="hub-tree-drop-hint">{{ t('hub.treeDropRoot') }}</span>
+              <!-- 新建文件 / 新建文件夹：两个独立入口（VS Code 资源管理器同款） -->
               <button
                 type="button"
                 class="hub-icon-btn hub-tree-add"
@@ -192,64 +208,81 @@
                 @click="beginCreateFile"
               >
                 <svg viewBox="0 0 16 16" aria-hidden="true">
-                  <path d="M8 3.2v9.6M3.2 8h9.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                  <path d="M3.8 2.4h4.4l2.6 2.6v5.2H3.8z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+                  <path d="M11.6 10.4v3.4M9.9 12.1h3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="hub-icon-btn hub-tree-add"
+                :title="t('hub.treeNewFolderTitle')"
+                :aria-label="t('hub.treeNewFolderTitle')"
+                @click="beginCreateFolder"
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M2.2 4.3h3.5l1.2 1.4h6.3v6H2.2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+                  <path d="M11.8 10.4v3.4M10.1 12.1h3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
                 </svg>
               </button>
             </div>
 
-            <div class="hub-tree-body">
-              <!-- 新建文件输入行（Enter 确认 / Esc 取消；半敲路径不随保存落库） -->
-              <div v-if="creatingFile" class="hub-tree-input-row">
-                <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon">
-                  <path d="M4.2 2.2h5l2.8 2.8v8.8H4.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
-                </svg>
-                <input
-                  ref="createInputRef"
-                  v-model="creatingValue"
-                  type="text"
-                  maxlength="200"
-                  :placeholder="t('hub.treeNewFilePlaceholder')"
-                  spellcheck="false"
-                  @keydown.enter.prevent="commitCreateFile"
-                  @keydown.esc.stop="cancelTreeInput"
-                />
-                <button type="button" class="hub-icon-btn" :title="t('hub.treeCreate')" @click="commitCreateFile">
-                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.6 8.4l2.8 2.8 6-6.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
-                </button>
-                <button type="button" class="hub-icon-btn" :title="t('common.cancel')" @click="cancelTreeInput">
-                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
+            <div
+              class="hub-tree-body"
+              @dragover.prevent="onDragOverTreeBody"
+              @drop.prevent="onDropToRoot"
+              @dragleave="onDragLeaveTarget"
+            >
+              <!-- 入口文件（置顶；路径固定，由主编辑语义承载，不可删改、不可拖动） -->
+              <div class="hub-tree-item">
+                <button
+                  type="button"
+                  class="hub-tree-row is-entry"
+                  :class="{ 'is-active': selectedIsEntry }"
+                  @click="selectFile('SKILL.md')"
+                  @contextmenu.prevent
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon">
+                    <path d="M5 2.6h6v10.8l-3-2.2-3 2.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+                  </svg>
+                  <span class="hub-tree-name">SKILL.md</span>
+                  <span v-if="isFileDirty('SKILL.md')" class="hub-tree-dirty" :title="t('hub.treeDirty')" />
+                  <span class="hub-tree-badge">{{ t('hub.treeEntryBadge') }}</span>
                 </button>
               </div>
 
-              <!-- 入口文件（置顶；路径固定，由主编辑语义承载，不可删改） -->
-              <button
-                type="button"
-                class="hub-tree-row is-entry"
-                :class="{ 'is-active': selectedIsEntry }"
-                @click="selectFile('SKILL.md')"
-              >
-                <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon">
-                  <path d="M5 2.6h6v10.8l-3-2.2-3 2.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
-                </svg>
-                <span class="hub-tree-name">SKILL.md</span>
-                <span v-if="isFileDirty('SKILL.md')" class="hub-tree-dirty" :title="t('hub.treeDirty')" />
-                <span class="hub-tree-badge">{{ t('hub.treeEntryBadge') }}</span>
-              </button>
-
-              <!-- 目录与资源文件（目录可折叠；文件行悬停出重命名 / 删除） -->
+              <!-- 树行：目录 / 文件 / 内联输入行（新建文件 / 新建文件夹 / 重命名） -->
               <template v-for="row in treeRows" :key="row.key">
-                <!-- 重命名行（整行替换为输入） -->
-                <div v-if="row.kind === 'file' && renamingPath === row.path" class="hub-tree-input-row is-nested" :style="{ '--depth': row.depth }">
+                <!-- 内联输入行 -->
+                <div v-if="row.kind === 'input-file' || row.kind === 'input-folder'" class="hub-tree-input-row" :style="{ '--depth': row.depth }">
+                  <svg v-if="row.kind === 'input-folder'" viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon">
+                    <path d="M2.4 4.3h3.6l1.2 1.4h6.4v5.9H2.4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+                  </svg>
+                  <svg v-else viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon">
+                    <path d="M4.2 2.2h5l2.8 2.8v8.8H4.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+                  </svg>
+                  <span v-if="row.inputMode === 'create' && targetFolder" class="hub-tree-input-prefix">{{ targetFolder }}/</span>
                   <input
-                    :ref="setRenameInputEl"
-                    v-model="renamingValue"
+                    :ref="setTreeInputEl"
+                    v-model="treeInputValue"
                     type="text"
                     maxlength="200"
+                    :placeholder="
+                      row.kind === 'input-folder'
+                        ? t('hub.treeNewFolderPlaceholder')
+                        : row.inputMode === 'create'
+                          ? t('hub.treeNewFileNamePlaceholder')
+                          : t('hub.treeRename')
+                    "
                     spellcheck="false"
-                    @keydown.enter.prevent="commitRenameFile"
+                    @keydown.enter.prevent="commitTreeInput"
                     @keydown.esc.stop="cancelTreeInput"
                   />
-                  <button type="button" class="hub-icon-btn" :title="t('hub.treeRenameApply')" @click="commitRenameFile">
+                  <button
+                    type="button"
+                    class="hub-icon-btn"
+                    :title="row.inputMode === 'create' ? t('hub.treeCreate') : t('hub.treeRenameApply')"
+                    @click="commitTreeInput"
+                  >
                     <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.6 8.4l2.8 2.8 6-6.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
                   </button>
                   <button type="button" class="hub-icon-btn" :title="t('common.cancel')" @click="cancelTreeInput">
@@ -257,29 +290,52 @@
                   </button>
                 </div>
 
-                <!-- 目录行（折叠 / 展开） -->
+                <!-- 目录行（折叠 / 展开；把文件拖到目录行即可移入该目录） -->
                 <button
                   v-else-if="row.kind === 'folder'"
                   type="button"
                   class="hub-tree-row is-folder"
                   :style="{ '--depth': row.depth }"
+                  :class="{ 'is-drop-target': dropTarget?.kind === 'folder' && dropTarget.path === row.folderPath }"
                   :aria-expanded="!collapsedFolders.has(row.folderPath ?? '')"
-                  @click="toggleFolder(row.folderPath ?? '')"
+                  draggable="true"
+                  @click="selectFolder(row.folderPath ?? '')"
+                  @contextmenu.prevent.stop="openContextMenu($event, 'folder', row.folderPath ?? '')"
+                  @dragstart="onDragStart($event, row.folderPath ?? '')"
+                  @dragend="onDragEnd"
+                  @dragover.prevent.stop="onDragOverFolder(row.folderPath ?? '')"
+                  @drop.prevent.stop="onDropIntoFolder(row.folderPath ?? '')"
+                  @dragleave="onDragLeaveTarget"
                 >
                   <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-chevron" :class="{ 'is-collapsed': collapsedFolders.has(row.folderPath ?? '') }">
                     <path d="M6.2 4.2L10 8l-3.8 3.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
                   </svg>
+                  <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon">
+                    <path d="M2.4 4.4h3.7l1.3 1.5h6.2a1 1 0 0 1 1 1v4.9a1 1 0 0 1-1 1H2.4a1 1 0 0 1-1-1V5.4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+                  </svg>
                   <span class="hub-tree-name">{{ row.label }}</span>
                 </button>
 
-                <!-- 文件行 -->
-                <div v-else class="hub-tree-branch" :style="{ '--depth': row.depth }">
+                <!-- 文件行（可拖拽：拖到目录 = 移入，拖到文件 = 插到其前，拖到树头 = 移回根目录） -->
+                <div
+                  v-else
+                  class="hub-tree-item"
+                  :style="{ '--depth': row.depth }"
+                  :class="{ 'is-drop-before': dropTarget?.kind === 'file' && dropTarget.path === row.path }"
+                >
                   <button
                     type="button"
                     class="hub-tree-row is-file"
-                    :class="{ 'is-active': selectedFile === row.path }"
+                    :class="{ 'is-active': selectedFile === row.path, 'is-dragging': dragPath === row.path }"
                     :title="row.path"
+                    draggable="true"
                     @click="selectFile(row.path ?? '')"
+                    @contextmenu.prevent.stop="openContextMenu($event, 'file', row.path ?? '')"
+                    @dragstart="onDragStart($event, row.path ?? '')"
+                    @dragend="onDragEnd"
+                    @dragover.prevent.stop="onDragOverFile(row.path ?? '')"
+                    @drop.prevent.stop="onDropBeforeFile(row.path ?? '')"
+                    @dragleave="onDragLeaveTarget"
                   >
                     <svg v-if="fileIconKind(row.label) === 'md'" viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon">
                       <path d="M4.2 2.2h5l2.8 2.8v8.8H4.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
@@ -306,7 +362,7 @@
               </template>
 
               <p v-if="treeError" class="hub-tree-error" role="alert">{{ treeError }}</p>
-              <p v-if="resourceFileCount === 0 && !creatingFile" class="hub-tree-empty">{{ t('hub.resourceFilesEmpty') }}</p>
+              <p v-if="resourceFileCount === 0 && resourceFolders.length === 0 && !treeInput" class="hub-tree-empty">{{ t('hub.resourceFilesEmpty') }}</p>
             </div>
           </aside>
 
@@ -349,8 +405,13 @@
               :placeholder="t('hub.treeFilePlaceholder')"
               spellcheck="false"
             ></textarea>
+          </div>
 
-            <!-- 状态条：入口文件 = 实时校验；资源文件 = 环境与读取说明 -->
+          <!-- 状态条（通栏，位于文件树与文件编辑器下方）：入口文件 = 实时校验；资源文件 = 环境与读取说明 -->
+          <div
+            class="hub-editor-status"
+            :class="selectedIsEntry ? (rawValidation.ok ? 'is-ok' : 'is-error') : ''"
+          >
             <div
               v-if="selectedIsEntry"
               class="hub-validation"
@@ -358,7 +419,14 @@
               role="status"
               aria-live="polite"
             >
-              <div class="hub-validation-head">
+              <!-- 折叠态：只报问题数量（点击标题展开明细） -->
+              <button
+                type="button"
+                class="hub-validation-head"
+                :aria-expanded="validationExpanded"
+                :title="validationExpanded ? t('hub.validationCollapse') : t('hub.validationExpand')"
+                @click="validationExpanded = !validationExpanded"
+              >
                 <svg v-if="rawValidation.ok" viewBox="0 0 16 16" aria-hidden="true">
                   <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5" />
                   <path d="M5.2 8.3l1.9 1.9 3.7-4.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
@@ -368,23 +436,30 @@
                   <path d="M8 4.6v4.2M8 11.2v.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
                 </svg>
                 <span>{{ t('hub.validationTitle') }}</span>
-                <span v-if="!rawValidation.ok" class="hub-validation-count">{{ rawIssues.length }}</span>
+                <span v-if="!rawValidation.ok" class="hub-validation-count">{{ t('hub.validationIssueCount', { count: rawIssues.length }) }}</span>
+                <span v-else class="hub-validation-ok-badge">{{ t('hub.validationOkBadge') }}</span>
+                <svg class="hub-validation-chevron" :class="{ 'is-open': validationExpanded }" viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M4.5 6.2L8 9.8l3.5-3.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+              <!-- 展开态：逐条问题明细 -->
+              <div v-if="validationExpanded" class="hub-validation-body">
+                <p v-if="rawValidation.ok" class="hub-validation-ok-text">{{ t('hub.validationOk') }}</p>
+                <ul v-else class="hub-validation-items">
+                  <li
+                    v-for="(issue, index) in rawIssues"
+                    :key="index"
+                    class="hub-validation-item"
+                    :style="{ animationDelay: `${Math.min(index * 40, 240)}ms` }"
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4" />
+                      <path d="M8 4.9v3.9M8 11v.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                    </svg>
+                    <span>{{ issue }}</span>
+                  </li>
+                </ul>
               </div>
-              <p v-if="rawValidation.ok" class="hub-validation-ok-text">{{ t('hub.validationOk') }}</p>
-              <ul v-else class="hub-validation-items">
-                <li
-                  v-for="(issue, index) in rawIssues"
-                  :key="index"
-                  class="hub-validation-item"
-                  :style="{ animationDelay: `${Math.min(index * 40, 240)}ms` }"
-                >
-                  <svg viewBox="0 0 16 16" aria-hidden="true">
-                    <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4" />
-                    <path d="M8 4.9v3.9M8 11v.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-                  </svg>
-                  <span>{{ issue }}</span>
-                </li>
-              </ul>
             </div>
             <p v-else class="hub-code-note">{{ t('hub.resourceFilesHint') }}</p>
           </div>
@@ -394,10 +469,32 @@
       <div class="hub-editor-footer">
         <span v-if="errorMessage" class="hub-error">{{ errorMessage }}</span>
         <span v-else-if="advancedBlockHint" class="hub-hint">{{ advancedBlockHint }}</span>
-        <div class="hub-editor-actions">
-          <button type="button" class="hub-btn" @click="cancelEdit">{{ t('common.cancel') }}</button>
-          <button type="submit" class="hub-btn hub-btn-primary" :disabled="!canSave || saving">{{ t('common.save') }}</button>
-        </div>
+      </div>
+
+      <!-- 右键菜单卡片（文件树自定义菜单：新建 / 副本 / 重命名 / 复制路径 / 删除） -->
+      <div
+        v-if="contextMenu"
+        ref="contextMenuEl"
+        class="hub-menu"
+        role="menu"
+        :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+      >
+        <template v-if="contextMenu.kind === 'file'">
+          <button type="button" class="hub-menu-item" @click="menuNewFileIn(parentFolderOf(contextMenu.path))">{{ t('hub.treeNewFileIn') }}</button>
+          <button type="button" class="hub-menu-item" @click="menuDuplicateFile(contextMenu.path)">{{ t('hub.treeDuplicate') }}</button>
+          <button type="button" class="hub-menu-item" @click="menuRenameFile(contextMenu.path)">{{ t('hub.treeRename') }}</button>
+          <button type="button" class="hub-menu-item" @click="menuCopyPath(contextMenu.path)">{{ t('hub.treeCopyPath') }}</button>
+          <div class="hub-menu-separator" role="separator"></div>
+          <button type="button" class="hub-menu-item is-danger" @click="menuDeleteFile(contextMenu.path)">{{ t('hub.delete') }}</button>
+        </template>
+        <template v-else>
+          <button type="button" class="hub-menu-item" @click="menuNewFileIn(contextMenu.path)">{{ t('hub.treeNewFileIn') }}</button>
+          <button type="button" class="hub-menu-item" @click="menuNewFolderIn(contextMenu.path)">{{ t('hub.treeNewFolderIn') }}</button>
+          <button type="button" class="hub-menu-item" @click="menuRenameFolder(contextMenu.path)">{{ t('hub.treeRenameFolder') }}</button>
+          <button type="button" class="hub-menu-item" @click="menuCopyPath(contextMenu.path)">{{ t('hub.treeCopyPath') }}</button>
+          <div class="hub-menu-separator" role="separator"></div>
+          <button type="button" class="hub-menu-item is-danger" @click="menuDeleteFolder(contextMenu.path)">{{ t('hub.treeDeleteFolder') }}</button>
+        </template>
       </div>
     </form>
   </section>
@@ -476,6 +573,7 @@ import {
   SKILL_IMPORT_MAX_TOTAL_CHARS,
   SKILL_IMPORT_WARN_BYTES,
   SKILL_PATH_MAX_CHARS,
+  normalizeFolderList,
 } from '@/utils/skills/skill-types';
 
 // ──── 列表态 ────
@@ -746,6 +844,13 @@ let preservedFrontmatterLines: string[] = [];
 const resourceFiles = ref<Record<string, string>>({});
 const resourceFileCount = computed(() => Object.keys(resourceFiles.value).length);
 
+/**
+ * 显式目录（含空目录）：用户新建、尚未放入文件的目录。
+ * 文件路径派生的目录不在此列（由 files 隐含）；空目录若无此字段支撑，
+ * 保存后会随技能消失——故作为一等状态随记录持久化。
+ */
+const resourceFolders = ref<string[]>([]);
+
 /** 高级模式当前打开的文件：'SKILL.md' = 入口原文，否则为资源文件相对路径 */
 const selectedFile = ref('SKILL.md');
 const selectedIsEntry = computed(() => selectedFile.value === 'SKILL.md');
@@ -764,23 +869,37 @@ const selectedResourceText = computed<string>({
   },
 });
 
-/** 文件树瞬时输入态：新建行 + 单行重命名。半敲的路径不是内容——不进编辑器快照，主保存期间视为未收笔 */
-const creatingFile = ref(false);
-const creatingValue = ref('');
-const renamingPath = ref<string | null>(null);
-const renamingValue = ref('');
+/**
+ * 文件树内联输入态：新建文件 / 新建文件夹 / 重命名（文件或目录）。
+ * 全树同时只允许一个输入行（VS Code 同款），半敲的路径不是内容——
+ * 不进编辑器快照，主保存期间视为未收笔。
+ */
+interface TreeInputState {
+  /** 输入的是文件还是目录 */
+  kind: 'file' | 'folder';
+  /** 新建还是重命名 */
+  mode: 'create' | 'rename';
+  /** 重命名目标（文件路径或目录路径）；新建时为空 */
+  target?: string;
+}
+const treeInput = ref<TreeInputState | null>(null);
+const treeInputValue = ref('');
+/** 新建项落在哪个目录（'' = 根目录）；点击目录 / 文件行会更新 */
+const targetFolder = ref('');
 /** 树内输入的就地错误提示（路径非法 / 重复 / 超限） */
 const treeError = ref('');
-const treeInputActive = computed(() => creatingFile.value || renamingPath.value !== null);
+const treeInputActive = computed(() => treeInput.value !== null);
 
 /** 折叠目录集合（不可变替换保证响应性） */
 const collapsedFolders = ref<Set<string>>(new Set());
 
-const createInputRef = ref<HTMLInputElement | null>(null);
-let renameInputEl: HTMLElement | null = null;
-/** 重命名行的动态 ref（v-for 内无法用静态 ref 收集） */
-function setRenameInputEl(el: unknown): void {
-  renameInputEl = el instanceof HTMLElement ? el : null;
+/** 实时校验面板展开态（默认收起，只显示问题数量） */
+const validationExpanded = ref(false);
+
+const treeInputEl = ref<HTMLElement | null>(null);
+/** 内联输入行的动态 ref（v-for 内无法用静态 ref 收集；只记元素、不置空，避免重渲染竞态） */
+function setTreeInputEl(el: unknown): void {
+  if (el instanceof HTMLElement) treeInputEl.value = el;
 }
 function focusElement(el: HTMLElement | null): void {
   try {
@@ -790,16 +909,25 @@ function focusElement(el: HTMLElement | null): void {
   }
 }
 
-/** 文件树展示行（扁平化 + 缩进深度；折叠目录的子行不产出） */
+/**
+ * 文件树展示行（扁平化 + 缩进深度；折叠目录的子行不产出）
+ *
+ * 顺序 = 用户编排顺序：目录按首次出现排序，文件按插入顺序排列，
+ * 不做字母排序——拖拽调整位置后必须肉眼可见地留在新位置（与 VS Code
+ * 手动拖拽排序的直觉一致）。
+ */
 interface TreeRow {
   key: string;
-  kind: 'folder' | 'file';
+  /** folder = 目录行；file = 文件行；input-file / input-folder = 内联输入行 */
+  kind: 'folder' | 'file' | 'input-file' | 'input-folder';
   label: string;
   depth: number;
   /** 文件行：完整相对路径 */
   path?: string;
   /** 目录行：目录前缀路径 */
   folderPath?: string;
+  /** 输入行：新建还是重命名 */
+  inputMode?: 'create' | 'rename';
 }
 
 const treeRows = computed<TreeRow[]>(() => {
@@ -819,24 +947,51 @@ const treeRows = computed<TreeRow[]>(() => {
     }
     return node;
   };
+  // 显式目录（含空目录）先入树，随后由文件路径派生的目录 / 文件补齐
+  for (const folderPath of resourceFolders.value) ensureFolder(folderPath);
+  // 资源表按键的插入顺序遍历 → 目录与文件均保持用户编排顺序
   for (const path of Object.keys(resourceFiles.value)) {
     const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
     ensureFolder(dir).files.push(path);
   }
 
   const rows: TreeRow[] = [];
-  const walk = (node: FolderNode, depth: number): void => {
-    for (const folderPath of [...node.folders.keys()].sort((a, b) => a.localeCompare(b))) {
-      const label = folderPath.split('/').pop() ?? folderPath;
-      rows.push({ key: `d:${folderPath}`, kind: 'folder', label, depth, folderPath });
-      if (!collapsedFolders.value.has(folderPath)) walk(node.folders.get(folderPath)!, depth + 1);
+  const input = treeInput.value;
+  /**
+   * 遍历产出展示行：
+   *   - 新建输入行落在目标目录的首行（根目录即列表顶部，紧随 SKILL.md 之后）；
+   *   - 重命名输入行替换被改名的文件 / 目录行（其子项暂不展示）；
+   *   - 折叠目录不产出子行（新建目标目录会自动展开，否则输入行不可见）。
+   */
+  const walk = (node: FolderNode, depth: number, folderPath: string): void => {
+    if (input && input.mode === 'create' && folderPath === targetFolder.value) {
+      rows.push({
+        key: 'i:create',
+        kind: input.kind === 'folder' ? 'input-folder' : 'input-file',
+        label: '',
+        depth,
+        inputMode: 'create',
+      });
     }
-    const files = [...node.files].sort((a, b) => a.localeCompare(b));
-    for (const filePath of files) {
-      rows.push({ key: `f:${filePath}`, kind: 'file', label: filePath.split('/').pop() ?? filePath, depth, path: filePath });
+    for (const [path, child] of node.folders) {
+      const label = path.split('/').pop() ?? path;
+      if (input && input.mode === 'rename' && input.kind === 'folder' && input.target === path) {
+        rows.push({ key: `i:rename:${path}`, kind: 'input-folder', label: '', depth, folderPath: path, inputMode: 'rename' });
+        continue;
+      }
+      rows.push({ key: `d:${path}`, kind: 'folder', label, depth, folderPath: path });
+      if (!collapsedFolders.value.has(path) || path === targetFolder.value) walk(child, depth + 1, path);
+    }
+    for (const filePath of node.files) {
+      const label = filePath.split('/').pop() ?? filePath;
+      if (input && input.mode === 'rename' && input.kind === 'file' && input.target === filePath) {
+        rows.push({ key: `i:rename:${filePath}`, kind: 'input-file', label: '', depth, path: filePath, inputMode: 'rename' });
+        continue;
+      }
+      rows.push({ key: `f:${filePath}`, kind: 'file', label, depth, path: filePath });
     }
   };
-  walk(root, 0);
+  walk(root, 0, '');
   return rows;
 });
 
@@ -893,38 +1048,99 @@ function validateResourcePath(path: string, originalPath: string | null): string
   return null;
 }
 
-// ──── 文件树操作（新建 / 重命名 / 删除 / 选中有防串扰的输入态管理） ────
+// ──── 文件树操作（新建 / 重命名 / 删除 / 副本 / 右键菜单；输入态防串扰） ────
 
 function cancelTreeInput(): void {
-  creatingFile.value = false;
-  creatingValue.value = '';
-  renamingPath.value = null;
-  renamingValue.value = '';
+  treeInput.value = null;
+  treeInputValue.value = '';
   treeError.value = '';
+}
+
+/** 路径的父目录（根级文件返回空串） */
+function parentFolderOf(path: string): string {
+  return path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
 }
 
 /** 切换选中文件：先收笔（半敲输入不该跟着切走），保证任意时刻只有一个焦点流 */
 function selectFile(path: string): void {
   cancelTreeInput();
   selectedFile.value = path;
+  // 新建项的落点跟随选中文件所在的目录（VS Code 同款）
+  targetFolder.value = path === 'SKILL.md' ? '' : parentFolderOf(path);
 }
 
+/** 选中目录：同时把它设为新建项的落点，并折叠 / 展开（VS Code 同款单击行为） */
+function selectFolder(folderPath: string): void {
+  cancelTreeInput();
+  targetFolder.value = folderPath;
+  toggleFolder(folderPath);
+}
+
+/** 展开目录（新建输入行落在折叠目录里时不可见，必须先展开） */
+function expandFolder(folderPath: string): void {
+  if (!folderPath || !collapsedFolders.value.has(folderPath)) return;
+  const next = new Set(collapsedFolders.value);
+  next.delete(folderPath);
+  collapsedFolders.value = next;
+}
+
+/** 新建文件：输入行落在目标目录内（可再带子路径，如 steps/plan.md） */
 function beginCreateFile(): void {
   cancelTreeInput();
-  creatingFile.value = true;
-  void nextTick(() => focusElement(createInputRef.value));
+  treeInput.value = { kind: 'file', mode: 'create' };
+  treeInputValue.value = '';
+  expandFolder(targetFolder.value);
+  void nextTick(() => focusElement(treeInputEl.value));
 }
 
+/** 新建文件夹：输入行落在目标目录内 */
+function beginCreateFolder(): void {
+  cancelTreeInput();
+  treeInput.value = { kind: 'folder', mode: 'create' };
+  treeInputValue.value = '';
+  expandFolder(targetFolder.value);
+  void nextTick(() => focusElement(treeInputEl.value));
+}
+
+/** 重命名文件（输入框只带文件名；输入含 / 时按根目录相对路径处理） */
 function beginRenameFile(path: string): void {
   if (resourceFiles.value[path] === undefined) return;
   cancelTreeInput();
-  renamingPath.value = path;
-  renamingValue.value = path;
-  void nextTick(() => focusElement(renameInputEl));
+  treeInput.value = { kind: 'file', mode: 'rename', target: path };
+  treeInputValue.value = path.slice(path.lastIndexOf('/') + 1);
+  void nextTick(() => focusElement(treeInputEl.value));
 }
 
+/** 重命名文件夹（改名 = 目录内所有文件随前缀迁移） */
+function beginRenameFolder(folderPath: string): void {
+  cancelTreeInput();
+  treeInput.value = { kind: 'folder', mode: 'rename', target: folderPath };
+  treeInputValue.value = folderPath.slice(folderPath.lastIndexOf('/') + 1);
+  void nextTick(() => focusElement(treeInputEl.value));
+}
+
+/** 内联输入提交：按「新建文件 / 新建文件夹 / 重命名文件 / 重命名文件夹」分发 */
+function commitTreeInput(): void {
+  const input = treeInput.value;
+  if (!input) return;
+  if (input.mode === 'create') {
+    if (input.kind === 'file') commitCreateFile();
+    else commitCreateFolder();
+    return;
+  }
+  if (input.kind === 'file') commitRenameFile(input.target ?? '');
+  else commitRenameFolder(input.target ?? '');
+}
+
+/** 新建文件：落点 = 目标目录 + 输入（输入可再带子目录） */
 function commitCreateFile(): void {
-  const path = normalizeResourcePath(creatingValue.value);
+  const raw = treeInputValue.value.trim();
+  if (!raw) {
+    cancelTreeInput();
+    return;
+  }
+  const relative = normalizeResourcePath(raw);
+  const path = targetFolder.value ? `${targetFolder.value}/${relative}` : relative;
   const pathError = validateResourcePath(path, null);
   if (pathError) {
     treeError.value = pathError;
@@ -940,10 +1156,85 @@ function commitCreateFile(): void {
   selectedFile.value = path;
 }
 
-function commitRenameFile(): void {
-  const from = renamingPath.value;
-  if (from === null) return;
-  const to = normalizeResourcePath(renamingValue.value);
+/**
+ * 校验目录路径：段级边界 + 长度 + 与既有目录重名。
+ * 既有目录 = 显式目录 ∪ 文件路径派生的目录。
+ */
+function validateFolderPath(path: string, originalPath: string | null): string | null {
+  if (
+    !path ||
+    path.startsWith('/') ||
+    path.split('/').some(segment => segment === '' || segment === '.' || segment === '..') ||
+    hasControlCharacter(path)
+  ) {
+    return t('hub.resourceFolderInvalidPath');
+  }
+  if (path.length > SKILL_PATH_MAX_CHARS) {
+    return t('hub.resourceFolderInvalidPath');
+  }
+  const existing = existingFolderPaths();
+  if (existing.has(path) && path !== originalPath) {
+    return t('hub.resourceFolderDuplicate');
+  }
+  return null;
+}
+
+/** 现有目录集合：显式目录 ∪ 文件路径派生目录 */
+function existingFolderPaths(): Set<string> {
+  const folders = new Set<string>(resourceFolders.value);
+  for (const path of Object.keys(resourceFiles.value)) {
+    const dir = parentFolderOf(path);
+    if (!dir) continue;
+    // 逐级补齐（a/b/c.md → a、a/b）
+    const segments = dir.split('/');
+    for (let index = 1; index <= segments.length; index++) {
+      folders.add(segments.slice(0, index).join('/'));
+    }
+  }
+  return folders;
+}
+
+/** 新建文件夹：落点 = 目标目录 + 输入（输入可再带层级，如 assets/img） */
+function commitCreateFolder(): void {
+  const raw = treeInputValue.value.trim();
+  if (!raw) {
+    cancelTreeInput();
+    return;
+  }
+  const relative = normalizeResourcePath(raw);
+  const path = targetFolder.value ? `${targetFolder.value}/${relative}` : relative;
+  const pathError = validateFolderPath(path, null);
+  if (pathError) {
+    treeError.value = pathError;
+    return;
+  }
+  // 逐级补齐父目录（a/b → 同时建出 a）
+  const segments = path.split('/');
+  const created = [...resourceFolders.value];
+  for (let index = 1; index <= segments.length; index++) {
+    const folder = segments.slice(0, index).join('/');
+    if (!created.includes(folder)) created.push(folder);
+  }
+  resourceFolders.value = created;
+  cancelTreeInput();
+  // 新目录成为当前落点，便于紧接着在其中新建文件
+  targetFolder.value = path;
+  expandFolder(parentFolderOf(path));
+}
+
+/** 重命名文件：保持原有顺序迁移；输入含 / 时按根目录相对路径处理 */
+function commitRenameFile(from: string): void {
+  const raw = treeInputValue.value.trim();
+  if (!raw) {
+    cancelTreeInput();
+    return;
+  }
+  const normalized = normalizeResourcePath(raw);
+  const to = normalized.includes('/')
+    ? normalized
+    : parentFolderOf(from)
+      ? `${parentFolderOf(from)}/${normalized}`
+      : normalized;
   if (to === from) {
     cancelTreeInput();
     return;
@@ -953,15 +1244,59 @@ function commitRenameFile(): void {
     treeError.value = pathError;
     return;
   }
-  const next = { ...resourceFiles.value };
-  next[to] = next[from] ?? '';
-  delete next[from];
+  const next: Record<string, string> = {};
+  for (const [path, content] of Object.entries(resourceFiles.value)) {
+    next[path === from ? to : path] = content;
+  }
   resourceFiles.value = next;
   if (selectedFile.value === from) selectedFile.value = to;
   cancelTreeInput();
 }
 
-/** 删除资源文件（二次确认；选中态与重命名态指向该文件时同步回退） */
+/** 重命名文件夹：目录内文件随前缀迁移，显式目录同步改名 */
+function commitRenameFolder(from: string): void {
+  const raw = treeInputValue.value.trim();
+  if (!raw) {
+    cancelTreeInput();
+    return;
+  }
+  const normalized = normalizeResourcePath(raw);
+  if (normalized.includes('/')) {
+    // 目录改名只接受名称（跨层移动交给拖拽，避免「改名」语义含混）
+    treeError.value = t('hub.resourceFolderInvalidPath');
+    return;
+  }
+  const parent = parentFolderOf(from);
+  const to = parent ? `${parent}/${normalized}` : normalized;
+  if (to === from) {
+    cancelTreeInput();
+    return;
+  }
+  const pathError = validateFolderPath(to, from);
+  if (pathError) {
+    treeError.value = pathError;
+    return;
+  }
+  const prefix = `${from}/`;
+  const next: Record<string, string> = {};
+  for (const [path, content] of Object.entries(resourceFiles.value)) {
+    next[path.startsWith(prefix) ? `${to}${path.slice(from.length)}` : path] = content;
+  }
+  resourceFiles.value = next;
+  resourceFolders.value = resourceFolders.value.map(folder =>
+    folder === from
+      ? to
+      : folder.startsWith(prefix)
+        ? `${to}${folder.slice(from.length)}`
+        : folder,
+  );
+  if (selectedFile.value.startsWith(prefix)) {
+    selectedFile.value = `${to}${selectedFile.value.slice(from.length)}`;
+  }
+  cancelTreeInput();
+}
+
+/** 删除资源文件（二次确认；选中态与输入态指向该文件时同步回退） */
 function removeResourceFile(path: string): void {
   if (resourceFiles.value[path] === undefined) return;
   if (!window.confirm(t('hub.confirmDeleteResourceFile', { path }))) return;
@@ -969,7 +1304,75 @@ function removeResourceFile(path: string): void {
   delete next[path];
   resourceFiles.value = next;
   if (selectedFile.value === path) selectedFile.value = 'SKILL.md';
-  if (renamingPath.value === path) cancelTreeInput();
+  if (treeInput.value?.mode === 'rename' && treeInput.value.target === path) cancelTreeInput();
+}
+
+/** 删除文件夹（二次确认；目录内文件与子目录一并删除） */
+function removeResourceFolder(folderPath: string): void {
+  const prefix = `${folderPath}/`;
+  const files = Object.keys(resourceFiles.value).filter(path => path.startsWith(prefix));
+  const folders = resourceFolders.value.filter(folder => folder === folderPath || folder.startsWith(prefix));
+  if (!files.length && !folders.length) return;
+  if (!window.confirm(t('hub.treeConfirmDeleteFolder', { path: folderPath, count: files.length }))) return;
+  const next: Record<string, string> = {};
+  for (const [path, content] of Object.entries(resourceFiles.value)) {
+    if (!path.startsWith(prefix)) next[path] = content;
+  }
+  resourceFiles.value = next;
+  resourceFolders.value = resourceFolders.value.filter(
+    folder => folder !== folderPath && !folder.startsWith(prefix),
+  );
+  if (selectedFile.value.startsWith(prefix)) selectedFile.value = 'SKILL.md';
+  if (treeInput.value?.mode === 'rename' && treeInput.value.target === folderPath) cancelTreeInput();
+}
+
+/**
+ * 创建副本：在原文件之后插入一份同内容副本，文件名带 -copy 后缀
+ * （已存在则递增为 -copy-2 / -copy-3…），副本直接打开。
+ */
+function duplicateResourceFile(path: string): void {
+  const content = resourceFiles.value[path];
+  if (content === undefined) return;
+  if (Object.keys(resourceFiles.value).length + 1 + 1 > SKILL_IMPORT_MAX_FILES) {
+    treeError.value = t('hub.resourceFileLimit', { max: SKILL_IMPORT_MAX_FILES });
+    return;
+  }
+  const dir = parentFolderOf(path);
+  const name = path.slice(path.lastIndexOf('/') + 1);
+  const dot = name.lastIndexOf('.');
+  const base = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  let index = 1;
+  let candidate = `${base}-copy${ext}`;
+  while (true) {
+    const full = dir ? `${dir}/${candidate}` : candidate;
+    if (resourceFiles.value[full] === undefined && !resourceFolders.value.includes(full)) {
+      const next: Record<string, string> = {};
+      let inserted = false;
+      for (const [existing, existingContent] of Object.entries(resourceFiles.value)) {
+        next[existing] = existingContent;
+        if (existing === path) {
+          next[full] = content;
+          inserted = true;
+        }
+      }
+      if (!inserted) next[full] = content;
+      resourceFiles.value = next;
+      selectedFile.value = full;
+      return;
+    }
+    index += 1;
+    candidate = `${base}-copy-${index}${ext}`;
+  }
+}
+
+/** 复制资源文件路径到剪贴板（失败静默——非关键路径不弹错） */
+async function copyResourcePath(path: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(path);
+  } catch {
+    /* 剪贴板权限被拒等场景忽略 */
+  }
 }
 
 function toggleFolder(folderPath: string): void {
@@ -977,6 +1380,304 @@ function toggleFolder(folderPath: string): void {
   if (next.has(folderPath)) next.delete(folderPath);
   else next.add(folderPath);
   collapsedFolders.value = next;
+}
+
+// ──── 文件树右键菜单（自定义小菜单卡片） ────
+
+interface ContextMenuState {
+  kind: 'file' | 'folder';
+  /** 目标路径（文件路径或目录路径） */
+  path: string;
+  /** 相对编辑器左上角的位置（编辑器为定位祖先） */
+  x: number;
+  y: number;
+}
+
+const contextMenu = ref<ContextMenuState | null>(null);
+const contextMenuEl = ref<HTMLElement | null>(null);
+const editorRef = ref<HTMLElement | null>(null);
+
+/** 右键打开菜单：定位到光标处，并夹紧在编辑器可视范围内 */
+function openContextMenu(event: MouseEvent, kind: 'file' | 'folder', path: string): void {
+  event.preventDefault();
+  event.stopPropagation();
+  const rect = editorRef.value?.getBoundingClientRect();
+  contextMenu.value = {
+    kind,
+    path,
+    x: event.clientX - (rect?.left ?? 0),
+    y: event.clientY - (rect?.top ?? 0),
+  };
+  void nextTick(() => clampContextMenu());
+}
+
+/** 菜单贴边翻转：超出编辑器右 / 下边界时向内收 */
+function clampContextMenu(): void {
+  const menu = contextMenuEl.value;
+  const editor = editorRef.value;
+  const state = contextMenu.value;
+  if (!menu || !editor || !state) return;
+  const menuRect = menu.getBoundingClientRect();
+  const editorRect = editor.getBoundingClientRect();
+  const maxX = editorRect.width - menuRect.width - 8;
+  const maxY = editorRect.height - menuRect.height - 8;
+  contextMenu.value = {
+    ...state,
+    x: Math.max(8, Math.min(state.x, maxX)),
+    y: Math.max(8, Math.min(state.y, maxY)),
+  };
+}
+
+function closeContextMenu(): void {
+  contextMenu.value = null;
+}
+
+/** 点击菜单外部 / Esc 时关闭菜单 */
+function onDocumentPointerDown(event: PointerEvent): void {
+  if (!contextMenu.value) return;
+  const target = event.target as Node | null;
+  if (target && contextMenuEl.value?.contains(target)) return;
+  closeContextMenu();
+}
+
+onMounted(() => document.addEventListener('pointerdown', onDocumentPointerDown, true));
+onUnmounted(() => document.removeEventListener('pointerdown', onDocumentPointerDown, true));
+
+/** 菜单动作：在指定目录中新建文件 */
+function menuNewFileIn(folderPath: string): void {
+  closeContextMenu();
+  targetFolder.value = folderPath;
+  beginCreateFile();
+}
+
+/** 菜单动作：在指定目录中新建文件夹 */
+function menuNewFolderIn(folderPath: string): void {
+  closeContextMenu();
+  targetFolder.value = folderPath;
+  beginCreateFolder();
+}
+
+/** 菜单动作：重命名文件 */
+function menuRenameFile(path: string): void {
+  closeContextMenu();
+  beginRenameFile(path);
+}
+
+/** 菜单动作：重命名文件夹 */
+function menuRenameFolder(path: string): void {
+  closeContextMenu();
+  beginRenameFolder(path);
+}
+
+/** 菜单动作：复制路径 */
+function menuCopyPath(path: string): void {
+  closeContextMenu();
+  void copyResourcePath(path);
+}
+
+/** 菜单动作：删除文件 */
+function menuDeleteFile(path: string): void {
+  closeContextMenu();
+  removeResourceFile(path);
+}
+
+/** 菜单动作：删除文件夹 */
+function menuDeleteFolder(path: string): void {
+  closeContextMenu();
+  removeResourceFolder(path);
+}
+
+/** 菜单动作：创建副本 */
+function menuDuplicateFile(path: string): void {
+  closeContextMenu();
+  duplicateResourceFile(path);
+}
+
+// ──── 文件树拖放（移入目录 / 同级重排 / 移回根目录） ────
+
+/** 正在拖动的资源文件路径（null = 当前没有拖拽） */
+const dragPath = ref<string | null>(null);
+
+/** 放置目标类型：目录（移入）/ 文件（插到它前面）/ 根目录（移回顶层） */
+type DropTargetKind = 'folder' | 'file' | 'root';
+interface DropTarget {
+  kind: DropTargetKind;
+  /** 目录路径或目标文件路径（根目录为空串） */
+  path: string;
+}
+
+/** 当前放置目标（null = 未悬停在任何落点上） */
+const dropTarget = ref<DropTarget | null>(null);
+
+/** 开始拖动：入口文件不可拖动（路径固定，由主编辑语义承载） */
+function onDragStart(event: DragEvent, path: string): void {
+  if (!path || path === 'SKILL.md') {
+    event.preventDefault();
+    return;
+  }
+  dragPath.value = path;
+  event.dataTransfer?.setData('text/plain', path);
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+}
+
+/** 拖动结束（放下或中途取消）：清空拖拽态 */
+function onDragEnd(): void {
+  dragPath.value = null;
+  dropTarget.value = null;
+}
+
+/** 悬停目录行：落点 = 移入该目录（不能移进自己或自己的子树） */
+function onDragOverFolder(folderPath: string): void {
+  if (!dragPath.value) return;
+  const from = dragPath.value;
+  if (from === folderPath || folderPath.startsWith(`${from}/`)) return;
+  dropTarget.value = { kind: 'folder', path: folderPath };
+}
+
+/** 悬停文件行：落点 = 插到该文件之前 */
+function onDragOverFile(path: string): void {
+  if (!dragPath.value || path === dragPath.value) return;
+  dropTarget.value = { kind: 'file', path };
+}
+
+/** 悬停树头：落点 = 移回根目录 */
+function onDragOverRoot(): void {
+  if (!dragPath.value) return;
+  dropTarget.value = { kind: 'root', path: '' };
+}
+
+/**
+ * 树体空白处悬停 = 根目录落点。
+ * 行自身的 dragover 已 stop 冒泡，只有真正落在空白区（target === 容器）才生效。
+ */
+function onDragOverTreeBody(event: DragEvent): void {
+  if (!dragPath.value) return;
+  if (event.target !== event.currentTarget) return;
+  onDragOverRoot();
+}
+
+/** 离开当前放置目标：只有确实离开该元素（而非移到其子元素）才清除高亮 */
+function onDragLeaveTarget(event: DragEvent): void {
+  const current = event.currentTarget as HTMLElement | null;
+  const related = event.relatedTarget as Node | null;
+  if (current && related && current.contains(related)) return;
+  dropTarget.value = null;
+}
+
+/**
+ * 落位执行：把拖动的条目移到目标目录（beforePath 非空时插到该文件之前）。
+ * 条目可以是文件（单个迁移）或目录（整棵子树随前缀迁移）。
+ * 路径合法性与重命名共用同一套校验（重复路径 / 越界 / 保留名），
+ * 失败时在树内就地报错，不静默丢弃这次拖动。
+ */
+function applyFileMove(toDir: string, beforePath: string | null): void {
+  const from = dragPath.value;
+  dragPath.value = null;
+  dropTarget.value = null;
+  if (!from) return;
+  // 拖到自己身上 = 无操作（否则会被误当成重排）
+  if (beforePath === from) return;
+  if (resourceFiles.value[from] === undefined) {
+    moveResourceFolder(from, toDir, beforePath);
+    return;
+  }
+  const content = resourceFiles.value[from] ?? '';
+  const fileName = from.slice(from.lastIndexOf('/') + 1);
+  const newPath = toDir ? `${toDir}/${fileName}` : fileName;
+  const pathError = validateResourcePath(newPath, from);
+  if (pathError) {
+    treeError.value = pathError;
+    return;
+  }
+  // 路径与顺序都没变 = 无操作
+  if (newPath === from && beforePath === null) return;
+  const next: Record<string, string> = {};
+  let inserted = false;
+  for (const [path, value] of Object.entries(resourceFiles.value)) {
+    if (path === from) continue;
+    if (beforePath && path === beforePath) {
+      next[newPath] = content;
+      inserted = true;
+    }
+    next[path] = value;
+  }
+  if (!inserted) next[newPath] = content;
+  resourceFiles.value = next;
+  if (selectedFile.value === from) selectedFile.value = newPath;
+  treeError.value = '';
+}
+
+/**
+ * 目录整体迁移：目录内所有文件与显式子目录随前缀改写，
+ * 并按落点插到目标文件之前（或追加到目标目录末尾）。
+ */
+function moveResourceFolder(from: string, toDir: string, beforePath: string | null): void {
+  const prefix = `${from}/`;
+  const name = from.slice(from.lastIndexOf('/') + 1);
+  const to = toDir ? `${toDir}/${name}` : name;
+  if (to === from) return;
+  // 目录不能移进自己的子树
+  if (to.startsWith(`${from}/`)) {
+    treeError.value = t('hub.resourceFolderInvalidPath');
+    return;
+  }
+  const pathError = validateFolderPath(to, from);
+  if (pathError) {
+    treeError.value = pathError;
+    return;
+  }
+  const moved = Object.entries(resourceFiles.value)
+    .filter(([path]) => path.startsWith(prefix))
+    .map(([path, content]) => [`${to}${path.slice(from.length)}`, content] as const);
+  const next: Record<string, string> = {};
+  let inserted = false;
+  for (const [path, content] of Object.entries(resourceFiles.value)) {
+    if (path.startsWith(prefix)) continue;
+    if (beforePath && path === beforePath) {
+      for (const [movedPath, movedContent] of moved) next[movedPath] = movedContent;
+      inserted = true;
+    }
+    next[path] = content;
+  }
+  if (!inserted) {
+    for (const [movedPath, movedContent] of moved) next[movedPath] = movedContent;
+  }
+  resourceFiles.value = next;
+  // 显式目录同步改写（源目录本身 + 其下的显式子目录），并补上目标目录
+  const folders = resourceFolders.value.map(folder =>
+    folder === from
+      ? to
+      : folder.startsWith(prefix)
+        ? `${to}${folder.slice(from.length)}`
+        : folder,
+  );
+  if (!folders.includes(to)) folders.push(to);
+  resourceFolders.value = folders;
+  if (selectedFile.value.startsWith(prefix)) {
+    selectedFile.value = `${to}${selectedFile.value.slice(from.length)}`;
+  }
+  treeError.value = '';
+}
+
+/** 落在目录行：移入该目录（并自动展开，否则文件会“消失”在折叠目录里） */
+function onDropIntoFolder(folderPath: string): void {
+  applyFileMove(folderPath, null);
+  if (collapsedFolders.value.has(folderPath)) {
+    const next = new Set(collapsedFolders.value);
+    next.delete(folderPath);
+    collapsedFolders.value = next;
+  }
+}
+
+/** 落在文件行：插到该文件之前（跨目录时同时移入其所在目录） */
+function onDropBeforeFile(path: string): void {
+  const toDir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+  applyFileMove(toDir, path);
+}
+
+/** 落在树头 / 树体空白：移回根目录 */
+function onDropToRoot(): void {
+  applyFileMove('', null);
 }
 
 /**
@@ -1025,7 +1726,7 @@ let destroyed = false;
 
 function editorSnapshot(): LearnDraftEditorState {
   return JSON.parse(JSON.stringify({ form, editorMode: editorMode.value, preservedFrontmatterLines,
-    resourceFiles: resourceFiles.value, selectedFile: selectedFile.value }));
+    resourceFiles: resourceFiles.value, resourceFolders: resourceFolders.value, selectedFile: selectedFile.value }));
 }
 function queueEditorCopy(): void {
   const id = activeTransferId.value;
@@ -1069,6 +1770,7 @@ async function acceptLearnDraft(id: string): Promise<{ ok: boolean; error?: stri
       Object.assign(form, state.form); editorMode.value = state.editorMode;
       preservedFrontmatterLines = [...state.preservedFrontmatterLines];
       resourceFiles.value = { ...state.resourceFiles };
+      resourceFolders.value = normalizeFolderList(state.resourceFolders);
       // 选中态防御：快照指向的文件可能已被并发删除——失效即回退入口文件
       selectedFile.value =
         state.selectedFile === 'SKILL.md' || state.selectedFile in resourceFiles.value
@@ -1198,8 +1900,12 @@ function resetForm(): void {
   errorMessage.value = '';
   draftCard.value = null;
   resourceFiles.value = {};
+  resourceFolders.value = [];
   selectedFile.value = 'SKILL.md';
+  targetFolder.value = '';
   collapsedFolders.value = new Set();
+  validationExpanded.value = false;
+  closeContextMenu();
   cancelTreeInput();
 }
 
@@ -1249,8 +1955,13 @@ function startEdit(skill: SkillRecord): void {
   resourceFiles.value = Object.fromEntries(
     Object.entries(skill.files).filter(([path]) => path !== 'SKILL.md'),
   );
+  // 显式目录（含空目录）一并带入，空目录才不会在下次打开时消失
+  resourceFolders.value = normalizeFolderList(skill.folders);
   selectedFile.value = 'SKILL.md';
+  targetFolder.value = '';
   collapsedFolders.value = new Set();
+  validationExpanded.value = false;
+  closeContextMenu();
   cancelTreeInput();
   // 分类回填：内置分类直接选中；自定义分类进入「自定义创建」态并回填名称
   // （历史数据缺分类时由存储层归入通用，此处不会出现空白项）
@@ -1379,6 +2090,8 @@ async function saveImpl(): Promise<void> {
       editorMode.value === 'advanced'
         ? (advancedBlockHint.value ?? t('hub.errorSkillInvalid'))
         : t('hub.errorSkillInvalid');
+    // 高级模式下校验未通过时自动展开问题明细——否则用户只看到「保存不了」却看不到原因
+    if (editorMode.value === 'advanced' && !rawValidation.value.ok) validationExpanded.value = true;
     return;
   }
 
@@ -1429,6 +2142,8 @@ async function saveImpl(): Promise<void> {
       skill.source === 'custom' && parseFrontmatter(skill.files['SKILL.md'] ?? '').data[LEARN_TRANSFER_MARKER] === activeTransferId.value)?.id : undefined),
     name,
     files,
+    // 显式目录（含空目录）随记录落库——空目录才不会在下次打开时凭空消失
+    folders: resourceFolders.value,
     description,
     enabled: editingSource.value?.enabled ?? true,
     ...keepAllowedTools,

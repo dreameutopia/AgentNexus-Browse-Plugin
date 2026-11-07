@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>技能选择卡片预览（/ 触发 · 智能体关联口径）</title>
+    <link rel="stylesheet" href="../entrypoints/sidepanel/styles/global.css" />
+    <link rel="stylesheet" href="../entrypoints/sidepanel/styles/app.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        background: #f4f5f7;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 20px;
+      }
+      .note {
+        font-size: 12px;
+        color: #6b7280;
+        max-width: 420px;
+        line-height: 1.6;
+      }
+      .stage {
+        position: relative;
+        background: var(--surface-canvas, #fff);
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 56px 14px 14px;
+        width: 380px;
+        font-size: 14px;
+        color: var(--ink-primary, #292824);
+      }
+      .stage-label {
+        position: absolute;
+        top: 8px;
+        left: 14px;
+        font-size: 11px;
+        color: #9b9790;
+      }
+      /* 预览页把卡片从「悬浮于输入框上方」改为平铺展示；
+         卡片内部（sticky 搜索框 / 列表滚动 / sticky 底部提示）保持真实样式 */
+      .stage .agent-selector {
+        position: static;
+        margin-bottom: 10px;
+      }
+      .fake-input {
+        display: flex;
+        align-items: center;
+        height: 38px;
+        padding: 0 12px;
+        border: 1px solid #e4e2de;
+        border-radius: 10px;
+        color: #9b9790;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <p class="note">
+      技能选择卡片（/ 触发）三态：未选智能体 → 引导先选智能体；已选智能体 →
+      只展示该智能体在管理中心显式关联的启用技能，底部常驻关联范围提示 +
+      「去关联」直达 hub 智能体分区；无关联 / 搜索无果 → 空态分岔文案。
+    </p>
+
+    <!-- 状态一：未选中智能体 -->
+    <section class="stage">
+      <span class="stage-label">状态一 · 未选中智能体（输入 / 触发）</span>
+      <div class="fake-input">发消息，输入 @ 选智能体，/ 选技能</div>
+      <div class="agent-selector skill-selector">
+        <div class="skill-empty">
+          <span class="skill-empty-text">请先选择智能体，再激活 Skill</span>
+          <button type="button" class="selector-dismiss-btn" title="关闭">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z" fill="currentColor"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 状态二：已选智能体，关联技能若干 -->
+    <section class="stage">
+      <span class="stage-label">状态二 · 已选智能体（Deep Research，3 个关联技能）</span>
+      <div class="fake-input">发消息，输入 @ 选智能体，/ 选技能</div>
+      <div class="agent-selector skill-selector">
+        <div class="selector-search">
+          <svg class="selector-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.44,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.44C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5Z" fill="currentColor"/>
+          </svg>
+          <input type="text" class="selector-search-input" placeholder="搜索技能…" autocomplete="off" />
+        </div>
+        <div class="agent-option skill-option skill-active">
+          <div class="agent-info">
+            <div class="agent-name">web-research-report</div>
+            <div class="agent-desc">把多轮网页调研整理成可信度分级的研究报告</div>
+          </div>
+        </div>
+        <div class="agent-option skill-option selected">
+          <div class="agent-info">
+            <div class="agent-name">xlsx-creator</div>
+            <div class="agent-desc">生成规范格式的 Excel 表格与图表</div>
+          </div>
+        </div>
+        <div class="agent-option skill-option">
+          <div class="agent-info">
+            <div class="agent-name">deep-search-playbook</div>
+            <div class="agent-desc">跨站点检索与信源交叉验证的操作手册</div>
+          </div>
+        </div>
+        <div class="skill-scope-hint">
+          <span class="skill-scope-hint-text">如已添加的 Skill 在此没有显示，请前往智能体编辑界面为此智能体关联目标 Skill</span>
+          <button type="button" class="skill-scope-hint-action">去关联</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 状态三：已选智能体但无关联技能 -->
+    <section class="stage">
+      <span class="stage-label">状态三 · 已选智能体但尚未关联技能</span>
+      <div class="fake-input">发消息，输入 @ 选智能体，/ 选技能</div>
+      <div class="agent-selector skill-selector">
+        <div class="selector-search">
+          <svg class="selector-search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.44,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.44C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5Z" fill="currentColor"/>
+          </svg>
+          <input type="text" class="selector-search-input" placeholder="搜索技能…" autocomplete="off" />
+        </div>
+        <div class="skill-empty">
+          <span class="skill-empty-text">该智能体尚未关联技能</span>
+          <button type="button" class="selector-dismiss-btn" title="关闭">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z" fill="currentColor"/>
+            </svg>
+          </button>
+        </div>
+        <div class="skill-scope-hint">
+          <span class="skill-scope-hint-text">如已添加的 Skill 在此没有显示，请前往智能体编辑界面为此智能体关联目标 Skill</span>
+          <button type="button" class="skill-scope-hint-action">去关联</button>
+        </div>
+      </div>
+    </section>
+  </body>
+</html>

@@ -129,9 +129,13 @@ JSON Schema 是无需 eval 的有界解释器，当前支持 type、properties�
 
 可复制 `docs/plugin-release-workflow.yml` 到第三方插件仓库的 `.github/workflows/release.yml`。配置 SDK 仓库与固定提交、签名私钥 secret、受保护 release 环境后使用；此文件不会在当前宿主仓库自动执行。Actions 按已核对的完整提交固定：[checkout](https://github.com/actions/checkout/commit/3d3c42e5aac5ba805825da76410c181273ba90b1)、[setup-node](https://github.com/actions/setup-node/commit/949feb2413d6458794dcd2491c4babbbce0c15c1)。维护者应按依赖更新流程复核新版本。
 
-## 签名目录
+## 官方目录与市场
 
-系统不内置虚构的官方目录地址。现在可直接使用 GitHub 社区搜索与仓库 URL；部署官方目录后，在插件中心填入 HTTPS 目录地址和通过独立可信渠道分发的原始 Ed25519 公钥 Base64。
+在线市场由官方签名目录驱动：目录托管在官方 `AgentNexus-Browse-Plugin-Registry` 仓库的 GitHub Pages（`catalog.json`），目录 URL 与 Ed25519 目录公钥**内置在扩展构建里**（`utils/plugins/official-catalog.ts`），用户在插件中心搜索、安装、更新全程不接触任何密钥——签名验证、防重放（递增序号）、有效期检查全部在后台静默完成。
+
+- 发现页默认按关键词本地筛选官方目录条目；「搜索 GitHub 社区」按钮扩展到社区搜索（结果明确标注未审核）。
+- 打开插件中心自动检查已安装插件的更新（后台 6 小时节流、逐项容错、GitHub 限流即中止），发现新版本仅提示「可更新 vX.Y.Z」，安装仍走审查确认。
+- 自托管目录场景：插件中心「自定义目录源（高级）」可填入 HTTPS 目录地址与独立可信渠道取得的目录公钥 Base64，验证规则与官方目录完全一致。
 
 未签名目录结构：
 
@@ -159,9 +163,9 @@ JSON Schema 是无需 eval 的有界解释器，当前支持 type、properties�
 npm run plugin:sdk -- catalog-sign unsigned-catalog.json --key catalog-private-jwk.json --out catalog.json
 ```
 
-将产物发布在 GitHub Pages 或可直接读取的 raw.githubusercontent.com HTTPS URL。客户端验证目录签名、有效期和持久化最高序号，再核对下载包的身份/版本/摘要。目录签名与插件作者签名职责不同；目录公钥不从目录自身取得。
+目录登记流程：向官方 `AgentNexus-Browse-Plugin-Registry` 仓库提交 PR，在 `plugins/` 下新增登记条目（字段与上表 `plugins[]` 单条一致）；CI 校验字段格式、核对对应 GitHub Release 资产存在且摘要一致、下载验签并比对插件身份后，以递增序号重建签名目录并发布到 Pages。目录签名与插件作者签名职责不同；目录公钥不从目录自身取得，轮换目录密钥需随扩展版本分发新公钥（与发布者密钥丢失同规则：不可用旧身份接管）。
 
-目前尚未部署官方目录仓库，没有宣称 GitHub 账号已经过官方认证；社区项会明确显示未审核。目录撤销名单、发布者子密钥轮换、OAuth 服务授权和第三方 UI 贡献是后续独立 API 扩展，不默认放权。
+目录撤销名单、发布者子密钥轮换、OAuth 服务授权和第三方 UI 贡献是后续独立 API 扩展，不默认放权；社区项明确显示未审核，不宣称 GitHub 账号已经过官方认证。
 
 ## 模块维护与验证
 

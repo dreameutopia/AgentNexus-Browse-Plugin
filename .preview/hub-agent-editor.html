@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Hub 智能体编辑器预览</title>
+<link rel="stylesheet" href="../entrypoints/sidepanel/components/modals/settings-modal.css">
+<link rel="stylesheet" href="../entrypoints/hub/hub.css">
+<style>
+  /* 预览页仅用于视觉核对 */
+  .hub { height: 100vh; }
+</style>
+</head>
+<body>
+<div class="hub">
+  <div class="hub-layout">
+    <!-- 左：导航卡 -->
+    <aside class="hub-sidebar">
+      <h1 class="hub-sidebar-title">管理中心</h1>
+      <nav class="hub-sidebar-nav">
+        <button type="button" class="hub-nav-item active"><span class="hub-nav-label">智能体</span></button>
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">技能</span></button>
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">插件</span></button>
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">备份</span></button>
+      </nav>
+      <div class="hub-sidebar-foot">
+        <div class="hub-locale" role="group">
+          <button type="button" class="hub-locale-btn active">中文</button>
+          <button type="button" class="hub-locale-btn">EN</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 右：内容卡 -->
+    <main class="hub-content">
+      <div class="hub-content-body">
+        <section class="api-section">
+          <form class="hub-editor is-fill">
+            <!-- 头部：返回列表 / 取消 / 保存 -->
+            <div class="hub-editor-head">
+              <div class="hub-editor-head-main">
+                <h2>编辑智能体</h2>
+              </div>
+              <div class="hub-editor-head-actions">
+                <button type="button" class="hub-btn">返回列表</button>
+                <button type="button" class="hub-btn">取消</button>
+                <button type="submit" class="hub-btn hub-btn-primary">保存</button>
+              </div>
+            </div>
+
+            <div class="hub-editor-split hub-editor-split--agent">
+              <!-- 左卡：基础信息（双列栅格提高利用率） -->
+              <div class="hub-editor-col hub-editor-col--form">
+                <div class="hub-field hub-avatar-field">
+                  <span class="hub-field-label">头像</span>
+                  <div class="hub-avatar-picker">
+                    <div class="hub-avatar-current">
+                      <span class="hub-avatar-preview is-emoji"><span style="font-size: 20px;">🧭</span></span>
+                      <div class="hub-avatar-actions">
+                        <label class="hub-btn hub-avatar-upload">上传图片<input type="file" hidden></label>
+                        <button type="button" class="hub-btn">选择 Emoji</button>
+                        <button type="button" class="hub-btn hub-avatar-clear">清除</button>
+                      </div>
+                    </div>
+                    <p class="hub-hint">上传图片（自动裁剪压缩）或点选 Emoji；图片可点击放大查看并下载。</p>
+                  </div>
+                </div>
+
+                <!-- 名称 + 描述并排 -->
+                <div class="hub-form-row">
+                  <label class="hub-field">
+                    <span class="hub-field-label">名称<span class="hub-required">*</span></span>
+                    <input type="text" value="网页调研助手">
+                  </label>
+                  <label class="hub-field">
+                    <span class="hub-field-label">描述<span class="hub-required">*</span></span>
+                    <input type="text" value="抓取网页并产出带引用的调研报告">
+                  </label>
+                </div>
+
+                <!-- 视觉声明（横向紧凑行） -->
+                <fieldset class="hub-field hub-vision-field">
+                  <legend class="hub-field-label">视觉能力</legend>
+                  <div class="hub-vision-row">
+                    <label class="hub-switch">
+                      <input class="hub-switch__input" type="checkbox" role="switch" checked>
+                      <span class="hub-switch__track"></span>
+                      <span class="hub-switch__label">启用视觉</span>
+                    </label>
+                    <label class="hub-switch">
+                      <input class="hub-switch__input" type="checkbox" role="switch" checked>
+                      <span class="hub-switch__track"></span>
+                      <span class="hub-switch__label">工具执行后重新截图</span>
+                    </label>
+                  </div>
+                  <p class="hub-hint">视觉模式会把当前页面截图作为上下文输入。</p>
+                </fieldset>
+
+                <!-- 分类 + 标签并排 -->
+                <div class="hub-form-row">
+                  <div class="hub-field">
+                    <span class="hub-field-label">分类</span>
+                    <div class="cat-select">
+                      <div class="cat-select-row">
+                        <button type="button" class="cat-select-trigger">
+                          <span class="cat-select-dot" style="background: #5c584f;"></span>
+                          <span class="cat-select-value">内容创作</span>
+                          <svg class="cat-select-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="hub-field">
+                    <span class="hub-field-label">标签</span>
+                    <div class="tag-input">
+                      <div class="hub-tags">
+                        <span class="hub-tag">调研<span class="hub-tag-remove">×</span></span>
+                        <span class="hub-tag">网页<span class="hub-tag-remove">×</span></span>
+                      </div>
+                      <input type="text" placeholder="回车添加标签">
+                    </div>
+                  </div>
+                </div>
+
+                <label class="hub-field hub-field--grow">
+                  <span class="hub-field-label">系统提示词<span class="hub-required">*</span></span>
+                  <textarea class="hub-field--fill" placeholder="描述智能体的职责、边界与输出格式…">你是一名网页调研助手。
+
+工作流程：
+1. 明确调研目标
+2. 抓取关键页面并保留引用
+3. 汇总为 Markdown 报告</textarea>
+                </label>
+              </div>
+
+              <!-- 右卡：工具组 / 外部工具 / 关联技能（三张独立卡片，均可折叠） -->
+              <div class="hub-editor-col hub-editor-col--lists">
+                <!-- 工具组 -->
+                <div class="hub-section hub-section--groups">
+                  <div class="hub-section-head">
+                    <button type="button" class="hub-section-toggle" aria-expanded="true" title="收起">
+                      <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-section-toggle__chevron"><path d="M4.5 6.2L8 9.8l3.5-3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                    <span class="hub-field-label">工具组<span class="hub-required">*</span></span>
+                    <span class="hub-groups-count">已选 12 / 30</span>
+                  </div>
+                  <div class="hub-section-body">
+                    <div class="hub-section-body-inner">
+                      <div class="hub-search hub-search--fill">
+                        <svg class="hub-search__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M11.1 10.2a4.6 4.6 0 1 0-.9.9l3 3 .9-.9-3-3zm-4.1.3a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z" fill="currentColor"/></svg>
+                        <input type="text" class="hub-list-search" placeholder="搜索工具组">
+                      </div>
+                      <div class="hub-groups-scroll">
+                        <div class="hub-groups">
+                          <div class="hub-group checked">
+                            <input class="hub-check" type="checkbox" checked>
+                            <button type="button" class="hub-group-body">
+                              <span class="hub-group-name">统一网页搜索</span>
+                              <span class="hub-group-desc">web_search 一次调用：导航 + 多平台结果解析（website 枚举 9 平台）</span>
+                            </button>
+                            <button type="button" class="hub-group-info"><svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg></button>
+                          </div>
+                          <div class="hub-group checked">
+                            <input class="hub-check" type="checkbox" checked>
+                            <button type="button" class="hub-group-body">
+                              <span class="hub-group-name">页面深度读取</span>
+                              <span class="hub-group-desc">HTML / 元素信息 / Markdown / 指定区域抓取</span>
+                            </button>
+                            <button type="button" class="hub-group-info"><svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg></button>
+                          </div>
+                          <div class="hub-group">
+                            <input class="hub-check" type="checkbox">
+                            <button type="button" class="hub-group-body">
+                              <span class="hub-group-name">脚本执行</span>
+                              <span class="hub-group-desc">在页面上下文中执行脚本</span>
+                            </button>
+                            <button type="button" class="hub-group-info"><svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg></button>
+                          </div>
+                          <div class="hub-group locked">
+                            <input class="hub-check" type="checkbox" disabled>
+                            <button type="button" class="hub-group-body">
+                              <span class="hub-group-name">Python 计算</span>
+                              <span class="hub-group-desc">沙箱内执行 Python</span>
+                            </button>
+                            <span class="hub-group-lock">环境未就绪</span>
+                            <button type="button" class="hub-group-info"><svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg></button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 外部插件工具（收起态示意：只留标题行 + 左侧折叠按钮） -->
+                <div class="hub-section hub-section--external external-tools is-collapsed" role="group" aria-label="外部插件工具">
+                  <div class="hub-section-head">
+                    <button type="button" class="hub-section-toggle" aria-expanded="false" title="展开">
+                      <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-section-toggle__chevron is-collapsed"><path d="M4.5 6.2L8 9.8l3.5-3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                    <span class="hub-field-label">外部插件工具</span>
+                  </div>
+                  <div class="hub-section-body">
+                    <div class="hub-section-body-inner">
+                      <div class="hub-search hub-search--fill external-tools__search">
+                        <svg class="hub-search__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M11.1 10.2a4.6 4.6 0 1 0-.9.9l3 3 .9-.9-3-3zm-4.1.3a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z" fill="currentColor"/></svg>
+                        <input type="search" class="external-tools__input" placeholder="搜索插件、工具或发布者">
+                      </div>
+                      <div class="external-tools__groups">
+                        <div class="external-tools__group">
+                          <strong class="external-tools__group-name">example-plugin · 1.0.0</strong>
+                          <p class="external-tools__group-meta">Example Publisher · GitHub: example/plugin</p>
+                          <div class="external-tools__tools">
+                            <label class="external-tools__tool is-checked">
+                              <input class="hub-check" type="checkbox" checked>
+                              <span class="external-tools__tool-text">example_tool — 插件提供的示例工具</span>
+                            </label>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 关联技能 -->
+                <div class="hub-section hub-section--skills">
+                  <div class="hub-section-head">
+                    <button type="button" class="hub-section-toggle" aria-expanded="true" title="收起">
+                      <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-section-toggle__chevron"><path d="M4.5 6.2L8 9.8l3.5-3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                    <span class="hub-field-label">关联技能</span>
+                    <span class="hub-groups-count">已选 1 / 5</span>
+                  </div>
+                  <div class="hub-section-body">
+                    <div class="hub-section-body-inner">
+                      <div class="hub-search hub-search--fill">
+                        <svg class="hub-search__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M11.1 10.2a4.6 4.6 0 1 0-.9.9l3 3 .9-.9-3-3zm-4.1.3a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z" fill="currentColor"/></svg>
+                        <input type="text" class="hub-list-search" placeholder="搜索技能">
+                      </div>
+                      <div class="hub-groups-scroll">
+                        <div class="hub-groups">
+                          <div class="hub-group checked">
+                            <input class="hub-check" type="checkbox" checked>
+                            <button type="button" class="hub-group-body">
+                              <span class="hub-group-name">网页调研报告</span>
+                              <span class="hub-group-desc">生成一份带引用的网页调研报告</span>
+                            </button>
+                            <button type="button" class="hub-group-info" title="查看该技能的完整说明">
+                              <svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="hub-editor-footer">
+              <span class="hub-hint">三区各为独立卡片；折叠按钮在标题左侧；收起时空间自动让给其余分区。</span>
+            </div>
+          </form>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+</body>
+</html>

@@ -10,7 +10,8 @@ export function validationToolIds(draft: SkillDraft): string[] {
     // Registry filtering belongs to runtime-builder. Do not accidentally exclude
     // a legitimate declared dependency merely because it is outside a preset.
     ...draft.allowedTools.filter(id => !internal.has(id) && !(draft.mode === 'text' && isVisualSkillTool(id))),
-    'note_tool', 'submit_validation',
+    // note_tool 随 CORE_SESSION_TOOL_IDS 注入（验证段记录卡点），不再重复登记
+    'submit_validation',
     // Automatic screenshots are stage infrastructure, not an undeclared action path.
     ...(draft.mode === 'vision' ? ['screenshot'] : []),
   ])];

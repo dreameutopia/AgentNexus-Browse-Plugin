@@ -30,6 +30,11 @@ import {
   type PluginPreview,
 } from '@/utils/plugins/contracts';
 import type { GithubCandidate } from '@/utils/plugins/github';
+import {
+  OFFICIAL_CATALOG_PUBLIC_KEY,
+  OFFICIAL_CATALOG_URL,
+  isOfficialCatalogConfigured,
+} from '@/utils/plugins/official-catalog';
 
 export type PluginCenterTab = 'installed' | 'discover' | 'review';
 
@@ -46,11 +51,23 @@ const consent = ref(false);
 const pendingData = ref('');
 const pendingRepository = ref('');
 const pendingRollback = ref(false);
-const results = ref<GithubCandidate[]>([]);
 /** 是否已执行过搜索 / 目录加载（区分「初始引导」与「无结果」两种空态） */
 const discovered = ref(false);
 const catalogUrl = ref('');
 const catalogKey = ref('');
+// —— 发现页：官方目录为主、社区搜索为辅 ——
+/** 官方 + 自定义目录条目（按 repository 去重，先到先占） */
+const catalogResults = ref<GithubCandidate[]>([]);
+/** GitHub 社区搜索结果（显式按钮触发） */
+const communityResults = ref<GithubCandidate[]>([]);
+/** 官方目录状态：未部署 / 加载中 / 就绪 / 失败（idle 仅首帧） */
+const catalogState = ref<'idle' | 'unconfigured' | 'loading' | 'ok' | 'failed'>(
+  isOfficialCatalogConfigured() ? 'idle' : 'unconfigured',
+);
+/** 官方目录内存缓存新鲜度（5 分钟内不重复拉取） */
+let catalogFetchedAt = 0;
+// —— 自动更新检查（check-updates 结果，键为 pluginKey） ——
+const updates = ref<Record<string, { version: string; digest: string }>>({});
 const secrets = ref<Record<string, string>>({});
 const versions = ref<Record<string, { version: string; digest: string }[]>>({});
 
@@ -75,6 +92,30 @@ const installed = computed(() =>
 
 const installedTotal = computed(() => snapshot.value.packages.length);
 const hasPendingReview = computed(() => !!pending.value);
+
+/** 目录条目按当前关键词的本地过滤（空关键词显示全部，不区分大小写包含） */
+const officialMatches = computed(() => {
+  const q = query.value.trim().toLowerCase();
+  return q
+    ? catalogResults.value.filter((c) =>
+        `${c.name} ${c.description} ${c.repository}`.toLowerCase().includes(q),
+      )
+    : catalogResults.value;
+});
+/** 发现页展示列表：目录结果在前（已验签徽章），社区结果按 repository 去重追加 */
+const discoverResults = computed(() => {
+  const q = query.value.trim().toLowerCase(),
+    seen = new Set(officialMatches.value.map((c) => c.repository));
+  const community = communityResults.value.filter((c) => {
+    if (seen.has(c.repository)) return false;
+    seen.add(c.repository);
+    return (
+      !q ||
+      `${c.name} ${c.description} ${c.repository}`.toLowerCase().includes(q)
+    );
+  });
+  return [...officialMatches.value, ...community];
+});
 
 // ==================== 提示条 ====================
 
@@ -104,6 +145,8 @@ function dismissNotice(): void {
 
 function goToTab(tab: PluginCenterTab): void {
   activeTab.value = tab;
+  // 进入发现页即静默拉取官方目录（未部署则保持降级空态）
+  if (tab === 'discover') void ensureOfficialCatalog();
 }
 
 /** 拿到待审查安装后切入审查标签（记录来源，便于取消后返回） */
@@ -292,23 +335,90 @@ async function exportPlugin(p: InstalledPlugin): Promise<void> {
   });
 }
 
-// ==================== 发现（社区搜索 / 签名目录） ====================
+// ==================== 发现（官方目录为主 / 社区搜索为辅） ====================
 
+/** 目录条目并入（按 repository 去重，已有条目优先保留） */
+function mergeCatalog(list: GithubCandidate[]): void {
+  const seen = new Set(catalogResults.value.map((c) => c.repository));
+  catalogResults.value = [
+    ...catalogResults.value,
+    ...list.filter((c) => !seen.has(c.repository)),
+  ];
+}
+
+/**
+ * 静默拉取官方目录（内置 URL + 公钥，用户不可见）。
+ * 失败不打横幅：离线/限流不影响已安装插件；已有缓存结果则原样保留。
+ */
+async function ensureOfficialCatalog(force = false): Promise<void> {
+  if (!isOfficialCatalogConfigured()) {
+    catalogState.value = 'unconfigured';
+    return;
+  }
+  if (
+    !force &&
+    (catalogState.value === 'loading' ||
+      (catalogState.value === 'ok' && Date.now() - catalogFetchedAt < 300_000))
+  )
+    return;
+  catalogState.value = 'loading';
+  try {
+    mergeCatalog(
+      await pluginRequest<GithubCandidate[]>('catalog', {
+        url: OFFICIAL_CATALOG_URL,
+        publicKey: OFFICIAL_CATALOG_PUBLIC_KEY,
+      }),
+    );
+    catalogFetchedAt = Date.now();
+    catalogState.value = 'ok';
+    discovered.value = true;
+  } catch {
+    catalogState.value = catalogResults.value.length ? 'ok' : 'failed';
+  }
+}
+
+/** GitHub 社区搜索（显式触发；结果带社区徽章追加在目录结果之后） */
 async function search(): Promise<void> {
   await run(async () => {
-    results.value = await pluginRequest('search', { query: query.value });
+    communityResults.value = await pluginRequest('search', {
+      query: query.value,
+    });
     discovered.value = true;
   });
 }
 
+/** 自定义目录源（高级）：用户手填 URL + 公钥，结果并入目录条目 */
 async function loadCatalog(): Promise<void> {
   await run(async () => {
-    results.value = await pluginRequest('catalog', {
-      url: catalogUrl.value,
-      publicKey: catalogKey.value,
-    });
+    mergeCatalog(
+      await pluginRequest('catalog', {
+        url: catalogUrl.value,
+        publicKey: catalogKey.value,
+      }),
+    );
+    catalogFetchedAt = Date.now();
+    catalogState.value = 'ok';
     discovered.value = true;
   });
+}
+
+// ==================== 自动更新检查 ====================
+
+/**
+ * 打开插件中心后静默检查（后台 6 小时节流 + 逐项容错）；
+ * 仅提示有新版本，安装仍走审查确认。失败完全静默。
+ */
+async function checkUpdates(): Promise<void> {
+  try {
+    const list = await pluginRequest<
+      { key: string; version: string; digest: string }[]
+    >('check-updates');
+    updates.value = Object.fromEntries(list.map((u) => [u.key, u]));
+    if (list.length)
+      showNotice(t('hub.plugins.updatesNotice', { count: list.length }));
+  } catch {
+    // 更新检查失败不影响任何功能，不打扰用户
+  }
 }
 
 // ==================== 对外 ====================
@@ -325,8 +435,11 @@ export function usePluginCenter() {
     pending,
     consent,
     pendingRollback,
-    results,
     discovered,
+    catalogResults,
+    communityResults,
+    catalogState,
+    updates,
     catalogUrl,
     catalogKey,
     secrets,
@@ -337,6 +450,8 @@ export function usePluginCenter() {
     installed,
     installedTotal,
     hasPendingReview,
+    officialMatches,
+    discoverResults,
     // 命令
     showNotice,
     dismissNotice,
@@ -355,6 +470,8 @@ export function usePluginCenter() {
     remove,
     search,
     loadCatalog,
+    ensureOfficialCatalog,
+    checkUpdates,
     saveSecret,
     exportPlugin,
   };

@@ -108,7 +108,8 @@ const triggerRef = ref<HTMLButtonElement | null>(null);
 
 function toggle(): void {
   if (props.disabled) return;
-  open.value ? close() : openList();
+  if (open.value) close();
+  else openList();
 }
 
 function openList(): void {

@@ -630,7 +630,7 @@ export async function domActionPayload(
       };
     }
     const text = typeof value === 'string' ? value : String(value ?? '');
-    let expectedValue = text;
+    const expectedValue = text;
 
     // 聚焦是所有操作的前提
     if (

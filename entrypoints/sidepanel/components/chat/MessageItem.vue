@@ -16,22 +16,38 @@
         </div>
       </template>
 
-      <!-- ════ 直播态（流式进行中 / 用户消息 / 无末段正文的记录）：
+      <!-- ════ 用户消息：独立气泡渲染 ════
+           正文超长自动收起（点击展开查看完整内容），气泡右下角常驻复制按钮。
+           用户消息没有推理/工具等过程内容，不参与下面的前奏分组 ════ -->
+      <template v-if="isUserMessage">
+        <UserMessageBubble :content="userTextContent" :message-id="message.id" />
+      </template>
+
+      <!-- ════ 直播态（流式进行中 / 无末段正文的记录）：
            维持原有顺序全量渲染，过程内容实时可见 ════ -->
-      <template v-if="!usePreludeCollapse">
-        <!-- 推理内容特殊渲染（仅当没有reasoning类型的parts时显示，保持向后兼容） -->
+      <template v-else-if="!usePreludeCollapse">
+        <!-- 推理内容特殊渲染（仅当没有reasoning类型的parts时显示，保持向后兼容）；
+             视觉对齐工具调用行（tool-row）的无边框紧凑设计语言 -->
         <div v-if="legacyReasoningVisible" :class="['reasoning-container', { collapsed: message._reasoningContentCollapsed }]">
-          <div class="reasoning-header" @click="emit('toggle-reasoning-content-collapse', message.id!)">
-            <div class="reasoning-icon">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <button
+            type="button"
+            class="reasoning-header"
+            :title="t('sidepanel.chat.reasoningTitle')"
+            :aria-expanded="message._reasoningContentCollapsed ? 'false' : 'true'"
+            @click="emit('toggle-reasoning-content-collapse', message.id!)"
+          >
+            <span class="reasoning-icon" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path d="M13 3C9.23 3 6.19 5.95 6 9.66l-1.92 2.53c-.24.31 0 .81.42.81H6v3c0 1.1.9 2 2 2h1v3h7v-4.69c2.37-1.12 4-3.51 4-6.31 0-3.87-3.13-7-7-7m2 11h-1v4h-3v-4H9v-3H7.23L9 8.34C9.31 5.93 11 4 13 4c2.76 0 5 2.24 5 5 0 2.04-1.23 3.81-3 4.58V14z" fill="currentColor"/>
               </svg>
-            </div>
+            </span>
             <span class="reasoning-title">{{ t('sidepanel.chat.reasoningTitle') }}</span>
-            <svg class="reasoning-expand-icon" :class="{ collapsed: message._reasoningContentCollapsed }" width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z" fill="currentColor"/>
-            </svg>
-          </div>
+            <span class="reasoning-right">
+              <svg class="reasoning-chevron" :class="{ expanded: !message._reasoningContentCollapsed }" width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M9,6L8,7L14,12L8,17L9,18L16,12L9,6Z" fill="currentColor"/>
+              </svg>
+            </span>
+          </button>
           <div v-if="!message._reasoningContentCollapsed" class="reasoning-content" v-html="renderMessage(message.reasoning_content || '')"></div>
         </div>
 
@@ -41,6 +57,7 @@
           :streaming="isLive"
           @toggle-tool-call-expansion="forwardToolToggle"
           @toggle-reasoning-collapse="forwardReasoningToggle"
+          @toggle-compaction-collapse="forwardCompactionToggle"
         />
       </template>
 
@@ -64,10 +81,12 @@
                 <path d="M12,3L9.9,8.2L4.5,9.4L8.3,13.3L7.4,18.7L12,16.2L16.6,18.7L15.7,13.3L19.5,9.4L14.1,8.2L12,3Z" fill="currentColor"/>
               </svg>
             </span>
-            <span v-if="groups.hasReasoning || groups.toolCount > 0" class="prelude-summary">
+            <span v-if="groups.hasReasoning || groups.toolCount > 0 || groups.compactionCount > 0" class="prelude-summary">
               <template v-if="groups.hasReasoning">{{ t('sidepanel.chat.preludeReasoning') }}</template>
               <template v-if="groups.hasReasoning && groups.toolCount > 0">&nbsp;·&nbsp;</template>
               <template v-if="groups.toolCount > 0">{{ t('sidepanel.chat.preludeTools', { count: groups.toolCount }) }}</template>
+              <template v-if="groups.toolCount > 0 && groups.compactionCount > 0">&nbsp;·&nbsp;</template>
+              <template v-if="groups.compactionCount > 0">{{ t('sidepanel.chat.preludeCompactions', { count: groups.compactionCount }) }}</template>
             </span>
             <!-- 前奏仅含中间文本（无推理无工具）时的兜底摘要，避免空标题行 -->
             <span v-else class="prelude-summary">
@@ -88,17 +107,25 @@
             <div class="prelude-inner">
               <!-- 兼容旧记录：仅有 reasoning_content、无 reasoning parts 时并入前奏 -->
               <div v-if="legacyReasoningVisible" :class="['reasoning-container', 'prelude-legacy-reasoning', { collapsed: message._reasoningContentCollapsed }]">
-                <div class="reasoning-header" @click="emit('toggle-reasoning-content-collapse', message.id!)">
-                  <div class="reasoning-icon">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <button
+                  type="button"
+                  class="reasoning-header"
+                  :title="t('sidepanel.chat.reasoningTitle')"
+                  :aria-expanded="message._reasoningContentCollapsed ? 'false' : 'true'"
+                  @click="emit('toggle-reasoning-content-collapse', message.id!)"
+                >
+                  <span class="reasoning-icon" aria-hidden="true">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                       <path d="M13 3C9.23 3 6.19 5.95 6 9.66l-1.92 2.53c-.24.31 0 .81.42.81H6v3c0 1.1.9 2 2 2h1v3h7v-4.69c2.37-1.12 4-3.51 4-6.31 0-3.87-3.13-7-7-7m2 11h-1v4h-3v-4H9v-3H7.23L9 8.34C9.31 5.93 11 4 13 4c2.76 0 5 2.24 5 5 0 2.04-1.23 3.81-3 4.58V14z" fill="currentColor"/>
                     </svg>
-                  </div>
+                  </span>
                   <span class="reasoning-title">{{ t('sidepanel.chat.reasoningTitle') }}</span>
-                  <svg class="reasoning-expand-icon" :class="{ collapsed: message._reasoningContentCollapsed }" width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z" fill="currentColor"/>
-                  </svg>
-                </div>
+                  <span class="reasoning-right">
+                    <svg class="reasoning-chevron" :class="{ expanded: !message._reasoningContentCollapsed }" width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M9,6L8,7L14,12L8,17L9,18L16,12L9,6Z" fill="currentColor"/>
+                    </svg>
+                  </span>
+                </button>
                 <div v-if="!message._reasoningContentCollapsed" class="reasoning-content" v-html="renderMessage(message.reasoning_content || '')"></div>
               </div>
 
@@ -107,6 +134,7 @@
                 :message-id="message.id || ''"
                 @toggle-tool-call-expansion="forwardToolToggle"
                 @toggle-reasoning-collapse="forwardReasoningToggle"
+                @toggle-compaction-collapse="forwardCompactionToggle"
               />
             </div>
           </div>
@@ -119,6 +147,7 @@
           :message-id="message.id || ''"
           @toggle-tool-call-expansion="forwardToolToggle"
           @toggle-reasoning-collapse="forwardReasoningToggle"
+          @toggle-compaction-collapse="forwardCompactionToggle"
         />
         <!-- 正文之后的终态注记（守卫停止 / 截断说明等 notice）：恒保持可见，
              不被前奏折叠遮蔽；中止前的过程残留已随规则并入前奏折叠 -->
@@ -128,11 +157,12 @@
           :message-id="message.id || ''"
           @toggle-tool-call-expansion="forwardToolToggle"
           @toggle-reasoning-collapse="forwardReasoningToggle"
+          @toggle-compaction-collapse="forwardCompactionToggle"
         />
       </template>
 
-      <!-- 如果没有parts但有content或toolCalls -->
-      <template v-if="(!message.parts || message.parts.length === 0) && ((message.content && !message.reasoning_content) || (message.toolCalls && message.toolCalls.length > 0))">
+      <!-- 如果没有parts但有content或toolCalls（用户消息由气泡独立渲染，不走此兜底） -->
+      <template v-if="!isUserMessage && (!message.parts || message.parts.length === 0) && ((message.content && !message.reasoning_content) || (message.toolCalls && message.toolCalls.length > 0))">
         <div v-if="message.content && !message.reasoning_content" class="message-content">
           <!-- 处理数组类型的content（视觉对话） -->
           <template v-if="Array.isArray(message.content)">
@@ -266,17 +296,18 @@
  * 被 Vue 浅比较整体跳过，只有正在流式更新的那一行参与渲染，
  * 配合 MessageParts/MarkdownText 的片段级节流实现「容器单位隔离的增量渲染」。
  */
-import { computed, onBeforeUnmount, ref } from 'vue';
+import { computed, ref } from 'vue';
 import { t } from '@/utils/i18n';
 import type { ExtendedChatMessage, IndexedMessagePart, MessageFeedback } from '../../types/chat';
 import { markdownRenderer } from '../../utils/chat/markdown-renderer';
 import { groupAnswerParts, type AnswerGrouping } from '../../utils/chat/part-grouping';
 import { formatDuration } from '../../utils/chat/duration';
 import { openNoteDetail } from '../../utils/chat/note-nav';
-import { message as toast } from '../../utils/chat/message';
+import { useCopyToClipboard } from '../../utils/chat/use-copy-to-clipboard';
 import ToolCallItem from './ToolCallItem.vue';
 import MessageParts from './MessageParts.vue';
 import MessageImages from './MessageImages.vue';
+import UserMessageBubble from './UserMessageBubble.vue';
 
 const props = defineProps<{
   message: ExtendedChatMessage;
@@ -288,6 +319,7 @@ const emit = defineEmits<{
   'toggle-tool-call-expansion': [messageId: string, toolCallId: string];
   'toggle-reasoning-collapse': [messageId: string, partIndex: number];
   'toggle-reasoning-content-collapse': [messageId: string];
+  'toggle-compaction-collapse': [messageId: string, partIndex: number];
   /** 反馈变更（赞/踩；null = 清除）：本组件不直改 props，由 App 落库后回写列表 */
   'feedback-change': [messageId: string, feedback: MessageFeedback | null];
 }>();
@@ -306,6 +338,32 @@ const showBottomImages = computed<boolean>(() => {
   if (!refs || refs.length === 0) return false;
   if (props.message.role === 'user') return true;
   return !(props.message.parts ?? []).some(part => part.type === 'image');
+});
+
+/**
+ * 是否为用户消息：用户消息走独立气泡（超长自动收起 + 右下角复制按钮），
+ * 不参与模型消息的过程分组 / 折叠条渲染。
+ */
+const isUserMessage = computed(() => props.message.role === 'user');
+
+/**
+ * 用户消息正文（气泡渲染的源文）。
+ * 字符串正文直取；多模态数组取文本块拼接（图片不进正文，走底部图片区）；
+ * 无 content 的旧记录回退到文本片段拼接。
+ */
+const userTextContent = computed<string>(() => {
+  const content = props.message.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(item => item?.type === 'text')
+      .map(item => item.text || '')
+      .join('\n');
+  }
+  return (props.message.parts ?? [])
+    .filter(part => part.type === 'text')
+    .map(part => part.content || '')
+    .join('\n');
 });
 
 /**
@@ -331,6 +389,7 @@ const indexedVisibleParts = computed<IndexedMessagePart[]>(() => {
     if (part.type === 'notice' && !part.content) return;
     if (part.type === 'tool' && !part.toolCall) return;
     if (part.type === 'image' && !part.imageRef) return;
+    if (part.type === 'compaction' && !part.compaction) return;
     result.push({ index, part });
   });
   return result;
@@ -416,14 +475,6 @@ const showMessageActions = computed(
     !props.message.isSystemNotice,
 );
 
-/** 复制成功反馈态（2 秒后复原） */
-const copied = ref(false);
-let copiedTimer: ReturnType<typeof setTimeout> | null = null;
-
-onBeforeUnmount(() => {
-  if (copiedTimer) clearTimeout(copiedTimer);
-});
-
 /**
  * 待复制正文（computed 缓存：正文变化才重建，点击与 disabled 判定零重复计算）。
  * 字符串直接用；多模态数组仅取文本块（图片不参与复制）。
@@ -440,25 +491,11 @@ const copyableText = computed<string>(() => {
   return '';
 });
 
-const copyMessage = async (): Promise<void> => {
-  const text = copyableText.value;
-  if (!text) return;
-  try {
-    await navigator.clipboard.writeText(text);
-    copied.value = true;
-    if (copiedTimer) clearTimeout(copiedTimer);
-    copiedTimer = setTimeout(() => {
-      copied.value = false;
-    }, 2000);
-  } catch (error) {
-    // 剪贴板不可用（权限 / 非安全上下文 / 内容超限）：
-    // 复位成功态避免「已复制」误导，toast 给出可读提示，控制台保留可分析细节
-    copied.value = false;
-    const reason = error instanceof Error ? error.message : String(error);
-    console.warn(`[MessageItem] 消息复制失败（messageId=${props.message.id ?? '无'}）: ${reason}`, error);
-    toast.error(t('sidepanel.chat.copyFailed'));
-  }
-};
+/** 复制成功反馈态与复制动作（与用户消息气泡共用 utils/chat/use-copy-to-clipboard） */
+const { copied, copy: copyMessage } = useCopyToClipboard(
+  () => copyableText.value,
+  () => `消息（messageId=${props.message.id ?? '无'}）`,
+);
 
 /** 赞/踩切换：再次点击同一按钮 = 清除；两态互斥由单字段天然保证 */
 const setFeedback = (kind: MessageFeedback): void => {
@@ -473,6 +510,9 @@ const forwardToolToggle = (messageId: string, toolCallId: string) => {
 };
 const forwardReasoningToggle = (messageId: string, partIndex: number) => {
   emit('toggle-reasoning-collapse', messageId, partIndex);
+};
+const forwardCompactionToggle = (messageId: string, partIndex: number) => {
+  emit('toggle-compaction-collapse', messageId, partIndex);
 };
 
 // ==================== 关联笔记卡片（note_tool 结果提取） ====================

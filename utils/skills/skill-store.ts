@@ -36,6 +36,7 @@ import {
   generateUniqueSkillId,
   presetSkillIdFromName,
   normalizeAllowedToolList,
+  normalizeFolderList,
 } from './skill-types';
 import { parseFrontmatter, normalizeSkillName, parseAllowedTools, parseSkillTags } from './frontmatter-parser';
 import { AGENT_CATEGORY_UNCATEGORIZED, normalizeCategory } from '../agents/agent-types';
@@ -379,6 +380,8 @@ function deserializeSkill(raw: unknown): SkillRecord | null {
       const normalized = normalizeAllowedToolList(candidate.allowedTools);
       if (normalized.length > 0) record.allowedTools = normalized;
     }
+    // 显式目录（可能为空目录）随记录恢复：否则用户新建的空目录在重启后消失
+    record.folders = normalizeFolderList(candidate.folders);
     return record;
   } catch (error) {
     console.warn(`[SkillStore] 自定义技能 "${candidate.name}" 解析失败，已跳过:`, error);
@@ -695,6 +698,8 @@ export function setCustomSkill(input: {
   id?: string;
   name: string;
   files: Record<string, string>;
+  /** 显式目录（含空目录）：相对路径列表，经归一化后随记录持久化 */
+  folders?: string[];
   description?: string;
   compatibility?: string;
   license?: string;
@@ -740,6 +745,8 @@ export function setCustomSkill(input: {
   }
   if (input.compatibility) record.compatibility = input.compatibility;
   if (input.license) record.license = input.license;
+  // 显式目录（含空目录）恒以归一化形态入库——形状统一，空目录不因缺省而丢失
+  record.folders = normalizeFolderList(input.folders);
   skillMap.set(record.id, record);
   reindexNames();
   persistCustomSkills();

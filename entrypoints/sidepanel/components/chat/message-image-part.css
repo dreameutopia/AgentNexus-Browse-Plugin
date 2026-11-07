@@ -1,79 +1,89 @@
 /* ==================== 内联截屏片段（MessageImagePart「查看屏幕」） ====================
-   形态对标 .reasoning-container（折叠头 + 展开体），
+   对齐工具调用行（tool-row）的无边框紧凑设计语言：图标 + 标题 + 右侧
+   展开箭头的单行收起条，hover 极轻圆角底，无卡片边框与底色；展开体
+   （原图/占位）与工具详情（tool-detail）同一缩进（26px）。
    独立命名空间避免与推理/工具容器互相污染。 */
 
 .screen-container {
-  margin: 6px 0 10px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: var(--surface-soft, #f3f1ed);
-  border: 1px solid var(--line-soft, #e4e2de);
-  transition: all 0.2s ease;
-}
-
-.screen-container.collapsed {
-  padding: 8px 12px;
-  background: var(--surface-soft, #f3f1ed);
+  margin: 0;
 }
 
 .screen-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   width: 100%;
-  padding: 0;
-  border: none;
+  min-height: 26px;
+  padding: 3px 6px 3px 4px;
   background: transparent;
-  color: var(--ink-secondary, #787671);
-  font-weight: 600;
-  font-size: 13px;
+  border: none;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
   text-align: left;
+  color: var(--ink-secondary, #787671);
   cursor: pointer;
   user-select: none;
+  box-sizing: border-box;
+}
+
+.screen-header:hover {
+  background: var(--surface-hover, #eeece7);
 }
 
 .screen-header:focus-visible {
   outline: 2px solid var(--focus-ring, #a5a09a);
-  outline-offset: 2px;
-  border-radius: 6px;
+  outline-offset: -1px;
 }
 
+/* 截屏图标：与工具行状态图标同一槽位（15px 槽 + 14px 线稿），保留品牌靛蓝 */
 .screen-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 15px;
+  height: 15px;
   flex-shrink: 0;
 }
 
 .screen-title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12px;
   letter-spacing: 0.01em;
-  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
-.screen-expand-icon {
-  color: var(--ink-muted, #9b9790);
-  transition: transform 0.2s ease;
+/* 右侧组合（展开箭头）：margin-left:auto 推右，与 tool-right 同构 */
+.screen-right {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   flex-shrink: 0;
 }
 
-.screen-expand-icon.collapsed {
-  transform: rotate(-90deg);
+.screen-chevron {
+  flex-shrink: 0;
+  color: #b0b7c3;
+  transition: transform 0.18s ease;
 }
 
-/* ── 展开体：截屏原图 ── */
+.screen-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+/* ── 展开体：截屏原图（与工具详情同一缩进节奏） ── */
 .screen-body {
-  margin-top: 8px;
+  padding: 1px 6px 6px 26px;
 }
 
 .screen-frame {
   display: block;
   padding: 0;
   border: 1px solid rgba(148, 163, 184, 0.35);
-  border-radius: 8px;
+  border-radius: 6px;
   overflow: hidden;
   background: rgba(148, 163, 184, 0.1);
   cursor: zoom-in;

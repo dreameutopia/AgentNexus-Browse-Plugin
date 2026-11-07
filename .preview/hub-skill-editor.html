@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Hub 技能编辑器预览（高级模式）</title>
+<link rel="stylesheet" href="../entrypoints/sidepanel/components/modals/settings-modal.css">
+<link rel="stylesheet" href="../entrypoints/hub/hub.css">
+<style>
+  /* 预览页仅用于视觉核对：撑满视口便于观察文件树 / 编辑器等高与状态条位置 */
+  .hub { height: 100vh; }
+</style>
+</head>
+<body>
+<div class="hub">
+  <div class="hub-layout">
+    <aside class="hub-sidebar">
+      <h1 class="hub-sidebar-title">管理中心</h1>
+      <nav class="hub-sidebar-nav">
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">智能体</span></button>
+        <button type="button" class="hub-nav-item active"><span class="hub-nav-label">技能</span></button>
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">插件</span></button>
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">备份</span></button>
+      </nav>
+      <div class="hub-sidebar-foot">
+        <div class="hub-locale" role="group">
+          <button type="button" class="hub-locale-btn active">中文</button>
+          <button type="button" class="hub-locale-btn">EN</button>
+        </div>
+      </div>
+    </aside>
+    <main class="hub-content">
+      <div class="hub-content-body">
+        <section class="api-section">
+          <form class="hub-editor is-fill">
+            <div class="hub-editor-head">
+              <div class="hub-editor-head-main">
+                <h2>编辑技能</h2>
+                <p class="hub-editor-mode-hint">高级模式：左侧文件树管理 SKILL.md 与资源文件，右侧直接编辑原文。</p>
+              </div>
+              <div class="hub-editor-head-actions">
+                <div class="hub-seg" role="radiogroup">
+                  <span class="hub-seg__thumb" style="width: calc((100% - 6px) / 2); transform: translateX(100%);"></span>
+                  <button type="button" role="radio" class="hub-seg__btn">简单</button>
+                  <button type="button" role="radio" class="hub-seg__btn is-active">高级</button>
+                </div>
+                <button type="button" class="hub-btn">返回列表</button>
+                <button type="button" class="hub-btn">取消</button>
+                <button type="submit" class="hub-btn hub-btn-primary">保存</button>
+              </div>
+            </div>
+
+            <div class="hub-editor-split hub-editor-split--skill-advanced">
+              <!-- 左：文件树 -->
+              <aside class="hub-tree">
+                <div class="hub-tree-head" title="拖动资源文件可移入目录或调整顺序">
+                  <span class="hub-tree-title">文件</span>
+                  <span class="hub-tree-count">4</span>
+                  <button type="button" class="hub-icon-btn hub-tree-add" aria-label="新建资源文件" title="新建资源文件">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.8 2.4h4.4l2.6 2.6v5.2H3.8z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M11.6 10.4v3.4M9.9 12.1h3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                  </button>
+                  <button type="button" class="hub-icon-btn hub-tree-add" aria-label="新建文件夹" title="新建文件夹">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.2 4.3h3.5l1.2 1.4h6.3v6H2.2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M11.8 10.4v3.4M10.1 12.1h3.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                  </button>
+                </div>
+                <div class="hub-tree-body">
+                  <div class="hub-tree-item">
+                    <button type="button" class="hub-tree-row is-entry is-active">
+                      <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon"><path d="M5 2.6h6v10.8l-3-2.2-3 2.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+                      <span class="hub-tree-name">SKILL.md</span>
+                      <span class="hub-tree-dirty"></span>
+                      <span class="hub-tree-badge">入口</span>
+                    </button>
+                  </div>
+                  <button type="button" class="hub-tree-row is-folder" style="--depth: 0;">
+                    <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-chevron"><path d="M6.2 4.2L10 8l-3.8 3.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon"><path d="M2.4 4.4h3.7l1.3 1.5h6.2a1 1 0 0 1 1 1v4.9a1 1 0 0 1-1 1H2.4a1 1 0 0 1-1-1V5.4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+                    <span class="hub-tree-name">references</span>
+                  </button>
+                  <div class="hub-tree-item" style="--depth: 1;">
+                    <button type="button" class="hub-tree-row is-file">
+                      <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon"><path d="M4.2 2.2h5l2.8 2.8v8.8H4.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M6.2 8.6h3.6M6.2 10.8h2.4" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+                      <span class="hub-tree-name">REFERENCE.md</span>
+                    </button>
+                    <span class="hub-tree-ops">
+                      <button type="button" class="hub-icon-btn" aria-label="重命名"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 12l.6-2.4 6.2-6.2 1.8 1.8-6.2 6.2zM9.8 4.4l1.8 1.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></button>
+                      <button type="button" class="hub-icon-btn hub-icon-btn--danger" aria-label="删除"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 5h8M6.5 5V3.8h3V5M5.4 5l.5 7.2h4.2l.5-7.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    </span>
+                  </div>
+                  <div class="hub-tree-item" style="--depth: 1;">
+                    <button type="button" class="hub-tree-row is-file">
+                      <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon"><path d="M4.2 2.2h5l2.8 2.8v8.8H4.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+                      <span class="hub-tree-name">notes.txt</span>
+                      <span class="hub-tree-dirty"></span>
+                    </button>
+                    <span class="hub-tree-ops">
+                      <button type="button" class="hub-icon-btn" aria-label="重命名"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 12l.6-2.4 6.2-6.2 1.8 1.8-6.2 6.2zM9.8 4.4l1.8 1.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></button>
+                      <button type="button" class="hub-icon-btn hub-icon-btn--danger" aria-label="删除"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 5h8M6.5 5V3.8h3V5M5.4 5l.5 7.2h4.2l.5-7.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    </span>
+                  </div>
+                  <button type="button" class="hub-tree-row is-folder" style="--depth: 0;">
+                    <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-chevron"><path d="M6.2 4.2L10 8l-3.8 3.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon"><path d="M2.4 4.4h3.7l1.3 1.5h6.2a1 1 0 0 1 1 1v4.9a1 1 0 0 1-1 1H2.4a1 1 0 0 1-1-1V5.4a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+                    <span class="hub-tree-name">steps</span>
+                  </button>
+                  <div class="hub-tree-item" style="--depth: 1;">
+                    <button type="button" class="hub-tree-row is-file">
+                      <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon"><path d="M6.1 5.2L3.4 8l2.7 2.8M9.9 5.2L12.6 8l-2.7 2.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                      <span class="hub-tree-name">plan.json</span>
+                    </button>
+                    <span class="hub-tree-ops">
+                      <button type="button" class="hub-icon-btn" aria-label="重命名"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 12l.6-2.4 6.2-6.2 1.8 1.8-6.2 6.2zM9.8 4.4l1.8 1.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></button>
+                      <button type="button" class="hub-icon-btn hub-icon-btn--danger" aria-label="删除"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 5h8M6.5 5V3.8h3V5M5.4 5l.5 7.2h4.2l.5-7.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    </span>
+                  </div>
+                </div>
+              </aside>
+
+              <!-- 右：当前文件编辑器 -->
+              <div class="hub-code">
+                <div class="hub-code-head">
+                  <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-tree-file-icon"><path d="M5 2.6h6v10.8l-3-2.2-3 2.2z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+                  <span class="hub-code-path">SKILL.md</span>
+                  <span class="hub-tree-dirty"></span>
+                  <span class="hub-code-meta">512 字</span>
+                </div>
+                <textarea class="hub-code-input" spellcheck="false">---
+name: web-research-report
+description: 生成一份带引用的网页调研报告
+category: content
+---
+
+# 使用流程
+
+1. 抓取目标页面正文
+2. 抽取关键段落并标注来源
+3. 汇总为 Markdown 报告
+</textarea>
+              </div>
+
+              <!-- 状态条（贴底）：实时校验默认收起，只报「N 个问题」；点击向上弹出悬浮卡片 -->
+              <div class="hub-editor-status is-error">
+                <div class="hub-validation is-error" role="status">
+                  <button type="button" class="hub-validation-head" aria-expanded="true">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.6v4.2M8 11.2v.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                    <span>实时校验</span>
+                    <span class="hub-validation-count">2 个问题</span>
+                    <svg class="hub-validation-chevron is-open" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.2L8 9.8l3.5-3.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </button>
+                  <div class="hub-validation-body">
+                    <ul class="hub-validation-items">
+                      <li class="hub-validation-item">
+                        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 4.9v3.9M8 11v.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                        <span>缺少 category 字段：技能必须归入一个分类</span>
+                      </li>
+                      <li class="hub-validation-item">
+                        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 4.9v3.9M8 11v.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                        <span>正文为空：技能需要至少一段可执行的指令</span>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="hub-editor-footer">
+              <span class="hub-hint">文件树与文件编辑器等高；实时校验默认收起，只报问题数量（点击向上弹出）。</span>
+            </div>
+
+            <!-- 右键菜单卡片（示意） -->
+            <div class="hub-menu" style="left: 268px; top: 196px;">
+              <button type="button" class="hub-menu-item">在此新建文件</button>
+              <button type="button" class="hub-menu-item">在此新建文件夹</button>
+              <button type="button" class="hub-menu-item">重命名文件夹</button>
+              <button type="button" class="hub-menu-item">复制路径</button>
+              <div class="hub-menu-separator"></div>
+              <button type="button" class="hub-menu-item is-danger">删除文件夹</button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+</body>
+</html>

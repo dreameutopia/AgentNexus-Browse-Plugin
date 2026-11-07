@@ -62,9 +62,24 @@ export interface ToolMetadata {
    *   - 工具结果照常进入转录与事件流，UI 与历史可完整回溯「提交了什么」。
    */
   terminal?: boolean;
-  /** Vision continuation policy. Unknown tools conservatively require a new
-   * screenshot; observation/data tools explicitly opt out. */
-  visionRefresh?: 'none' | 'after';
+  /**
+   * 视觉循环重拍豁免（单一事实源，默认 false = 保守重拍）。
+   *
+   * true 的准入条件（缺一不可，声错比漏标更危险——错标会让模型拿着已失效的
+   * 截图坐标继续操作）：
+   *   1. 工具执行绝不改变目标页面的像素/视口/滚动位置/活动标签页
+   *      （纯读取：页面文本、DOM 结构、标签页/窗口枚举、被动网络观察、
+   *        纯数据加工等）；
+   *   2. 工具不替换 GUI 截图身份（内部自拍的工具如 ocr/extract_data 会
+   *      覆盖当前 screenshotId，必须保持 false 让循环重拍恢复有效凭据）。
+   *
+   * 视觉循环判定（needsVisionRefresh）：整批工具调用全部为 true（或产出
+   * 可复用视口图）时不重拍、不合成多模态续拍消息，行为与文本执行循环一致；
+   * 任一调用为 false/未声明（含未知与插件工具）即保守重拍。
+   * vision_gui / screenshot / vision_read_wait 的动作级例外在该判定内
+   * 按工具名单独处理，不经过本字段。
+   */
+  noVisionRecapture?: boolean;
 }
 
 // 工具执行上下文：调用方（会话引擎）随执行注入的会话信息。

@@ -6,7 +6,7 @@
  * 于此，按区块分节、便于后续功能扩展时就近追加。
  *
  * 设计语言对齐插件侧边栏：中性色全部走 hub.css :root 的镜像 token
- * （暖纸画布 / 暖线 / 暖墨），强调色沿用两侧同源的靛紫 #667eea，
+ * （暖纸画布 / 暖线 / 暖墨），强调色为中性墨色（纯黑白灰体系，不含蓝紫），
  * 阴影为 ink 系轻阴影 + hover 上浮（对齐 sidepanel .action-btn 手法）。
  */
 
@@ -34,9 +34,9 @@
   align-items: center;
   justify-content: center;
   border-radius: 10px;
-  color: var(--primary-color, #667eea);
-  background: rgba(102, 126, 234, 0.1);
-  border: 1px solid rgba(102, 126, 234, 0.25);
+  color: var(--primary-color, #3b3934);
+  background: rgba(41, 40, 36, 0.1);
+  border: 1px solid rgba(41, 40, 36, 0.25);
 }
 
 .pc-header__text {
@@ -235,8 +235,8 @@
 }
 
 .pc-tab.active .pc-tab__count {
-  background: rgba(102, 126, 234, 0.12);
-  color: var(--primary-color, #667eea);
+  background: rgba(41, 40, 36, 0.12);
+  color: var(--primary-color, #3b3934);
 }
 
 /* 审查待处理角标：琥珀色小圆点（配 title 说明） */
@@ -309,10 +309,16 @@
   border-color: #fecaca;
 }
 
+.pc-badge.is-update {
+  color: #b45309;
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
 .pc-badge.is-signed {
-  color: var(--primary-color, #667eea);
-  background: rgba(102, 126, 234, 0.1);
-  border-color: rgba(102, 126, 234, 0.4);
+  color: var(--primary-color, #3b3934);
+  background: rgba(41, 40, 36, 0.1);
+  border-color: rgba(41, 40, 36, 0.4);
 }
 
 .pc-badge.is-community {
@@ -716,7 +722,7 @@
 }
 
 .pc-result__link:hover {
-  color: var(--primary-color, #667eea);
+  color: var(--primary-color, #3b3934);
   text-decoration: underline;
 }
 
@@ -724,7 +730,7 @@
 
 .review {
   background: var(--surface-card, #ffffff);
-  border: 1px solid rgba(102, 126, 234, 0.5);
+  border: 1px solid rgba(41, 40, 36, 0.28);
   border-radius: 12px;
   padding: 16px 18px;
   display: flex;
@@ -804,7 +810,7 @@
 .review__note {
   margin: 0;
   padding: 8px 12px;
-  border-left: 3px solid var(--primary-color, #667eea);
+  border-left: 3px solid var(--primary-color, #3b3934);
   background: var(--surface-soft, #f3f1ed);
   border-radius: 0 8px 8px 0;
   font-size: 12px;
@@ -890,7 +896,7 @@
 .review__consent input {
   margin-top: 3px;
   flex: none;
-  accent-color: var(--primary-color, #667eea);
+  accent-color: var(--primary-color, #3b3934);
 }
 
 /* 操作区：确认安装在前（DOM 顺序即测试契约），取消在后 */

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>消息折叠引导线预览</title>
+    <link rel="stylesheet" href="../entrypoints/sidepanel/styles/global.css" />
+    <link rel="stylesheet" href="../entrypoints/sidepanel/styles/app.css" />
+    <link rel="stylesheet" href="../entrypoints/sidepanel/components/chat/chat-message-list.css" />
+    <!-- 截屏片段样式在 SFC 内 scoped @import（预览构建不走 vite 样式管线），页面直接挂源文件 -->
+    <link rel="stylesheet" href="../entrypoints/sidepanel/components/chat/message-image-part.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        background: #f4f5f7;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 16px;
+      }
+      .note {
+        font-size: 12px;
+        color: #6b7280;
+        max-width: 400px;
+        line-height: 1.6;
+      }
+      .stage {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 16px;
+        width: 400px;
+        font-size: 14px;
+        color: #292824;
+      }
+    </style>
+  </head>
+  <body>
+    <p class="note">
+      折叠引导线验证：点击「前奏收起条」（星形）展开大折叠——内容左侧一根首尾
+      渐隐的连续竖线；展开条内「小折叠」（堆叠图标）——簇成员左侧连续树状线，
+      与前奏线构成层级；直播消息末尾的当前活动恒可见且不带线。
+    </p>
+    <main id="collapse-host" class="stage messages-container"></main>
+    <script src="../node_modules/.cache/collapse-preview.js"></script>
+  </body>
+</html>

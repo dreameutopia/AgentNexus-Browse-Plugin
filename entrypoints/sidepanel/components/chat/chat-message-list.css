@@ -716,7 +716,7 @@
 }
 
 /* ==================== 系统信息条（notice 片段） ====================
-   守卫停止说明、截断注记、压缩进度等系统级提示：与工具行同风格的
+   守卫停止说明、截断注记等系统级提示：与工具行同风格的
    轻量容器（细边框浅底 + 信息图标），区别于正文气泡样式 */
 .system-notice {
   display: flex;
@@ -789,6 +789,28 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ==================== 上下文压缩行（compaction 片段） ====================
+   与工具调用行（tool-row）同一视觉规范：单行承载全部状态（图标 + 标题 +
+   右侧压缩收益与耗时），无卡片边框与底色；展开详情复用 tool-detail。
+   压缩收益（144.5K → 2.5K）用等宽数字弱化呈现——它是「这一行做了什么」
+   的结论，不与工具名争夺注意力 */
+.compaction-tokens {
+  font-size: 11px;
+  color: var(--ink-muted, #9b9790);
+  font-variant-numeric: tabular-nums;
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, Consolas, monospace;
+  white-space: nowrap;
+}
+
+.compaction-row.success .compaction-tokens {
+  color: #10b981;
+  opacity: 0.85;
+}
+
+.compaction-name {
+  white-space: nowrap;
+}
+
 .tool-chevron {
   color: #b0b7c3;
   transition: transform 0.18s ease;
@@ -798,64 +820,85 @@
   transform: rotate(90deg);
 }
 
-/* 推理内容样式 */
+/* ==================== 推理（思考过程）行 ====================
+   对齐工具调用行（tool-row）的无边框紧凑设计语言：左侧图标 + 标题 +
+   右侧展开箭头的单行收起条，hover 极轻圆角底，无卡片边框与底色；
+   展开后的思考正文与工具详情（tool-detail）同一缩进（图标 15 + 间距 7
+   ≈ 22px + 行左内边距 4 = 26px），两族过程行在直播流与前奏折叠内观感一致 */
 .reasoning-container {
-  margin: 6px 0 10px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: var(--surface-soft, #f3f1ed);
-  border: 1px solid var(--line-soft, #e4e2de);
-  transition: all 0.2s ease;
-}
-
-.reasoning-container.collapsed {
-  padding: 8px 12px;
-  background: var(--surface-soft, #f3f1ed);
+  margin: 0;
 }
 
 .reasoning-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 7px;
+  width: 100%;
+  min-height: 26px;
+  padding: 3px 6px 3px 4px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
   color: var(--ink-secondary, #787671);
-  font-weight: 600;
-  font-size: 13px;
   cursor: pointer;
   user-select: none;
+  box-sizing: border-box;
 }
 
-.reasoning-container.collapsed .reasoning-header {
-  margin-bottom: 0;
+.reasoning-header:hover {
+  background: var(--surface-hover, #eeece7);
 }
 
+.reasoning-header:focus-visible {
+  outline: 2px solid var(--focus-ring, #a5a09a);
+  outline-offset: -1px;
+}
+
+/* 思考图标：与工具行状态图标同一槽位（15px 槽 + 14px 线稿） */
 .reasoning-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  color: var(--ink-secondary, #787671);
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--ink-muted, #9b9790);
 }
 
 .reasoning-title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12px;
   letter-spacing: 0.01em;
-  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
-.reasoning-expand-icon {
-  color: var(--ink-muted, #9b9790);
-  transition: transform 0.2s ease;
+/* 右侧组合（展开箭头）：margin-left:auto 推右，与 tool-right 同构 */
+.reasoning-right {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   flex-shrink: 0;
 }
 
-.reasoning-expand-icon.collapsed {
-  transform: rotate(-90deg);
+.reasoning-chevron {
+  flex-shrink: 0;
+  color: #b0b7c3;
+  transition: transform 0.18s ease;
 }
 
+.reasoning-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+/* 思考正文：与工具详情（tool-detail）同一缩进节奏，弱化色衬正文主体 */
 .reasoning-content {
+  padding: 1px 6px 6px 26px;
   color: var(--ink-secondary, #787671);
   font-size: 13px;
   line-height: 1.65;
@@ -880,11 +923,12 @@
   font-size: 12px;
 }
 
+/* 代码块：与工具详情的 pre 同一容器语言（浅底无边框圆角小内边距） */
 .reasoning-content pre {
   background: var(--surface-soft, #f3f1ed);
-  border: 1px solid var(--line-soft, #e4e2de);
-  border-radius: 8px;
-  padding: 10px 12px;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 10px;
   margin: 8px 0;
   overflow-x: auto;
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
@@ -1349,16 +1393,33 @@
 }
 
 .prelude-inner {
+  position: relative;
   min-height: 0;
   overflow: hidden;
-  /* 展开时的内容弱化 + 左侧细引导线，衬托末段正文主体 */
-  border-left: 2px solid rgba(148, 163, 184, 0.25);
-  margin: 2px 0 2px 5px;
-  padding-left: 10px;
+  /* 展开时的内容弱化 + 左侧细引导线（::before 绘制），衬托末段正文主体；
+     左移 8px 让线中心（9px）正对收起条星形图标的中心 */
+  margin: 2px 0 4px 8px;
+  padding-left: 12px;
 }
 
-.answer-prelude.collapsed .prelude-inner {
-  border-left-color: transparent;
+/* 前奏引导线：首尾渐隐的连续竖线——自收起条正下方淡入、贴末段正文处淡出
+   （文件管理器展开文件夹的树状视觉）。与小折叠的簇成员引导线
+   （.cluster-member::before）同一视觉配方；收起时随 0fr 网格行整体归零
+   （overflow hidden 裁切），无需单独隐藏 */
+.prelude-inner::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(
+    180deg,
+    rgba(148, 163, 184, 0) 0,
+    rgba(148, 163, 184, 0.32) 14px,
+    rgba(148, 163, 184, 0.32) calc(100% - 14px),
+    rgba(148, 163, 184, 0) 100%
+  );
 }
 
 /* 前奏内的中间文本弱化展示（正文主体保持默认样式） */
@@ -1367,8 +1428,9 @@
   font-size: 13px;
 }
 
+/* 旧记录 reasoning_content 并入前奏：紧凑行形态，随前奏内容流排布 */
 .prelude-legacy-reasoning {
-  margin: 2px 0 6px;
+  margin: 0;
 }
 
 /* ==================== 「连续过程小折叠」条 ====================
@@ -1452,6 +1514,49 @@
 
 .cluster-chevron.collapsed {
   transform: rotate(0deg);
+}
+
+/* ==================== 簇成员引导线（小折叠展开态） ====================
+   展开的簇成员左侧一根连续树状引导线（文件管理器展开文件夹同款视觉）：
+   首个成员自收起条正下方淡入、末个成员向底部淡出，中间实线贯穿。
+   成员仅在簇展开时渲染（收起时整组不渲染），线天然只在展开时出现；
+   线中心对准收起条图标中心（≈9px），嵌套在前奏折叠内部时逐级右移，
+   与前奏引导线构成层级树 */
+.cluster-member {
+  position: relative;
+  /* flow-root：子容器（推理/截屏/工具行）的外边距收纳在成员盒内，
+     贴叠的成员之间不留缝隙，引导线才全程连续不断裂 */
+  display: flow-root;
+  margin-left: 8px;
+  padding-left: 10px;
+}
+
+.cluster-member::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(148, 163, 184, 0.32);
+}
+
+/* 首个成员：线自收起条正下方淡入 */
+.cluster-bar + .cluster-member::before {
+  background: linear-gradient(180deg, rgba(148, 163, 184, 0) 0, rgba(148, 163, 184, 0.32) 14px);
+}
+
+/* 末个成员：线向底部淡出（其后不再是簇成员）。:has 与前奏折叠动画依赖的
+   grid-template-rows 过渡同为 Chromium 105+ 基线能力，扩展运行环境恒可用；
+   极端不支持时退化为实线，无碍 */
+.cluster-member:not(:has(+ .cluster-member))::before {
+  background: linear-gradient(0deg, rgba(148, 163, 184, 0) 0, rgba(148, 163, 184, 0.32) 14px);
+}
+
+/* 簇成员贴叠：覆盖 .message-part + .message-part 的 2px 间距——间距改由
+   成员内部子容器各自的外边距承担（flow-root 收纳），线才贯穿不断 */
+.cluster-member + .cluster-member {
+  margin-top: 0;
 }
 
 /* ==================== 模型消息操作栏（复制 / 赞 / 踩） ====================

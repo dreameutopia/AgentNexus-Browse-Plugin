@@ -20,6 +20,12 @@ const at = (index: number, part: MessagePart): IndexedMessagePart => ({ index, p
 const reasoning = (content = '思考'): MessagePart => ({ type: 'reasoning', content });
 const notice = (content = '终态注记'): MessagePart => ({ type: 'notice', content });
 const image = (ref = 'hash'): MessagePart => ({ type: 'image', imageRef: ref });
+const compaction = (
+  status: 'pending' | 'success' | 'error' = 'success',
+): MessagePart => ({
+  type: 'compaction',
+  compaction: { status, trigger: 'runtime', ...(status === 'success' ? { originalTokens: 147968, summaryTokens: 2560, summary: '<summary>…</summary>' } : {}) },
+});
 const tool = (id: string, status: ToolCallUI['status'] = 'success', executionTime?: number): MessagePart => ({
   type: 'tool',
   toolCall: {
@@ -242,12 +248,12 @@ const kinds = (entries: ReturnType<typeof buildLivePartSegments>) =>
   assert.notEqual(bars[0].key, bars[1].key, '不同簇的标识互异');
 }
 
-// 8. 混合簇计数（截图 + 思考 + 工具）
+// 8. 混合簇计数（截图 + 思考 + 工具 + 压缩计数恒在）
 {
   const entries = buildLivePartSegments(indexed(image(), reasoning(), tool('t1'), tool('t2')));
   const bar = entries[0];
   assert.equal(bar.kind, 'cluster-bar');
-  assert.deepEqual(bar.counts, { tools: 1, reasoning: 1, images: 1 });
+  assert.deepEqual(bar.counts, { tools: 1, reasoning: 1, images: 1, compactions: 0 });
   assert.equal(kinds(entries).filter(k => k === 'part').length, 1, '仅最新工具可见');
 }
 
@@ -265,7 +271,7 @@ const kinds = (entries: ReturnType<typeof buildLivePartSegments>) =>
   );
 }
 
-// 10. 已结算工具耗时合计入条；未结算（pending / 缺时长）不计
+// 10. 已结算工具耗时合计入条；未结算（pending / 缺时长）不计；压缩耗时同口径计入
 {
   const entries = buildLivePartSegments(
     indexed(
@@ -278,6 +284,16 @@ const kinds = (entries: ReturnType<typeof buildLivePartSegments>) =>
   const bar = entries[0];
   assert.equal(bar.kind, 'cluster-bar');
   assert.equal(bar.durationMs, 3800);
+  // 压缩耗时并入簇合计（pending 不计，与工具未结算同口径）
+  const withCompaction = buildLivePartSegments(
+    indexed(tool('t1', 'success', 1000), {
+      ...compaction('success'),
+      compaction: { ...compaction('success').compaction!, durationMs: 8500 },
+    }, compaction('pending')),
+  );
+  const compactionBar = withCompaction[0];
+  assert.equal(compactionBar.kind, 'cluster-bar');
+  assert.equal(compactionBar.durationMs, 9500, '已结算压缩的耗时计入簇合计');
 }
 
 // 11. 纯文本 / 纯推理单段：无折叠条
@@ -289,6 +305,57 @@ const kinds = (entries: ReturnType<typeof buildLivePartSegments>) =>
 // 12. 空输入
 {
   assert.deepEqual(buildLivePartSegments([]), []);
+}
+
+// ════════ 上下文压缩片段（type='compaction'）：与工具调用同一过程语义 ════════
+//（构造器 compaction() 定义在文件顶部的构造工具区，与 text/tool 同列）
+
+// C1. 结束态：压缩片段并入前奏折叠，计数单列（与 toolCount 同口径）
+{
+  const g = groupAnswerParts(indexed(compaction(), tool('t1'), text('压缩后继续答复')), {
+    legacyReasoningText: false,
+  });
+  assert.deepEqual(g.prelude.map(p => p.part.type), ['compaction', 'tool'], '压缩片段随过程内容入前奏');
+  assert.equal(g.compactionCount, 1);
+  assert.equal(g.toolCount, 1);
+  // 无工具仅压缩：折叠条单独成立，计数仍准确
+  const only = groupAnswerParts(indexed(compaction(), text('答复')), { legacyReasoningText: false });
+  assert.deepEqual(only.prelude.map(p => p.part.type), ['compaction']);
+  assert.equal(only.compactionCount, 1);
+  assert.equal(only.toolCount, 0);
+  // 多次压缩计数累加
+  const twice = groupAnswerParts(indexed(compaction(), compaction(), text('答复')), { legacyReasoningText: false });
+  assert.equal(twice.compactionCount, 2);
+}
+
+// C2. 直播态：压缩是过程片段——与工具相邻成簇、计数入条；
+//     抵达流末尾的 pending 压缩保持条外可见（当前活动不被折叠遮住）
+{
+  // [tool, compaction-pending]：簇收拢 tool，压缩行（当前活动）可见
+  const entries = buildLivePartSegments(indexed(tool('t1'), compaction('pending')));
+  assert.deepEqual(kinds(entries), ['bar', 'grouped', 'part']);
+  const bar = entries[0];
+  assert.equal(bar.kind, 'cluster-bar');
+  assert.equal(bar.counts.tools, 1);
+  assert.equal(bar.counts.compactions, 0, '条外可见的最新压缩不计入条内');
+  // [compaction-success, tool]：压缩被取代 → 整簇收拢，仅最新工具可见
+  const superseded = buildLivePartSegments(indexed(compaction(), tool('t2')));
+  assert.deepEqual(kinds(superseded), ['bar', 'grouped', 'part']);
+  assert.equal((superseded[0] as { counts: { compactions: number } }).counts.compactions, 1);
+  // 正文之后的压缩 + 工具：文本断片隔离，两侧各自成簇
+  const mixed = buildLivePartSegments(indexed(compaction(), text('中间结论'), tool('t1'), compaction('pending')));
+  assert.deepEqual(
+    mixed.map(e => (e.kind === 'cluster-bar' ? `bar(${e.counts.compactions}c)` : e.clusterKey ? 'grouped' : 'part')),
+    ['part', 'part', 'bar(0c)', 'grouped', 'part'],
+    '正文隔断：孤立压缩单行可见，末簇保留 pending 压缩条外可见',
+  );
+}
+
+// C3. 压缩独占时间线（前无工具后有正文）：单行容器恒可见，不立折叠条
+{
+  assert.deepEqual(kinds(buildLivePartSegments(indexed(text('收到'), compaction(), text('继续')))), ['part', 'part', 'part']);
+  // 纯压缩单段（中止于压缩轮的极端形态）
+  assert.deepEqual(kinds(buildLivePartSegments(indexed(compaction()))), ['part']);
 }
 
 console.log('[message-collapse] 分组纯函数全部场景通过（结束态前奏折叠 + 连续过程小折叠：正文隔离语义）。');

@@ -28,6 +28,13 @@
  *      白名单 / 分页元信息 / 续读指引 / 脏参数防御。
  *  11. 写入原子性与导入防御：md 直导体量门、快照 / 回滚（含污染快照拒绝）、
  *      第三方（插件）形状退化记录的装配防御。
+ *  12. 可用性承载校验：三通道（显式关联 / 映射兜底 / 自定义自适应）统一要求
+ *      技能 allowedTools ⊆ 会话工具集——advertised ⊆ 可执行 的不变量源头
+ *     （预置技能曾绕过校验导致 TOOL_NOT_ALLOWED 死链的事故回归锚）。
+ *  13. 显式目录：归一化规则（去重 / 丢弃非法项）与写入透传。
+ *  14. 智能体关联技能解析：输入框「/」卡片可选集合（resolveAgentLinkedSkills）
+ *      的三态解析、停用/失效剔除、按 id 去重保序与输入形状防御；并与装配清单
+ *      分工对齐（不做承载校验、不做映射兜底——面板答「能选什么」）。
  *
  * 运行：node tests/skills/run.mjs   （或 npm run test:skills）
  */
@@ -43,6 +50,7 @@ import {
   generateUniqueSkillId,
   isReservedSkillId,
   modelSkillIdOf,
+  normalizeFolderList,
   presetSkillIdFromName,
   skillIdFromName,
 } from '@/utils/skills/skill-types';
@@ -754,6 +762,165 @@ function pageOf(text: string, page: number, budget?: number) {
   const nonStringPage = paginateSkillText(null as unknown as string, 1);
   check(nonStringPage.ok === true && nonStringPage.page.totalChars === 0, 'K3 非字符串文本收敛为空页');
   eq(countSkillChars(undefined as unknown as string), 0, 'K3 非字符串字数为 0');
+}
+
+// ==================== 12. 可用性承载校验（三通道统一：advertised ⊆ 可执行） ====================
+// 事故根因回归锚：预置技能经映射兜底曾绕过承载校验，web-research-report 携带的
+// note_tool 在多个智能体下「目录可见但执行被拒」（TOOL_NOT_ALLOWED）。三通道
+// （显式关联 / 映射兜底 / 自定义自适应）统一要求 allowedTools ⊆ 会话工具集。
+
+{
+  const { computeAvailableSkills } = await import('../../utils/skills/skill-availability');
+  const { presetSkillIdFromName } = await import('../../utils/skills/skill-types');
+  const idsOf = (skills: { id: string }[]) => skills.map(skill => skill.id);
+
+  // deepSearch 同构工具面（核心 + 场景 + 动态 web_search）：web-research-report
+  // 全部工具可承载 → 映射兜底通道放行
+  const DEEP_SEARCH_TOOLSET = [
+    ...['interact', 'browser_get_page_text', 'plan_tool', 'note_tool'],
+    'browser_go_back_or_forward', 'browser_navigate', 'browser_get_page_info',
+    'browser_web_fetcher', 'browser_observe', 'browser_interact',
+    'browser_dom_explore', 'browser_page_exec', 'web_search',
+  ];
+  const deepList = idsOf(computeAvailableSkills(undefined, DEEP_SEARCH_TOOLSET));
+  check(
+    deepList.includes(presetSkillIdFromName('web-research-report')),
+    'L1 工具面完整时映射兜底放行 web-research-report',
+    deepList,
+  );
+
+  // automation 同构工具面（含 web_search 但缺 browser_web_fetcher）：承载校验
+  // 必须把 web-research-report 整个挡在清单外——缺任一工具即不得进入发现清单
+  const AUTOMATION_TOOLSET = [
+    ...['interact', 'browser_get_page_text', 'plan_tool', 'note_tool'],
+    'browser_observe', 'browser_interact', 'browser_dom_explore', 'browser_navigate',
+    'browser_get_page_info', 'wait_page_load', 'web_search', 'generic_wait',
+    'browser_page_exec',
+  ];
+  const autoList = idsOf(computeAvailableSkills(undefined, AUTOMATION_TOOLSET));
+  check(
+    !autoList.includes(presetSkillIdFromName('web-research-report')),
+    'L2 缺任一承载工具的技能不得进清单（曾经的死链根因）',
+    autoList,
+  );
+
+  // 显式关联通道同样过承载校验：关联了承载不了的技能 → 从发现清单剔除
+  // （发送时预选不受此限，走 activation 另行注入——见 skill-availability 文件头）
+  const explicitList = idsOf(computeAvailableSkills(
+    [presetSkillIdFromName('web-research-report')],
+    AUTOMATION_TOOLSET,
+  ));
+  check(
+    !explicitList.includes(presetSkillIdFromName('web-research-report')),
+    'L3 显式关联的技能承载不了时同样剔除',
+    explicitList,
+  );
+
+  // 自定义技能自适应通道：allowedTools 全部在场 → 可用；缺一 → 不可用
+  const carried = mustWrite({
+    name: 'availability-carried',
+    files: mdFiles('availability-carried', '正文', ['allowed-tools: browser_observe web_search']),
+  }, 'L4 写入可承载自定义技能');
+  const notCarried = mustWrite({
+    name: 'availability-not-carried',
+    files: mdFiles('availability-not-carried', '正文', ['allowed-tools: browser_observe vision_gui']),
+  }, 'L4 写入不可承载自定义技能');
+  const customList = idsOf(computeAvailableSkills(undefined, AUTOMATION_TOOLSET));
+  check(customList.includes(carried.id), 'L4 自定义技能全部工具在场时可用');
+  check(!customList.includes(notCarried.id), 'L4 自定义技能缺工具时不可用');
+
+  // note-workspace 已删除：技能面收敛为 3 个预置，且没有任何技能再映射自 note_tool
+  const presets = getAllSkills().filter(skill => skill.source === 'preset');
+  eq(presets.length, 3, 'L5 预置技能收敛为 3 个（note-workspace 并入 note-prompt 后移除）');
+  check(
+    presets.every(skill => skill.name !== 'note-workspace'),
+    'L5 note-workspace 不再作为技能存在（通用规范由固定分区承载）',
+  );
+}
+
+// ==================== 13. 显式目录（空目录）承载与归一化 ====================
+//
+// 技能包按文件组织，空目录若不单独记录就会在保存后消失——故记录上有一等字段
+// `folders`。这里锁两条契约：归一化规则（去重 / 丢弃非法项）与写入透传。
+
+eq(
+  normalizeFolderList(['a/b', 'a\\b', './c', 'x/', 'y/../z', '', '/abs', 'd//e']),
+  ['a/b', 'c', 'x'],
+  '13.1 显式目录归一化：反斜杠 / 前缀 / 尾斜杠归一，重复与非法项丢弃',
+);
+
+{
+  const record = mustWrite({
+    name: 'folder-skill',
+    description: '含空目录的技能',
+    files: mdFiles('folder-skill', '正文'),
+    folders: ['references', 'assets/img', 'references', 'bad/../path', ''],
+  }, '13.2 写入含显式目录的技能');
+  eq(record.folders, ['references', 'assets/img'], '13.3 显式目录随记录入库并已归一化');
+  const reread = getAllSkills().find(skill => skill.id === record.id);
+  eq(reread?.folders, ['references', 'assets/img'], '13.4 显式目录可从技能表读回（空目录不丢）');
+}
+
+// ==================== 14. 智能体关联技能解析（输入框「/」卡片可选集合） ====================
+//
+// 输入框技能卡片的可选范围收敛为「当前智能体在 hub 编辑页显式关联的启用技能」。
+// 这里锁定 resolveAgentLinkedSkills 的解析契约：三态解析（id / 模型标识 / 名称）、
+// 停用与失效引用剔除、按 id 去重保序、输入形状防御；并与 computeAvailableSkills
+// 的分工对齐——不做承载校验、不做映射兜底（面板回答「能选什么」，装配回答「注入什么」，
+// 预选技能经合成 load_skill 轮注入，工具由激活轮并入可执行集）。
+
+{
+  const { resolveAgentLinkedSkills, computeAvailableSkills } = await import('../../utils/skills/skill-availability');
+  const { presetSkillIdFromName } = await import('../../utils/skills/skill-types');
+  const { setSkillEnabled } = await import('../../utils/skills/skill-store');
+
+  const alpha = mustWrite({ name: 'linked-alpha', files: mdFiles('linked-alpha', '正文') }, 'M1 写入关联技能 alpha');
+  const beta = mustWrite({ name: 'linked-beta', files: mdFiles('linked-beta', '正文') }, 'M1 写入关联技能 beta');
+  const off = mustWrite({ name: 'linked-off', files: mdFiles('linked-off', '正文') }, 'M1 写入将被停用的技能');
+  const heavy = mustWrite({
+    name: 'linked-heavy-carrier',
+    files: mdFiles('linked-heavy-carrier', '正文', ['allowed-tools: vision_gui browser_execute_js']),
+  }, 'M1 写入重承载技能');
+
+  check(setSkillEnabled(off.id, false), 'M2 停用 off 技能成功');
+
+  // 未声明关联 / 空数组 → 空可选集（面板据此呈现「先选智能体 / 去关联」引导）
+  eq(resolveAgentLinkedSkills(undefined).map(s => s.id), [], 'M2 未声明关联 → 空集');
+  eq(resolveAgentLinkedSkills([]).map(s => s.id), [], 'M2 空关联数组 → 空集');
+
+  // 三态引用混排：id / 名称 / 模型标识各自命中；停用与失效引用剔除；
+  // 同一技能的多形态引用按 id 去重；声明顺序保持（beta 在前）
+  const mixedRefs = [beta.id, 'linked-alpha', modelSkillIdOf(heavy), off.id, 'no-such-ref', modelSkillIdOf(beta), '', '   '];
+  eq(
+    resolveAgentLinkedSkills(mixedRefs).map(s => s.id),
+    [beta.id, alpha.id, heavy.id],
+    'M3 三态解析混排：保序、去重、停用/失效/空白引用剔除',
+  );
+
+  // 分工契约 1——不做承载校验：heavy 的 allowedTools 不在任何工具集里，
+  // 装配清单会剔除它（第 12 节 L3 同型），面板可选集必须原样放行
+  eq(resolveAgentLinkedSkills([heavy.id]).map(s => s.id), [heavy.id], 'M4 面板可选集不做承载校验');
+  check(
+    !computeAvailableSkills([heavy.id], []).some(s => s.id === heavy.id),
+    'M4 对照：装配清单按承载校验剔除同一技能',
+  );
+
+  // 分工契约 2——不做映射兜底：工具面命中映射的预置技能只在装配清单出现，
+  // 未被显式关联就不会进入面板可选集（「技能与智能体绑定选择」的口径源头）
+  const DEEP_SEARCH_TOOLSET = [
+    'interact', 'browser_get_page_text', 'plan_tool', 'note_tool',
+    'browser_go_back_or_forward', 'browser_navigate', 'browser_get_page_info',
+    'browser_web_fetcher', 'browser_observe', 'browser_interact',
+    'browser_dom_explore', 'browser_page_exec', 'web_search',
+  ];
+  check(
+    computeAvailableSkills(undefined, DEEP_SEARCH_TOOLSET).some(s => s.id === presetSkillIdFromName('web-research-report')),
+    'M5 对照：装配清单经映射兜底包含 web-research-report',
+  );
+  check(
+    !resolveAgentLinkedSkills(undefined).some(s => s.id === presetSkillIdFromName('web-research-report')),
+    'M5 面板可选集无映射兜底：未被显式关联即不可选',
+  );
 }
 
 // ==================== 汇总 ====================

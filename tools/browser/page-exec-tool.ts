@@ -246,7 +246,7 @@ function buildDataRefGuide(
     `后续：data_ref_tool(action="info", ref=${meta.id}) 查看字段结构；` +
     `browser_page_exec(readRef=${meta.id}, offset=${DATA_CHARS_LIMIT}, limit=${DATA_CHARS_LIMIT}) 分页读取任意片段（每页 ≤${DATA_CHARS_LIMIT} 字符，用响应的 nextOffset 续读）；` +
     `xlsx_tool(action="create_from_data", sheets[].dataRef=${meta.id}) 直接生成 Excel；` +
-    `多页批次先 data_ref_tool(action="merge") 合并。切勿在对话中抄写数据行。`
+    `多页批次先 data_ref_tool(action="merge") 合并（滚动增量出现重复行时先 action="dedupe" 去重）。切勿在对话中抄写数据行。`
   );
 }
 

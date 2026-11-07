@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 class EventHook {
-  listeners: Function[] = [];
-  addListener(fn: Function) {
+  listeners: ((...args: any[]) => void)[] = [];
+  addListener(fn: (...args: any[]) => void) {
     this.listeners.push(fn);
   }
   fire(...args: any[]) {

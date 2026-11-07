@@ -2,8 +2,9 @@
   应用级轻量弹窗（use-app-dialog 的唯一展示层）
 
   单例组件：App.vue 挂载一次，状态由 use-app-dialog 提供；
-  alert（单按钮）/ confirm（双按钮）两种形态 × info/warn/error 三种语义色。
-  点击遮罩：alert 视为已知悉（关闭），confirm 视为取消（安全侧默认）。
+  alert（单按钮）/ confirm（双按钮）/ action（三按钮）三种形态 ×
+  info/warn/error 三种语义色。
+  点击遮罩：alert 视为已知悉（关闭），confirm/action 视为取消（安全侧默认）。
 -->
 <template>
   <Transition name="app-dialog">
@@ -28,17 +29,25 @@
         <p class="app-dialog-message">{{ dialog.message }}</p>
         <div class="app-dialog-actions">
           <button
-            v-if="dialog.mode === 'confirm'"
+            v-if="dialog.mode === 'confirm' || dialog.mode === 'action'"
             type="button"
             class="app-dialog-btn app-dialog-btn-secondary"
-            @click="settleAppDialog(false)"
+            @click="settleAppDialog('cancel')"
           >
             {{ dialog.cancelText }}
           </button>
           <button
+            v-if="dialog.mode === 'action' && dialog.alternateText"
+            type="button"
+            class="app-dialog-btn app-dialog-btn-tertiary"
+            @click="settleAppDialog('alternate')"
+          >
+            {{ dialog.alternateText }}
+          </button>
+          <button
             type="button"
             class="app-dialog-btn app-dialog-btn-primary"
-            @click="settleAppDialog(true)"
+            @click="settleAppDialog('confirm')"
           >
             {{ dialog.confirmText }}
           </button>
@@ -54,9 +63,9 @@ import { useAppDialog, settleAppDialog } from '../../composables/use-app-dialog'
 
 const dialog = useAppDialog();
 
-/** 遮罩点击：alert 视为已知悉；confirm 视为取消（安全侧，不会误确认） */
+/** 遮罩点击：alert 视为已知悉；confirm/action 视为取消（安全侧，不会误确认） */
 const handleOverlayClick = () => {
-  settleAppDialog(dialog.value.mode === 'confirm' ? false : true);
+  settleAppDialog(dialog.value.mode === 'alert' ? 'confirm' : 'cancel');
 };
 
 // 弹窗打开：聚焦弹窗容器（键盘可达）并接管 Escape；
@@ -70,16 +79,17 @@ watch(
       keydownHandler = (event: KeyboardEvent) => {
         if (event.key === 'Escape') {
           event.stopPropagation();
-          // Escape 与遮罩点击同语义：confirm 取消（安全侧），alert 已知悉
-          settleAppDialog(dialog.value.mode === 'confirm' ? false : true);
+          // Escape 与遮罩点击同语义：confirm/action 取消（安全侧），alert 已知悉
+          settleAppDialog(dialog.value.mode === 'alert' ? 'confirm' : 'cancel');
         }
       };
       document.addEventListener('keydown', keydownHandler, true);
       void nextTick(() => {
-        // 初始焦点策略：warn/error 的 confirm 初始聚焦次按钮（安全侧，
+        // 初始焦点策略：warn/error 的 confirm/action 初始聚焦次按钮（安全侧，
         // 回车不会误触破坏性确认）；其余聚焦主按钮
         const focusCancel =
-          dialog.value.mode === 'confirm' && (dialog.value.tone === 'warn' || dialog.value.tone === 'error');
+          (dialog.value.mode === 'confirm' || dialog.value.mode === 'action') &&
+          (dialog.value.tone === 'warn' || dialog.value.tone === 'error');
         const target = focusCancel
           ? document.querySelector<HTMLButtonElement>('.app-dialog-btn-secondary')
           : document.querySelector<HTMLButtonElement>('.app-dialog-btn-primary');

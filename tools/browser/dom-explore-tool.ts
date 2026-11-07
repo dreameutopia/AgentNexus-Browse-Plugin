@@ -104,6 +104,9 @@ export class DomExploreTool extends BaseBrowserTool {
     version: '1.0.0',
     tags: ['browser', 'dom', 'structure', 'explore', 'scrape', 'rpa'],
     displayName: 'DOM 关系探索',
+    // 纯读（注入荷载只做结构遍历/相似元素发现，不写 DOM、不动视口）：
+    // 视觉循环无需重拍，截图身份继续有效
+    noVisionRecapture: true,
   };
 
   openaiSchema: OpenAITool = {

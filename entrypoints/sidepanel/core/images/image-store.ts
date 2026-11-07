@@ -48,43 +48,22 @@ const DATA_URL_PATTERN = /^data:([^;,]+)?;base64,([A-Za-z0-9+/=\s]+)$/;
 const IMAGE_REF_PATTERN = /^[0-9a-f]{32,64}$/;
 
 // ==================== 短 id（回答中引用截图） ====================
+// 字母表 / 生成 / 冲突判定的唯一实现在 utils/shared/short-id（与会话文件库
+// 共享，杜绝两处同构复制漂移）；此处仅保留本库相关的重试常量与再导出。
 
-/**
- * 短 id 字母表：32 个字符（Crockford base32 去掉易混的 I/L/O/U）。
- * 8 位 × 5 bit = 40 bit 熵；唯一性另由存储层的唯一索引兜底。
- */
-const SHORT_ID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
-/** 短 id 长度（8 位；回答里写 <agent-image id="xxxxxxxx" />） */
-export const SHORT_ID_LENGTH = 8;
+import {
+  generateShortId,
+  isShortIdConstraintError,
+  SHORT_ID_LENGTH as SHARED_SHORT_ID_LENGTH,
+  SHORT_ID_PATTERN as SHARED_SHORT_ID_PATTERN,
+} from '@/utils/shared/short-id';
+
+/** 短 id 长度（8 位；回答里写 <agent-image id="xxxxxxxx" />）——再导出保持既有导入方稳定 */
+export const SHORT_ID_LENGTH = SHARED_SHORT_ID_LENGTH;
+/** 短 id 形态（渲染层据此判定引用是否合法）——再导出保持既有导入方稳定 */
+export const SHORT_ID_PATTERN = SHARED_SHORT_ID_PATTERN;
 /** 短 id 分配的最大重试次数（唯一索引冲突时换候选重试） */
 const SHORT_ID_MAX_ATTEMPTS = 8;
-/** 短 id 形态（渲染层据此判定引用是否合法） */
-export const SHORT_ID_PATTERN = /^[0-9a-z]{8}$/;
-
-/** 生成候选短 id（crypto 优先；不可用时退回 Math.random） */
-function randomShortId(): string {
-  let out = '';
-  const globalCrypto = typeof crypto !== 'undefined' ? crypto : undefined;
-  if (globalCrypto?.getRandomValues) {
-    const bytes = new Uint8Array(SHORT_ID_LENGTH);
-    globalCrypto.getRandomValues(bytes);
-    for (const byte of bytes) out += SHORT_ID_ALPHABET[byte % 32];
-    return out;
-  }
-  for (let index = 0; index < SHORT_ID_LENGTH; index++) {
-    out += SHORT_ID_ALPHABET[Math.floor(Math.random() * 32)];
-  }
-  return out;
-}
-
-/** 判定是否为唯一索引冲突（写短 id 时可能被拒绝的唯一原因） */
-function isUniqueConstraintError(error: unknown): boolean {
-  if (!error) return false;
-  const name = (error as { name?: unknown }).name;
-  if (name === 'ConstraintError') return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return /ConstraintError/i.test(message);
-}
 
 // ==================== 纯函数（引用归一 / 形态判定） ====================
 
@@ -247,7 +226,7 @@ class ImageStore {
     }
     let lastError: unknown;
     for (let attempt = 0; attempt < SHORT_ID_MAX_ATTEMPTS; attempt++) {
-      const candidate = randomShortId();
+      const candidate = generateShortId();
       const record: StoredImage = { ...base, shortId: candidate };
       try {
         await imageDatabase.put(record);
@@ -257,7 +236,7 @@ class ImageStore {
         this.touchLru(this.shortIdHashCache, candidate, SHORT_ID_CACHE_MAX);
         return record;
       } catch (error) {
-        if (!isUniqueConstraintError(error)) throw error;
+        if (!isShortIdConstraintError(error)) throw error;
         lastError = error;
       }
     }

@@ -1,6 +1,6 @@
 ---
 name: xlsx-creator
-description: 使用 xlsx_tool 生成 Excel (.xlsx) 文件：多工作表、合并单元格、公式、富文本、超链接、样式美化与自动列宽，并在聊天中输出可下载的文件卡片；批量抓取的数据可经 dataRef 暂存批次直接导出（create_from_data）。当用户要求"生成/导出/制作 Excel 表格、把数据整理成 xlsx、导出报表/清单/统计表、把抓取结果落盘"时使用。
+description: 使用 xlsx_tool 生成 Excel (.xlsx) 文件：多工作表、合并单元格、公式、富文本、超链接、样式美化与自动列宽，并在聊天中输出可下载的文件卡片；批量抓取的数据可经 dataRef 暂存批次直接导出（create_from_data），数据表可与公式汇总表混排在同一个工作簿。当用户要求"生成/导出/制作 Excel 表格、把数据整理成 xlsx、导出报表/清单/统计表、把抓取结果落盘"时使用。
 allowed-tools: xlsx_tool
 category: content
 tags: excel 表格 导出
@@ -15,11 +15,12 @@ tags: excel 表格 导出
 ## 核心规则
 
 1. **工具只有 `xlsx_tool` 一个**，用 `action` 区分三种用法：
-   - `create`：用声明式结构生成（支持多表、合并单元格、公式、样式等全部能力）；
+   - `create`：用声明式结构生成（支持多表、合并单元格、公式、样式等全部能力；也可用 `dataRef` 引用暂存批次）；
    - `create_from_markdown`：把 Markdown 表格文本转成 xlsx（简单表格快捷路径，文本里多张 `|` 表格会变成多张工作表，`# 标题` 作为表名）；
-   - `create_from_data`：把批量抓取的暂存批次（dataRef，由 browser_page_exec 产生——saveResult 默认开启即暂存，或结果超 2000 字符自动暂存；浏览器会话内约 12 小时有效）直接生成工作表——**批量数据一律走此路径**，不要手写 rows 复现数据。
-2. **默认已自动美化**，不必手写这些样式：表头蓝底白字加粗居中、全表细边框、自动列宽（按内容自适应，中文按双宽估算）、有表头时自动冻结表头。可选项：`zebra: true` 斑马纹、`autoFilter: true` 表头筛选、`landscape: true` 横向打印、`tabColor` 标签色。
-3. **文件名**：用户给了就用用户的（无需 `.xlsx` 后缀，会自动补）；没给就用「主题_YYYYMMDD.xlsx」。
+   - `create_from_data`：批量数据导出入口——`sheets[].dataRef` 引用暂存批次（由 browser_page_exec 产生：saveResult 默认开启即暂存，或结果超 2000 字符自动暂存；browser_network_capture 捕获的响应正文也入同一暂存区；浏览器会话内约 12 小时有效）直接生成工作表，**批量数据一律走此路径，不要手写 rows 复现数据**；可与手写 `rows` 表（公式汇总、分组小计等）混排在同一次调用中。
+2. **每张表的数据来源二选一**：`dataRef`（引用暂存批次）与 `rows`（手写行）不能出现在同一张表，但不同表可以混用——这正是「批量数据表 + 公式汇总表」一次生成的方式。
+3. **默认已自动美化**，不必手写这些样式：表头蓝底白字加粗居中、全表细边框、自动列宽（按内容自适应，中文按双宽估算）、有表头时自动冻结表头。可选项：`zebra: true` 斑马纹、`autoFilter: true` 表头筛选、`landscape: true` 横向打印、`tabColor` 标签色。
+4. **文件名**：用户给了就用用户的（无需 `.xlsx` 后缀，会自动补）；没给就用「主题_YYYYMMDD.xlsx」。
 
 ## 何时选哪个 action
 
@@ -27,7 +28,7 @@ tags: excel 表格 导出
 |---|---|
 | 简单二维表、用户贴了 Markdown 表格、或你只需把现有文本表格落盘 | `create_from_markdown` |
 | 多张工作表 / 合并单元格 / 复杂表头 / 公式列 / 需要指定样式、列宽、行高 | `create` |
-| 批量抓取的数据（有 dataRef 批次 ID，如浏览器抓取结果） | `create_from_data` |
+| 批量抓取的数据（有 dataRef 批次 ID，如浏览器抓取结果）——含与公式汇总表混排 | `create_from_data` |
 
 ## create_from_data 的数据结构速查（批量抓取导出专用）
 
@@ -37,19 +38,29 @@ tags: excel 表格 导出
 {
   "action": "create_from_data",
   "filename": "商品SKU_20261031",
-  "sheets": [{
-    "name": "SKU数据",
-    "dataRef": "a1b2c3d4",              // 批次 ID（抓取工具响应里的 dataRef.id；多页先用 data_ref_tool merge）
-    "fields": ["title", "price", "url"], // 可选：导出哪些列、什么顺序（缺省全部字段）
-    "headers": ["商品名", "价格", "链接"], // 可选：表头文案（缺省用 fields）
-    "zebra": true
-  }]
+  "sheets": [
+    {
+      "name": "SKU数据",
+      "dataRef": "a1b2c3d4",              // 批次 ID（抓取工具响应里的 dataRef.id；多页批次先用 data_ref_tool 按序合并——可能重复用 dedupe 一步完成，否则 merge；信封响应先 extract）
+      "fields": ["title", "price", "url"], // 可选：导出哪些列、什么顺序（缺省全部字段）
+      "headers": ["商品名", "价格", "链接"], // 可选：表头文案（缺省用 fields）
+      "zebra": true
+    },
+    {
+      "name": "汇总",                      // 混排：手写 rows 表（与 dataRef 表分属不同工作表）
+      "rows": [
+        ["总行数", { "formula": "COUNTA(SKU数据!A2:A9999)" }],
+        ["平均价格", { "formula": "AVERAGE(SKU数据!B2:B9999)", "numFmt": "0.00" }]
+      ]
+    }
+  ]
 }
 ```
 
 - 对象数组批次用 `fields` 选列/定序（字段名拼写错误会被校验拒绝并提示实际字段）；二维数组批次可用 `headers` 定表头或 `firstRowAsHeader: true`。字段值若是嵌套对象/数组，会以 JSON 文本写入单元格——需要拆列请在抓取脚本中展平字段。
-- `name/title/merges/columns/freeze/autoFilter/zebra` 等样式选项与 `create` 完全一致。
-- 报错常见原因：批次 ID 不存在或已过期（暂存区仅浏览器会话内约 12 小时有效）；行数超单表 5000 上限（分 sheet/分文件）。
+- `name/title/merges/columns/cells/freeze/autoFilter/zebra` 等样式选项与 `create` 完全一致；`cells` 可在数据区之外追加注释/落款。
+- `create_from_data` 至少要有一个 `dataRef` 表（否则改用 `create`）；`fields` 只对 `dataRef` 表有效。
+- 报错常见原因：批次 ID 不存在或已过期（暂存区仅浏览器会话内约 12 小时有效）；同一张表同时给了 `dataRef` 与 `rows`；行数超单表 5000 上限（分 sheet/分文件）。
 
 ## create 的数据结构速查
 
@@ -94,15 +105,15 @@ tags: excel 表格 导出
 ## 错误处理
 
 - 工具失败**不会中断对话**，错误信息格式为 `参数不合法 → sheets[0].rows[3][2].style.fillColor: 无效颜色 "xyz"（支持 #RGB/#RRGGBB/...）`——**按报错里的路径和原因修正参数后重试**，最多重试 2 次。
-- 常见错误：merge 区域内非左上角含数据；工作表名超 31 字符或含 `: \ / ? * [ ]`；单元格同时给了两种值形态；行数超过 5000。
+- 常见错误：同一张表同时提供 `dataRef` 与 `rows`（数据来源二选一，分到不同工作表）；`create_from_data` 没有任何 `dataRef` 表；`fields` 出现在手写表上；`markdown` 与 `sheets` 参数跨 action 误传（各属于自己的 action）；对象数组批次传 `firstRowAsHeader`（其自动生成表头）；merge 区域内非左上角含数据；工作表名超 31 字符或含 `: \ / ? * [ ]`；单元格同时给了两种值形态；行数超过 5000。
 - 重试仍失败：向用户说明具体原因，并给出你已经整理好的数据（Markdown 表格），不要静默放弃。
 
 ## 容量限制
 
-单文件 ≤16 张工作表、单表 ≤5000 行、总单元格 ≤50000、单表 ≤200 处合并。超出时先与用户确认拆分方案（如按月份拆多表）。
+单文件 ≤16 张工作表、单表 ≤5000 行、总单元格 ≤50000、单表 ≤200 处合并。导出前先估算：**50000 ÷ 导出列数 = 单文件行数上限**（如 8 列 ≈ 6250 行，实际还受单表 5000 行约束）——预计超限时先与用户确认拆分方案（如按月份拆多表），不要撞报错再拆。
 
 ## 边界情况
 
 - 用户只说"导出"没给内容：先从当前对话/页面数据整理出表格再生成，不要生成空文件。
-- 数据来自批量抓取（存在 dataRef 批次）：一律用 `create_from_data` 直接引用导出，禁止把数据行抄进参数；多页批次先 `data_ref_tool(action="merge")` 合并。
+- 数据来自批量抓取（存在 dataRef 批次）：一律用 `create_from_data` 直接引用导出，禁止把数据行抄进参数；多页批次按序合成一个——可能重复时用 `data_ref_tool(action="dedupe")` 拼接+去重一步完成（无重复时直接 `action="merge"`），信封包装的响应先 `data_ref_tool(action="extract")` 提取列表。
 - 用户要求 CSV：本技能只做 xlsx；可先说明并生成 xlsx，或按用户坚持提供 Markdown 表格文本。

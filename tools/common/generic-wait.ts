@@ -12,7 +12,6 @@ export class GenericWaitTool extends BaseTool {
     description: '可中止的通用等待，单位秒；超过 600 秒自动按 600 秒执行，等待不代表页面业务完成',
     category: 'common',
     version: '2.0.0',
-    visionRefresh: 'after',
     author: 'Chrome Extension',
     tags: ['utility', 'wait', 'delay']
   };
@@ -43,6 +42,9 @@ export class GenericWaitTool extends BaseTool {
         throw new Error('等待参数仅接受 waitSeconds');
       const seconds = normalizeWaitSeconds(params.waitSeconds), started = Date.now(), signal = context?.signal;
       const completed = await new Promise<boolean>(resolve => {
+        // 保持 let：signal 已 aborted 时 finish(false) 会在 timer 初始化之前执行，
+        // 改为 const 会触发 TDZ（finish 闭包读取 timer 时它尚未初始化）。
+        // eslint-disable-next-line prefer-const
         let timer: ReturnType<typeof setTimeout> | undefined;
         const finish = (ok: boolean) => { if (timer !== undefined) clearTimeout(timer); signal?.removeEventListener('abort', cancel); resolve(ok); };
         const cancel = () => finish(false);

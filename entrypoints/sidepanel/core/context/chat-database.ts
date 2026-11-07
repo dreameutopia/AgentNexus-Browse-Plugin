@@ -273,10 +273,16 @@ class ChatDatabase {
    */
   async saveMessage(record: ChatMessageRecord): Promise<{ inserted: boolean; skipped: boolean }> {
     // 存储边界归一：图片引用去重/形态校验/上限收敛（防御外部写入与运行期
-    // 直改 record.imageRefs 的脏数据）；其余字段原样落库
-    const normalized: ChatMessageRecord = { ...record, imageRefs: [...new Set([
+    // 直改 record.imageRefs 的脏数据）；其余字段原样落库。
+    // uploadImageRefs（用户上传子集）同样收敛，并防御性收敛为 imageRefs 的
+    // 子集——脏数据/异构备份里游离的引用按静默剔除处理（展示口径不得超出
+    // GC 引用集合，否则气泡会展示已被回收的图片）
+    const mergedImageRefs = [...new Set([
       ...normalizeImageRefs(record.imageRefs), ...protocolImageRefs(record.modelMessages), ...protocolImageRefs(record.modelContext),
-    ])] };
+    ])];
+    const normalized: ChatMessageRecord = { ...record, imageRefs: mergedImageRefs,
+      ...(record.uploadImageRefs !== undefined ? { uploadImageRefs: [...new Set(normalizeImageRefs(record.uploadImageRefs))]
+        .filter(ref => mergedImageRefs.includes(ref)) } : {}) };
     return this.tx([MESSAGES_STORE, SESSIONS_STORE], 'readwrite', async tx => {
       const sessions = tx.objectStore(SESSIONS_STORE);
       const session = (await ChatDatabase.requestToPromise(sessions.get(normalized.chatId))) as
@@ -543,9 +549,16 @@ class ChatDatabase {
       sessionStore.clear();
       messageStore.clear();
       for (const meta of sessions) sessionStore.put(meta);
-      for (const record of messages) messageStore.put({ ...record, imageRefs: [...new Set([
-        ...normalizeImageRefs(record.imageRefs), ...protocolImageRefs(record.modelMessages), ...protocolImageRefs(record.modelContext),
-      ])] });
+      for (const record of messages) {
+        // 与 saveMessage 同一存储边界口径：imageRefs 并入协议引用、
+        // uploadImageRefs 收敛为 imageRefs 子集（备份为外部数据，同样防御）
+        const imageRefs = [...new Set([
+          ...normalizeImageRefs(record.imageRefs), ...protocolImageRefs(record.modelMessages), ...protocolImageRefs(record.modelContext),
+        ])];
+        messageStore.put({ ...record, imageRefs,
+          ...(record.uploadImageRefs !== undefined ? { uploadImageRefs: [...new Set(normalizeImageRefs(record.uploadImageRefs))]
+            .filter(ref => imageRefs.includes(ref)) } : {}) });
+      }
     });
   }
 }

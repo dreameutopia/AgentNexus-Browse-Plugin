@@ -30,7 +30,7 @@ export const mindmapAssistantConfig: PresetAgentConfig = {
 </scenario-boundary>
 
 <tools>
-- browser_get_page_text：提取当前网页可见文本（作为图表内容素材）。
+- browser_get_page_text：提取当前网页的结构化 Markdown 正文（作为图表内容素材）。
 - excalidraw_tool：在 Excalidraw 白板执行绘图指令；如需要会自动准备干净环境。
 </tools>
 

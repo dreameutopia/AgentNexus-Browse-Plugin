@@ -23,7 +23,6 @@
 
 import {
   getAllSkills,
-  getEnabledSkills,
   resolveSkill,
   setCustomSkill,
   removeCustomSkill,
@@ -109,14 +108,18 @@ class SkillEngine {
   // ──── 可用技能（智能体上下文 → 选择性清单） ────
 
   /**
-   * 解析给定智能体上下文的可用技能：
-   *   - 有智能体：显式关联 ∪ 工具映射兜底（按 id 去重，仅启用项）；
-   *   - 无智能体：全部启用技能（默认对话允许用户显式激活任意技能）。
+   * 解析给定智能体上下文的可用技能（一律经 skill-availability 承载校验）：
+   *   - 有智能体：显式关联 ∪ 工具映射兜底 ∪ 自定义自适应；
+   *   - 无智能体：工具映射兜底 ∪ 自定义自适应（默认对话没有可解析的显式关联）。
+   * 三通道统一要求技能 allowedTools ⊆ 会话工具集（advertised ⊆ 可执行 的不变量，
+   * 见 skill-availability 文件头）。无智能体曾直接回落全部启用技能——绕过校验
+   * 会让默认对话的技能目录出现不可执行工具（与 web-research-report 事故同根因），
+   * 已收敛；用户发送时预选技能不受此限（buildActivationRound 显式授权路径，
+   * 其工具经 activation.toolIds 并入会话工具集，从第一轮起可执行）。
    * 挂死引用（技能已删除/停用）静默忽略，绝不让装配失败。
    */
   resolveAvailableSkills(agent: AgentConfig | null, toolIds: readonly string[]): SkillRecord[] {
-    if (!agent) return getEnabledSkills();
-    return computeAvailableSkills(agent.skills, toolIds);
+    return computeAvailableSkills(agent?.skills, toolIds);
   }
 
   // ──── 写入 ────

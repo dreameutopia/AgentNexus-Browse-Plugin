@@ -1,4 +1,8 @@
-import { textContentPayload } from '../browser/text-content-payload';
+import { structuredPagePayload } from '../browser/structured-page-payload';
+import { saveDataRefJson, getDataRef, listDataRefs } from '@/utils/data-ref-store';
+import { trimDanglingSurrogate } from '@/utils/text/truncate';
+import { isRestrictedUrl } from '@/common/constants';
+import { existingNavigationWindowId } from '../browser/navigation-window';
 /**
  * 页面信息工具
  * 提供获取当前页面文本、HTML、基本信息等功能
@@ -9,32 +13,98 @@ import { ToolMetadata } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
 
+/** 单次响应正文上限（字符）：超过即缓存全量并分页 */
+const PAGE_CHARS_LIMIT = 15_000;
+/** 整篇正文上限（字符）：防超大页撑爆注入回传与暂存区（8MB 字节配额按最坏 CJK 3 字节预留） */
+const MAX_DOC_CHARS = 2_000_000;
+/** url 模式后台标签页的加载等待上限 */
+const URL_LOAD_TIMEOUT_MS = 30_000;
+/** url 参数长度上限（超长必为误用） */
+const MAX_URL_PARAM_CHARS = 8_192;
+/** 响应内标题展示上限 */
+const MAX_TITLE_CHARS = 300;
+/** frame 标头中 URL 的展示上限 */
+const MAX_FRAME_URL_CHARS = 200;
+
 /**
- * 获取页面文本工具
+ * 按页切片（代理项安全）：
+ * - 末边界落在增补平面前半（高位代理）时回退一位，该字符归下一页；
+ * - 起边界若恰好是上一页末边界回退遗留的高位代理的后半，回退一位与其前半配对，
+ *   保证任何页都不出现孤立代理项、也不丢字符。
+ */
+function pageSlice(doc: string, page: number, limit: number): string {
+  const rawStart = Math.min((page - 1) * limit, doc.length);
+  let start = rawStart;
+  if (start > 0) {
+    const before = doc.charCodeAt(start - 1);
+    if (before >= 0xd800 && before <= 0xdbff) start -= 1;
+  }
+  const rawEnd = Math.min(page * limit, doc.length);
+  let end = rawEnd;
+  if (end > start && end < doc.length) {
+    const last = doc.charCodeAt(end - 1);
+    if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  }
+  return doc.slice(start, end);
+}
+
+/**
+ * 获取页面文本工具（结构化 Markdown 正文）
+ *
+ * 能力（原 getPageMarkdown 已并入本工具后下线）：
+ *   - 结构化提取：标题层级 / 表格（rowspan+colspan 还原）/ 列表（嵌套+任务项）/
+ *     代码块+语言 / 链接目标 / 引用 / 图片 / 表单控件；
+ *   - 覆盖面：全部可注入 frame（allFrames）+ 可访问 shadow root（slot 分发感知）；
+ *     自动剔除 script/style/svg/canvas 等噪声、隐藏内容与无意义空白/编码串；
+ *   - url 参数（单个，http/https）：后台标签页加载后提取，完成即关闭；
+ *   - 分页：单次正文 ≤15k 字符；超长全文自动缓存为 dataRef（引用 ID + 页码续读，
+ *     与 browser_page_exec 的 readRef 同一暂存区、同一 TTL）。
  */
 export class GetPageTextTool extends BaseBrowserTool {
   name = 'browser_get_page_text';
 
   metadata: ToolMetadata = {
     name: 'browser_get_page_text',
-    description: '获取当前页面的文本内容',
+    description:
+      '读取页面为结构化 Markdown 正文：保留标题层级/表格/列表/代码块+语言/链接/引用结构，' +
+      '覆盖全部可注入 frame 与可访问 shadow root；超 15k 字符自动缓存分页',
     category: 'browser',
-    version: '1.0.0',
+    version: '2.0.0',
     author: 'AgentNexus',
-    tags: ['browser', 'content', 'text']
+    tags: ['browser', 'content', 'text', 'markdown', 'structured'],
+    // 纯读（url 参数走后台加载，不动当前标签页）：视觉循环整批纯读时不重拍
+    noVisionRecapture: true
   };
 
   openaiSchema: OpenAITool = {
     type: 'function',
     function: {
       name: 'browser_get_page_text',
-      description: '获取当前页面的可见文本内容',
+      description:
+        '读取页面正文并转为结构化 Markdown：保留标题层级、表格（含合并单元格）、列表、代码块及语言、链接目标、引用、图片与表单控件；' +
+        '覆盖当前页全部可注入 frame（iframe）与可访问 shadow root，自动剔除隐藏内容、脚本/样式/SVG/Canvas 与无意义空白。' +
+        '默认读当前活动标签页；url=单个网址 时后台加载后提取（不动当前标签页）；tabId 可指定标签页。' +
+        '单次正文最多 15000 字符：超出时全量自动缓存并返回引用 ID（ref）与总页数，' +
+        '用 ref+page 分页续读（缓存浏览器会话内约 12 小时有效），响应含 totalChars/hasMore/nextPage。' +
+        '需要交互展开、批量抽取时用 browser_interact / browser_page_exec；正文抽取质量优先 browser_web_fetcher。',
       parameters: {
         type: 'object',
         properties: {
+          url: {
+            type: 'string',
+            description: '目标网址（可选，仅支持单个 http/https URL）。提供后在后台标签页加载并提取，完成后自动关闭；不提供则读当前标签页'
+          },
           tabId: {
             type: 'number',
-            description: '标签页 ID（可选，默认当前活动标签页）'
+            description: '标签页 ID（可选，默认当前活动标签页；与 url 互斥）'
+          },
+          ref: {
+            type: 'string',
+            description: '分页引用 ID（可选，上次超长响应返回的 ref）。提供时不访问任何标签页，直接读缓存正文指定页；与 url、tabId 互斥'
+          },
+          page: {
+            type: 'number',
+            description: '页码（可选，默认 1，每页 15000 字符）。超长正文直接指定页码读取，或配合 ref 续读'
           }
         },
         required: []
@@ -42,32 +112,359 @@ export class GetPageTextTool extends BaseBrowserTool {
     }
   };
 
-  async execute(args: { tabId?: number } = {}): Promise<ToolResult> {
+  async execute(rawArgs: { url?: unknown; tabId?: unknown; ref?: unknown; page?: unknown } = {}): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
-    try {
-      const tab = typeof args?.tabId === 'number'
-        ? await chrome.tabs.get(args.tabId)
-        : await this.getActiveTab();
+    // 参数整体形态防御：非对象（含数组/字符串）按模型误用拒绝，
+    // 错误信息里带实际类型便于自纠——静默当空对象处理会走错目标页
+    if (rawArgs === null || typeof rawArgs !== 'object' || Array.isArray(rawArgs)) {
+      return this.createErrorResponse(
+        `参数必须是对象 { url?, tabId?, ref?, page? }，实际收到 ${Array.isArray(rawArgs) ? 'array' : typeof rawArgs}`
+      );
+    }
+    const args = rawArgs;
 
-      if (!tab || typeof tab.id !== 'number') {
-        return this.createErrorResponse('No active tab found');
+    // ── 参数归一与防御 ──
+    if (args.ref !== undefined && args.ref !== null && typeof args.ref !== 'string') {
+      return this.createErrorResponse(
+        `ref 必须是字符串（分页引用 ID），实际收到 ${Array.isArray(args.ref) ? 'array' : typeof args.ref}`
+      );
+    }
+    const ref = typeof args.ref === 'string' ? args.ref.trim() : '';
+    if (args.url !== undefined && args.url !== null && typeof args.url !== 'string') {
+      return this.createErrorResponse('url 仅支持单个 URL 字符串（不支持数组批量）');
+    }
+    const url = typeof args.url === 'string' ? args.url.trim() : '';
+    if (args.tabId !== undefined && args.tabId !== null &&
+      (!Number.isInteger(args.tabId) || (args.tabId as number) < 0)) {
+      return this.createErrorResponse(`tabId 必须为非负整数，实际收到 ${String(args.tabId)}`);
+    }
+    const requestedTabId = args.tabId as number | undefined;
+    let page = 1;
+    if (args.page !== undefined && args.page !== null) {
+      const parsed = typeof args.page === 'number'
+        ? args.page
+        : typeof args.page === 'string' && (args.page as string).trim() !== ''
+          ? Number(args.page)
+          : NaN;
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        return this.createErrorResponse(`page 必须是 ≥1 的整数（页码），实际收到 ${String(args.page)}`);
       }
+      page = Math.floor(parsed);
+    }
 
+    // ── 模式分诊 ──
+    if (ref) {
+      if (url) {
+        return this.createErrorResponse('ref 与 url 互斥：分页读取缓存正文时不要同时提供 url（ref 模式不会访问页面）');
+      }
+      if (requestedTabId !== undefined && requestedTabId !== null) {
+        return this.createErrorResponse('ref 与 tabId 互斥：ref 模式只读缓存、不访问任何标签页，请只提供 ref 与 page');
+      }
+      return this.readCachedPage(ref, page);
+    }
+    if (url && requestedTabId !== undefined && requestedTabId !== null) {
+      return this.createErrorResponse('url 与 tabId 互斥：url 模式自行创建后台标签页，请只提供其一');
+    }
+
+    // ── 解析目标标签页 ──
+    let targetTabId: number | undefined;
+    let createdTabId: number | null = null;
+    let loadNote: string | undefined;
+    let resolvedUrl: string | undefined;
+    if (url) {
+      if (url.length > MAX_URL_PARAM_CHARS) {
+        return this.createErrorResponse(`url 过长（${url.length} 字符，上限 ${MAX_URL_PARAM_CHARS}）`);
+      }
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(url);
+      } catch {
+        return this.createErrorResponse(`url 无法解析：${url.slice(0, 200)}`);
+      }
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        return this.createErrorResponse(`url 仅支持 http/https 协议，实际收到 ${parsedUrl.protocol}`);
+      }
+      // 与当前活动标签页完全同址时直接读当前页：内容就是刚加载的同一 URL，
+      // 免开重复后台标签页（不匹配时仍走后台加载，不做模糊归一）
+      try {
+        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (activeTab && typeof activeTab.id === 'number' && activeTab.url === parsedUrl.href) {
+          targetTabId = activeTab.id;
+          resolvedUrl = activeTab.url ?? url;
+        }
+      } catch { /* 查询失败不阻断，走正常后台加载 */ }
+      if (targetTabId === undefined) {
+        try {
+          // 绑定现有普通窗口（无窗口时明确报错，绝不隐式新建浏览器窗口——
+          // 与 browser_navigate 等导航工具同一窗口边界）
+          const windowId = await existingNavigationWindowId();
+          const created = await chrome.tabs.create({ url, active: false, windowId });
+          if (!created || typeof created.id !== 'number') {
+            return this.createErrorResponse('后台标签页创建失败');
+          }
+          createdTabId = created.id;
+          const wait = await this.waitForUrlTab(created.id, URL_LOAD_TIMEOUT_MS);
+          if (!wait.ok) {
+            await this.quietCloseTab(created.id);
+            return this.createErrorResponse(`目标页面加载失败：${wait.note ?? '未知原因'}`);
+          }
+          loadNote = wait.note;
+          targetTabId = created.id;
+          resolvedUrl = url;
+        } catch (error) {
+          if (createdTabId !== null) await this.quietCloseTab(createdTabId);
+          return this.createErrorResponse('目标页面打开失败', error);
+        }
+      }
+    } else {
+      try {
+        const tab = requestedTabId !== undefined && requestedTabId !== null
+          ? await chrome.tabs.get(requestedTabId)
+          : await this.getActiveTab();
+        if (!tab || typeof tab.id !== 'number') {
+          return this.createErrorResponse('No active tab found');
+        }
+        if (isRestrictedUrl(tab.url)) {
+          return this.createErrorResponse(
+            `Current page is a restricted URL (${tab.url}) where script injection is not permitted. Navigate to a normal web page first.`
+          );
+        }
+        targetTabId = tab.id;
+        resolvedUrl = tab.url ?? undefined;
+      } catch (error) {
+        return this.createErrorResponse('Failed to resolve target tab', error);
+      }
+    }
+    // 两条分支之外仍无目标（理论不可达，防御性兜底）——不把 undefined 传给注入
+    if (typeof targetTabId !== 'number') {
+      return this.createErrorResponse('未能解析目标标签页（未提供可用 tabId/url，且无活动标签页）');
+    }
+
+    // ── 注入提取（allFrames + shadow root 感知荷载）──
+    try {
       const results = await chrome.scripting.executeScript({
-        target:{tabId:tab.id,allFrames:true},world:'ISOLATED',func:textContentPayload,args:[12000],
+        target: { tabId: targetTabId, allFrames: true },
+        world: 'ISOLATED',
+        func: structuredPagePayload,
       });
-      const frames=results.filter(r=>r.result).map(r=>({frameId:r.frameId,...r.result}));
-      const joined=frames.map(frame=>'[FrameId='+frame.frameId+']\n'+frame.text).join('\n');
-      const textContent=joined.slice(0,24000);
-      return this.createSuccessResponse({
-        textContent,url:tab.url,title:tab.title,tabId:tab.id,length:textContent.length,
-        coverage:{complete:false,frames:frames.map(({text,...frame})=>frame),truncated:joined.length>24000||frames.some(f=>f.truncated),missingResults:results.length-frames.length},
-        hint:'仅 DOM 可见文本，含可注入 frame 和可访问 shadow roots；画布/未加载数据不保证覆盖。不足时用 browser_observe 的 structure/accessibility 或指定 frame 的脚本。',
-      }, 'Page text retrieved successfully');
+      return this.assembleResponse(results ?? [], { targetTabId, requestedUrl: resolvedUrl, page, loadNote });
     } catch (error) {
       return this.createErrorResponse('Failed to get page text', error);
+    } finally {
+      if (createdTabId !== null) await this.quietCloseTab(createdTabId);
     }
+  }
+
+  /** url 模式的后台标签页加载等待：完成 / 超时软失败（按已渲染内容继续）/ 标签页消失 */
+  private async waitForUrlTab(tabId: number, timeoutMs: number): Promise<{ ok: boolean; note?: string }> {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab.status === 'complete') return { ok: true };
+      } catch {
+        return { ok: false, note: '标签页在加载期间被关闭' };
+      }
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    return { ok: true, note: '页面加载超时，已按当前已渲染内容提取' };
+  }
+
+  private async quietCloseTab(tabId: number): Promise<void> {
+    try {
+      await chrome.tabs.remove(tabId);
+    } catch { /* 标签页可能已被用户关闭 */ }
+  }
+
+  /** 组装多 frame 结果 → 整篇正文 → 缓存与分页封装 */
+  private async assembleResponse(
+    results: Array<{ frameId?: number; result?: unknown }>,
+    options: { targetTabId: number; requestedUrl?: string; page: number; loadNote?: string },
+  ): Promise<ToolResult> {
+    const { targetTabId, requestedUrl, page, loadNote } = options;
+    const warnings: string[] = [];
+
+    const frames = results
+      .filter(entry => entry && entry.result && typeof entry.result === 'object')
+      .map(entry => ({ frameId: entry.frameId ?? 0, ...(entry.result as ReturnType<typeof structuredPagePayload>) }))
+      .filter(frame => typeof frame.markdown === 'string')
+      // 主 frame（0）置首，其余按 frameId 升序——正文阅读顺序稳定
+      .sort((a, b) => (a.frameId === 0 ? -1 : b.frameId === 0 ? 1 : a.frameId - b.frameId));
+    const missingResults = results.length - frames.length;
+    if (missingResults > 0) {
+      warnings.push(`${missingResults} 个 frame 注入失败或未返回有效结果（受限/跨域 frame 不保证覆盖）`);
+    }
+    for (const frame of frames) {
+      if (frame.error) warnings.push(`Frame ${frame.frameId} 提取异常：${frame.error}`);
+    }
+    if (frames.length === 0) {
+      return this.createErrorResponse('页面注入成功但没有可提取的正文（可能是空白页或注入被拒绝）');
+    }
+
+    const mainFrame = frames.find(frame => frame.frameId === 0) ?? frames[0];
+    const url = requestedUrl || mainFrame.url || '';
+    // 标题收敛为单行（页面 <title> 可能含换行/多空格，直接拼进 # 标题行会破坏结构）
+    const title = (mainFrame.title || '').replace(/\s+/g, ' ').trim().slice(0, MAX_TITLE_CHARS);
+
+    // 空正文 frame 不进入正文段（只保留在 coverage 里）——否则多 frame 页会
+    // 产出只有标头的空段；有内容的 frame 数决定是否加 FrameId 标头
+    const contentFrames = frames.filter(frame => frame.markdown.trim() !== '');
+    const displayUrl = (frameUrl: string): string =>
+      frameUrl.length > MAX_FRAME_URL_CHARS
+        ? trimDanglingSurrogate(frameUrl, MAX_FRAME_URL_CHARS) + '…'
+        : frameUrl;
+    const sections = contentFrames.map(frame =>
+      contentFrames.length > 1
+        ? `[FrameId=${frame.frameId} | ${displayUrl(frame.url)}]\n\n${frame.markdown}`
+        : frame.markdown,
+    );
+    let doc = (title ? `# ${title}\n\n` : '') + sections.join('\n\n');
+
+    let docTruncated = false;
+    if (doc.length > MAX_DOC_CHARS) {
+      doc = trimDanglingSurrogate(doc, MAX_DOC_CHARS) + '\n\n…［全文超长已截断］';
+      docTruncated = true;
+      warnings.push(`正文超过 ${MAX_DOC_CHARS} 字符上限，已截断`);
+    }
+
+    const totalChars = doc.length;
+    const totalPages = Math.max(1, Math.ceil(totalChars / PAGE_CHARS_LIMIT));
+    if (page > totalPages) {
+      return this.createErrorResponse(
+        `page=${page} 超出范围：正文共 ${totalChars} 字符、${totalPages} 页${totalPages > 1 ? `（1..${totalPages}）` : ''}`
+      );
+    }
+
+    // 超长正文缓存为 dataRef（与 browser_page_exec 同一暂存区），后续 ref+page 分页续读
+    let refId: string | undefined;
+    if (totalChars > PAGE_CHARS_LIMIT) {
+      let saved: Awaited<ReturnType<typeof saveDataRefJson>>;
+      try {
+        saved = await saveDataRefJson(
+          JSON.stringify({
+            type: 'page-text',
+            v: 1,
+            url,
+            title,
+            markdown: doc,
+            frames: frames.map(({ frameId, url: frameUrl, truncated, shadowRoots, markdown }) => ({
+              frameId, url: frameUrl, truncated, shadowRoots, chars: markdown.length,
+            })),
+          }),
+          `页面正文·${(title || url || '').slice(0, 60)}`,
+        );
+      } catch (error) {
+        saved = { ok: false, reason: error instanceof Error ? error.message : String(error) };
+      }
+      if (saved.ok) {
+        refId = saved.meta.id;
+      } else {
+        warnings.push(
+          `全文暂存失败（${saved.reason}）——本次仅返回第 ${page} 页且后续页无法用 ref 续读；` +
+            `需要其它页时重新调用本工具（可带 page=N 按页重取）`,
+        );
+      }
+    }
+
+    const content = pageSlice(doc, page, PAGE_CHARS_LIMIT);
+    const hasMore = page < totalPages;
+    const payload: Record<string, unknown> = {
+      textContent: content,
+      url,
+      title,
+      tabId: targetTabId,
+      length: content.length,
+      totalChars,
+      page,
+      totalPages,
+      hasMore,
+      ...(hasMore ? { nextPage: page + 1 } : {}),
+      ...(refId ? { ref: refId } : {}),
+      ...(refId && hasMore
+        ? {
+            refGuide:
+              `全文已缓存（引用 ${refId}，浏览器会话内约 12 小时有效）：` +
+              `续读用 browser_get_page_text(ref="${refId}", page=${page + 1})，共 ${totalPages} 页`,
+          }
+        : {}),
+      coverage: {
+        frames: frames.map(({ frameId, url: frameUrl, truncated, shadowRoots, markdown }) => ({
+          frameId,
+          url: frameUrl,
+          chars: markdown.length,
+          ...(truncated ? { truncated: true } : {}),
+          ...(shadowRoots ? { shadowRoots } : {}),
+        })),
+        missingResults,
+        ...(docTruncated ? { docTruncated: true } : {}),
+      },
+      ...(loadNote ? { note: loadNote } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
+      hint:
+        '结构化 Markdown 正文：保留标题/表格/列表/代码块/链接结构，覆盖全部可注入 frame 与可访问 shadow root；' +
+        '已剔除隐藏内容与脚本/SVG/Canvas 等噪声。画布/未加载数据不保证覆盖；不足时改用本会话可用的观察类工具'
+    };
+    return this.createSuccessResponse(
+      payload,
+      totalChars === 0
+        ? '页面没有可提取的可见文本（空白页或全部内容在画布/受限 frame 内）'
+        : `已提取结构化正文 ${totalChars} 字符` +
+          `${contentFrames.length > 1 ? `（${contentFrames.length} 个 frame）` : ''}` +
+          `${refId ? `，超长已缓存为 ${refId}（第 ${page}/${totalPages} 页）` : ''}`,
+    );
+  }
+
+  /** ref 分页读取：只读暂存缓存，不访问任何标签页 */
+  private async readCachedPage(refId: string, page: number): Promise<ToolResult> {
+    const entry = await getDataRef(refId);
+    if (!entry) {
+      const existing = await listDataRefs();
+      const hint =
+        existing.length > 0
+          ? `当前可用批次（最多列出 10 个）：${existing.slice(0, 10).map(meta => meta.id + (meta.label ? `「${meta.label}」` : '')).join('、')}`
+          : '暂存区为空（缓存可能已随浏览器会话过期，请重新读取页面）。';
+      return this.createErrorResponse(`ref "${refId}" 不存在或已过期。${hint}`);
+    }
+    let parsed: { type?: string; markdown?: unknown; url?: unknown; title?: unknown; frames?: unknown };
+    try {
+      parsed = JSON.parse(entry.json);
+    } catch {
+      return this.createErrorResponse(`ref "${refId}" 缓存数据损坏，无法分页读取——请重新读取页面`);
+    }
+    if (parsed.type !== 'page-text' || typeof parsed.markdown !== 'string') {
+      return this.createErrorResponse(
+        `ref "${refId}" 不是 browser_get_page_text 的页面正文批次（data_ref 暂存区中还有其它工具的数据）；分页续读请使用本工具返回的 ref`
+      );
+    }
+    const doc = parsed.markdown;
+    const totalChars = doc.length;
+    const totalPages = Math.max(1, Math.ceil(totalChars / PAGE_CHARS_LIMIT));
+    if (page > totalPages) {
+      return this.createErrorResponse(
+        `page=${page} 超出范围：该缓存正文共 ${totalChars} 字符、${totalPages} 页（1..${totalPages}）`
+      );
+    }
+    const content = pageSlice(doc, page, PAGE_CHARS_LIMIT);
+    const hasMore = page < totalPages;
+    return this.createSuccessResponse(
+      {
+        source: 'ref',
+        ref: entry.id,
+        textContent: content,
+        url: typeof parsed.url === 'string' ? parsed.url : '',
+        title: typeof parsed.title === 'string' ? parsed.title : '',
+        length: content.length,
+        totalChars,
+        page,
+        totalPages,
+        hasMore,
+        ...(hasMore ? { nextPage: page + 1 } : {}),
+        ...(Array.isArray(parsed.frames) ? { coverage: { frames: parsed.frames } } : {}),
+      },
+      `已读取缓存 ${entry.id}${entry.label ? `「${entry.label}」` : ''} 第 ${page}/${totalPages} 页` +
+        `（共 ${totalChars} 字符${hasMore ? `，下一页 page=${page + 1}` : '，已到末页'}）`,
+    );
   }
 }
 
@@ -151,7 +548,9 @@ export class GetCurrentPageInfoTool extends BaseBrowserTool {
     category: 'browser',
     version: '1.0.0',
     author: 'AgentNexus',
-    tags: ['browser', 'info', 'page']
+    tags: ['browser', 'info', 'page'],
+    // 纯读（chrome.tabs.query 元信息）：不触碰视口，视觉循环无需重拍
+    noVisionRecapture: true
   };
 
   openaiSchema: OpenAITool = {
@@ -235,7 +634,10 @@ export class GetAllTabsTool extends BaseBrowserTool {
     category: 'browser',
     version: '1.0.0',
     author: 'AgentNexus',
-    tags: ['browser', 'tabs', 'info']
+    tags: ['browser', 'tabs', 'info'],
+    // 纯读（chrome.tabs.query 枚举）：不改变活动标签页与视口，视觉循环无需重拍；
+    // 切换标签页是 browser_switch_tab 的职责（保持默认重拍）
+    noVisionRecapture: true
   };
 
   openaiSchema: OpenAITool = {

@@ -358,11 +358,38 @@ h1 {
   gap: 8px; /* 设置文本域和按钮栏之间的间距 */
   transition: all 0.3s ease;
   box-shadow: 0 2px 8px rgb(41 40 36 / 3%);
+  /* 拖拽上传：覆盖层（.file-drop-hint）的定位基准 */
+  position: relative;
 }
 
 .input-container:focus-within {
   border-color: var(--focus-ring);
   box-shadow: 0 0 0 3px rgb(41 40 36 / 4%);
+}
+
+/* 文件拖入输入区：高亮放置目标（与 focus-within 叠加时拖拽态优先） */
+.input-container.drag-over {
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 3px rgb(59 130 246 / 12%);
+  background: color-mix(in srgb, var(--surface-card) 96%, #3b82f6 4%);
+}
+
+/* 拖拽放置提示覆盖层（不挤占布局；pointer-events 关闭避免抖动 dragleave 计数） */
+.file-drop-hint {
+  position: absolute;
+  inset: 4px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1.5px dashed rgb(59 130 246 / 55%);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface-card) 88%, #3b82f6 12%);
+  color: #2563eb;
+  font-size: 13px;
+  font-weight: 500;
+  pointer-events: none;
 }
 
 .message-input {
@@ -1267,6 +1294,47 @@ h1 {
 .selector-dismiss-btn:hover {
   background: rgba(107, 114, 128, 0.12);
   color: var(--ink-secondary, #787671);
+}
+
+/* 技能卡片底部关联范围提示（仅已选智能体时渲染）：
+   sticky 于卡片底部（与顶部搜索框对称，列表滚动时始终可见），
+   弱化小字说明可选范围 + 直达 hub 智体管理分区的动作按钮（绿色 = 技能主题色） */
+.skill-scope-hint {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: #ffffff;
+  border-top: 1px solid #f1f2f4;
+  border-radius: 0 0 10px 10px;
+}
+
+.skill-scope-hint-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-muted, #9b9790);
+}
+
+.skill-scope-hint-action {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #10b981;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.skill-scope-hint-action:hover {
+  opacity: 0.75;
+  text-decoration: underline;
 }
 
 /* 工具面板样式 */
@@ -2347,8 +2415,9 @@ h1 {
 /* 截图预览区域样式 */
 /* ==================== 待发送附件栏 ====================
  *
- * 位于截图预览与输入容器之间：文本/Office 解析产物与图片附件混排的 chip 列表
- * + 底部预算用量行。chip 移除即时释放预算（预算行随 totalChars 响应式刷新）。
+ * 位于截图预览与输入容器之间：文本/Office 解析产物与图片附件混排的 chip 列表。
+ * 文本 chip 显示分页页数（全文在发送时注册会话文件库，按页续读）；
+ * 图片 chip 显示整理后体积（>2MB 经压缩引擎）。
  */
 
 .attachment-bar {
@@ -2431,14 +2500,6 @@ h1 {
 .attachment-chip-remove:hover {
   background: #fee2e2;
   color: #dc2626;
-}
-
-.attachment-budget {
-  font-size: 11px;
-  color: var(--ink-muted, #9b9790);
-  text-align: right;
-  padding-right: 4px;
-  font-variant-numeric: tabular-nums;
 }
 
 /* chip 增删/位移过渡（TransitionGroup move 类） */

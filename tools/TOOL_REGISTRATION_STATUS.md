@@ -19,7 +19,6 @@ registerAllTools()                      (tools/index.ts)
  ├─ registerSearchTools()               tools/search/
  ├─ registerNavigationTools()           tools/navigation/
  ├─ registerTextCompressionTools()      tools/text-compression/
- ├─ registerAnalyseTools()              tools/analyse/
  ├─ registerAutomationTools()           tools/automation/
  ├─ registerCommonTools()               tools/common/
  ├─ registerVisionTools()               tools/vision/
@@ -35,7 +34,8 @@ registerAllTools()                      (tools/index.ts)
  ├─ registerPythonTools()               tools/python/
  ├─ registerPlanTools()                 tools/plan/
  ├─ registerDataTools()                 tools/data/
- └─ registerLearnTools()                tools/learn/
+ ├─ registerLearnTools()                tools/learn/
+ └─ registerUploadFileTools()           tools/upload-file/
 ```
 
 - **background 端**：`registerAllTools()` 在 background 启动时调用
@@ -56,7 +56,10 @@ registerAllTools()                      (tools/index.ts)
 ## 二、命名约定
 
 - 新一代工具统一 **`browser_` 前缀 + snake_case**：`browser_navigate`、`browser_get_page_text`。
-- 例外（保持既有调用方兼容）：`page-source`、`getPageMarkdown`、`task-submit`、`task-result`、`formFiller`、`semantic_compressor`、`interact`。
+- 例外（保持既有调用方兼容）：`page-source`、`task-submit`、`task-result`、`formFiller`、`semantic_compressor`、`interact`。
+- **`getPageMarkdown` 已下线**：结构化 Markdown 提取已并入 `browser_get_page_text`
+  （`tools/base/page-info-tool.ts` + `tools/browser/structured-page-payload.ts`，
+  结构化正文 + url 直读 + 超 15000 字符 ref 分页），预设与 Agent 提示词不要再引用旧名。
 - **`browser_screenshot` 已下线**：视觉截图统一由 `screenshot`（`tools/vision/screenshot-tool.ts`）提供，预设与 Agent 提示词里不要混用两个名字。
 - 有些名字只是**消息类型别名**，不是注册工具：`browser_go_back` / `browser_go_forward`（映射到 `browser_go_back_or_forward`）。脚本求值统一为 `browser_page_exec`。
 - `browser_refresh`、`browser_set_zoom` **没有注册工具**，只在 `tools-manager-listener.ts` 内联处理——仅当调用方直接发 `{ type: 'browser_refresh' }` 消息时可用，`CALL_TOOL` 通道不可达。
@@ -68,7 +71,6 @@ registerAllTools()                      (tools/index.ts)
 
 | 分类 | 数量 | 工具名 |
 | --- | --- | --- |
-| analyse | 1 | `getPageMarkdown` |
 | automation | 9 | `ai_action`、`ai_locate`、`check_restricted_url`、`extract_data`、`file_upload_getter`、`file_uploader`、`formFiller`、`get_downloads_status`、`xiaozhi_config` |
 | base | 3 | `page-source`、`task-result`、`task-submit` |
 | bilibili | 2 | `bilibili_jump_tool`、`bilibili_subtitle_tool` |
@@ -87,6 +89,7 @@ registerAllTools()                      (tools/index.ts)
 | search | 1 | `web_search` |
 | skill | 2 | `load_skill`、`read_skill_file` |
 | text-processing | 1 | `semantic_compressor` |
+| upload-file | 1 | `read_file` |
 | vision | 7 | `ocr`、`screenshot`、`vision_gui`、`vision_read`、`vision_read_scroll`、`vision_read_wait`、`vision_read_zoom` |
 
 ## 四、消费方

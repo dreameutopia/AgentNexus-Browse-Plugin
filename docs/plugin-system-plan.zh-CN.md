@@ -253,7 +253,7 @@ CLI 打包必须固定条目顺序、时间戳和压缩设置，生成可重复�
 
 ## 8. GitHub 搜索、下载与更新链路
 
-推荐官方维护一个公开 `agentnexus-plugin-registry` 仓库，通过 PR 登记发布者/插件，GitHub Actions 校验并产出带签名、递增序号和有效期的目录快照。它不要求先建设专用市场后端。
+推荐官方维护一个公开 `AgentNexus-Browse-Plugin-Registry` 仓库（与产品仓库同前缀，范围限于浏览器插件产品线），通过 PR 登记发布者/插件，GitHub Actions 校验并产出带签名、递增序号和有效期的目录快照。它不要求先建设专用市场后端。
 
 目录记录包含 pluginKey、展示元数据、已验证 GitHub account/repository 数字 ID、release/tag/asset ID、包 SHA-256、兼容范围、渠道、签名者、撤销状态。目录签名公钥随宿主内置；不能用下载到的公钥验证它自己。缓存最高序号防重放；过期目录不用于静默新安装，已安装插件仍可离线使用。
 
@@ -272,7 +272,7 @@ GitHub Release API 支持下载资产及 SHA-256 digest，Immutable Releases 可
 
 未认证 GitHub REST 通常只有每小时 60 次且搜索限制更严，因此不能每次打开界面对所有插件逐个请求。目录缓存、ETag/条件请求、分批检查、退避与限速必须内置；403/429/离线只影响发现/更新，不影响已安装插件启动。GitHub token 可选，不随插件共享，也不发往重定向目标。[GitHub 限流](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)
 
-本仓库没有自动获得上述目录仓库的发布授权；此处是待实施的分发设施设计。
+官方目录已按上述模式落地：`AgentNexus-Browse-Plugin-Registry` 仓库经 PR 登记、Actions 校验签名并发布目录快照到 GitHub Pages；目录 URL 与目录公钥内置在扩展（`utils/plugins/official-catalog.ts`），发现页默认走官方目录本地搜索，打开插件中心自动检查更新（6 小时节流、限流中止、仅提示不自动安装）。手填 URL/公钥保留为自托管「自定义目录源（高级）」入口。
 
 ## 9. 存储、依赖和用户修改
 

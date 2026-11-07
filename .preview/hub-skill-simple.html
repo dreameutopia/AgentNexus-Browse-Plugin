@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Hub 技能编辑器预览（简单模式）</title>
+<link rel="stylesheet" href="../entrypoints/sidepanel/components/modals/settings-modal.css">
+<link rel="stylesheet" href="../entrypoints/hub/hub.css">
+<style>
+  /* 预览页仅用于视觉核对：撑满视口，便于观察简单模式是否占满界面 */
+  .hub { height: 100vh; }
+</style>
+</head>
+<body>
+<div class="hub">
+  <div class="hub-layout">
+    <!-- 左：导航卡 -->
+    <aside class="hub-sidebar">
+      <h1 class="hub-sidebar-title">管理中心</h1>
+      <nav class="hub-sidebar-nav">
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">智能体</span></button>
+        <button type="button" class="hub-nav-item active"><span class="hub-nav-label">技能</span></button>
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">插件</span></button>
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">备份</span></button>
+      </nav>
+      <div class="hub-sidebar-foot">
+        <div class="hub-locale" role="group">
+          <button type="button" class="hub-locale-btn active">中文</button>
+          <button type="button" class="hub-locale-btn">EN</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 右：内容卡 -->
+    <main class="hub-content">
+      <div class="hub-content-body">
+        <section class="api-section">
+          <!-- 填满态：编辑器吃满内容卡剩余高度 -->
+          <form class="hub-editor is-fill">
+            <div class="hub-editor-head">
+              <div class="hub-editor-head-main">
+                <h2>新建技能</h2>
+                <p class="hub-editor-mode-hint">填写名称、描述、分类、标签与提示词即可，自动生成规范 SKILL.md，百分百创建成功</p>
+              </div>
+              <div class="hub-editor-head-actions">
+                <div class="hub-seg" role="radiogroup">
+                  <span class="hub-seg__thumb" style="width: calc((100% - 6px) / 2);"></span>
+                  <button type="button" role="radio" class="hub-seg__btn is-active">简单模式</button>
+                  <button type="button" role="radio" class="hub-seg__btn">高级模式</button>
+                </div>
+                <button type="button" class="hub-btn">返回列表</button>
+                <button type="button" class="hub-btn">取消</button>
+                <button type="submit" class="hub-btn hub-btn-primary">保存</button>
+              </div>
+            </div>
+
+            <!-- 简单模式：左表单 / 右提示词，网格单行 → 提示词占满窗口剩余空间 -->
+            <div class="hub-editor-split hub-editor-split--skill-simple">
+              <div class="hub-editor-col">
+                <label class="hub-field">
+                  <span class="hub-field-label">技能名（小写字母/数字/连字符）</span>
+                  <input type="text" placeholder="例如：web-research-report">
+                  <span class="hub-hint">规则：小写字母、数字与连字符；将作为技能的唯一标识</span>
+                </label>
+                <label class="hub-field">
+                  <span class="hub-field-label">描述（做什么 + 何时使用）</span>
+                  <input type="text" placeholder="描述该技能做什么、何时使用（供模型发现与匹配）">
+                </label>
+                <div class="hub-field">
+                  <span class="hub-field-label">分类<span class="hub-required">*</span></span>
+                  <div class="cat-select">
+                    <div class="cat-select-row">
+                      <button type="button" class="cat-select-trigger">
+                        <span class="cat-select-dot" style="background: #d8d4cc;"></span>
+                        <span class="cat-select-value is-placeholder">请选择分类</span>
+                        <svg class="cat-select-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                      </button>
+                    </div>
+                  </div>
+                  <span class="hub-hint">分类必选：可选择内置分类或已有自定义分类，也可新建自定义分类</span>
+                </div>
+                <div class="hub-field">
+                  <span class="hub-field-label">标签</span>
+                  <div class="tag-input">
+                    <input type="text" placeholder="输入标签后回车添加，逗号或空格可一次分隔多个">
+                    <p class="hub-hint">最多 8 个标签，用于技能列表的过滤与检索</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="hub-editor-col">
+                <label class="hub-field hub-field--grow">
+                  <span class="hub-field-label">提示词（技能正文）</span>
+                  <textarea class="hub-body-editor hub-field--fill" placeholder="# 技能指令&#10;&#10;## 工作流程&#10;1. …"></textarea>
+                  <span class="hub-hint">当前正文 0 字符；建议保持精炼，详细参考资料放入技能文件</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="hub-editor-footer">
+              <span class="hub-hint">简单模式同样填满界面：右列提示词区占满窗口剩余高度。</span>
+            </div>
+          </form>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+</body>
+</html>

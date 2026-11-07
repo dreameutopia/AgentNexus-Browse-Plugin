@@ -190,6 +190,7 @@ export function initConversationRuntime(): void {
               phase: "start",
               trigger: "pre-run",
             });
+            const startedAt = Date.now();
             try {
               const result = await contextCompactor.compact({
                 messages: runtime.initialContext,
@@ -210,6 +211,16 @@ export function initConversationRuntime(): void {
                   runtime.initialContext.length,
                 ),
               ];
+              // 结果回执随 runtime 进入引擎：助手记录创建时种子为消息时间线的
+              // 首个压缩片段（持久化），与 UI 侧「缓冲事件、assistant-start 时
+              // 种子」同一来源——时间线在两条路径上落成同一形态。
+              runtime.preRunCompaction = {
+                status: "success",
+                originalTokens: result.originalTokens,
+                summaryTokens: result.summaryTokens,
+                summary: result.summary,
+                durationMs: Date.now() - startedAt,
+              };
               emit({
                 type: "compaction",
                 chatId: runtime.chatId,
@@ -217,15 +228,26 @@ export function initConversationRuntime(): void {
                 trigger: "pre-run",
                 originalTokens: result.originalTokens,
                 summaryTokens: result.summaryTokens,
+                summary: result.summary,
+                durationMs: runtime.preRunCompaction.durationMs,
               });
             } catch (error) {
               if (prepareAbort.signal.aborted) throw error;
+              const failureText = String(
+                error instanceof Error ? error.message : error,
+              );
+              runtime.preRunCompaction = {
+                status: "error",
+                error: failureText,
+                durationMs: Date.now() - startedAt,
+              };
               emit({
                 type: "compaction",
                 chatId: runtime.chatId,
                 phase: "failed",
                 trigger: "pre-run",
-                error: String(error instanceof Error ? error.message : error),
+                error: failureText,
+                durationMs: runtime.preRunCompaction.durationMs,
               });
             }
           }

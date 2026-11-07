@@ -2,8 +2,11 @@
  * xlsx 创建工具
  *
  * 单一工具覆盖 Excel 文件生成的完整操作面，通过 action 区分：
- *   - create                ：声明式创建（多表/合并单元格/公式/富文本/超链接/样式/冻结/筛选）
+ *   - create                ：声明式创建（多表/合并单元格/公式/富文本/超链接/样式/冻结/筛选；
+ *                             可引用 dataRef 暂存批次，与手写表跨表混排）
  *   - create_from_markdown  ：把 Markdown 表格文本（支持多表）转换为 xlsx
+ *   - create_from_data      ：批量数据导出入口（dataRef 直出、零转录，至少含一个
+ *                             dataRef 表，可混排手写公式汇总表）
  *
  * 产物路径：生成 → 存入扩展文件库（chrome.storage，fileId 索引）→（可选）自动下载。
  * 返回结果携带 [file:ID|文件名] 标记，渲染端据此展示可下载的文件卡片。
@@ -131,17 +134,28 @@ const CELL_SCHEMA = {
 
 const SHEET_SCHEMA = {
   type: 'object',
-  description: '工作表声明',
+  description:
+    '工作表声明：数据来源二选一——rows 手写数据，或 dataRef 引用暂存批次（同一工作表不能同时提供；不同工作表可混用，可一次生成「批量数据表 + 公式汇总表」的混合工作簿）',
   properties: {
     name: { type: 'string', description: '工作表名（≤31 字符，不含 : \\ / ? * [ ]）' },
     title: { type: 'string', description: '大标题：置于表格上方，跨全部列合并居中加粗' },
     headers: { type: 'array', description: '表头行（默认蓝底白字加粗、冻结表头）', items: CELL_SCHEMA },
     firstRowAsHeader: { type: 'boolean', description: '无 headers 时是否把 rows 第一行当表头美化（默认 false）' },
-    rows: { type: 'array', description: `数据行二维数组（每行 ≤ ${XLSX_LIMITS.maxColumnsPerSheet} 列，共 ≤ ${XLSX_LIMITS.maxRowsPerSheet} 行）`, items: { type: 'array', items: CELL_SCHEMA } },
+    rows: { type: 'array', description: `数据行二维数组（每行 ≤ ${XLSX_LIMITS.maxColumnsPerSheet} 列，共 ≤ ${XLSX_LIMITS.maxRowsPerSheet} 行；与 dataRef 二选一）`, items: { type: 'array', items: CELL_SCHEMA } },
     cells: {
       type: 'array',
-      description: '精确单元格放置（ref 如 "B3"），与 rows 叠加使用（后写覆盖）',
+      description: '精确单元格放置（ref 如 "B3"），与 rows 叠加使用（后写覆盖）；dataRef 表也可用它在数据区之外追加注释/落款',
       items: { type: 'object', properties: { ref: { type: 'string', description: "单元格引用，如 'B3'" } }, required: ['ref'] },
+    },
+    dataRef: {
+      type: 'string',
+      description:
+        '数据批次 ID（browser_page_exec 抓取产生：saveResult 默认开启即暂存，或结果超 2000 字符自动暂存；browser_network_capture 捕获的响应正文也入同一暂存区；data_ref_tool(action="list") 可查，分页批次先 merge/extract/dedupe）。与 rows 互斥；浏览器会话内约 12 小时有效',
+    },
+    fields: {
+      type: 'array',
+      description: '仅 dataRef 表有效：按此字段列表取值，并决定导出列的顺序与数量（缺省取数据全部字段；不在此列表中的字段不导出；字段名拼写错误会被校验拒绝）',
+      items: { type: 'string' },
     },
     merges: { type: 'array', description: "合并区域，如 ['A1:C1','B2:B5']（区域内只允许左上角有数据）", items: { type: 'string' } },
     columns: {
@@ -175,46 +189,22 @@ const SHEET_SCHEMA = {
   required: ['name'],
 };
 
-/**
- * create_from_data 的工作表声明：数据来自暂存批次（dataRef），无需手写 rows。
- * 样式/结构选项与 SHEET_SCHEMA 保持一致，仅把 rows/cells 换成 dataRef + 列映射。
- */
-const DATA_SHEET_SCHEMA = {
-  type: 'object',
-  description: '数据表声明：dataRef 引用的暂存批次直接生成工作表（无需手写 rows，数据零转录）',
-  properties: {
-    name: SHEET_SCHEMA.properties.name,
-    title: SHEET_SCHEMA.properties.title,
-    dataRef: {
-      type: 'string',
-      description: '数据批次 ID（browser_page_exec 抓取产生：saveResult 默认开启即暂存，或结果超 2000 字符自动暂存；data_ref_tool(action="list") 可查，分页批次先 merge）。浏览器会话内约 12 小时有效',
-    },
-    fields: {
-      type: 'array',
-      description: '对象数组数据：按此字段列表取值，并决定导出列的顺序与数量（缺省取数据全部字段；不在此列表中的字段不导出；字段名拼写错误会被校验拒绝）',
-      items: { type: 'string' },
-    },
-    headers: {
-      ...SHEET_SCHEMA.properties.headers,
-      description: '表头行（缺省：对象数组用 fields 作表头并自动美化；二维数组默认无表头，可配 firstRowAsHeader 把首行当表头）',
-    },
-    firstRowAsHeader: SHEET_SCHEMA.properties.firstRowAsHeader,
-    merges: SHEET_SCHEMA.properties.merges,
-    columns: SHEET_SCHEMA.properties.columns,
-    colWidths: SHEET_SCHEMA.properties.colWidths,
-    rowHeights: SHEET_SCHEMA.properties.rowHeights,
-    freeze: SHEET_SCHEMA.properties.freeze,
-    autoFilter: SHEET_SCHEMA.properties.autoFilter,
-    zebra: SHEET_SCHEMA.properties.zebra,
-    tabColor: SHEET_SCHEMA.properties.tabColor,
-    landscape: SHEET_SCHEMA.properties.landscape,
-  },
-  required: ['name', 'dataRef'],
-};
-
 /** 是否为普通对象（非数组） */
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * 错误信息用的安全值预览：JSON 化失败（BigInt/循环引用等程序化入参）时
+ * 回落 String()——错误构造路径自身绝不允许抛错。
+ */
+function previewValue(value: unknown): string {
+  try {
+    const text = JSON.stringify(value ?? null);
+    return typeof text === 'string' ? text : String(value);
+  } catch {
+    return String(value);
+  }
 }
 
 /** 任意抓取值 → xlsx 可接受的纯值（超长文本截断、结构化值紧凑 JSON 化） */
@@ -236,167 +226,226 @@ function toXlsxCell(value: unknown): string | number | boolean | null {
 }
 
 /**
- * create_from_data：把暂存批次（dataRef）转换为 buildWorkbook 可用的工作表声明。
+ * 解析单个 dataRef 工作表：把暂存批次转换为 buildWorkbook 可用的工作表声明。
  * 对象数组 → 按 fields（或全部字段）逐行取值；二维数组 → 行内值规范化后直传。
+ * cells 叠加（数据区外注释/落款）随 styleProps 透传给 buildWorkbook。
  * 所有结构性错误以带参数路径的 XlsxBuildError 抛出，由 execute 统一转为失败结果；
  * 数据质量提示（嵌套对象降级、全空列）以 warnings 返回，不阻断导出。
  */
-async function buildSheetsFromDataRefs(
-  rawSheets: unknown
-): Promise<{ sheets: unknown[]; warnings: string[] }> {
-  if (!Array.isArray(rawSheets) || rawSheets.length === 0) {
+async function resolveDataRefSheet(
+  spec: Record<string, unknown>,
+  path: string,
+): Promise<{ sheet: Record<string, unknown>; warnings: string[]; roughCells: number }> {
+  const refId = spec.dataRef;
+  if (typeof refId !== 'string' || !refId.trim()) {
+    throw new XlsxBuildError(`${path}.dataRef: 必须是数据批次 ID（browser_page_exec 抓取产生：saveResult 默认开启，或结果超 2000 字符自动暂存）`);
+  }
+
+  const entry = await getDataRef(refId.trim());
+  if (!entry) {
     throw new XlsxBuildError(
-      'sheets: create_from_data 需要 sheets 数组（每项含 name 与 dataRef），或单表简写 sheet 对象',
+      `${path}.dataRef: 引用 "${refId}" 不存在或已过期（暂存区数据仅在浏览器会话内有效）——请重新抓取后再导出`,
     );
   }
 
-  const sheets: Record<string, unknown>[] = [];
+  let value: unknown;
+  try {
+    value = JSON.parse(entry.json);
+  } catch {
+    throw new XlsxBuildError(`${path}.dataRef: 批次 "${refId}" 数据已损坏，无法解析`);
+  }
+  if (!Array.isArray(value)) {
+    throw new XlsxBuildError(`${path}.dataRef: 批次 "${refId}" 不是表格形态数据（kind=${entry.kind}），无法生成工作表`);
+  }
+  if (entry.kind === 'value') {
+    throw new XlsxBuildError(
+      `${path}.dataRef: 批次 "${refId}" 不是对象数组或二维数组——请在抓取脚本中返回表格形态的数据`,
+    );
+  }
+
+  // 样式/结构选项透传给 buildWorkbook（dataRef/fields 是本层参数，剔除后再传；
+  // cells 保留——它是数据区之外的叠加放置，与 dataRef 不冲突）
+  const { dataRef: _dataRef, fields: _fields, ...styleProps } = spec;
+
+  let rows: unknown[][];
+  let headers: unknown[] | undefined;
   const warnings: string[] = [];
-  let roughTotalCells = 0;
+
+  if (entry.kind === 'records') {
+    // records 批次恒定自动生成表头——firstRowAsHeader 在此必然被忽略，显式拒绝
+    if (spec.firstRowAsHeader === true) {
+      throw new XlsxBuildError(
+        `${path}.firstRowAsHeader: 对象数组批次自动生成表头，该参数仅适用于二维数组批次`,
+      );
+    }
+    let keys: string[];
+    if (spec.fields !== undefined) {
+      if (!Array.isArray(spec.fields) || !spec.fields.every(k => typeof k === 'string')) {
+        throw new XlsxBuildError(`${path}.fields: 必须是字符串数组（对象数据的字段名列表）`);
+      }
+      keys = spec.fields as string[];
+      // 字段名硬校验：与批次存储时算好的字段并集比对，typo 直接报错而不是静默产出空列。
+      // 并集在存储层截断到 MAX_FIELDS（超出部分不在列表内）——此时跳过校验避免误伤合法字段。
+      const known = entry.fields ?? [];
+      if (known.length > 0 && known.length < DATA_REF_MAX_FIELDS) {
+        const unknownKeys = keys.filter(k => !known.includes(k));
+        if (unknownKeys.length > 0) {
+          throw new XlsxBuildError(
+            `${path}.fields: 字段 ${unknownKeys.map(k => JSON.stringify(k)).join('、')} 不在批次字段列表中（可能拼写有误）。` +
+              `批次实际字段：${known.join('、')}（data_ref_tool(action="info", ref="${refId.trim()}") 可复核）`,
+          );
+        }
+      }
+    } else {
+      keys = entry.fields ?? [];
+    }
+    if (keys.length === 0) {
+      throw new XlsxBuildError(`${path}: 数据没有可导出的字段`);
+    }
+    if (keys.length > XLSX_LIMITS.maxColumnsPerSheet) {
+      throw new XlsxBuildError(
+        `${path}.fields: 字段数 ${keys.length} 超过单表列上限 ${XLSX_LIMITS.maxColumnsPerSheet}——请用 fields 只选需要的列`,
+      );
+    }
+    // 逐行取值时同步做数据质量侦测：嵌套结构降级计数、全空列计数
+    let nestedCount = 0;
+    const definedHits = new Map<string, number>();
+    rows = (value as unknown[]).map(record => {
+      const plain = isPlainRecord(record);
+      return keys.map(key => {
+        const cellValue = plain ? record[key] : undefined;
+        if (cellValue !== undefined && cellValue !== null) {
+          definedHits.set(key, (definedHits.get(key) ?? 0) + 1);
+          if (typeof cellValue === 'object') nestedCount++;
+        }
+        return toXlsxCell(cellValue);
+      });
+    });
+    if (nestedCount > 0) {
+      warnings.push(
+        `${path}（${spec.name}）：${nestedCount} 个单元格的值是嵌套对象/数组，已按紧凑 JSON 文本写入单元格——如需独立列请在抓取脚本中展平字段后再暂存`,
+      );
+    }
+    const emptyKeys = keys.filter(k => (definedHits.get(k) ?? 0) === 0);
+    if (emptyKeys.length > 0 && rows.length > 0) {
+      warnings.push(
+        `${path}（${spec.name}）：字段 ${emptyKeys.join('、')} 在所有行都是空值——若非预期请用 data_ref_tool(action="info") 核对字段名`,
+      );
+    }
+    headers = spec.headers !== undefined ? (spec.headers as unknown[]) : keys;
+  } else {
+    if (spec.fields !== undefined) {
+      throw new XlsxBuildError(`${path}.fields: 仅对象数组数据支持字段筛选（该批次为二维数组）`);
+    }
+    let nestedCount = 0;
+    rows = (value as unknown[]).map(row =>
+      Array.isArray(row)
+        ? row.map(v => {
+            if (typeof v === 'object' && v !== null) nestedCount++;
+            return toXlsxCell(v);
+          })
+        : [toXlsxCell(row)],
+    );
+    if (nestedCount > 0) {
+      warnings.push(
+        `${path}（${spec.name}）：${nestedCount} 个单元格的值是嵌套对象/数组，已按紧凑 JSON 文本写入单元格`,
+      );
+    }
+    headers = spec.headers !== undefined ? (spec.headers as unknown[]) : undefined;
+  }
+
+  if (rows.length > XLSX_LIMITS.maxRowsPerSheet) {
+    throw new XlsxBuildError(
+      `${path}: 批次 "${refId}" 有 ${rows.length} 行，超过单表上限 ${XLSX_LIMITS.maxRowsPerSheet} 行——请分批导出（分多个工作表或多个文件）`,
+    );
+  }
+  const roughCells = rows.length * (headers?.length ?? (rows[0]?.length || 0));
+
+  return {
+    sheet: {
+      ...styleProps,
+      name: spec.name,
+      ...(headers !== undefined ? { headers } : {}),
+      rows,
+    },
+    warnings,
+    roughCells,
+  };
+}
+
+/**
+ * 统一的工作表数据源解析（create / create_from_data 共用）：
+ *   - dataRef 表：解析暂存批次为行数据（零转录通道）；
+ *   - rows/布局表（headers/cells）：原样直通，由 buildWorkbook 全量校验；
+ *   - 同表同时给 dataRef 与 rows → 拒绝（数据来源二选一）；
+ *   - 无任何数据来源 → 拒绝并提示可选来源。
+ * 混排能力由此打通：一次调用可同时产出「批量数据表 + 公式汇总表」。
+ */
+async function resolveWorkbookSheets(
+  rawSheets: unknown,
+): Promise<{
+  sheets: unknown[];
+  warnings: string[];
+  dataRefSheetCount: number;
+  dataRefRoughCells: number;
+}> {
+  if (!Array.isArray(rawSheets) || rawSheets.length === 0) {
+    throw new XlsxBuildError(
+      'sheets: 需要工作表数组（每项含 name，以及 rows 或 dataRef 之一），或单表简写 sheet 对象',
+    );
+  }
+
+  const sheets: unknown[] = [];
+  const warnings: string[] = [];
+  let dataRefSheetCount = 0;
+  let dataRefRoughCells = 0;
 
   for (let i = 0; i < rawSheets.length; i++) {
     const path = `sheets[${i}]`;
     const raw = rawSheets[i];
     if (!isPlainRecord(raw)) {
-      throw new XlsxBuildError(`${path}: 工作表必须是对象，实际收到 ${Array.isArray(raw) ? '数组' : typeof raw}`);
+      const actual = raw === null ? 'null' : Array.isArray(raw) ? '数组' : typeof raw;
+      throw new XlsxBuildError(`${path}: 工作表必须是对象，实际收到 ${actual}`);
     }
     const spec = raw as Record<string, unknown>;
-    if (spec.rows !== undefined || spec.cells !== undefined) {
+    const hasDataRef = spec.dataRef !== undefined;
+    const hasRows = spec.rows !== undefined;
+
+    if (hasDataRef && hasRows) {
       throw new XlsxBuildError(
-        `${path}: create_from_data 不接受 rows/cells——数据来自 dataRef 批次；若需手写数据请改用 action="create"`,
+        `${path}: 数据来源二选一——dataRef（暂存批次）与 rows（手写行）不能同时提供；混合工作簿请把两类表分到不同工作表`,
       );
     }
-    const refId = spec.dataRef;
-    if (typeof refId !== 'string' || !refId.trim()) {
-      throw new XlsxBuildError(`${path}.dataRef: 必须是数据批次 ID（browser_page_exec 抓取产生：saveResult 默认开启，或结果超 2000 字符自动暂存）`);
+
+    if (hasDataRef) {
+      const resolved = await resolveDataRefSheet(spec, path);
+      sheets.push(resolved.sheet);
+      warnings.push(...resolved.warnings);
+      dataRefSheetCount++;
+      dataRefRoughCells += resolved.roughCells;
+      continue;
     }
 
-    const entry = await getDataRef(refId.trim());
-    if (!entry) {
+    // 手写/布局表：fields 只对 dataRef 有意义，出现在这里必是误用——
+    // 显式拒绝而不是静默忽略（杜绝「传了但没生效」的歧义）
+    if (spec.fields !== undefined) {
+      throw new XlsxBuildError(`${path}.fields: fields 仅在提供 dataRef 时有效（用于从暂存批次选列）`);
+    }
+    if (spec.rows === undefined && spec.cells === undefined && spec.headers === undefined) {
       throw new XlsxBuildError(
-        `${path}.dataRef: 引用 "${refId}" 不存在或已过期（暂存区数据仅在浏览器会话内有效）——请重新抓取后再导出`,
+        `${path}: 工作表没有任何内容——提供 rows（手写数据）、dataRef（暂存批次）或 cells/headers（布局）之一`,
       );
     }
-
-    let value: unknown;
-    try {
-      value = JSON.parse(entry.json);
-    } catch {
-      throw new XlsxBuildError(`${path}.dataRef: 批次 "${refId}" 数据已损坏，无法解析`);
-    }
-    if (!Array.isArray(value)) {
-      throw new XlsxBuildError(`${path}.dataRef: 批次 "${refId}" 不是表格形态数据（kind=${entry.kind}），无法生成工作表`);
-    }
-    if (entry.kind === 'value') {
-      throw new XlsxBuildError(
-        `${path}.dataRef: 批次 "${refId}" 不是对象数组或二维数组——请在抓取脚本中返回表格形态的数据`,
-      );
-    }
-
-    // 样式/结构选项透传给 buildWorkbook（dataRef/fields 是本层参数，剔除后再传）
-    const { dataRef: _dataRef, fields: _fields, ...styleProps } = spec;
-
-    let rows: unknown[][];
-    let headers: unknown[] | undefined;
-
-    if (entry.kind === 'records') {
-      let keys: string[];
-      if (spec.fields !== undefined) {
-        if (!Array.isArray(spec.fields) || !spec.fields.every(k => typeof k === 'string')) {
-          throw new XlsxBuildError(`${path}.fields: 必须是字符串数组（对象数据的字段名列表）`);
-        }
-        keys = spec.fields as string[];
-        // 字段名硬校验：与批次存储时算好的字段并集比对，typo 直接报错而不是静默产出空列。
-        // 并集在存储层截断到 MAX_FIELDS（超出部分不在列表内）——此时跳过校验避免误伤合法字段。
-        const known = entry.fields ?? [];
-        if (known.length > 0 && known.length < DATA_REF_MAX_FIELDS) {
-          const unknownKeys = keys.filter(k => !known.includes(k));
-          if (unknownKeys.length > 0) {
-            throw new XlsxBuildError(
-              `${path}.fields: 字段 ${unknownKeys.map(k => JSON.stringify(k)).join('、')} 不在批次字段列表中（可能拼写有误）。` +
-                `批次实际字段：${known.join('、')}（data_ref_tool(action="info", ref="${refId.trim()}") 可复核）`,
-            );
-          }
-        }
-      } else {
-        keys = entry.fields ?? [];
-      }
-      if (keys.length === 0) {
-        throw new XlsxBuildError(`${path}: 数据没有可导出的字段`);
-      }
-      if (keys.length > XLSX_LIMITS.maxColumnsPerSheet) {
-        throw new XlsxBuildError(
-          `${path}.fields: 字段数 ${keys.length} 超过单表列上限 ${XLSX_LIMITS.maxColumnsPerSheet}——请用 fields 只选需要的列`,
-        );
-      }
-      // 逐行取值时同步做数据质量侦测：嵌套结构降级计数、全空列计数
-      let nestedCount = 0;
-      const definedHits = new Map<string, number>();
-      rows = (value as unknown[]).map(record => {
-        const plain = isPlainRecord(record);
-        return keys.map(key => {
-          const cellValue = plain ? record[key] : undefined;
-          if (cellValue !== undefined && cellValue !== null) {
-            definedHits.set(key, (definedHits.get(key) ?? 0) + 1);
-            if (typeof cellValue === 'object') nestedCount++;
-          }
-          return toXlsxCell(cellValue);
-        });
-      });
-      if (nestedCount > 0) {
-        warnings.push(
-          `sheets[${i}]（${spec.name}）：${nestedCount} 个单元格的值是嵌套对象/数组，已按紧凑 JSON 文本写入单元格——如需独立列请在抓取脚本中展平字段后再暂存`,
-        );
-      }
-      const emptyKeys = keys.filter(k => (definedHits.get(k) ?? 0) === 0);
-      if (emptyKeys.length > 0 && rows.length > 0) {
-        warnings.push(
-          `sheets[${i}]（${spec.name}）：字段 ${emptyKeys.join('、')} 在所有行都是空值——若非预期请用 data_ref_tool(action="info") 核对字段名`,
-        );
-      }
-      headers = spec.headers !== undefined ? (spec.headers as unknown[]) : keys;
-    } else {
-      if (spec.fields !== undefined) {
-        throw new XlsxBuildError(`${path}.fields: 仅对象数组数据支持字段筛选（该批次为二维数组）`);
-      }
-      let nestedCount = 0;
-      rows = (value as unknown[]).map(row =>
-        Array.isArray(row)
-          ? row.map(v => {
-              if (typeof v === 'object' && v !== null) nestedCount++;
-              return toXlsxCell(v);
-            })
-          : [toXlsxCell(row)],
-      );
-      if (nestedCount > 0) {
-        warnings.push(
-          `sheets[${i}]（${spec.name}）：${nestedCount} 个单元格的值是嵌套对象/数组，已按紧凑 JSON 文本写入单元格`,
-        );
-      }
-      headers = spec.headers !== undefined ? (spec.headers as unknown[]) : undefined;
-    }
-
-    if (rows.length > XLSX_LIMITS.maxRowsPerSheet) {
-      throw new XlsxBuildError(
-        `${path}: 批次 "${refId}" 有 ${rows.length} 行，超过单表上限 ${XLSX_LIMITS.maxRowsPerSheet} 行——请分批导出（分多个工作表或多个文件）`,
-      );
-    }
-    roughTotalCells += rows.length * (headers?.length ?? (rows[0]?.length || 0));
-
-    sheets.push({
-      ...styleProps,
-      name: spec.name,
-      ...(headers !== undefined ? { headers } : {}),
-      rows,
-    });
+    sheets.push(spec);
   }
 
-  if (roughTotalCells > XLSX_LIMITS.maxTotalCells) {
+  if (dataRefRoughCells > XLSX_LIMITS.maxTotalCells) {
     throw new XlsxBuildError(
-      `预计总单元格数约 ${roughTotalCells} 超过上限 ${XLSX_LIMITS.maxTotalCells}——请减少导出列（fields 精简）或拆分为多个文件`,
+      `预计 dataRef 数据表总单元格数约 ${dataRefRoughCells} 超过上限 ${XLSX_LIMITS.maxTotalCells}——请减少导出列（fields 精简）或拆分为多个文件`,
     );
   }
-  return { sheets, warnings };
+
+  return { sheets, warnings, dataRefSheetCount, dataRefRoughCells };
 }
 
 export class XlsxTool extends BaseTool {
@@ -404,9 +453,9 @@ export class XlsxTool extends BaseTool {
 
   metadata: ToolMetadata = {
     name: 'xlsx_tool',
-    description: '生成 Excel (.xlsx) 文件：多工作表、合并单元格、公式、富文本、超链接、样式美化、自动列宽、批量抓取数据直接导出，并把文件保存为可下载产物',
+    description: '生成 Excel (.xlsx) 文件：多工作表、合并单元格、公式、富文本、超链接、样式美化、自动列宽、批量抓取数据直接导出（支持数据表与公式汇总表混排），并把文件保存为可下载产物',
     category: 'office',
-    version: '1.0.0',
+    version: '1.1.0',
     author: 'AgentNexus',
     displayName: 'Excel 文件生成',
     tags: ['xlsx', 'excel', 'office', 'file', 'export'],
@@ -418,18 +467,18 @@ export class XlsxTool extends BaseTool {
     function: {
       name: 'xlsx_tool',
       description:
-        '生成 Excel (.xlsx) 文件并保存为可下载产物。action=create 用声明式结构一次生成完整工作簿（多表/合并单元格/公式/富文本/超链接/冻结表头/自动筛选/样式）；' +
+        '生成 Excel (.xlsx) 文件并保存为可下载产物。action=create 用声明式结构一次生成完整工作簿（多表/合并单元格/公式/富文本/超链接/冻结表头/自动筛选/样式；也可用 dataRef 引用暂存批次）；' +
         'action=create_from_markdown 把 Markdown 表格文本（支持多表，标题作表名）转为 xlsx；' +
-        'action=create_from_data 把批量抓取的暂存数据（browser_page_exec 产生的 dataRef：saveResult 默认开启即暂存，或结果超 2000 字符自动暂存）直接生成工作表——数据零转录，' +
-        '适合电商 SKU、评论、榜单等大批量场景，务必用它替代手写 rows。' +
+        'action=create_from_data 批量数据导出入口：dataRef 引用暂存批次直接成表（数据零转录，适合电商 SKU、评论、榜单等大批量场景），可与手写 rows 表混排——同一次调用产出「批量数据表 + 公式汇总表」。' +
+        '每张表的数据来源二选一（dataRef 或 rows），不同表可混用。' +
         '默认自动美化：表头蓝底白字加粗、全表细边框、自动列宽、冻结表头。生成成功后按结果中的【输出指引】在回复里插入文件标记。',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['create', 'create_from_markdown', 'create_from_data'], description: '操作类型' },
+          action: { type: 'string', enum: ['create', 'create_from_markdown', 'create_from_data'], description: '操作类型：create=声明式工作簿（手写表与 dataRef 表均可）；create_from_markdown=Markdown 表格转 xlsx；create_from_data=批量数据导出（至少含一个 dataRef 表，可混排手写公式汇总表）' },
           filename: { type: 'string', description: '文件名（无需 .xlsx 后缀也会自动补全）' },
           autoDownload: { type: 'boolean', description: '生成后是否同时下载到浏览器下载目录（默认 false；文件始终保存到扩展文件库供下载）' },
-          sheets: { type: 'array', description: `工作表声明列表（create/create_from_data 必填，1-${XLSX_LIMITS.maxSheets} 张；create 用 rows 手写数据，create_from_data 用 dataRef 引用暂存批次）`, items: SHEET_SCHEMA },
+          sheets: { type: 'array', description: `工作表声明列表（create/create_from_data 必填，1-${XLSX_LIMITS.maxSheets} 张；每张表数据来源二选一：rows 手写数据或 dataRef 引用暂存批次，可混排）`, items: SHEET_SCHEMA },
           sheet: { ...SHEET_SCHEMA, description: '单表简写：只有一张表时可直接给 sheet 对象（与 sheets 二选一）' },
           markdown: { type: 'string', description: 'create_from_markdown 必填：含 Markdown 表格的文本（| 分隔；多张表用标题行 # 分隔并命名）' },
           defaultSheetName: { type: 'string', description: 'create_from_markdown：单表默认工作表名' },
@@ -451,7 +500,7 @@ export class XlsxTool extends BaseTool {
       const { action } = params;
       if (action !== 'create' && action !== 'create_from_markdown' && action !== 'create_from_data') {
         return this.createErrorResponse(
-          `action 必须是 'create'、'create_from_markdown' 或 'create_from_data'，实际收到 ${JSON.stringify(action ?? null)}`,
+          `action 必须是 'create'、'create_from_markdown' 或 'create_from_data'，实际收到 ${previewValue(action)}`,
         );
       }
 
@@ -475,6 +524,13 @@ export class XlsxTool extends BaseTool {
       const dataWarnings: string[] = [];
       let sheetsSpec: unknown;
       if (action === 'create' || action === 'create_from_data') {
+        // 跨 action 参数互斥：markdown 只属于 create_from_markdown——
+        // 传了却没生效属于「静默忽略」，显式拒绝
+        if (params.markdown !== undefined) {
+          return this.createErrorResponse(
+            `markdown 仅适用于 action="create_from_markdown"；当前 action="${action}" 请改用 sheets/sheet 提供数据`,
+          );
+        }
         if (params.sheets !== undefined && params.sheet !== undefined) {
           return this.createErrorResponse(`sheets 与 sheet 只能提供一个（多表用 sheets 数组，单表用 sheet 对象）`);
         }
@@ -482,15 +538,25 @@ export class XlsxTool extends BaseTool {
           return this.createErrorResponse(`缺少工作表数据：请提供 sheets 数组（多表），或单表简写 sheet 对象`);
         }
         sheetsSpec = params.sheets !== undefined ? params.sheets : [params.sheet];
-        if (action === 'create_from_data') {
-          // dataRef → 行数据：从暂存区解析批次并转换（错误带参数路径，由 catch 统一转失败结果；
-          // 数据质量提示以 warnings 透传给模型）
-          const built = await buildSheetsFromDataRefs(sheetsSpec);
-          sheetsSpec = built.sheets;
-          dataWarnings.push(...built.warnings);
+        // 数据源解析（create / create_from_data 共用）：dataRef 表从暂存区解析为
+        // 行数据（零转录），手写/布局表直通；错误带参数路径，由 catch 统一转失败
+        // 结果，数据质量提示以 warnings 透传给模型
+        const resolved = await resolveWorkbookSheets(sheetsSpec);
+        if (action === 'create_from_data' && resolved.dataRefSheetCount === 0) {
+          return this.createErrorResponse(
+            'create_from_data 至少需要一个 dataRef 工作表（引用暂存批次，实现批量数据零转录导出）；纯手写工作簿请改用 action="create"',
+          );
         }
+        sheetsSpec = resolved.sheets;
+        dataWarnings.push(...resolved.warnings);
         // 结构合法性由 buildWorkbook 逐项校验（报错带参数路径）
       } else {
+        // 同上：sheets/sheet 只属于 create/create_from_data
+        if (params.sheets !== undefined || params.sheet !== undefined) {
+          return this.createErrorResponse(
+            'sheets/sheet 仅适用于 action="create" 或 "create_from_data"；create_from_markdown 请改用 markdown 参数提供表格文本',
+          );
+        }
         sheetsSpec = parseMarkdownTables({
           markdown: params.markdown,
           path: 'markdown',

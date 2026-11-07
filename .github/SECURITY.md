@@ -4,8 +4,7 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 2.0.x   | :white_check_mark: |
-| < 2.0   | :x:                |
+| 0.0.x   | :white_check_mark: |
 
 ## Reporting a Vulnerability
 
@@ -19,7 +18,7 @@ We take the security of AgentNexus Browse Helper seriously. If you have discover
 
 ### Please DO:
 
-- **Email us** with details of the vulnerability
+- **Email us** at `13077995107@163.com` with details of the vulnerability
 - Provide enough information to reproduce the issue
 - Allow us a reasonable time to respond and fix the issue before any disclosure
 

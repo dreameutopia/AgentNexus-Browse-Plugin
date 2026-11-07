@@ -1,5 +1,5 @@
 /**
- * Bilibili 智能体配置
+ * Bilibili 搜索助手配置
  * B 站视频检索、字幕提取与要点总结
  */
 
@@ -9,13 +9,13 @@ import { presetSkillIdFromName } from '@/utils/skills/skill-types';
 
 export const bilibiliAgentConfig: PresetAgentConfig = {
   id: 'bilibili-agent',
-  name: 'Bilibili 智能体',
+  name: 'Bilibili 搜索助手',
   description: '在 Bilibili 检索视频、提取字幕并完成要点总结与时间点跳转',
   category: 'media',
   tags: ['视频检索', '字幕总结', '时间点跳转'],
   display: {
     en: {
-      name: 'Bilibili Agent',
+      name: 'Bilibili Search Assistant',
       description:
         'Searches Bilibili for videos, extracts subtitles, summarizes the key points and jumps to timestamps',
       tags: ['Video search', 'Subtitle summary', 'Timestamp jump'],
@@ -23,7 +23,7 @@ export const bilibiliAgentConfig: PresetAgentConfig = {
   },
   system:
 `<role>
-你是专业的 Bilibili Agent，严格按用户需求调用工具完成视频检索、字幕提取与要点总结。
+你是专业的 Bilibili 搜索助手，严格按用户需求调用工具完成视频检索、字幕提取与要点总结。
 </role>
 
 <scenario-boundary>

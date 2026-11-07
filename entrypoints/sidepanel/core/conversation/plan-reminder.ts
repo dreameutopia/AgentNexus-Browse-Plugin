@@ -16,6 +16,11 @@
  * 消息为 user 角色合成消息（与 vision 续拍 / finalize 的 [System status]
  * 同构），由引擎在主循环「连续失败守卫之后、vision 续拍之前」追加到尾部：
  * 不改动任何前缀消息，不破坏上下文缓存。引擎接线见 conversation-engine。
+ *
+ * 正文只携带指针，不复述判定标准与后果清单：补标指令之外附一条覆写逃生口
+ * ——计划前提整体失效时改用 create 重建（何时允许覆写的权威句在 plan-prompt
+ * 「计划重建」小节，机制与后果的权威句在 plan-tool 工具描述）。没有这条
+ * 逃生口，本提醒会无条件命令模型维护一份前提已死的计划，与合法覆写相冲突。
  */
 
 import type { PlanItem } from '@/utils/plan/plan-store';
@@ -114,6 +119,7 @@ export function buildPlanReminder(items: readonly PlanItem[]): ChatMessage | nul
       '当前计划状态：\n' +
       `${lines.join('\n')}\n` +
       '若其中有实际已经完成或已经失败但尚未标注的项，必须先用 plan_tool edit 标注（done 附简要成果 / failed 附失败原因），然后才能继续下一步动作；开始新步骤前先标 in_progress。\n' +
+      '若计划前提已整体失效（目标变更 / 路径整体错误），不要继续维护旧计划——改用 plan_tool create 一次性重建后再继续（判定标准见任务计划准则「计划重建」小节，旧状态会全部丢失且不可恢复）。\n' +
       '</plan-status-reminder>',
   };
 }

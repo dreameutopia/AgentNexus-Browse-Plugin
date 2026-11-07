@@ -50,6 +50,13 @@ import { toolRegistry } from '@/tools/registry';
 import { skillEngine } from '../registry/skill-engine';
 import { filterVisionAssistantTools, isVisionAssistantTool } from '@/utils/agents/vision-assistant-policy';
 import { needsVisionRefresh, takeVisionToolImage, withoutVisionImage, VISION_TOOL_SETTLE_DELAY_MS, type VisionToolImage } from './vision-feedback';
+import { ViewportImageDeduplicator } from './viewport-image-dedup';
+import {
+  pushCompactionPart,
+  settleCompactionPart,
+  settlePendingCompactionParts,
+  createCompactionPart,
+} from '../../utils/chat/compaction-part';
 import { GENERIC_WAIT_TOOL_ID, waitExecutionTimeout } from '@/tools/common/wait-contract';
 import type {
   ChatMessageRecord,
@@ -173,6 +180,14 @@ interface RunHandle {
   toolCallCount: number;
   /** An explicit screenshot in the same tool batch cannot bypass the 3s gap. */
   captureGapPending?: boolean;
+  /**
+   * 模型可见上下文里已出现的视口图（按内容哈希判重，见 viewport-image-dedup）。
+   * 唯一职责：保证同一张视口截图在模型上下文里只出现一次——
+   * 准备阶段首截图、工具产出的视口图、自动续拍图共用这一个判重集合。
+   * 跨轮次同理：历史重放的截图以协议引用（agentnexus-image:<hash>）形式
+   * 回到上下文，其 hash 已在本集合内时不再重复附图。
+   */
+  viewportDedup: ViewportImageDeduplicator;
   /** 事件发射（run 内闭包，供流式累积等内部方法复用） */
   emit: (event: ConversationEvent) => void;
   /** 最近一次请求的全量上下文用量（RunSummary 数据源） */
@@ -205,6 +220,14 @@ interface RunHandle {
   /** 最近一次计划状态提醒注入所在轮次（0 = 尚未注入）：提醒频率间隔判定输入 */
   lastReminderRound: number;
 }
+
+/**
+ * 视觉重拍豁免判定的注册表回调（needsVisionRefresh 策略单一事实源）：
+ * ToolMetadata.noVisionRecapture 显式为 true 才豁免；未声明（含未知工具与
+ * 插件工具）一律保守重拍。提取为模块级常量供三处调用点共用，杜绝口径漂移。
+ */
+const visionNoRecapture = (name: string): boolean | undefined =>
+  toolRegistry.getTool(name)?.metadata.noVisionRecapture === true;
 
 /** 流式期间快照落库间隔 */
 const SNAPSHOT_INTERVAL_MS = 2000;
@@ -241,7 +264,8 @@ const TOOL_APPROVAL_PREVIEW_MAX_CHARS = 400;
 
 /**
  * 组装发给模型的本轮用户消息（引擎运行与发送前上下文计量共用，保证逐字同源）：
- *   - 转录可见正文（runtime.userInput，含附件摘要标记）+ 附件全文块 + 系统时间戳；
+ *   - 转录可见正文（runtime.userInput，含附件摘要标记）+ <upload_file> 信封
+ *     （文件元信息 + 第 1 页预览，全文在会话文件库由 read_file 分页续读）+ 系统时间戳；
  *   - images 非空时输出多模态数组（text 在前、图片按传入顺序排列），
  *     引擎侧传入「用户上传图片 + vision 截图」，计量侧传入用户上传图片
  *     （vision 截图在运行期产生，预估不含它，实际请求后由引擎测量回填）。
@@ -360,6 +384,14 @@ export class ConversationEngine {
       let userHistoryMessage: ChatMessage | null = null;
       /** vision 首截图的内容哈希（挂接到本条助手消息的图片区，见步骤 2） */
       let initialScreenshotRef: string | null = null;
+      /**
+       * 视口图判重器（模型可见上下文的唯一截图保障）。
+       * 必须在准备阶段之前就绪：首截图入上下文前就要与历史同图比对。
+       * 预载历史视口图哈希——历史截图以协议引用（agentnexus-image:<hash>）
+       * 回到模型上下文，其像素证据模型已持有，本轮同图不再重复附图。
+       */
+      const viewportDedup = new ViewportImageDeduplicator();
+      for (const ref of runtime.priorViewportImageRefs ?? []) viewportDedup.remember(ref);
       if (runtime.userInput.trim()) {
         // 上传图片先入库取引用（失败降级为无引用，绝不阻断发送）
         const userImageRefs =
@@ -372,20 +404,42 @@ export class ConversationEngine {
         emit({ type: 'user-message', chatId: runtime.chatId, record });
 
         let visionImage: { image: string; description: string } | null = null;
+        /**
+         * 首截图是否被判定为「模型上下文已持有」（跨轮次同图）：
+         * 历史重放的截图以协议引用回到上下文，其内容哈希与本轮首拍相同
+         * 即为同一张像素证据——重复附图只多耗 token，不增加信息。
+         * 判重时仍保留描述文本（携带新 screenshotId，GUI 坐标凭据不丢）。
+         */
+        let initialImageDuplicated = false;
         if (runtime.vision) {
           visionImage = await this.captureScreenshot(runtime, abortController.signal);
           if (visionImage) {
             initialScreenshotRef = await imageStore.putFromDataUrl(visionImage.image);
+            // 入库后才有 hash（内容寻址）；入库失败时 ref 为 null → 不判重
+            initialImageDuplicated = viewportDedup.isDuplicate({
+              ref: initialScreenshotRef,
+              kind: 'viewport',
+            });
+            viewportDedup.remember(initialScreenshotRef);
           }
         }
         // 转录（用户可见）存原始输入；附件全文与系统时间戳只拼进发给模型的
         // 这条用户消息——构造收敛到 composeLlmUserMessage（与发送前计量同源），
         // systemPrompt 因此保持逐轮稳定，可命中上下文缓存
+        //
+        // 图片装配口径：用户上传图恒附（用户素材，语义独立）；视口首截图在
+        // 「模型已持有同一像素证据」时不再附图（判重为真 → 只带描述文本）。
+        // 两者都不影响用户侧 UI：截图一律以助手消息内联「查看屏幕」片段展示。
+        const userMessageImages = [
+          ...runtime.userImages,
+          ...(visionImage && !initialImageDuplicated ? [visionImage.image] : []),
+        ];
         userHistoryMessage = composeLlmUserMessage(
-          runtime.userInput + (visionImage ? `\n${visionImage.description}` : runtime.vision ? '\nCurrent viewport screenshot unavailable. Call screenshot to recover; do not use attachment images or old screenshot IDs for GUI coordinates.' : ''),
+          runtime.userInput + (visionImage ? `\n${visionImage.description}${initialImageDuplicated ? '\n(The viewport is pixel-identical to a screenshot already in this conversation; the image is not repeated here. The screenshotId above is the valid one for GUI actions.)' : ''}` : runtime.vision ? '\nCurrent viewport screenshot unavailable. Call screenshot to recover; do not use attachment images or old screenshot IDs for GUI coordinates.' : ''),
           runtime.attachmentPrompt,
-          visionImage ? [...runtime.userImages, visionImage.image] : runtime.userImages,
-          !!visionImage,
+          userMessageImages,
+          // 末位高细节：仅当视口截图真的附在末尾时才有意义（用户上传图恒为 auto）
+          !!visionImage && !initialImageDuplicated,
         );
         record.modelMessages = await storeProtocolMessages([userHistoryMessage]);
         await transcriptEngine.flush(record);
@@ -393,6 +447,16 @@ export class ConversationEngine {
 
       // ── 2. 助手记录占位 + 快照定时器 ──
       record = await transcriptEngine.createAssistantRecord(runtime.chatId);
+      // 发送前压缩（后台 worker 在引擎运行前完成）的结果种子进消息时间线：
+      // 压缩发生在本轮一切内容之前，片段置于流最前；UI 侧经 pre-run 事件
+      // 缓冲在 assistant-start 时种子同一数据，双写两侧由同一来源收敛
+      // （构造器共享 compaction-part.settledCompactionPart，两侧字节一致）。
+      if (runtime.preRunCompaction) {
+        record.parts = [
+          ...record.parts,
+          createCompactionPart({ trigger: 'pre-run', ...runtime.preRunCompaction }),
+        ];
+      }
       const activationContext = structuredClone(runtime.activationContext);
       const activationIds = new Map<string, string>();
       for (const message of activationContext) for (const call of message.tool_calls ?? []) {
@@ -439,6 +503,8 @@ export class ConversationEngine {
         record,
         snapshotTimer: null,
         toolCallCount: 0,
+        // 模型上下文同图去重：首截图是模型当前持有的唯一视口证据
+        viewportDedup,
         emit,
         lastUsage: null,
         compactions: 0,
@@ -816,8 +882,7 @@ export class ConversationEngine {
         // 工具的固定等待纯属额外延迟，多轮累积会显著拖慢对话节奏
         if (!runtime.vision && toolCalls.some(call => call.function?.name?.startsWith('browser_') ||
           call.function?.name === 'vision_gui') &&
-          needsVisionRefresh(toolCalls, toolOutcome.images,
-            name => toolRegistry.getTool(name)?.metadata.visionRefresh)) {
+          needsVisionRefresh(toolCalls, toolOutcome.images, visionNoRecapture)) {
           await this.interruptibleDelay(TOOL_SETTLE_DELAY_MS, abortController.signal);
         }
 
@@ -827,6 +892,7 @@ export class ConversationEngine {
         if ((runtime.vision?.reScreenshotAfterTools || toolOutcome.images.length > 0) && toolOutcome.messages.length > 0) {
           const continuation = await this.buildVisionContinuationMessage(
             runtime,
+            handle,
             toolCalls,
             toolOutcome.messages,
             toolOutcome.images,
@@ -965,8 +1031,24 @@ export class ConversationEngine {
       threshold: 1,
     });
     const headTokens = headUsage.messagesTokens + headUsage.imageTokens;
+    const startedAt = Date.now();
 
-    handle.emit({ type: 'compaction', chatId: runtime.chatId, phase: 'start', trigger: 'runtime', originalTokens: headTokens });
+    // 压缩进度写入消息时间线（record.parts 持久化 + 事件镜像给 UI 的直播
+    // 消息，compaction-part 纯函数是两侧共用的唯一实现）：pending 期间片段
+    // 随 2s 快照定时器落库（中止/崩溃后时间线上仍能看到「压缩到一半」），
+    // 结算由下方 done/failed 或 finalize 的中断结算兜底。
+    handle.record.parts = pushCompactionPart(handle.record.parts, {
+      trigger: 'runtime',
+      originalTokens: headTokens,
+    });
+    handle.emit({
+      type: 'compaction',
+      chatId: runtime.chatId,
+      messageId: handle.record.id,
+      phase: 'start',
+      trigger: 'runtime',
+      originalTokens: headTokens,
+    });
     try {
       const result = await contextCompactor.compact({
         messages: head,
@@ -979,15 +1061,26 @@ export class ConversationEngine {
         ...tail,
       ];
       handle.record.modelContext = await storeProtocolMessages(handle.history);
+      const durationMs = Date.now() - startedAt;
+      settleCompactionPart(handle.record.parts, {
+        status: 'success',
+        originalTokens: result.originalTokens,
+        summaryTokens: result.summaryTokens,
+        summary: result.summary,
+        durationMs,
+      });
       await transcriptEngine.flush(handle.record);
       handle.compactionFailedAt = null;
       handle.emit({
         type: 'compaction',
         chatId: runtime.chatId,
+        messageId: handle.record.id,
         phase: 'done',
         trigger: 'runtime',
         originalTokens: result.originalTokens,
         summaryTokens: result.summaryTokens,
+        summary: result.summary,
+        durationMs,
       });
       console.info(
         `[ConversationEngine] 运行时压缩完成（${plan.mode}）: ${result.originalTokens} → ${result.summaryTokens} token`,
@@ -1017,12 +1110,17 @@ export class ConversationEngine {
       // 冷却：记录失败轮次，间隔 COMPACTION_RETRY_ROUND_GAP 轮后可再试
       handle.compactionFailedAt = iteration;
       console.warn('[ConversationEngine] 运行时压缩失败，进入冷却并降级为窗口裁剪:', error);
+      const failureText = error instanceof Error ? error.message : String(error);
+      const durationMs = Date.now() - startedAt;
+      settleCompactionPart(handle.record.parts, { status: 'error', error: failureText, durationMs });
       handle.emit({
         type: 'compaction',
         chatId: runtime.chatId,
+        messageId: handle.record.id,
         phase: 'failed',
         trigger: 'runtime',
-        error: error instanceof Error ? error.message : String(error),
+        error: failureText,
+        durationMs,
       });
       return false;
     }
@@ -1203,7 +1301,7 @@ export class ConversationEngine {
         }
         if (runtime.toolPolicy === 'vision-assistant' && toolName === 'browser_get_page_text' &&
             (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length > 0))
-          throw new Error('TOOL_NOT_ALLOWED: 视觉助手的全文读取仅接受空参数，不能指定其它标签页。');
+          throw new Error('TOOL_NOT_ALLOWED: 视觉助手的全文读取仅接受空参数（读取当前活动页），不能指定标签页、URL 或分页引用。');
         if (this.deps.requiresApproval(toolName, args)) {
           const approved = options.onToolApproval
             ? await this.awaitToolApproval(options.onToolApproval, {
@@ -1249,7 +1347,7 @@ export class ConversationEngine {
         // 反馈即刻生效，不再被最长 120s 的工具超时卡住
         if (runtime.vision && ['screenshot','vision_read_wait'].includes(toolName) && handle.captureGapPending)
           await this.interruptibleDelay(VISION_TOOL_SETTLE_DELAY_MS, signal);
-        if (runtime.vision && needsVisionRefresh([toolCall], [], name => toolRegistry.getTool(name)?.metadata.visionRefresh))
+        if (runtime.vision && needsVisionRefresh([toolCall], [], visionNoRecapture))
           handle.captureGapPending = true;
         const result = await new Promise<ToolResult>((resolve, reject) => {
           const callController = new AbortController();
@@ -1655,16 +1753,25 @@ export class ConversationEngine {
    * 绝不进入文本部件）。
    * 返回值携带新截图的内容哈希引用（入库成功时）：调用方据此把截图挂接到
    * 助手消息图片区（UI 查看/放大/下载），与合成消息的 data URL 各司其职。
+   *
+   * 纯读批次（整批 noVisionRecapture=true 且无图片产出）返回 null：工具结果
+   * 按文本执行循环原样回传，不合成续拍、不等待、不重拍——当前截图身份
+   * 继续有效（纯读不消耗驱动层 snapshot）。
+   *
+   * 模型可见上下文同图去重：视口图的内容哈希若已在模型上下文出现过
+   * （判重器 ViewportImageDeduplicator，含跨轮次的历史引用），只送描述
+   * 文本（携带新 screenshotId 等元数据），不重复附图；归档与 UI 时间线
+   * 不受影响（截图照常入库、照常发 message-image 事件）。
    */
   private async buildVisionContinuationMessage(
     runtime: ConversationRuntime,
+    handle: RunHandle,
     toolCalls: NonNullable<ChatMessage['tool_calls']>,
     toolMessages: ChatMessage[],
     images: VisionToolImage[],
     signal: AbortSignal,
   ): Promise<{ message: ChatMessage; imageRefs: string[] } | null> {
-    const refresh = !!runtime.vision?.reScreenshotAfterTools && needsVisionRefresh(toolCalls, images,
-      name => toolRegistry.getTool(name)?.metadata.visionRefresh);
+    const refresh = !!runtime.vision?.reScreenshotAfterTools && needsVisionRefresh(toolCalls, images, visionNoRecapture);
     // Tool results already contain the evidence; reads/plans need no synthetic
     // continuation, delay, or new image invalidating the current screenshot ID.
     if (!refresh && images.length === 0) return null;
@@ -1717,20 +1824,39 @@ export class ConversationEngine {
     const delivered = images.map(image => ({
       image: image.image,
       description: image.description,
+      kind: image.kind,
       // 工具产出的截图已在工具循环里归档（同一处图片库），此处复用其引用，
       // 不重复写库；自动续拍没有引用，走常规入库
       imageRef: image.imageRef,
     }));
-    if (fresh) delivered.push({ image: fresh.image, description: fresh.description, imageRef: undefined });
+    if (fresh) delivered.push({ image: fresh.image, description: fresh.description, kind: 'viewport' as const, imageRef: undefined });
     const imageRefs: string[] = [];
     for (const visual of delivered) {
-      (content as Array<{ type: string; text?: string }>).push({ type: 'text', text: visual.description });
-      (content as Array<{ type: string }>).push({
-        type: 'image_url',
-        image_url: { url: visual.image, detail: 'high' },
-      } as never);
+      // 入库取得内容哈希（内容寻址）：工具产出的截图已在工具循环里归档，
+      // 此处复用其引用不重复写库；自动续拍走常规入库。
+      // 入库失败（ref 为 null）时判重无从进行——按「不判重」处理（照常附图）。
       const imageRef = visual.imageRef ?? await imageStore.putFromDataUrl(visual.image);
       if (imageRef) imageRefs.push(imageRef);
+      // 同图去重只针对视口截图（区域放大图与用户上传语义不同，恒不复用）：
+      // 判重依据是内容哈希（图片库内容寻址），跨轮次/跨消息一致——
+      // 模型已持有同一像素证据时不再重复附图，只留描述文本（含新 screenshotId，
+      // GUI 坐标凭据不丢）。动画/光标差异自然失配（安全降级为照常附图）。
+      const duplicate = handle.viewportDedup.isDuplicate({ ref: imageRef, kind: visual.kind });
+      (content as Array<{ type: string; text?: string }>).push({
+        type: 'text',
+        text: duplicate
+          ? `${visual.description}\n(The viewport is pixel-identical to a screenshot already in this conversation; the image is not repeated here. The screenshotId above is the valid one for GUI actions.)`
+          : visual.description,
+      });
+      if (!duplicate) {
+        (content as Array<{ type: string }>).push({
+          type: 'image_url',
+          image_url: { url: visual.image, detail: 'high' },
+        } as never);
+      }
+      // 登记本图（重复的图已在集合中，remember 幂等）；
+      // 区域图不登记——局部证据与视口全景不同，不参与互斥
+      if (visual.kind === 'viewport') handle.viewportDedup.remember(imageRef);
     }
     if (refresh && !fresh) {
       (content as Array<{ type: string; text?: string }>).push({ type: 'text', text: 'Latest viewport screenshot unavailable. Call screenshot to recover. Do not reuse earlier screenshot IDs or infer coordinates from older images.' });
@@ -1746,6 +1872,10 @@ export class ConversationEngine {
     error: string | undefined,
     iterations: number,
   ): Promise<void> {
+    // 中断结算：压缩请求进行中被中止/出错的运行，时间线上不允许残留旋转态
+    // 片段（历史重载后将永远 pending）——统一结算为可读的中断说明。
+    // UI 侧在 aborted/assistant-error 事件处理里做同一收敛（双写两侧同构）。
+    settlePendingCompactionParts(handle.record.parts, t('sidepanel.chat.compactionInterrupted'));
     if (handle.roundText) {
       await this.appendModelMessages(handle, [{ role: 'assistant', content: handle.roundText }]);
       handle.roundText = '';

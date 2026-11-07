@@ -1,11 +1,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: 📖 Documentation
-    url: https://github.com/your-org/AgentNexus-Browse-Plugin/tree/main/docs
+    url: https://github.com/dreameutopia/AgentNexus-Browse-Plugin/tree/main/docs
     about: Please check the documentation before opening an issue.
   - name: 💬 Discussions
-    url: https://github.com/your-org/AgentNexus-Browse-Plugin/discussions
+    url: https://github.com/dreameutopia/AgentNexus-Browse-Plugin/discussions
     about: Ask questions, share ideas, and discuss with the community.
   - name: 🏢 Commercial License Inquiry
-    url: mailto:your-email@example.com
+    url: mailto:13077995107@163.com
     about: Contact us for commercial licensing options if AGPL-3.0 does not meet your needs.

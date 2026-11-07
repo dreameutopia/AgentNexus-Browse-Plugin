@@ -372,6 +372,10 @@ class TranscriptEngine {
       toolCalls: [],
       status: 'done',
       ...(imageRefs.length > 0 ? { imageRefs: [...imageRefs] } : {}),
+      // 恒写入（空上传 = 空数组）：与旧记录的 undefined 区分，UI 侧据此
+      // 只把用户上传展示为气泡底部图片；vision 首截图等引擎注入的引用
+      // 仅进 imageRefs（落库归一化补入），不进本字段
+      uploadImageRefs: [...imageRefs],
       createdAt: now,
       updatedAt: now,
     };
@@ -569,4 +573,36 @@ class TranscriptEngine {
 }
 
 /** 全局单例 */
+/**
+ * 用户消息气泡底部图片区的展示口径：只含用户主动上传的图片。
+ *
+ * 两级判定（新记录精确 / 旧记录反推）：
+ *   1. **新记录**（uploadImageRefs 存在）：直接取该字段——落库时已把
+ *      用户上传与引擎注入的视口截图分开登记，无需二次推断。
+ *   2. **旧记录**（uploadImageRefs 缺失）：无法从记录自身区分来源，
+ *      改用「会话内助手记录的引用」反推——引擎注入的视口截图必然同时
+ *      出现在对应的助手记录里（助手消息是它的展示主体），从用户记录的
+ *      引用中剔除这些即可还原用户真正的上传。
+ *      无法反推时（会话内无助手记录）回退完整 imageRefs：宁可多展示，
+ *      不可丢失用户上传。
+ *
+ * 视觉截图的展示入口恒为助手消息的内联「查看屏幕」片段，不经本函数；
+ * 模型上下文派生继续用完整 imageRefs（截图是协议历史的合法组成部分，
+ * 且图片回收/GC 依赖它）。
+ *
+ * @param record 用户记录
+ * @param assistantImageRefs 会话内助手记录持有的全部引用（用于旧记录反推）
+ */
+export function userVisibleImageRefs(
+  record: Pick<ChatMessageRecord, 'imageRefs' | 'uploadImageRefs'>,
+  assistantImageRefs?: ReadonlySet<string>,
+): string[] {
+  if (record.uploadImageRefs !== undefined) return record.uploadImageRefs;
+  const refs = record.imageRefs ?? [];
+  if (refs.length === 0 || !assistantImageRefs || assistantImageRefs.size === 0) return refs;
+  // 旧记录反推：剔除「助手消息也在展示」的引用（= 引擎注入的视口截图）
+  const uploads = refs.filter(ref => !assistantImageRefs.has(ref));
+  return uploads.length > 0 ? uploads : refs;
+}
+
 export const transcriptEngine = new TranscriptEngine();

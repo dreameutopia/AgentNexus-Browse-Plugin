@@ -40,6 +40,8 @@ export class LoadSkillTool extends BaseTool {
     version: '1.3.0',
     author: 'AgentNexus',
     tags: ['skill', 'instructions', 'agent-skills'],
+    // 纯数据操作（读取技能指令并入会话工具面），不触碰页面：视觉循环无需重拍
+    noVisionRecapture: true,
   };
 
   openaiSchema: OpenAITool = {

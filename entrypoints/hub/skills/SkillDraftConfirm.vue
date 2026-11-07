@@ -75,14 +75,14 @@ function modeLabel(): string {
 </template>
 
 <style scoped>
-/* 玻璃确认卡（品牌靛蓝染层；中性色走 hub.css :root 的镜像 token）
+/* 玻璃确认卡（中性灰阶：管理中心为纯黑白灰体系，不使用任何彩色底）
    变量带回退，设置弹窗变量不可用时仍是完整可读的卡片 */
 .draft-card {
   margin: 0 0 14px;
   padding: 14px 16px;
   border-radius: 14px;
-  background: rgba(239, 246, 255, 0.6);
-  border: 1px solid rgba(147, 197, 253, 0.5);
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(41, 40, 36, 0.14);
   backdrop-filter: blur(16px) saturate(150%);
   -webkit-backdrop-filter: blur(16px) saturate(150%);
   box-shadow: var(--glass-inset, inset 0 1px 0 rgba(255, 255, 255, 0.92)),
@@ -104,7 +104,7 @@ function modeLabel(): string {
   height: 28px;
   flex: 0 0 auto;
   border-radius: 9px;
-  background: rgba(59, 130, 246, 0.16);
+  background: rgba(41, 40, 36, 0.1);
   font-size: 14px;
 }
 
@@ -133,8 +133,8 @@ function modeLabel(): string {
   margin: 0 0 12px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.6);
-  border: 1px solid rgba(147, 197, 253, 0.4);
+  background: rgba(41, 40, 36, 0.05);
+  border: 1px solid rgba(41, 40, 36, 0.1);
 }
 
 .draft-card__row {

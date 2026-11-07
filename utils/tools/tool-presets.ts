@@ -9,6 +9,8 @@
 
 import { CORE_INTERACT_TOOL_IDS } from '@/tools/interact/interact-prompt';
 import { PLAN_TOOL_ID } from '@/tools/plan/plan-prompt';
+import { NOTE_TOOL_ID } from '@/tools/note/note-prompt';
+import { READ_FILE_TOOL_ID } from '@/tools/upload-file/upload-file-prompt';
 
 /** 场景类型 */
 export type ToolScenario =
@@ -17,7 +19,6 @@ export type ToolScenario =
   | 'visionAgent'
   | 'excalidraw'
   | 'bilibili'
-  | 'searchAgent'
   | 'deepSearch'
   | 'automation'
   | 'dataHarvest'
@@ -26,7 +27,6 @@ export type ToolScenario =
   | 'siteLearnVisionForText'
   | 'siteValidateText'
   | 'siteValidateVision'
-  | 'note'
   | 'resource'
   | 'files'
   | 'navigation'
@@ -56,11 +56,18 @@ export type ToolScenario =
 export const CORE_PAGE_TOOL_IDS = ['browser_get_page_text'] as const;
 
 /**
- * 会话「无条件注入」核心工具全集——与 runtime-builder 装配时置首的三项严格同源。
+ * 会话「无条件注入」核心工具全集——与 runtime-builder 装配时置首的清单严格同源。
  *
  * 用途：技能可用性判定需要知道会话**真实**的工具面。智能体预设工具只是一部分，
- * 核心工具（交互征询 / 页面正文 / 任务计划）对任何智能体都恒定可用；漏掉它们
- * 会让「allowed-tools 含核心工具」的技能在所有智能体下都匹配失败。
+ * 核心工具（交互征询 / 页面正文 / 任务计划 / 工作笔记）对任何智能体都恒定可用；
+ * 漏掉它们会让「allowed-tools 含核心工具」的技能在所有智能体下都匹配失败。
+ *
+ * note_tool 与 plan_tool 同级核心：工具与使用准则（NOTE_SYSTEM_PROMPT_SECTION）
+ * 均无条件注入所有会话，任何智能体/场景不可裁剪（vision 策略放行见
+ * vision-assistant-policy）。因此下方各场景清单与 hub 工具组一律**不再登记**
+ * note_tool——单一事实源在此处，场景清单重复登记会造成两处口径漂移。
+ * read_file（上传文件分页读取）同属核心层：用户上传文件的 <upload_file>
+ * 信封出现在任意会话，读取入口必须恒定在场（使用准则见 upload-file-prompt）。
  *
  * 维护约定：新增无条件注入的工具时，必须同时改这里与 runtime-builder 的
  * toolIdSet 初始化（两处口径不一致 = 技能匹配漏判）。
@@ -69,6 +76,8 @@ export const CORE_SESSION_TOOL_IDS: readonly string[] = [
   ...CORE_INTERACT_TOOL_IDS,
   ...CORE_PAGE_TOOL_IDS,
   PLAN_TOOL_ID,
+  NOTE_TOOL_ID,
+  READ_FILE_TOOL_ID,
 ];
 
 /** 基础浏览器操作（同时作为未知场景的防御性回退；不含无条件注入的核心工具） */
@@ -91,7 +100,8 @@ const BASIC_BROWSER_TOOLS = [
 /**
  * 统一网页搜索工具组：单一 web_search（website 枚举覆盖全部 9 平台，一次调用
  * 完成导航 + 结果解析）。原「扩展搜索平台 / 结果抓取 / 集成搜索」三组 27 个
- * 平台专属工具已合并于此；搜索智能体场景与 hub 自定义智能体工具组共用本清单。
+ * 平台专属工具已合并于此；hub 自定义智能体工具组使用本清单
+ * （原搜索智能体预设已并入 Deep Search，该场景随之移除）。
  */
 const WEB_SEARCH_TOOL_IDS = ['web_search'] as const;
 
@@ -104,18 +114,13 @@ const BILIBILI_TOOLS = [
   'web_search',
 ] as const;
 
-/** 笔记 / 外部记忆（统一 note_tool，action 区分增删改查与列表） */
-const NOTE_TOOLS = [
-  'note_tool',
-] as const;
-
 /**
  * 网络观察（CDP Network 域被动捕获）。
  *
  * **两个 action agent（文本通用助手 / 视觉通用助手）不携带此工具**：它们的
  * 职责是操作页面，网络观察对「点哪里、填什么」是噪声；且该工具占用
  * exclusiveText 互斥队列（与视觉 GUI 共用调试会话），会拖慢每一步交互。
- * 因此它只出现在数据收割 / 网站学习 / 技能验证这些「以观察数据为目的」的
+ * 因此它只出现在数据采集 / 网站学习 / 技能验证这些「以观察数据为目的」的
  * 场景里，以及 hub 自定义智能体的资源工具组中。
  */
 const NETWORK_CAPTURE_TOOL = 'browser_network_capture';
@@ -169,8 +174,9 @@ const VISION_AGENT_TOOLS = [
 // 验证段只看 targetMode（技能交给谁用就用谁的执行面盲测）。
 //
 // 共同部分（核心层已无条件注入，此处不重复登记）：
-//   browser_get_page_text / plan_tool / interact。
-// 四个场景都带 note_tool：学习段逐步留痕，验证段记录卡点；
+//   browser_get_page_text / plan_tool / interact / note_tool
+//   （学习段逐步留痕、验证段记录卡点的 note_tool 用法由 learn-prompts 的
+//     <recording> 规范约束，工具本身随核心层恒定可用）。
 // 都带 browser_network_capture：观察页面背后数据（learn-prompts 的
 // dom-locating 块与之交叉锚定）。
 
@@ -199,7 +205,6 @@ const SITE_LEARN_DOM_TOOLS = [
 const SITE_LEARN_TEXT_TOOLS = [
   ...SITE_LEARN_DOM_TOOLS,
   NETWORK_CAPTURE_TOOL,
-  'note_tool',
   'submit_skill',
 ] as const;
 
@@ -233,7 +238,6 @@ export function getSiteLearnScenario(config: { targetMode: 'text' | 'vision'; st
 const SITE_VALIDATE_TEXT_TOOLS = [
   ...SITE_LEARN_DOM_TOOLS,
   NETWORK_CAPTURE_TOOL,
-  'note_tool',
   'submit_validation',
 ] as const;
 
@@ -244,7 +248,6 @@ const SITE_VALIDATE_VISION_TOOLS = [
   'vision_gui',
   'screenshot',
   'browser_window',
-  'note_tool',
   'submit_validation',
 ] as const;
 
@@ -267,11 +270,6 @@ const DATA_HARVEST_TOOLS = [
   'browser_network_request',
   'data_ref_tool',
   'xlsx_tool',
-] as const;
-
-/** 笔记（统一工具，含全部操作） */
-const NOTE_GROUP_TOOLS = [
-  'note_tool',
 ] as const;
 
 /** 资源嗅探与下载（媒体资源嗅探 + 网络捕获 + 资源落盘） */
@@ -306,14 +304,14 @@ const DATA_GROUP_TOOLS = [
   'mermaid_renderer',
 ] as const;
 
-/** 页面深度读取（HTML / 元数据 / 元素信息 / Markdown / 指定区域抓取；
- *  正文读取 browser_get_page_text 已升级为核心能力无条件注入，不再占用工具组位；
+/** 页面深度读取（HTML / 元数据 / 指定区域抓取 / Readability 正文；
+ *  结构化正文读取 browser_get_page_text 已升级为核心能力无条件注入
+ *  （结构化 Markdown + url 直读 + 超长分页），不再占用工具组位；
  *  browser_get_element_info 已下线（由 browser_observe 取代） */
 const PAGE_READ_GROUP_TOOLS = [
   'browser_get_page_html',
   'browser_get_page_info',
   'page-source',
-  'getPageMarkdown',
   'browser_web_fetcher',
 ] as const;
 
@@ -358,7 +356,7 @@ const BOOKMARK_HISTORY_GROUP_TOOLS = [
 
 /**
  * 统一网页搜索（hub 自定义智能体工具组；website 枚举覆盖全部平台）。
- * 与搜索智能体场景共用 WEB_SEARCH_TOOL_IDS，杜绝两份同值清单漂移。
+ * 直接引用 WEB_SEARCH_TOOL_IDS，杜绝两份同值清单漂移。
  */
 const WEB_SEARCH_GROUP_TOOLS = [...WEB_SEARCH_TOOL_IDS];
 
@@ -407,8 +405,9 @@ const PYTHON_GROUP_TOOLS = [
 // （导出供 tests/tools 契约测试枚举全部场景——新增场景若漏登记注册名，
 //   测试会立即失败，防止预设与注册表漂移）
 export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = {
-  /** 默认对话（未选择智能体）：轻量页面读取（正文读取已由核心层无条件提供） */
-  chat: ['getPageMarkdown'],
+  /** 默认对话（未选择智能体）：正文读取已由核心层无条件提供（结构化 Markdown），
+   *  这里只补页面加载诊断 */
+  chat: ['browser_get_page_info'],
 
   /** 视觉助手：观察、阅读滚动、原图放大及等待重拍；运行时另施加能力上限。 */
   visionAssist: ['screenshot', 'vision_read', 'vision_read_scroll', 'vision_read_zoom', 'vision_read_wait', 'generic_wait'],
@@ -433,26 +432,30 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
   /** Bilibili 检索与视频处理（站点搜索工具按会话动态扩展） */
   bilibili: [...BILIBILI_TOOLS],
 
-  /** 搜索智能体：多平台快速检索（统一 web_search，website 枚举区分平台） */
-  searchAgent: [...WEB_SEARCH_TOOL_IDS, 'browser_get_page_info'],
-
-  /** Deep Search：多站点深度调研（站点 website 枚举值按已开启站点动态注入提示） */
+  /** Deep Search：多站点深度调研（站点 website 枚举值按已开启站点动态注入提示；
+   *  检索工具 web_search 由发送装配按已开启站点动态追加，见 deep-search-sites）。
+   *  页面深访工具组（observe / interact / page_exec / dom_explore / web_fetcher）：
+   *  应对 SPA 渲染、登录墙外可见内容、需滚动/翻页的结果页，以及 Readability 级
+   *  正文抽取与结构化提取（相似元素 + JS 脚本）——与数据采集助手同源能力，
+   *  预算与使用纪律由 deep-search 预设提示词约束。
+   *  note_tool 由核心层无条件注入（调研留痕是 Deep Search 的核心工作方式），
+   *  此处不重复登记 */
   deepSearch: [
     'browser_go_back_or_forward',
     'browser_navigate',
     'browser_get_page_info',
-    'getPageMarkdown',
-    ...NOTE_TOOLS,
+    'browser_web_fetcher',
+    'browser_observe',
+    'browser_interact',
+    'browser_dom_explore',
+    'browser_page_exec',
   ],
 
   /** 文本通用助手：通用网页自动化 */
   automation: [...AUTOMATION_TOOLS],
 
-  /** 数据收割机：批量数据采集与导出（脚本抓取 → dataRef 暂存 → xlsx 直出） */
+  /** 数据采集助手：批量数据采集与导出（脚本抓取 → dataRef 暂存 → xlsx 直出） */
   dataHarvest: [...DATA_HARVEST_TOOLS],
-
-  /** 笔记备忘：完整增删改查（hub 自定义智能体工具组） */
-  note: [...NOTE_GROUP_TOOLS],
 
   /** 资源嗅探与下载（hub 自定义智能体工具组） */
   resource: [...RESOURCE_GROUP_TOOLS],

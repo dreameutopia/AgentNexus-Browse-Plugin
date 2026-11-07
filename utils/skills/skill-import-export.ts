@@ -378,6 +378,9 @@ export interface SkillExportPayload {
 /**
  * 把单个技能序列化为规范形态 zip：
  * `<name>/SKILL.md` + `<name>/<资源文件>`（可被本解析器与遵循规范的平台再次导入）。
+ *
+ * 只写文件：空目录在 zip 里没有对应物（目录由文件路径派生），故显式空目录
+ * 不出现在导出物中——需要保留目录结构时，往目录里放文件即可。
  */
 export function exportSkillToZip(skill: SkillRecord): SkillExportPayload {
   const zipEntries: Record<string, Uint8Array> = {};

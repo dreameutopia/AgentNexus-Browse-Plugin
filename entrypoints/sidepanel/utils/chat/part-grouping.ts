@@ -15,9 +15,9 @@
  *
  * ── 连续过程小折叠（buildLivePartSegments）──
  * 直播中与结束态（含展开的前奏折叠内部）共用的过程收拢：**只有连续的
- * 工具调用与思考（含 vision 截图）才收拢**，两项即成簇（对标 Claude
- * Code / Codex / Copilot：最新活动恒可见、被取代的旧活动收拢成组）。
- * 正文文本是正式输出，不参与收拢——它恒可见，并作为簇间隔离：一旦
+ * 工具调用、思考与截图（含 vision 截图、上下文压缩）才收拢**，两项即成簇
+ * （对标 Claude Code / Codex / Copilot：最新活动恒可见、被取代的旧活动收拢
+ * 成组）。正文文本是正式输出，不参与收拢——它恒可见，并作为簇间隔离：一旦
  * 出现非思考输出，过程连续即被隔断，两侧各自成簇。notice（终态注记）
  * 同样恒可见且切断簇；抵达片段流末尾的簇保留最新一项直接可见（直播中
  * 的当前活动不被折叠遮住），其余整组收拢。
@@ -39,6 +39,8 @@ export interface AnswerGrouping {
   hasReasoning: boolean;
   /** 全消息工具调用数（摘要展示用；含锚点之后被并入前奏的调用） */
   toolCount: number;
+  /** 全消息上下文压缩次数（摘要展示用；与 toolCount 同一口径） */
+  compactionCount: number;
 }
 
 /** 结束态分组选项 */
@@ -88,6 +90,7 @@ export function groupAnswerParts(
     tail,
     hasReasoning: options.legacyReasoningText || prelude.some(it => it.part.type === 'reasoning'),
     toolCount: options.totalToolCalls ?? indexed.filter(it => it.part.type === 'tool').length,
+    compactionCount: indexed.filter(it => it.part.type === 'compaction').length,
   };
 }
 
@@ -98,6 +101,7 @@ export interface ClusterCounts {
   tools: number;
   reasoning: number;
   images: number;
+  compactions: number;
 }
 
 /** 「小折叠」摘要条渲染项 */
@@ -123,9 +127,13 @@ export interface LivePartEntry {
 
 export type LiveRenderEntry = LiveClusterBarEntry | LivePartEntry;
 
-/** 过程片段（参与连续过程簇的片段类型） */
+/**
+ * 过程片段（参与连续过程簇的片段类型）：工具调用、思考、截图与上下文压缩。
+ * 压缩片段与工具调用同一待遇——直播中是当前活动（pending 旋转行），被后续
+ * 活动取代后随簇收拢，终态并入前奏折叠；簇摘要计数单列（「N 次压缩」）。
+ */
 const isProcessPart = (part: IndexedMessagePart['part']): boolean =>
-  part.type === 'tool' || part.type === 'reasoning' || part.type === 'image';
+  part.type === 'tool' || part.type === 'reasoning' || part.type === 'image' || part.type === 'compaction';
 
 /**
  * 簇间断片段：**正文文本（正式输出）**与 notice（终态注记）恒可见、绝不
@@ -136,19 +144,30 @@ const isProcessPart = (part: IndexedMessagePart['part']): boolean =>
 const isBreakerPart = (part: IndexedMessagePart['part']): boolean => !isProcessPart(part);
 
 const countParts = (items: IndexedMessagePart[]): ClusterCounts => {
-  const counts: ClusterCounts = { tools: 0, reasoning: 0, images: 0 };
+  const counts: ClusterCounts = { tools: 0, reasoning: 0, images: 0, compactions: 0 };
   for (const item of items) {
     if (item.part.type === 'tool') counts.tools += 1;
     else if (item.part.type === 'reasoning') counts.reasoning += 1;
     else if (item.part.type === 'image') counts.images += 1;
+    else if (item.part.type === 'compaction') counts.compactions += 1;
   }
   return counts;
 };
 
+/**
+ * 簇内已结算过程片段的耗时合计（毫秒；无已结算片段为 0）。
+ * 工具取 executionTime、压缩取 durationMs——两者都是「这一行做了多久」的
+ * 同一语义字段，簇条耗时是全组过程成本，两类都计入。
+ */
 const sumToolDuration = (items: IndexedMessagePart[]): number => {
   let total = 0;
   for (const item of items) {
-    const ms = item.part.type === 'tool' ? item.part.toolCall?.executionTime : undefined;
+    const ms =
+      item.part.type === 'tool'
+        ? item.part.toolCall?.executionTime
+        : item.part.type === 'compaction'
+          ? item.part.compaction?.durationMs
+          : undefined;
     if (typeof ms === 'number' && Number.isFinite(ms) && ms > 0) total += ms;
   }
   return total;

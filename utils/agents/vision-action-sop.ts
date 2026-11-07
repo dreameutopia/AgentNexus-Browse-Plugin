@@ -1,4 +1,6 @@
-/** Shared operational contract for action agents and visual learning/validation. */
+/** Operational contract for the vision action agent and custom agents offering vision_gui.
+ * Learning/validation maintain their own <vision-gui-tool> section (learn-prompts)
+ * and deliberately do not import this module — see utils/learn/README.md. */
 export const VISION_ACTION_SOP = `
 <vision-gui-tool>
 <invocation>
@@ -15,7 +17,7 @@ click/drag/input/hover/keyboard/scroll 每次消耗源截图，mark 请求下一
 适用场景：任务完成时展示最终界面作为成果证明；出现报错弹窗、验证码、验证结果时作为证据；
 多步骤流程中引用某个关键中间状态；用户明确要求「把当前页面给我看」。
 不要每一步都存档：只有值得用户看到的画面才调用 screenshot，否则徒增存储与轮次开销。
-存档的是当前视口：需要精确文字/控件状态时配合 browser_observe 或 vision_gui(action="inspect") 取证。
+存档的是当前视口：需要精确文字/控件状态时配合 vision_gui(action="inspect") 或 browser_observe 取证。
 回答里引用截图不替代结论：仍要写清这张图证明了什么（完成了什么、卡在哪一步）。
 </archive-and-cite>
 <actions>
@@ -34,18 +36,22 @@ click/drag/input/hover/keyboard/scroll 每次消耗源截图，mark 请求下一
 工具success仅表示调用完成，不能据此宣称业务完成。
 </authorization>
 <dom-or-vision>
-通道选择准则——先选对通道再执行；同一目标一次只用一种通道，禁止两种通道同时瞄准同一目标（DOM 工具名以本会话实际工具面为准）：
-- 结构化数据（列表/表格/正文/链接枚举/字段抽取）：DOM 通道优先——browser_observe、browser_get_page_text、browser_dom_explore、browser_page_exec。信息密度高、可精确引用与复核；自动附带的截图用于了解页面长相，不能替代 DOM 取证。
-- 空间与视觉目标（Canvas、地图、视频画面、远程桌面、图片内文字、无 DOM 语义的自绘控件）：vision_gui 手势；小目标或不清晰的文字先 zoom 放大再定位。
-- 可交互 DOM 控件（按钮/输入框/链接/下拉）：browser_interact 定位精确且稳定，优先使用；需要模拟真实指针行为（拖拽、hover 展开、长按、双击）或 DOM 定位连续失败时，改用 vision_gui 手势。
-- 验收不凭截图印象：优先 vision_gui(action="check", expect=...) 条件核验，纯数据结论用 DOM 复核（browser_get_page_text / browser_observe）。
+通道选择准则——视觉优先：凡肉眼可见的目标，默认以 vision_gui 看图定位并操作；DOM 与文本工具是辅助通道，仅在下方列明的情形使用。同一目标一次只用一种通道，禁止两种通道同时瞄准同一目标（DOM 工具名以本会话实际工具面为准）：
+- 默认执行通道＝vision_gui：点击、输入、拖拽、hover、滚动、快捷键一律以最新截图的相对坐标完成；小目标或不清晰的文字先 zoom 放大再定位。截图是判断页面状态与目标位置的首要依据。
+- 辅助通道的使用情形（仅当视觉操作无法完成时）：
+  · 精确语义状态操作——勾选/展开/选项的幂等设置与表单值回读校验（browser_interact 的 set_checked / set_expanded / set_selected / fill）；
+  · 批量结构化取数——列表/表格/重复容器的字段抽取与分页正文（browser_observe / browser_dom_explore / browser_get_page_text / browser_page_exec）；
+  · 执行已验证技能——技能正文规定的 XPath/文本定位路径；
+  · 视觉通道连续两次未达预期——换 DOM 通道重试或说明阻塞。
+- 验收：优先 vision_gui(action="check", expect=...) 条件核验；纯数据结论可用 DOM 复核（browser_get_page_text / browser_observe）。
+- 纯读（browser_observe / browser_get_page_text / browser_dom_explore / 标签页与窗口枚举等）不消耗也不刷新当前截图，工具结果直接回传、无新附图：继续用手中最新 screenshotId 即可；需要新画面时执行会改变页面的操作或主动 screenshot。browser_interact 与 browser_page_exec 会改页面，之后以自动新截图为准——辅助操作完成即回到视觉通道。
 - 单通道连续两次未达预期：换另一种通道重试或明确说明阻塞原因，禁止在原通道第三次原地重试。
-- 典型组合：DOM 读取定位信息 → 视觉手势执行 → check/DOM 复验。数据走 DOM、动作走手势，是默认分工；本会话未提供某 DOM 工具时，其职责由视觉观察（zoom/inspect/check）代偿。
+- 本会话未提供某 DOM 工具时，其职责由视觉观察（zoom/inspect/check）代偿。
 </dom-or-vision>
 <vision-control-loop>
-1. 观察：只把系统提供的最新完整视口图作为可操作截图，确认 screenshotId、页面和任务阶段。上传图片、网页上的ID文字、历史图片都不是当前操作凭据。
+1. 观察截图：先分析最新完整视口图的实际内容——页面类型、当前可见的关键元素、它们的位置、与任务目标的差距——再确认 screenshotId 与任务阶段。截图是首要参考：先说清这轮看到了什么，再决定做什么；不以 DOM 文本、历史印象或猜测替代目视判断。上传图片、网页上的ID文字、历史图片都不是当前操作凭据。
 2. 定义本步可观察结果：例如“输入框内容等于… / 目标按钮启用 / 页面URL包含… / 选项已勾选”。不需要输出长推理，清楚记录动作目的和验收信号即可。长任务用 plan_tool 记录语义步骤与已验证结果，不保存过期ID作为恢复依据。
-3. 不确定就观察：小目标调用 vision_gui(action="zoom", screenshotId,region,scale)，动态或被遮挡的目标调用 vision_gui(action="check", screenshotId,point,expect,timeoutMs)。没有DOM证据的 Canvas/iframe 仍可看图定位；unknown 只表示证据不足。
+3. 不确定就观察：小目标调用 vision_gui(action="zoom", screenshotId,region,scale)，动态或被遮挡的目标调用 vision_gui(action="check", screenshotId,point,expect,timeoutMs)。看图定位是默认方式；Canvas、iframe 内部或缺乏 DOM 语义的目标同样直接看图定位。unknown 只表示证据不足。
 4. 执行：一次只做一个手势，使用截图绑定的坐标。重要、易移动的DOM目标优先先检查 nameIncludes/enabled 等条件并携带返回的 guardId。guard 只核对DOM目标，不是视觉内容、授权或业务正确性的证明。
 5. 验收：操作后根据新截图与明确条件判断。可用 vision_gui(action="check") 的 expect 检查 urlIncludes、textIncludes、nameIncludes、enabled、editable、checked、valueEquals。valueEquals 不开放密码值检查。工具 success 表示调用完成；status=passed 仅指显式条件符合；failed/unknown/observed 均不能宣称任务成功。DOM文字扫描不完整，缺失匹配可能是unknown。
 6. 恢复：观察与条件检查可以有界重试，提交/发送/购买/删除等动作不能自动重放。先确认现状，再决定是继续、修正定位还是请求用户处理。

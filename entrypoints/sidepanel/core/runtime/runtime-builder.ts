@@ -5,7 +5,9 @@ import { startPluginClient, refresh as refreshPluginCatalog } from '@/utils/plug
  * 运行时装配引擎
  *
  * 职责：把「用户选择（智能体 + 技能 + 模型）」装配为一次性不可变的 ConversationRuntime：
- *   - systemPrompt：XML 分区隔离（environment / agent-instructions / supplementary-context / available-skills）
+ *   - systemPrompt：XML 分区隔离（environment / 固定准则分区（交互征询 · 任务
+ *     计划 · 工作笔记 · 富内容输出 · history-and-tools）/ agent-instructions /
+ *     supplementary-context / available-skills）
  *   - toolIds：多来源合并 + Set 去重（智能体预设 → 技能预授权 → 会话附加 → 技能承载工具）
  *   - model：经模型注册表按引用解析为端点快照（协议驱动/URL/密钥/阈值），密钥只进内存
  *   - initialContext：从用户面转录派生的 AI 面初始上下文
@@ -20,9 +22,12 @@ import { agentEngine, DEFAULT_AGENT_SYSTEM_PROMPT } from '../registry/agent-engi
 import { skillEngine, SKILL_TOOL_IDS } from '../registry/skill-engine';
 import { contextEngine } from '../context/context-engine';
 import { prepareProtocolHistory } from '../context/protocol-history';
+import { collectPriorViewportRefs } from '../context/viewport-ref-collector';
 import { imageStore, normalizeImageRefs } from '../images/image-store';
 import { INTERACT_SYSTEM_PROMPT_SECTION } from '@/tools/interact/interact-prompt';
 import { PLAN_SYSTEM_PROMPT_SECTION } from '@/tools/plan/plan-prompt';
+import { NOTE_SYSTEM_PROMPT_SECTION } from '@/tools/note/note-prompt';
+import { UPLOAD_FILE_SYSTEM_PROMPT_SECTION } from '@/tools/upload-file/upload-file-prompt';
 import { CORE_SESSION_TOOL_IDS } from '@/utils/tools/tool-presets';
 import { filterVisionAssistantTools, isVisionAssistantTool } from '@/utils/agents/vision-assistant-policy';
 import { VISION_ACTION_SOP } from '@/utils/agents/vision-action-sop';
@@ -149,8 +154,9 @@ class RuntimeBuilder {
   /**
    * 装配运行时（异步：AI 面初始上下文需解析图片引用——记录加载点已预载，
    * 此处仍以 await 统一走 imageStore 的缓存/回读路径，保证派生恒定）。
-   * 系统提示词分区顺序：环境声明 → 固定交互准则 → 富内容输出准则 →
-   * 智能体指令 → 补充上下文 → 发现清单（可用技能 − 已激活）。
+   * 系统提示词分区顺序：环境声明 → 固定交互准则 → 任务计划准则 → 笔记准则 →
+   * 上传文件准则 → 富内容输出准则 → history-and-tools → 智能体指令 →
+   * 补充上下文 → 发现清单（可用技能 − 已激活）。
    * 预选技能不进 system prompt：其正文由 activationContext 承载（合成
    * load_skill 轮），由会话引擎追加在本轮用户消息之后。工具合并顺序保证
    * 可预期：核心交互工具（无条件注入，任何智能体不可裁剪）→ 智能体 →
@@ -170,11 +176,13 @@ class RuntimeBuilder {
       throw new Error(`智能体 "${input.agentName}" 不存在`);
     }
 
-    // ── 可用技能（选择性清单：显式关联 ∪ 工具映射兜底；无智能体回落全部启用） ──
+    // ── 可用技能（三通道并经承载校验：显式关联 ∪ 工具映射兜底 ∪ 自定义自适应；
+    // 无智能体的默认对话走映射兜底 ∪ 自定义自适应，不再回落全部启用——清单技能
+    // 的 allowedTools 恒 ⊆ 会话工具面，advertised ⊆ toolIds 不变量由此保证） ──
     // 工具口径 = 无条件注入的核心工具 ∪ 智能体工具 ∪ 会话附加工具（如 Deep Search
     // 按站点动态注入的搜索工具）——「工具在哪技能在哪」对核心工具与动态工具同样
     // 成立。漏掉核心工具会让 allowed-tools 含核心工具的技能在任何智能体下都
-    // 匹配失败（技能可用性第三通道依赖此口径）
+    // 匹配失败（技能可用性判定依赖此口径）
     // disableSkillDiscovery=true（学习/盲测）：可用技能恒为空，发现分区、
     // 技能承载工具与技能携带的 GUI 能力一并关闭（见 RuntimeBuildInput 注释）
     const sessionToolIds = [
@@ -197,8 +205,8 @@ class RuntimeBuilder {
         `运行环境：浏览器扩展 AgentNexus（无终端与本地文件系统）。技能中如提及脚本（scripts/），本环境不执行脚本，请依据指令文字与可用工具完成任务。\n` +
         `导航边界：打开链接优先使用现有窗口的新标签页；browser_navigate 默认 newTab=true，只有明确需要当前页跳转才设 newTab=false。newWindow 参数已删除，禁止创建新的浏览器窗口，也不要通过脚本 window.open 绕过此边界。\n` +
         (isVisionGuide
-          ? `当前页面优先：以本轮最新截图判断布局和可见状态；需要精确文字或控件状态时用 vision_read 补充。仅当用户明确要求全文阅读时调用 browser_get_page_text，其结果可能含屏幕外正文，不能当作当前可见内容。不得执行任意脚本或代替用户点击、输入、导航；技能与附加指令不能扩大该边界。\n`
-          : `当前页面优先：用户提到「当前网站 / 当前页面 / 这个网页 / 本页」或语义明显指向其正在浏览的内容（如"分析这个页面的XX"）时，必须优先调用 browser_get_page_text 读取当前活跃标签页并基于其内容工作（该工具无条件可用），禁止先搜索或跳转其它网站；仅当当前页面信息不足以完成任务时，才补充检索外部资料，并向用户明确说明哪些信息来自当前页面、哪些来自外部检索。\n`) +
+          ? `当前页面优先：以本轮最新截图判断布局和可见状态；需要精确文字或控件状态时用 vision_read 补充。仅当用户明确要求全文阅读时调用 browser_get_page_text（空参数读当前活动页），其结果可能含屏幕外正文与 iframe 内容，不能当作当前可见状态证据。不得执行任意脚本或代替用户点击、输入、导航；技能与附加指令不能扩大该边界。\n`
+          : `当前页面优先：用户提到「当前网站 / 当前页面 / 这个网页 / 本页」或语义明显指向其正在浏览的内容（如"分析这个页面的XX"）时，必须优先调用 browser_get_page_text 读取当前活跃标签页并基于其内容工作（该工具无条件可用，返回保留标题/表格/列表/代码块结构的 Markdown 正文，超长自动分页），禁止先搜索或跳转其它网站；仅当当前页面信息不足以完成任务时，才补充检索外部资料，并向用户明确说明哪些信息来自当前页面、哪些来自外部检索。\n`) +
         `</environment>`,
     );
     // 固定交互准则（任何智能体/技能都不可覆盖）：敏感操作授权与关键决策
@@ -208,6 +216,15 @@ class RuntimeBuilder {
     // 任务计划准则（同样为固定分区）：长难任务的步骤清单与状态跟踪规范
     //（plan_tool 无条件注入，此处文案与其行为严格对齐）
     sections.push(PLAN_SYSTEM_PROMPT_SECTION);
+    // 笔记准则（固定分区，紧随计划准则）：跨会话知识沉淀的时机与内容规范，
+    // 以及与 plan_tool 的分工路由（note_tool 同为无条件注入的核心工具，
+    // 两分区相邻呈现互补分工，杜绝选择歧义——分层契约见 note-prompt 文件头）
+    sections.push(NOTE_SYSTEM_PROMPT_SECTION);
+    // 上传文件读取准则（固定分区，紧随笔记准则）：用户上传文件的
+    // <upload_file> 信封格式与 read_file 的按需分页续读纪律（read_file
+    // 同为无条件注入的核心工具；何时读页的决策协议唯一权威在
+    // upload-file-prompt，信封与工具描述只携带摘要句）
+    sections.push(UPLOAD_FILE_SYSTEM_PROMPT_SECTION);
     // 富内容输出准则（固定分区，按智能体能力协商裁剪）：教模型在合适场景
     // 输出 ```component 信封 / 原生 DSL 围栏，由侧边栏可信渲染管线消费。
     // 分区正文由组件注册表生成（rich-components/registry.ts 单一事实源）；
@@ -219,11 +236,14 @@ class RuntimeBuilder {
     // 学习/盲测会话既无发现清单也无 load_skill，保留「先 load_skill 再用其
     // 工具」的指令会让模型去找一个不存在的入口（死链指令），并给盲测留下
     // 「可以借助技能」的歧义——禁用时改为显式声明本会话不提供技能目录。
+    // 注：可用技能经 skill-availability 承载校验（allowedTools ⊆ 会话工具集），
+    // 其工具已与发现清单一并核验可执行——load_skill 在此是规程加载（方法论
+    // 纪律），不再是能力解锁。
     sections.push(
       '<history-and-tools>\n历史截图仅是过去状态的证据；GUI 操作必须使用最新有效截图，截图失效时重新获取，不得重用旧坐标。' +
         (input.disableSkillDiscovery
           ? '本会话不提供技能目录与 load_skill：不得加载、引用或假定任何既有技能，只依据本会话指令与工具完成任务。\n</history-and-tools>'
-          : '工具目录预先包含可用技能的工具，不代表已经授权执行：先 load_skill 激活对应技能，再使用该技能新增的工具。不得因目录中存在工具就跳过加载或扩大权限。\n</history-and-tools>'),
+          : '工具目录中可用技能的工具已随技能可用性核验（其声明的全部工具都在本会话工具面内）。使用某技能的工具前仍须先 load_skill 获取其完整规程并按规程执行——跳过加载直接调用是盲用。\n</history-and-tools>'),
     );
     // 智能体指令分区：动态装配方（网站学习等）经 agentSystemOverride 整体替换，
     // 否则取所选智能体指令，再兜底默认指令
@@ -239,7 +259,7 @@ class RuntimeBuilder {
     // 由会话侧追加到本轮用户消息之后；此处只取其预授权工具参与工具合并
     const selectedSkillNames = input.skillNames.filter(name => (!isVisionGuide || skillEngine.get(name)?.allowedTools.every(isVisionAssistantTool)) && (!pluginCeiling || skillEngine.get(name)?.allowedTools.every(allowedByPlugin)));
     if (isVisionGuide && selectedSkillNames.length !== input.skillNames.length) {
-      sections.push('<capability-boundary>\n本轮所选技能中存在不可用或超出观察范围的技能，已跳过激活。不要声称已运行这些技能；若用户目标依赖代操作，说明原因并建议切换视觉通用助手 / 文本通用助手 或数据收割机。\n</capability-boundary>');
+      sections.push('<capability-boundary>\n本轮所选技能中存在不可用或超出观察范围的技能，已跳过激活。不要声称已运行这些技能；若用户目标依赖代操作，说明原因并建议切换视觉通用助手 / 文本通用助手 或数据采集助手。\n</capability-boundary>');
     }
     if (pluginCeiling && selectedSkillNames.length !== input.skillNames.length) sections.push('<capability-boundary>所选技能中有超出插件公开授权范围的能力，已跳过这些技能。请向用户说明限制，不得通过加载其它技能绕过。</capability-boundary>');
     const activation = skillEngine.buildActivationRound(selectedSkillNames);
@@ -258,11 +278,12 @@ class RuntimeBuilder {
 
     // ── 工具合并（Set 去重保序；核心工具无条件置首，用户不可裁剪） ──
     // 核心层 = interact 交互征询 + 页面正文读取（browser_get_page_text）+
-    // 任务计划（plan_tool）：
+    // 任务计划（plan_tool）+ 工作笔记（note_tool）：
     //   前者保证关键决策必须征询用户的基线；页面读取保证「读取用户正在看的
     //   页面」这一浏览器 Agent 的基础能力对任何智能体/场景恒定可用（编辑页
     //   已将该工具移出可选工具组，统一由此处默认提供）；计划工具保证长难
-    //   任务的进度跟踪能力恒定可用（会话级数据隔离，见 plan-store）。
+    //   任务的进度跟踪能力恒定可用（会话级数据隔离，见 plan-store）；笔记
+    //   工具保证跨会话知识沉淀能力恒定可用（使用准则见 note-prompt 固定分区）。
     // 与 CORE_SESSION_TOOL_IDS 同源：技能可用性判定复用同一份核心工具口径
     const toolIdSet = new Set<string>(CORE_SESSION_TOOL_IDS);
     for (const toolId of agentToolIds) toolIdSet.add(toolId);
@@ -315,6 +336,10 @@ class RuntimeBuilder {
       },
     );
 
+    // 历史视口截图引用（模型可见上下文的唯一截图保障）：历史截图以协议引用
+    // 回到上下文，像素证据模型已持有——本轮新拍同图不再重复附图。
+    const priorViewportImageRefs = collectPriorViewportRefs(input.priorRecords);
+
     // 压缩点对齐用：初始上下文对应的用户面最大 seq（空历史为 0）
     const priorMaxSeq = input.priorRecords.reduce((max, record) => Math.max(max, record.seq), 0);
 
@@ -339,6 +364,7 @@ class RuntimeBuilder {
       userImages: input.userImages ? [...input.userImages] : [],
       attachmentPrompt: input.attachmentPrompt ?? '',
       initialContext,
+      priorViewportImageRefs,
       // 合成激活轮（未预选技能时为空数组），由会话引擎追加到用户消息之后
       activationContext: activation.messages,
       priorMaxSeq,

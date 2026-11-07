@@ -33,8 +33,10 @@ const SEARCH_TOOL_IDS: readonly string[] = ['web_search'];
 /** 表格生成工具 */
 const SPREADSHEET_TOOL_IDS: readonly string[] = ['xlsx_tool'];
 
-/** 笔记统一工具（外部记忆：增删改查 + 列表） */
-const NOTE_TOOL_IDS: readonly string[] = ['note_tool'];
+// note_tool 不在本表：它是 CORE_SESSION_TOOL_IDS 无条件注入的核心工具，
+// 使用规范由 note-prompt 的 NOTE_SYSTEM_PROMPT_SECTION 固定分区统一承载
+//（原 note-workspace 技能已并入该分区并移除，「工具在哪技能在哪」的兜底
+//  对恒定可用的核心工具没有意义）。
 
 /**
  * 内置映射表：工具 ID → 技能引用列表。
@@ -42,7 +44,6 @@ const NOTE_TOOL_IDS: readonly string[] = ['note_tool'];
  *   - Bilibili 系工具        → bilibili-video-summary（视频总结流程）
  *   - 统一检索 web_search    → web-research-report（调研报告流程）
  *   - 表格生成工具           → xlsx-creator（Excel 生成流程）
- *   - 笔记统一工具           → note-workspace（笔记 ID 纪律与记录规范）
  */
 const TOOL_SKILL_MAPPING: Readonly<Record<string, readonly string[]>> = {
   ...Object.fromEntries(
@@ -53,9 +54,6 @@ const TOOL_SKILL_MAPPING: Readonly<Record<string, readonly string[]>> = {
   ),
   ...Object.fromEntries(
     SPREADSHEET_TOOL_IDS.map(toolId => [toolId, [presetSkillIdFromName('xlsx-creator')]]),
-  ),
-  ...Object.fromEntries(
-    NOTE_TOOL_IDS.map(toolId => [toolId, [presetSkillIdFromName('note-workspace')]]),
   ),
 };
 
