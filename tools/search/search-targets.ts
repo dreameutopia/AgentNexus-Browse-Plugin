@@ -1,8 +1,17 @@
 /**
- * 统一搜索平台注册表（web_search 的单一事实源）
+ * 搜索目标注册表（web_search / platform_search 的单一事实源）
  *
- * 登记项 = 搜索入口（URL 模板）+ 结果解析器。解析器复用自原平台专属
- * result_scraper 工具的实现，分两类通道：
+ * 两类目标共用同一套「导航 + 解析 + Markdown 表」机制，但工具面与语义分离：
+ *   - 引擎（engine）：通用搜索引擎——bing / baidu，由 web_search 承载；
+ *   - 站点平台（platform）：垂直站点——知乎 / GitHub / CSDN / MOOC / 小红书 /
+ *     中国知网 / Bilibili，由 platform_search 承载。
+ *
+ * 登记项 = 搜索入口（URL 模板）+ 结果解析器 + 展示文案。两类目标登记在同一张
+ * 表里（解析逻辑与来源信息不因工具拆分而分叉），归属由两个 id 数组划分：
+ * SEARCH_ENGINE_IDS（引擎）/ SEARCH_PLATFORM_IDS（站点平台）——两个工具的
+ * schema 枚举均由此派生，杜绝「工具描述里的枚举」与「注册表」两处漂移。
+ *
+ * 解析器分两类通道：
  *   - inline：chrome.scripting.executeScript({func}) 直接注入自包含解析函数
  *     （百度 / Bing）。函数体内**禁止引用任何外部作用域**——序列化后在页面
  *     上下文求值，闭包变量会直接丢失。
@@ -11,18 +20,18 @@
  *     { status: 'success', data } | { status: 'error', message }。
  *     （知乎 / GitHub / CSDN / MOOC / 小红书 / 知网 / Bilibili）
  *
- * 新增平台步骤：
- *   1. SearchPlatformId 增加 id；
- *   2. SEARCH_PLATFORMS 登记配置（URL 模板 + 解析通道 + 文案）；
- *   3. script 通道需在 inject-scripts/scraper/ 落解析脚本并在此登记 file/action；
- *   4. web-search-tool 的 openaiSchema website 枚举与工具描述同步（Schema
- *      枚举由本模块导出的 SEARCH_PLATFORM_IDS 派生的常量维护，见 web-search-tool）。
+ * 新增目标步骤：
+ *   1. SearchTargetId 联合类型增加 id；
+ *   2. 按类别把 id 加入 SEARCH_ENGINE_IDS 或 SEARCH_PLATFORM_IDS；
+ *   3. SEARCH_TARGETS 登记配置（URL 模板 + 解析通道 + 文案）；
+ *   4. script 通道需在 inject-scripts/scraper/ 落解析脚本并在此登记 file/action。
  */
 
-/** 平台 id（website 参数的合法枚举值，小写） */
+/** 通用搜索引擎 id（web_search 的 engine 枚举值，小写） */
+export type SearchEngineId = 'bing' | 'baidu';
+
+/** 站点平台 id（platform_search 的 platform 枚举值，小写） */
 export type SearchPlatformId =
-  | 'baidu'
-  | 'bing'
   | 'zhihu'
   | 'github'
   | 'csdn'
@@ -30,6 +39,9 @@ export type SearchPlatformId =
   | 'xiaohongshu'
   | 'cnki'
   | 'bilibili';
+
+/** 全部搜索目标 id（引擎 + 站点平台） */
+export type SearchTargetId = SearchEngineId | SearchPlatformId;
 
 /** inline 通道的自包含解析函数（在页面上下文求值，返回结果条目数组） */
 export type InlineResultExtractor = () => unknown[];
@@ -48,10 +60,10 @@ export interface SearchResultExtractor {
   initDelayMs?: number;
 }
 
-/** 平台配置项 */
-export interface SearchPlatformConfig {
-  /** 平台 id（website 枚举值） */
-  id: SearchPlatformId;
+/** 搜索目标配置项 */
+export interface SearchTargetConfig {
+  /** 目标 id（引擎或站点平台的枚举值） */
+  id: SearchTargetId;
   /** 中文展示名（结果文案与错误提示用） */
   label: string;
   /** 引擎标识（回传模型，与原 searchEngine 字段口径一致） */
@@ -64,7 +76,8 @@ export interface SearchPlatformConfig {
   extractor: SearchResultExtractor;
 }
 
-export const SEARCH_PLATFORMS: Readonly<Record<SearchPlatformId, SearchPlatformConfig>> = {
+/** 全部搜索目标（引擎 + 站点平台）的注册表 */
+export const SEARCH_TARGETS: Readonly<Record<SearchTargetId, SearchTargetConfig>> = {
   baidu: {
     id: 'baidu',
     label: '百度',
@@ -303,15 +316,32 @@ export const SEARCH_PLATFORMS: Readonly<Record<SearchPlatformId, SearchPlatformC
   },
 };
 
-/** 全部平台 id（schema 枚举与文案派生的单一来源） */
-export const SEARCH_PLATFORM_IDS: readonly SearchPlatformId[] = Object.keys(SEARCH_PLATFORMS) as SearchPlatformId[];
+/** 通用搜索引擎 id 清单（web_search 的 engine 枚举，单一来源） */
+export const SEARCH_ENGINE_IDS: readonly SearchEngineId[] = ['bing', 'baidu'];
 
-/** 判定值是否为合法平台 id */
-export function isSearchPlatformId(value: unknown): value is SearchPlatformId {
-  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(SEARCH_PLATFORMS, value);
+/** 站点平台 id 清单（platform_search 的 platform 枚举，单一来源） */
+export const SEARCH_PLATFORM_IDS: readonly SearchPlatformId[] = [
+  'zhihu',
+  'github',
+  'csdn',
+  'mooc',
+  'xiaohongshu',
+  'cnki',
+  'bilibili',
+];
+
+/** 全部搜索目标 id（引擎 + 站点平台；注册表键的并集） */
+export const SEARCH_TARGET_IDS: readonly SearchTargetId[] = [
+  ...SEARCH_ENGINE_IDS,
+  ...SEARCH_PLATFORM_IDS,
+];
+
+/** 判定值是否为合法搜索目标 id（引擎或站点平台） */
+export function isSearchTargetId(value: unknown): value is SearchTargetId {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(SEARCH_TARGETS, value);
 }
 
-/** 支持平台列表文案（错误提示用，如「baidu / bing / zhihu / …」） */
-export function formatSupportedPlatforms(): string {
-  return SEARCH_PLATFORM_IDS.join(' / ');
+/** 判定值是否为合法站点平台 id */
+export function isSearchPlatformId(value: unknown): value is SearchPlatformId {
+  return typeof value === 'string' && SEARCH_PLATFORM_IDS.includes(value as SearchPlatformId);
 }

@@ -17,6 +17,7 @@ import type { ChatMessage } from '../../utils/ai/ai-chat-api';
 import { estimateMessageTokensDetailed, estimateTextTokens } from '../../utils/ai/token-estimate';
 import { openaiToolsConverter } from '../../utils/tools/openai-tools-converter';
 import type { ContextUsage } from '../types';
+import type { SkillToolMode } from '@/utils/skills/skill-tool-contract';
 
 /**
  * 工具定义合计 token 估算（未注册的工具 ID 由转换器告警并跳过，与实际请求一致）。
@@ -25,13 +26,13 @@ import type { ContextUsage } from '../types';
  */
 const toolsTokensCache = new Map<string, number>();
 
-function measureTools(toolIds: readonly string[]): number {
+function measureTools(toolIds: readonly string[], skillMode: SkillToolMode = 'text'): number {
   if (toolIds.length === 0) return 0;
-  const cacheKey = toolIds.join('|');
+  const cacheKey = skillMode + ':' + toolIds.join('|');
   const cached = toolsTokensCache.get(cacheKey);
   if (cached !== undefined) return cached;
   try {
-    const tools = openaiToolsConverter.getToolsByIds([...toolIds]);
+    const tools = openaiToolsConverter.getToolsByIds([...toolIds], { skillMode });
     const tokens = tools.reduce(
       (total, tool) => total + estimateTextTokens(JSON.stringify(tool) || ''),
       0,
@@ -51,6 +52,7 @@ function measureTools(toolIds: readonly string[]): number {
  */
 export function measureContextUsage(input: {
   toolDefinitions?: import('@/common/openai-types').OpenAITool[];
+  skillMode?: SkillToolMode;
   systemPrompt: string;
   toolIds: readonly string[];
   messages: readonly ChatMessage[];
@@ -59,7 +61,7 @@ export function measureContextUsage(input: {
   const systemTokens = estimateTextTokens(input.systemPrompt);
   const toolsTokens = input.toolDefinitions
     ? input.toolDefinitions.reduce((sum, tool) => sum + estimateTextTokens(JSON.stringify(tool)), 0)
-    : measureTools(input.toolIds);
+    : measureTools(input.toolIds, input.skillMode);
   let messagesTokens = 0;
   let imageTokens = 0;
   for (const message of input.messages) {

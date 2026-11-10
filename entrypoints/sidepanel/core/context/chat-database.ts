@@ -23,8 +23,8 @@ export const CHAT_SESSIONS_STORE = 'sessions';
 export const CHAT_MESSAGES_STORE = 'messages';
 export type StoredChatWorkspace = [chatId: string, snapshot: WorkspaceSnapshot];
 
-/** v3 增加 Python 工作区；v2 增加 messages.byImageRef 多值索引。 */
-const MIN_SCHEMA_VERSION = 3;
+/** v4 增加归档索引（archivedAt）；v3 增加 Python 工作区；v2 增加 messages.byImageRef 多值索引。 */
+const MIN_SCHEMA_VERSION = 4;
 const SESSIONS_STORE = CHAT_SESSIONS_STORE;
 const MESSAGES_STORE = CHAT_MESSAGES_STORE;
 const WORKSPACES_STORE = 'pythonWorkspaces';
@@ -43,7 +43,16 @@ interface StoreSchema {
 }
 
 const CHAT_SCHEMA: readonly StoreSchema[] = [
-  { name: SESSIONS_STORE, keyPath: 'chatId', indexes: [{ name: 'updatedAt', keyPath: 'updatedAt' }] },
+  {
+    name: SESSIONS_STORE,
+    keyPath: 'chatId',
+    indexes: [
+      { name: 'updatedAt', keyPath: 'updatedAt' },
+      // 归档分流索引：键路径缺失的记录不进索引（未归档会话天然被排除），
+      // 归档会话按 archivedAt 排序 —— 一条索引同时解决「查归档集」与「归档序」。
+      { name: 'byArchived', keyPath: 'archivedAt' },
+    ],
+  },
   {
     name: MESSAGES_STORE,
     keyPath: 'id',
@@ -79,11 +88,25 @@ function checkChatSchema(db: IDBDatabase, tx: IDBTransaction, upgrading = false)
 /** 列表页标题/预览截断 */
 const PREVIEW_MAX_CHARS = 80;
 
+/**
+ * 会话列表范围。
+ *
+ * - 'active'   未归档会话（常规列表口径，默认值）
+ * - 'archived' 已归档会话（归档列表口径）
+ * - 'all'      全部会话（备份 / 存储统计口径）
+ */
+export type SessionListScope = 'active' | 'archived' | 'all';
+
 export interface SessionListOptions {
   /** 最多返回多少条（默认 50） */
   limit?: number;
   /** 跳过多少条（按 updatedAt 倒序） */
   offset?: number;
+  /**
+   * 列表范围（默认 'active' —— 归档会话不进常规列表）。
+   * 'active' / 'all' 按 updatedAt 倒序；'archived' 按 archivedAt 倒序。
+   */
+  scope?: SessionListScope;
 }
 
 export interface MessagesPage {
@@ -293,6 +316,40 @@ class ChatDatabase {
         | undefined;
       if (!existing) return null;
       const updated: ChatSessionMeta = { ...existing, ...patch, chatId };
+      // 显式 undefined = 删键（与消息侧 mergeMessagePatch 同口径）：
+      // 取消归档必须真正移除 archivedAt 键 —— 保留 undefined 键会让
+      // 「未归档」在索引层变得不可判定，归档 / 常规两个列表的分流随之失真。
+      const mutable = updated as unknown as Record<string, unknown>;
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === undefined) delete mutable[key];
+      }
+      store.put(updated);
+      return updated;
+    });
+  }
+
+  /**
+   * 设置归档状态（同一事务内读-改-写，避免与并发写互相覆盖）。
+   *
+   * 归档 = 打上 archivedAt 时间戳；取消归档 = **删除该键**（见 patchSession
+   * 的显式 undefined 约定）。updatedAt 不随之改动 —— 归档是收纳动作而非
+   * 内容活动，归档列表按 archivedAt 排序，保留原更新时间才能如实反映
+   * 「这个会话最后一次有实质进展是什么时候」。
+   */
+  async setSessionArchived(
+    chatId: string,
+    archived: boolean,
+    archivedAt: number = Date.now(),
+  ): Promise<ChatSessionMeta | null> {
+    return this.tx([SESSIONS_STORE], 'readwrite', async tx => {
+      const store = tx.objectStore(SESSIONS_STORE);
+      const existing = (await ChatDatabase.requestToPromise(store.get(chatId))) as
+        | ChatSessionMeta
+        | undefined;
+      if (!existing) return null;
+      const updated: ChatSessionMeta = { ...existing };
+      if (archived) updated.archivedAt = Number.isFinite(archivedAt) ? archivedAt : Date.now();
+      else delete updated.archivedAt;
       store.put(updated);
       return updated;
     });
@@ -307,33 +364,73 @@ class ChatDatabase {
     return result ?? null;
   }
 
-  /** 按 updatedAt 倒序列出会话 */
+  /**
+   * 列出会话（按范围分流：常规 / 归档 / 全部）。
+   *
+   * - 'active'（默认）走 updatedAt 索引并跳过归档记录：归档会话通常远少于
+   *   常规会话，跳过的代价可忽略，换来常规列表不必扫全表；
+   * - 'archived' 走 byArchived 索引，天然只含归档会话，按 archivedAt 倒序；
+   * - 'all' 走 updatedAt 索引且不过滤（备份 / 存储统计口径）。
+   */
   async listSessions(options: SessionListOptions = {}): Promise<ChatSessionMeta[]> {
     const limit = options.limit ?? 50;
     const offset = options.offset ?? 0;
+    const scope = options.scope ?? 'active';
     const db = await this.open();
 
+    if (scope === 'archived') {
+      return this.cursorList(db, 'byArchived', 'prev', limit, offset, () => true);
+    }
+    if (scope === 'active') {
+      return this.cursorList(db, 'updatedAt', 'prev', limit, offset, meta => meta.archivedAt === undefined);
+    }
+    return this.cursorList(db, 'updatedAt', 'prev', limit, offset, () => true);
+  }
+
+  /**
+   * 游标分页读取（索引 → 记录），带过滤谓词与 offset / limit 语义。
+   *
+   * 谓词命中的记录才计入 offset 与 limit —— 否则「前 50 条」会被过滤掉的
+   * 记录吃掉配额，表现为「明明有数据却一条都不显示」。
+   */
+  private async cursorList(
+    db: IDBDatabase,
+    indexName: string,
+    direction: IDBCursorDirection,
+    limit: number,
+    offset: number,
+    accept: (meta: ChatSessionMeta) => boolean,
+  ): Promise<ChatSessionMeta[]> {
     return new Promise((resolve, reject) => {
       const tx = db.transaction([SESSIONS_STORE], 'readonly');
-      const index = tx.objectStore(SESSIONS_STORE).index('updatedAt');
-      const request = index.openCursor(null, 'prev');
+      const index = tx.objectStore(SESSIONS_STORE).index(indexName);
+      const request = index.openCursor(null, direction);
       const items: ChatSessionMeta[] = [];
       let skipped = 0;
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve(items);
+      };
 
       request.onsuccess = () => {
         const cursor = request.result;
         if (!cursor || items.length >= limit) {
-          resolve(items);
+          finish();
           return;
         }
-        if (skipped < offset) {
-          skipped++;
-        } else {
-          items.push(cursor.value as ChatSessionMeta);
+        const meta = cursor.value as ChatSessionMeta;
+        if (accept(meta)) {
+          if (skipped < offset) {
+            skipped++;
+          } else {
+            items.push(meta);
+          }
         }
         cursor.continue();
       };
-      request.onerror = () => reject(request.error);
+      request.onerror = () => reject(request.error ?? new Error('读取会话列表失败'));
     });
   }
 
@@ -647,6 +744,50 @@ class ChatDatabase {
   }
 
   /**
+   * 在某会话的消息正文里查找关键词（大小写不敏感）。
+   *
+   * 只扫 `content`（用户 / 助手正文）：模型面协议历史（modelMessages）里
+   * 同样含大量文本，但那是给模型看的结构化载荷（工具参数、附件信封、
+   * 系统注记），按正文匹配会命中大量噪音，让「搜对话内容」变得不可用。
+   *
+   * 返回命中条数与首条命中的上下文片段（供结果列表展示命中位置）；
+   * 未命中返回 null。
+   */
+  async findContentMatch(
+    chatId: string,
+    keyword: string,
+  ): Promise<{ count: number; snippet: string } | null> {
+    const needle = keyword.trim().toLowerCase();
+    if (!needle) return null;
+    const db = await this.open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([MESSAGES_STORE], 'readonly');
+      const index = tx.objectStore(MESSAGES_STORE).index('chatId');
+      const request = index.openCursor(IDBKeyRange.only(chatId));
+      let count = 0;
+      let snippet = '';
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (!cursor) {
+          resolve(count > 0 ? { count, snippet } : null);
+          return;
+        }
+        const record = cursor.value as ChatMessageRecord;
+        const content = typeof record.content === 'string' ? record.content : '';
+        if (content) {
+          const at = content.toLowerCase().indexOf(needle);
+          if (at >= 0) {
+            count++;
+            if (!snippet) snippet = buildMatchSnippet(content, at, needle.length);
+          }
+        }
+        cursor.continue();
+      };
+      request.onerror = () => reject(request.error ?? new Error('搜索会话内容失败'));
+    });
+  }
+
+  /**
    * 全部消息（备份 / 存储统计用；不受分页限制）。
    * 读取失败抛错——同 listAllSessions，绝不把失败伪装成空库。
    */
@@ -719,6 +860,23 @@ export function chatPreviewOf(text: string): string {
   return normalized.length > PREVIEW_MAX_CHARS
     ? `${normalized.slice(0, PREVIEW_MAX_CHARS)}…`
     : normalized;
+}
+
+/** 内容搜索命中片段的前后文长度（两侧各留这么多字符，总长约 2 倍 + 关键词） */
+const CONTENT_MATCH_CONTEXT_CHARS = 40;
+
+/**
+ * 截取关键词命中的上下文片段（供结果列表展示「命中在哪一段」）。
+ *
+ * 纯函数、无 IO，导出供单测：片段中命中部分以省略号包裹前后文，
+ * 中文等无空格语言按字符截取即可（不依赖词边界）。
+ */
+export function buildMatchSnippet(content: string, at: number, keywordLength: number): string {
+  const start = Math.max(0, at - CONTENT_MATCH_CONTEXT_CHARS);
+  const end = Math.min(content.length, at + keywordLength + CONTENT_MATCH_CONTEXT_CHARS);
+  const prefix = start > 0 ? '…' : '';
+  const suffix = end < content.length ? '…' : '';
+  return `${prefix}${content.slice(start, end).replace(/\s+/g, ' ').trim()}${suffix}`;
 }
 
 /** 全局单例 */

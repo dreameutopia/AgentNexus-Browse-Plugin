@@ -30,6 +30,7 @@ import {
   type SkillPageInfo,
 } from './skill-pagination';
 import { buildSuccessPayload } from '@/common/tool-handler';
+import { isSkillToolId, skillToolCall, type SkillToolMode } from './skill-tool-contract';
 
 /**
  * 优先级约定：技能正文随身携带，而不是挂在 system prompt 的技能分区上。
@@ -83,7 +84,7 @@ function formatBodyPaginationFooter(info: SkillPageInfo, modelId: string): strin
   return (
     `[技能正文分页] 第 ${info.page}/${info.pageCount} 页 · 本页 ${info.currentChars} 字 · ` +
     `正文共 ${info.totalChars} 字 · 剩余 ${info.remainingChars} 字\n` +
-    `继续读取下一页：load_skill(skill_name="${modelId}", page=${info.page + 1})`
+    '继续读取下一页：' + skillToolCall('load', modelId, info.page + 1)
   );
 }
 
@@ -113,7 +114,7 @@ function safeSkillParts(skill: SkillRecord): { body: string; files: Record<strin
  * 不再嵌入 system prompt 的分区结构。空正文（存储层未强制非空）不产生空段，
  * 分节统一用 \n\n 连接，任何输入形态下都不会出现连续空行。
  */
-export function buildSkillInstruction(skill: SkillRecord, page: number = 1): SkillInstructionResult {
+export function buildSkillInstruction(skill: SkillRecord, page = 1, mode: SkillToolMode = 'text'): SkillInstructionResult {
   const { body: rawBody, files } = safeSkillParts(skill);
   const body = rawBody.trim();
   const paged = paginateSkillText(body, page);
@@ -137,28 +138,32 @@ export function buildSkillInstruction(skill: SkillRecord, page: number = 1): Ski
   const resourceFiles = Object.entries(files).filter(
     ([path, content]) => path !== 'SKILL.md' && typeof content === 'string',
   );
-  if (resourceFiles.length > 0) {
-    const listing = resourceFiles
-      .map(([path, content]) => `- ${path}（${countSkillChars(content)} 字）`)
-      .join('\n');
-    const sample = resourceFiles[0][0];
+  const binaryPaths = mode === 'workspace' ? Object.keys(skill.resourceBytes ?? {}).sort() : [];
+  const folders = mode === 'workspace' ? skill.folders ?? [] : [];
+  if (resourceFiles.length || binaryPaths.length || folders.length) {
+    const listing = [
+      ...resourceFiles.map(([path, content]) => `- ${JSON.stringify(path)}（${countSkillChars(content)} 字）`),
+      ...binaryPaths.map(path => `- ${JSON.stringify(path)}（二进制）`),
+      ...folders.map(path => `- ${JSON.stringify(path)}（目录）`),
+    ].join('\n');
     sections.push(
       `# 技能资源文件\n` +
-        `该技能附带以下资源文件（括号内为字数）。需要时用 read_skill_file 分页读取` +
-        `（每页约 ${SKILL_PAGE_TOKEN_BUDGET} token，path 缺省读 SKILL.md）：\n` +
-        `${listing}\n` +
-        `调用示例：read_skill_file(skill_name="${modelId}", path="${sample}", page=1)`,
+        `用 skill_tool(action="read") 分页读取文本（每页约 ${SKILL_PAGE_TOKEN_BUDGET} token）。` +
+        (mode === 'workspace' ? '用 skill_tool(action="copy") 将文件或目录复制到会话工作区。' : '') + '\n' +
+        listing,
     );
   }
 
   // 环境限制说明（每次激活都带上，避免模型尝试执行脚本）
   const allowedTools = Array.isArray(skill?.allowedTools)
-    ? skill.allowedTools.filter((id): id is string => typeof id === 'string')
+    ? skill.allowedTools.filter((id): id is string => typeof id === 'string' && !isSkillToolId(id))
     : [];
   sections.push(
-    `# 环境说明\n当前运行环境为浏览器扩展（无终端与本地文件系统）：技能中的 scripts/ 等脚本一律不执行，` +
-      `只能作为文字参考阅读；references/ 等资源文件均为纯文本，按需分页读取。` +
-      `技能预授权工具：${allowedTools.length > 0 ? allowedTools.join(' ') : '（未声明，沿用会话现有工具）'}`,
+    '# 环境说明\n' +
+      (mode === 'workspace'
+        ? '会话提供 python_run 时，可预检并运行复制到工作区的兼容 Python 脚本。'
+        : '本技能在此会话中使用文本模式，脚本仅作参考，请用会话已有工具完成等效操作。') +
+      `\n技能预授权工具：${allowedTools.length > 0 ? allowedTools.join(' ') : '（未声明，沿用会话现有工具）'}`,
   );
 
   return {

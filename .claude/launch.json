@@ -24,8 +24,16 @@
       "url": "http://localhost:4173/.preview/hub-agent-editor.html"
     },
     {
+      "name": "hub-agent-list",
+      "url": "http://localhost:4173/.preview/hub-agent-list.html"
+    },
+    {
       "name": "hub-usage-python",
       "url": "http://localhost:4173/.preview/hub-usage-python.html"
+    },
+    {
+      "name": "hub-sessions",
+      "url": "http://localhost:4173/.preview/hub-sessions.html"
     },
     {
       "name": "skill-selector-preview",
@@ -46,6 +54,10 @@
     {
       "name": "page-glow-preview",
       "url": "http://localhost:4173/.preview/page-glow.html"
+    },
+    {
+      "name": "page-quote-preview",
+      "url": "http://localhost:4173/.preview/page-quote.html"
     }
   ]
 }

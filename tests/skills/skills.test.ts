@@ -41,6 +41,7 @@
 
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { strToU8, unzipSync, zipSync } from 'fflate';
 import {
   SKILL_ID_PATTERN,
   SKILL_ID_RESERVED_PREFIX,
@@ -66,8 +67,10 @@ import {
   normalizeSkillPageParam,
   paginateSkillText,
 } from '@/utils/skills/skill-pagination';
-import { loadSkillTool } from '@/tools/skill/load-skill-tool';
-import { readSkillFileTool } from '@/tools/skill/read-skill-file-tool';
+import { skillTool } from '@/tools/skill/skill-tool';
+import { skillToolCall } from '@/utils/skills/skill-tool-contract';
+import { getPyodideEnvState, setSkillScriptsEnabled, updatePyodideEnvState, watchPyodideEnv, withSkillScriptSupport } from '@/utils/pyodide/pyodide-env';
+import { PYODIDE_ENV_STORAGE_KEY } from '@/utils/pyodide/pyodide-config';
 import {
   getAllSkills,
   getSkillByName,
@@ -76,7 +79,8 @@ import {
   setCustomSkill,
   snapshotCustomSkills,
 } from '@/utils/skills/skill-store';
-import { commitImportCandidates, importSkillFromMdText } from '@/utils/skills/skill-import-export';
+import { commitImportCandidates, exportSkillToZip, importSkillFromMdText, parseSkillZipBytes } from '@/utils/skills/skill-import-export';
+import { decodeSkillBytes } from '@/utils/skills/skill-resources';
 import { skillEngine } from '@/entrypoints/sidepanel/core/registry/skill-engine';
 import { ContextWindowGuard } from '@/entrypoints/sidepanel/utils/ai/context-window-guard';
 import type { ChatMessage } from '@/entrypoints/sidepanel/utils/ai/ai-chat-api';
@@ -265,14 +269,14 @@ function mdFiles(name: string, body: string, extraFrontmatter: string[] = []): R
   eq(toolMessage.role, 'tool', 'C1 次条为 tool');
   const singleCalls = assistant.tool_calls ?? [];
   eq(singleCalls.length, 1, 'C1 一个 load_skill 调用');
-  eq(singleCalls[0]?.function.name, 'load_skill', 'C1 调用 load_skill');
+  eq(singleCalls[0]?.function.name, 'skill_tool', 'C1 调用 skill_tool');
   eq(
     JSON.parse(singleCalls[0]?.function.arguments ?? '{}'),
-    { skill_name: modelSkillIdOf(active) },
+    { action: 'load', skill_name: modelSkillIdOf(active) },
     'C1 入参为模型标识',
   );
   eq(toolMessage.tool_call_id, singleCalls[0]?.id, 'C1 tool 结果与调用 id 配对');
-  eq(toolMessage.name, 'load_skill', 'C1 tool 消息标注工具名');
+  eq(toolMessage.name, 'skill_tool', 'C1 tool 消息标注工具名');
   eq(single.toolIds, ['plan_tool', 'browser_get_page_text'], 'C1 预授权工具按声明顺序带出');
 
   // 与真实 load_skill 回传逐字同源（同一 buildSuccessPayload 拼装）
@@ -360,9 +364,9 @@ function mdFiles(name: string, body: string, extraFrontmatter: string[] = []): R
   check(instruction.instruction.includes('# 环境说明'), 'D2 携带环境说明');
   check(instruction.instruction.includes('技能预授权工具：xlsx_tool'), 'D2 回显预授权工具');
   check(instruction.instruction.includes('# 技能资源文件'), 'D3 携带资源文件清单');
-  check(instruction.instruction.includes('- references/extra.md'), 'D3 资源清单列出具体路径');
+  check(instruction.instruction.includes('- "references/extra.md"'), 'D3 资源清单列出具体路径');
   check(instruction.instruction.includes('（4 字）'), 'D3 资源清单附带字数', instruction.instruction);
-  check(instruction.instruction.includes('只能作为文字参考阅读'), 'D2 环境说明写明脚本不执行');
+  check(instruction.instruction.includes('脚本仅作参考'), 'D2 环境说明区分可用的 Python 脚本和本机命令');
   check(!instruction.truncated, 'D4 正文未超预算时不分页');
   check(instruction.pagination.pageCount === 1, 'D4 单页分页元信息');
   eq(instruction.skill, modelSkillIdOf(rich), 'D4 载荷携带模型标识');
@@ -386,7 +390,7 @@ function mdFiles(name: string, body: string, extraFrontmatter: string[] = []): R
   check(page1.pagination.pageCount === 2, 'D5 总页数按预算切分', page1.pagination);
   check(page1.instruction.includes('第 1/2 页'), 'D5 页脚携带页码');
   check(
-    page1.instruction.includes(`load_skill(skill_name="${modelSkillIdOf(long)}", page=2)`),
+    page1.instruction.includes(skillToolCall('load', modelSkillIdOf(long), 2)),
     'D5 页脚携带续读调用',
   );
   check(
@@ -667,48 +671,48 @@ function pageOf(text: string, page: number, budget?: number) {
   const ref = modelSkillIdOf(skillRecord);
 
   // load_skill：默认第 1 页 + 分页元信息 + 续读指引
-  const load1 = await loadSkillTool.execute({ skill_name: ref });
+  const load1 = await skillTool.execute({ action: 'load', skill_name: ref });
   check(load1.success === true, 'J1 load_skill 成功');
   check(load1.data?.pagination?.pageCount === 2, 'J1 正文两页', load1.data?.pagination);
-  check(String(load1.data?.instruction).includes(`load_skill(skill_name="${ref}", page=2)`), 'J1 页脚带续读调用');
+  check(String(load1.data?.instruction).includes(skillToolCall('load', ref, 2)), 'J1 页脚带续读调用');
 
   // load_skill：字符串页码归一；越界返回可自纠报错（不抛异常）
-  const load2 = await loadSkillTool.execute({ skill_name: ref, page: '2' });
+  const load2 = await skillTool.execute({ action: 'load', skill_name: ref, page: '2' });
   check(load2.success === true && load2.data?.pagination?.page === 2, 'J2 字符串页码归一');
-  const load9 = await loadSkillTool.execute({ skill_name: ref, page: 9 });
+  const load9 = await skillTool.execute({ action: 'load', skill_name: ref, page: 9 });
   check(load9.success === false, 'J2 越界页码返回失败');
   check(String(load9.error).includes('不存在第 9 页'), 'J2 越界报错携带页码信息', load9.error);
 
   // read_skill_file：缺省 path 读 SKILL.md（原文，含 frontmatter）
-  const readDefault = await readSkillFileTool.execute({ skill_name: ref });
+  const readDefault = await skillTool.execute({ action: 'read', skill_name: ref });
   check(readDefault.success === true, 'J3 缺省路径读取成功');
   check(readDefault.data?.path === 'SKILL.md', 'J3 缺省路径为 SKILL.md');
   check(String(readDefault.data?.content).startsWith('---'), 'J3 SKILL.md 原文含 frontmatter');
 
   // read_skill_file：资源文件分页 + 元信息 + 独立 hint 字段（内容本体不夹页脚）
-  const readFile1 = await readSkillFileTool.execute({ skill_name: ref, path: 'references/guide.md' });
+  const readFile1 = await skillTool.execute({ action: 'read', skill_name: ref, path: 'references/guide.md' });
   check(readFile1.success === true, 'J4 资源文件读取成功');
   check(readFile1.data?.pagination?.pageCount === 2, 'J4 资源文件分页', readFile1.data?.pagination);
   check(readFile1.data?.truncated === true, 'J4 截断标记');
-  check(String(readFile1.data?.hint).includes('page=2'), 'J4 续读指引在 hint 字段');
+  check(String(readFile1.data?.hint).includes('"page":2'), 'J4 续读指引在 hint 字段');
   eq(readFile1.data?.content, 'g'.repeat(12_000), 'J4 内容本体纯净（第一页恰为预算且不夹页脚）');
 
-  const readFile2 = await readSkillFileTool.execute({ skill_name: ref, path: 'references/guide.md', page: 2 });
+  const readFile2 = await skillTool.execute({ action: 'read', skill_name: ref, path: 'references/guide.md', page: 2 });
   check(readFile2.success === true && readFile2.data?.truncated === false, 'J4 末页无截断标记');
   eq(readFile2.data?.content, 'g'.repeat(4_000), 'J4 末页为剩余内容');
 
   // 白名单：未注册路径拒绝并列出可用文件（精确键匹配天然免疫 ../ 穿越）
-  const readMissing = await readSkillFileTool.execute({ skill_name: ref, path: '../outside.md' });
+  const readMissing = await skillTool.execute({ action: 'read', skill_name: ref, path: '../outside.md' });
   check(readMissing.success === false, 'J5 未注册路径拒绝');
-  check(String(readMissing.error).includes('可用文件'), 'J5 报错列出可用文件', readMissing.error);
+  check(String(readMissing.error).includes('SKILL_INVALID_PATH'), 'J5 遍历路径给出明确报错', readMissing.error);
 
-  const readNoSkill = await readSkillFileTool.execute({ skill_name: 'no-such-skill-xyz' });
+  const readNoSkill = await skillTool.execute({ action: 'read', skill_name: 'no-such-skill-xyz' });
   check(readNoSkill.success === false, 'J5 不存在的技能报错');
 
   // 第三方（插件）形状防御：脏参数与脏数据不击穿工具链
-  const numericRef = await readSkillFileTool.execute({ skill_name: 42 as unknown as string });
+  const numericRef = await skillTool.execute({ action: 'read', skill_name: 42 as unknown as string });
   check(numericRef.success === false, 'J5 数字型技能引用安全报错');
-  const nullPath = await readSkillFileTool.execute({ skill_name: ref, path: null as unknown as string });
+  const nullPath = await skillTool.execute({ action: 'read', skill_name: ref, path: null as unknown as string });
   check(nullPath.success === true && nullPath.data?.path === 'SKILL.md', 'J5 null 路径回落 SKILL.md');
 }
 
@@ -790,7 +794,7 @@ function pageOf(text: string, page: number, budget?: number) {
   // 全部工具可承载 → 映射兜底通道放行
   const DEEP_SEARCH_TOOLSET = [
     ...['interact', 'browser_get_page_text', 'plan_tool', 'note_tool'],
-    'browser_go_back_or_forward', 'browser_navigate', 'browser_get_page_info',
+    'browser_navigation', 'browser_get_page_info',
     'browser_observe', 'browser_interact',
     'browser_dom_explore', 'browser_page_exec', 'web_search',
   ];
@@ -805,8 +809,8 @@ function pageOf(text: string, page: number, budget?: number) {
   // 映射兜底放行（已下线的网页抓取工具不再把技能挡在清单外）
   const AUTOMATION_TOOLSET = [
     ...['interact', 'browser_get_page_text', 'plan_tool', 'note_tool'],
-    'browser_observe', 'browser_interact', 'browser_dom_explore', 'browser_navigate',
-    'browser_get_page_info', 'wait_page_load', 'web_search', 'generic_wait',
+    'browser_observe', 'browser_interact', 'browser_dom_explore', 'browser_navigation',
+    'browser_get_page_info', 'browser_tabs', 'web_search', 'generic_wait',
     'browser_page_exec',
   ];
   const autoList = idsOf(computeAvailableSkills(undefined, AUTOMATION_TOOLSET));
@@ -931,7 +935,7 @@ eq(
   // 未被显式关联就不会进入面板可选集（「技能与智能体绑定选择」的口径源头）
   const DEEP_SEARCH_TOOLSET = [
     'interact', 'browser_get_page_text', 'plan_tool', 'note_tool',
-    'browser_go_back_or_forward', 'browser_navigate', 'browser_get_page_info',
+    'browser_navigation', 'browser_get_page_info',
     'browser_observe', 'browser_interact',
     'browser_dom_explore', 'browser_page_exec', 'web_search',
   ];
@@ -943,6 +947,90 @@ eq(
     !resolveAgentLinkedSkills(undefined).some(s => s.id === presetSkillIdFromName('web-research-report')),
     'M5 面板可选集无映射兜底：未被显式关联即不可选',
   );
+}
+
+// ==================== Skill resource compatibility ====================
+{
+  const md = mdFiles('zip-resources', 'Use the supplied resource.')['SKILL.md'];
+  const binary = Uint8Array.of(0, 255, 10);
+  const text = '\uFEFF# Asset with BOM\r\n';
+  const archive = zipSync({
+    'zip-resources/SKILL.md': strToU8(md),
+    'zip-resources/assets/report.xlsx': binary,
+    'zip-resources/assets/literal space .txt': strToU8(text),
+    'zip-resources/.env.example': strToU8('REPORT_FORMAT=text'),
+    'zip-resources/empty/': new Uint8Array(),
+    'zip-resources/../escape.py': strToU8('raise Exception()'),
+    'C:/escape.py': strToU8('raise Exception()'),
+  });
+  const parsed = parseSkillZipBytes(archive);
+  eq(parsed.droppedFiles, [], 'ZIP keeps binary resources');
+  const [candidate] = parsed.candidates;
+  eq(candidate.files['assets/literal space .txt'], text, 'BOM, CRLF and literal file name round trip');
+  eq(candidate.folders, ['empty'], 'ZIP preserves explicit empty folders');
+  eq(candidate.files['.env.example'], 'REPORT_FORMAT=text', 'Dotfile remains available as a resource');
+  const committed = commitImportCandidates(parsed.candidates);
+  const skill = resolveSkill(committed.imported[0].id)!;
+  eq([...decodeSkillBytes(skill.resourceBytes!['assets/report.xlsx'])], [...binary], 'Binary bytes are stored');
+  const edited = setCustomSkill({ id: skill.id, name: skill.name, files: { ...skill.files } });
+  check(edited.ok && edited.skill.resourceBytes?.['assets/report.xlsx'] === skill.resourceBytes?.['assets/report.xlsx'],
+    'Text-only edits preserve binary resources');
+  const exported = unzipSync(exportSkillToZip(skill).bytes);
+  eq([...exported['zip-resources/assets/report.xlsx']], [...binary], 'ZIP export preserves binary bytes');
+  check(Object.hasOwn(exported, 'zip-resources/empty/'), 'ZIP export preserves empty folder');
+  check(!Object.keys(exported).some(name => name.includes('escape.py')), 'ZIP traversal paths never enter the skill');
+  const chromeBefore = globalThis.chrome;
+  const changes = new Set<(changes: Record<string, { newValue?: unknown }>, area: string) => void>();
+  let stored: Record<string, unknown> = { [PYODIDE_ENV_STORAGE_KEY]: { status: 'ready' } };
+  globalThis.chrome = { storage: {
+    local: {
+      get: async () => stored,
+      set: async (next: Record<string, unknown>) => {
+        stored = next;
+        changes.forEach(listener => listener({ [PYODIDE_ENV_STORAGE_KEY]: { newValue: stored[PYODIDE_ENV_STORAGE_KEY] } }, 'local'));
+      },
+    },
+    onChanged: {
+      addListener: (listener: typeof changes extends Set<infer T> ? T : never) => changes.add(listener),
+      removeListener: (listener: typeof changes extends Set<infer T> ? T : never) => changes.delete(listener),
+    },
+  } } as unknown as typeof chrome;
+  try {
+    eq((await getPyodideEnvState()).skillScriptsEnabled, false, 'Legacy ready state defaults to off');
+    eq(skillTool.openaiSchema.function.parameters.properties.action.enum, ['load', 'read'], 'Default schema offers text actions');
+    eq(skillTool.getSchema({ skillMode: 'workspace' }).function.parameters.properties.action.enum,
+      ['load', 'read', 'copy'], 'Workspace schema offers copy as well');
+    await setSkillScriptsEnabled(true);
+    const text = await skillTool.execute({ action: 'load', skill_name: skill.id }, { skillMode: 'text' });
+    check(!String(text.data?.instruction).includes('action="copy"'), 'Text mode activation omits copy guidance');
+    const workspace = await skillTool.execute({ action: 'load', skill_name: skill.id }, {
+      skillMode: 'workspace', skillResourceIds: [skill.id],
+    });
+    check(String(workspace.data?.instruction).includes('action="copy"') && String(workspace.data?.instruction).includes('report.xlsx'),
+      'Workspace activation includes binary resources and copy guidance');
+    const result = await skillTool.execute({ action: 'copy', skill_name: skill.id, paths: ['.'] }, {
+      chatId: 'chat_a', skillMode: 'workspace', availableSkillIds: [skill.id], skillResourceIds: ['unrelated-skill'],
+    });
+    check(result.error?.includes('SKILL_NOT_AVAILABLE') === true, 'A chat cannot copy a skill outside its authorized workspace set');
+    const simulatedCopy = withSkillScriptSupport(undefined, signal => new Promise(resolve => {
+      signal.addEventListener('abort', () => resolve(signal.aborted), { once: true });
+      void updatePyodideEnvState({ status: 'idle' });
+    }));
+    eq(await simulatedCopy, true, 'Removing the runtime cancels an in-flight copy');
+    const reinstalled = await updatePyodideEnvState({ status: 'ready' });
+    eq(reinstalled.skillScriptsEnabled, false, 'Reinstalling cannot re-enable script support');
+    const stale = await skillTool.execute({ action: 'copy', skill_name: skill.id, paths: ['.'] }, {
+      chatId: 'chat_a', skillMode: 'workspace', availableSkillIds: [skill.id], skillResourceIds: [skill.id],
+    });
+    check(stale.error?.includes('SKILL_WORKSPACE_UNAVAILABLE') === true, 'An earlier workspace session cannot copy after revocation');
+    let missingStateIsDisabled = false;
+    const unwatch = watchPyodideEnv(state => { missingStateIsDisabled = !state.skillScriptsEnabled; });
+    changes.forEach(listener => listener({ [PYODIDE_ENV_STORAGE_KEY]: {} }, 'local'));
+    unwatch();
+    check(missingStateIsDisabled, 'Removing the storage entry publishes a disabled state');
+  } finally {
+    globalThis.chrome = chromeBefore;
+  }
 }
 
 // ==================== 汇总 ====================

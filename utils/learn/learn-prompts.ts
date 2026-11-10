@@ -141,7 +141,7 @@ export const LEARN_WORKFLOW = section(
    （按本次目标细分，如进入搜索页 → 输入关键词 → 搜索 → 遍历结果 → 核对覆盖范围）。计划列的是
    **要探明的知识点**、最小成功证据与停止条件。只在阶段完成、受阻或计划变更时更新状态，
    不把每次观察/点击拆成计划项，不为同一次状态变化连续维护计划。
-2. 用 browser_navigate（waitForLoad=true）打开目标站点，browser_get_page_text 确认可达；
+2. 用 browser_navigation(action="open"，waitForLoad=true) 打开目标站点，browser_get_page_text 确认可达；
    需要用户手动处理才能继续时调用 interact，等待答复后重采页面（见 constraints）。
 3. 按 <exploration> 规定的手段逐步推进。每完成一个**关键步骤**立即用
    note_tool(action="append") 追加一条记录（格式见 <recording>），不要凭记忆攒到结束再写——
@@ -222,7 +222,7 @@ export function learnNoVisionGuiGuide(hasAutoScreenshots: boolean): string {
   return `<vision-gui-tool>
 本阶段没有视觉 GUI 工具：vision_gui 及其全部 action 不在本阶段工具面内，定位、操作与取证一律走 DOM 文本通道（见上文 dom-locating）。
 ${screenshotLine}
-本会话也不提供技能目录与 load_skill：任何未在本阶段工具面内的工具（尤其视觉工具）都不得调用。
+本会话不提供既有技能：只使用本阶段提供的工具。
 </vision-gui-tool>`;
 }
 
@@ -421,7 +421,7 @@ export const LEARN_SELF_RESCUE = section(
 2. 换定位通道：XPath 未命中 → 去掉 XPath，单独用 regex 搜文字 / placeholder / aria-label
    （两者同时传是 AND，不是 OR）；同名目标 → 用 role、所属区域、上下文消歧，不要盲选第一个。
 3. 换操作通道：点不到 → 先滚动容器 / 展开折叠 / 关掉遮挡层；仅在实际工具支持时悬停；
-   输入没生效 → 先 focus 再 fill，填完回读值确认；页面没加载 → wait_page_load 后重读状态。
+   输入没生效 → 先 focus 再 fill，填完回读值确认；页面没加载 → browser_navigation(action="wait") 等就绪后重读状态。
 4. 换信息通道：正文读不到 → browser_get_page_info 诊断加载状态、browser_get_page_text 读正文、
    structure / accessibility 读表格与语义；怀疑数据来自接口 → browser_network_capture 被动观察。
 5. 换路径：同一目标换已验证可用的入口或参数；先记录来源标签，再明确选择当前页导航或独立标签核验；必要时用可用的 browser_page_exec 探测组件作用域。
@@ -547,7 +547,7 @@ ${tooling}
 用户拒绝、超时或处理后仍受阻时，再把实际阻碍记入验证问题，不能一遇到人工步骤就判失败。
 1. 先按技能正文检查原有步骤；缺失、错误或与现场不一致的地方先记为原文问题，不凭经验补齐后直接判通过。
    用户额外描述是优先核对的过程与约束；与现场冲突或无法推进时先 interact，不自行改写用户目标。
-2. 从技能前置条件/起始页面独立核验，不沿用学习结束页跳过前面步骤。需要导航且已声明 browser_navigate 时再导航；当前文档任务先核对文档身份，不擅自换页。流程必需却未声明的导航能力属于依赖问题。
+2. 从技能前置条件/起始页面独立核验，不沿用学习结束页跳过前面步骤。需要导航且已声明 browser_navigation 时再导航；当前文档任务先核对文档身份，不擅自换页。流程必需却未声明的导航能力属于依赖问题。
    同URL标签复用不等于页面状态已重置：先核对弹层、筛选及当前对象，按技能恢复起始状态；效果未知的提交不刷新或重放。
    按 <sample-scope> 检查端到端路径和差异样本；已完成的写操作只读核对，不能为盲测重复发送/投递。
 3. ${locatorFocus}

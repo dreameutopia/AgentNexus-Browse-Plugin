@@ -72,6 +72,43 @@ export async function saveWorkspace(
   }, signal);
 }
 
+/** Stage a bounded set of named resources without replacing existing files or following links. */
+export function stageWorkspaceResources(
+  chatId: string,
+  resources: readonly WorkspaceEntry[],
+  signal?: AbortSignal,
+): Promise<void> {
+  const root = workspaceRoot(chatId);
+  indexWorkspaceEntries(root, resources);
+  return withWorkspaceLock(chatId, () => chatDatabase.updateWorkspace(chatId, current => {
+    const entries = indexWorkspaceEntries(root, current?.entries ?? []);
+    let changed = false;
+    for (const resource of resources) {
+      if (!resource.path.startsWith('skills/') || resource.link || (resource.blob && !resource.importId)) {
+        throw new Error('Invalid staged skill resource');
+      }
+      const existing = entries.get(resource.path);
+      if (existing) {
+        if ((!resource.blob && !existing.blob && !existing.link) ||
+            (resource.blob && existing.blob && existing.importId === resource.importId)) continue;
+        throw new Error(`Workspace path already occupied: ${JSON.stringify(resource.path)}`);
+      }
+      entries.set(resource.path, resource);
+      changed = true;
+      for (let slash = resource.path.lastIndexOf('/'); slash >= 0; slash = resource.path.lastIndexOf('/', slash - 1)) {
+        const path = resource.path.slice(0, slash);
+        if (!entries.has(path)) {
+          entries.set(path, { path, blob: null });
+          checkWorkspaceLimits(entries.size, 0);
+        }
+      }
+    }
+    const combined = [...entries.values()];
+    indexWorkspaceEntries(root, combined);
+    return { snapshot: changed ? { revision: crypto.randomUUID(), entries: combined } : undefined, result: undefined };
+  }, signal), signal);
+}
+
 export async function readWorkspaceOutput(chatId: string, path: string): Promise<Blob | null> {
   if (!chatId || !isWorkspaceOutput(path)) return null;
   try {

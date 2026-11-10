@@ -1,22 +1,14 @@
 /**
  * 技能（Skill）工具集合
- * 提供 skill 的加载（load_skill）与资源读取（read_skill_file）能力，
- * 是无 bash/文件系统环境下渐进式披露的承载工具。
+ * 提供技能加载、文本分页读取和会话工作区资源复制。
  */
 
 import { toolRegistry } from '../registry';
-import { LoadSkillTool, loadSkillTool } from './load-skill-tool';
-import { ReadSkillFileTool, readSkillFileTool } from './read-skill-file-tool';
+import { skillTool } from './skill-tool';
 
 // 注册函数
 export function registerSkillTools() {
-  toolRegistry.register(loadSkillTool);
-  toolRegistry.register(readSkillFileTool);
+  toolRegistry.register(skillTool);
 }
 
-export {
-  LoadSkillTool,
-  loadSkillTool,
-  ReadSkillFileTool,
-  readSkillFileTool,
-};
+export { skillTool };

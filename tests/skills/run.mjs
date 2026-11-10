@@ -35,7 +35,7 @@ mkdirSync(workDir, { recursive: true });
 const outfile = path.join(workDir, 'skills.test.mjs');
 
 /**
- * 按 Vite glob 的键格式读取仓库内 skills/ 的全部 .md 文件。
+ * 按 Vite glob 的键格式读取仓库内 skills/ 的资源。
  * 目录不存在时返回空表——此时依赖内置技能的断言会带着明确信息失败，
  * 而不是被一个「合成替身」悄悄掩盖真实装配问题。
  */
@@ -50,12 +50,13 @@ function readPresetGlobFromDisk() {
       return;
     }
     for (const entry of entries) {
+      if (entry === '.git') continue;
       const abs = path.join(dir, entry);
       const rel = relDir ? `${relDir}/${entry}` : entry;
       if (statSync(abs).isDirectory()) {
         walk(abs, rel);
-      } else if (entry.endsWith('.md')) {
-        glob[`/skills/${rel}`] = readFileSync(abs, 'utf8');
+      } else {
+        glob[`/skills/${rel}`] = readFileSync(abs).toString('base64');
       }
     }
   };
@@ -112,4 +113,9 @@ const run = spawnSync(process.execPath, [outfile], {
   cwd: root,
 });
 
-process.exit(run.status ?? 1);
+if (run.status !== 0) process.exit(run.status ?? 1);
+const workspace = spawnSync(process.execPath, [path.join(here, 'skill-workspace.test.mjs')], {
+  stdio: 'inherit',
+  cwd: root,
+});
+process.exit(workspace.status ?? 1);

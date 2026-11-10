@@ -281,29 +281,28 @@
       />
 
       <div class="input-section">
-        <!-- 选中文字展示 -->
-        <div v-if="showSelectedText && selectedText" class="selected-text-display">
-          <div class="selected-text-content">
-            <div class="selected-text-body">
-              <span class="selected-text-label">{{ t('sidepanel.app.selectedText') }}</span>
-              <span class="selected-text-value">{{ selectedText }}</span>
-            </div>
-            <div class="selected-text-actions">
-              <button class="quote-btn" @click="quoteSelectedText" :title="t('sidepanel.app.quoteToInput')">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M14,17H17L19,13V7H13V13H16M6,17H9L11,13V7H5V13H8L6,17Z" fill="currentColor"/>
-                </svg>
-                {{ t('sidepanel.app.quote') }}
-              </button>
-              <button class="close-selected-text" @click="clearSelectedText" :title="t('sidepanel.app.clearSelectedText')">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z" fill="currentColor"/>
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-        
+        <!-- 网页引用条：待引用（等用户确认）/ 已引用（随本轮消息发送）。
+             两态互斥：确认后原文固定、不进输入框；此时页面上再选别的内容不再响应，
+             须先「取消引用」。发送时双路落地：模型面以 <page_quote> 信封拼进本轮
+             用户消息，用户面随记录落库（气泡据此渲染引用块，历史可追溯）。 -->
+        <PageQuoteBar
+          v-if="pendingQuote"
+          state="pending"
+          :text="pendingQuote.text"
+          :source-title="pendingQuote.source.title"
+          :source-url="pendingQuote.source.url"
+          @confirm="confirmPageQuote"
+          @discard="discardPendingQuote"
+        />
+        <PageQuoteBar
+          v-else-if="confirmedQuote"
+          state="confirmed"
+          :text="confirmedQuote.text"
+          :source-title="confirmedQuote.source.title"
+          :source-url="confirmedQuote.source.url"
+          @cancel="cancelConfirmedQuote"
+        />
+
         <!-- 截图预览 -->
         <div v-if="showCapturedImage && capturedImage" class="captured-image-display">
           <div class="captured-image-content">
@@ -527,7 +526,7 @@
                   <path d="M12,2A3,3 0 0,1 15,5V11A3,3 0 0,1 12,14A3,3 0 0,1 9,11V5A3,3 0 0,1 12,2M19,11C19,14.53 16.39,17.44 13,17.93V21H11V17.93C7.61,17.44 5,14.53 5,11H7A5,5 0 0,0 12,16A5,5 0 0,0 17,11H19Z" fill="currentColor"/>
                 </svg>
               </button>
-              <button class="send-button" v-tip="isAiResponding ? t('sidepanel.chat.stopResponding') : t('sidepanel.chat.sendMessage')" @click="isAiResponding ? confirmStopResponse() : sendMessage()" :disabled="!isAiResponding && !userInput.trim() && !pendingAttachments.length" :class="{ 'stop-button': isAiResponding }">
+              <button class="send-button" v-tip="isAiResponding ? t('sidepanel.chat.stopResponding') : t('sidepanel.chat.sendMessage')" @click="isAiResponding ? confirmStopResponse() : sendMessage()" :disabled="!isAiResponding && !userInput.trim() && !pendingAttachments.length && !confirmedQuote" :class="{ 'stop-button': isAiResponding }">
                 <svg v-if="!isAiResponding" class="send-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M2,21L23,12L2,3V10L17,12L2,14V21Z" fill="currentColor"/>
                 </svg>
@@ -782,7 +781,7 @@ import AgentAvatar from '@/common/AgentAvatar.vue';
 import { useAgentDisplay } from '@/common/use-agent-display';
 import ToolComponent from './Tool.vue';
 // 组件按功能域从 barrel 引入（chat / modals / voice / feedback）
-import { ChatMessageList, ChatHistoryDrawer, ContextUsageRing, GuardConfirmBar, PlanBoard } from '../components/chat';
+import { ChatMessageList, ChatHistoryDrawer, ContextUsageRing, GuardConfirmBar, PlanBoard, PageQuoteBar } from '../components/chat';
 import { SiteLearnModal, LearnDialog, LearnStatusBar, LearnDegradedNotice, LearnRecoveryDismissDialog } from '../components/learn';
 import { useLearnSession } from '../composables/use-learn-session';
 import { backgroundConversation as conversationEngine } from '../core/conversation/runtime-client';
@@ -794,6 +793,11 @@ import { VoiceAssistantCard, VoiceAssistantSettings, VoiceRecordingModal } from 
 import { AiProcessingOverlay, AppDialog, InteractDialog, MessageContainer, WebSocketStatusBar } from '../components/feedback';
 // 全局 Toast（轻量可读提示：反馈落库失败 / 复制失败 / API 错误；宿主见模板 MessageContainer）
 import { message as toast } from '../utils/chat/message';
+import {
+  normalizePageQuoteSource,
+  normalizeQuoteText,
+  type PageQuote,
+} from '../utils/chat/page-quote';
 
 import { openaiToolsConverter } from '../utils/tools/openai-tools-converter';
 // 渠道 + 模型领域：模型选择器、端点解析、全局默认引用、会话模型回显统一经注册表
@@ -857,6 +861,8 @@ import {
 } from '../composables/use-attachments';
 // 会话文件库：文本附件发送时注册（8 位短 id + 确定性分页），read_file 按页续读
 import { conversationFileStore } from '@/utils/conversation-files/file-store';
+// 会话跨上下文桥：管理中心「会话管理」分区请求本面板切换 / 复位会话
+import { SESSION_BRIDGE_MSG } from '@/utils/sessions/session-bridge';
 import {
   buildUploadFileEnvelope,
   type UploadFileEnvelopeEntry,
@@ -1333,6 +1339,9 @@ const handleConversationEvent = (event: ConversationEvent): void => {
         ...(userVisibleImageRefs(event.record).length > 0
           ? { imageRefs: userVisibleImageRefs(event.record) }
           : {}),
+        // 用户确认的网页引用：随消息落库，气泡据此渲染引用块（引用原文在
+        // 会话历史里始终可见——用户能核对「当时引用的是哪一段」）
+        ...(event.record.pageQuote ? { pageQuote: event.record.pageQuote } : {}),
       });
       break;
     }
@@ -1738,6 +1747,8 @@ const recordToUiMessage = (
     // 执行时长与反馈随记录还原：耗时展示 / 赞踩状态跨重启持久（缺失 = 旧记录，隐藏展示）
     ...recordMetaOf(record),
     ...(visibleImageRefs.length > 0 ? { imageRefs: visibleImageRefs } : {}),
+    // 网页引用随记录还原（气泡引用块的唯一来源；旧记录无此字段 → 不渲染）
+    ...(record.pageQuote ? { pageQuote: record.pageQuote } : {}),
   };
 };
 // Escape 关闭面板后记住被忽略的触发符，直到触发序列中断（输入空格/删除），
@@ -2316,9 +2327,30 @@ let greetingTimer: ReturnType<typeof setInterval> | null = null;
 const greetingLogoUrl = chrome.runtime.getURL('logo.png');
 const greetingText = computed<string>(() => t(welcomeSentence.value));
 
-// 文字选择相关状态
-const selectedText = ref('');
-const showSelectedText = ref(false);
+// 网页引用状态（待引用 / 已引用）
+// - pendingQuote：捕获到页面选区，等待用户点「确认引用」；新的选区会覆盖它。
+// - confirmedQuote：用户已确认，原文固定且**不进输入框**；随本轮消息以
+//   <page_quote> 信封发给模型（装配见 utils/chat/page-quote.ts）。
+//   已引用态下页面再选别的内容不再响应（须先「取消引用」）。
+const pendingQuote = ref<PageQuote | null>(null);
+const confirmedQuote = ref<PageQuote | null>(null);
+
+/** 确认引用：待引用 → 已引用（原文固定，不写入输入框） */
+const confirmPageQuote = () => {
+  if (!pendingQuote.value) return;
+  confirmedQuote.value = pendingQuote.value;
+  pendingQuote.value = null;
+};
+
+/** 放弃待引用（尚未确认的选区；用户可改选页面上的其它内容） */
+const discardPendingQuote = () => {
+  pendingQuote.value = null;
+};
+
+/** 取消引用：已引用 → 无引用；此后页面选区恢复响应 */
+const cancelConfirmedQuote = () => {
+  confirmedQuote.value = null;
+};
 
 // 截图相关状态
 const capturedImage = ref('');
@@ -3371,6 +3403,7 @@ const refreshContextUsage = async (options: { force?: boolean } = {}): Promise<v
     const usage = measureContextUsage({
       systemPrompt: runtime.systemPrompt,
       toolIds: runtime.advertisedToolIds ?? runtime.toolIds,
+      skillMode: runtime.skillMode,
       // 合成激活轮同样是「下一次发送将占用的预算」的一部分：
       // 预选技能的 load_skill 正文随会话注入，漏计会让环上数字系统性偏低
       messages: [...runtime.initialContext, ...runtime.activationContext],
@@ -3506,24 +3539,6 @@ const handleFileUpload = (event: MouseEvent) => {
     }
   };
   input.click();
-};
-
-// 文字选择相关方法
-const quoteSelectedText = () => {
-  if (selectedText.value) {
-    userInput.value += `"${selectedText.value}" `;
-    clearSelectedText();
-    // 自动调整textarea高度
-    if (messageTextarea.value) {
-      messageTextarea.value.style.height = 'auto';
-      messageTextarea.value.style.height = messageTextarea.value.scrollHeight + 'px';
-    }
-  }
-};
-
-const clearSelectedText = () => {
-  selectedText.value = '';
-  showSelectedText.value = false;
 };
 
 // 截图相关方法
@@ -3823,7 +3838,9 @@ const sendMessageInner = async (beginGlow: () => void) => {
       return;
     }
 
-    if (!userInput.value.trim() && pendingAttachments.value.length === 0 && messages.value.length === 0) {
+    // 空输入拦截：用户正文、附件、已确认引用、历史消息四者皆无 → 无可发内容。
+    // 已确认引用计入：「只引用一段网页原文、不另写文字」本身是一条完整请求。
+    if (!userInput.value.trim() && pendingAttachments.value.length === 0 && !confirmedQuote.value && messages.value.length === 0) {
       console.warn(`[SendMessage] 输入为空且无历史消息, 跳过`);
       return;
     }
@@ -3908,7 +3925,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
       }
 
       // 自动建工作笔记，笔记信息作为提示词后缀注入（不再原地修改智能体共享配置）。
-      // 站点清单显式并入后缀：预设提示词要求「website 只在 <supplementary-context>
+      // 站点清单显式并入后缀：预设提示词要求「platform 只在 <supplementary-context>
       // 列出的已开启站点中选择」——此前清单只写进笔记正文，模型必须先读笔记才能
       // 知道可用平台，属传递断链；此处补齐（笔记正文保留清单供用户查看）
       try {
@@ -3926,7 +3943,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
             rawArgs: {
               action: 'create',
               title: `Deep Search - ${new Date().toLocaleString()}`,
-              content: `用户查询: ${userInput.value}\n\n搜索时间: ${new Date().toLocaleString()}\n\n已开启的搜索平台: ${enabledWebsites.value.map(site => site.name).join('、')}\n\n---\n\n`,
+              content: `用户查询: ${userInput.value}\n\n搜索时间: ${new Date().toLocaleString()}\n\n已开启的搜索站点: ${enabledWebsites.value.map(site => site.name).join('、')}\n\n---\n\n`,
             },
           },
           timeoutMs: 30_000,
@@ -3939,7 +3956,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
         const createNoteResult = noteOutcome.result;
         if (noteOutcome.status === 'success' && createNoteResult && !createNoteResult.isError) {
           const noteInfo = firstTextContent(createNoteResult.content) || '';
-          const enabledSiteLine = `已开启的搜索平台（web_search 的 website 只能从中选择）：${enabledWebsites.value.map(site => site.id).join('、')}`;
+          const enabledSiteLine = `已开启的搜索站点（platform_search 的 platform 只能从中选择）：${enabledWebsites.value.map(site => site.platform).join('、')}`;
           systemPromptSuffix = noteInfo ? `${noteInfo}\n${enabledSiteLine}` : enabledSiteLine;
         } else {
           console.error('note_tool 创建笔记失败:', noteOutcome.error ?? createNoteResult);
@@ -4043,8 +4060,20 @@ const sendMessageInner = async (beginGlow: () => void) => {
     const selectedThreshold = activeOption.value?.contextThreshold ?? CONTEXT_THRESHOLD_DEFAULT;
     const selectedAgentName = selectedAgent.value || null;
     const selectedSkillNames = [...selectedSkills.value];
+    // 已确认的网页引用随本轮消息发送：装配层从引用数据派生两路产物——
+    // 模型面 <page_quote> 信封（进本轮用户消息）+ 用户面引用块（随消息落库，
+    // 气泡据此渲染）。原文不进输入框。快照后即清空（与输入/附件同口径）：
+    // 发送失败时按原样恢复（restoreQuote）。
+    const currentQuote = confirmedQuote.value ?? undefined;
     userInput.value = '';
     attachmentManager.clearAttachments();
+    confirmedQuote.value = null;
+
+    /** 发送失败时把已确认引用放回引用条（与输入/附件的回填同口径）。
+     *  发送在途期间用户若已主动「取消引用」，不回填——用户的后续决断优先。 */
+    const restoreQuote = (): void => {
+      if (currentQuote && !confirmedQuote.value) confirmedQuote.value = currentQuote;
+    };
 
     // 附件派生（三条通道，与既有「时间戳只进模型侧」的口径一致）：
     //   - 转录可见摘要标记：并入 userInput 落库（用户能查到本轮带了哪些附件）
@@ -4126,6 +4155,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
         userInput: attachmentSummary.length ? `${currentInput}\n\n${attachmentSummary.join('\n')}` : currentInput,
         userImages: currentUserImages,
         attachmentPrompt: envelopePrompt,
+        pageQuote: currentQuote,
         agentName: selectedAgentName,
         skillNames: selectedSkillNames,
         modelRef: selectedModel,
@@ -4141,6 +4171,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
       runtime = await registerFilesAndBuildRuntime();
     } catch (error) {
       restoreSendDraft(runChatId, currentInput, currentAttachments);
+      restoreQuote();
       if (activeChatId.value !== runChatId) {
         console.warn('[SendMessage] 上一个会话装配失败:', error);
         pushSystemNotice(t('sidepanel.chat.sessionSwitchedDraftSaved'));
@@ -4150,6 +4181,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
     }
     if (activeChatId.value !== runChatId) {
       restoreSendDraft(runChatId, currentInput, currentAttachments);
+      restoreQuote();
       pushSystemNotice(t('sidepanel.chat.sessionSwitchedDraftSaved'));
       return;
     }
@@ -4161,11 +4193,12 @@ const sendMessageInner = async (beginGlow: () => void) => {
       measureContextUsage({
         systemPrompt: runtime.systemPrompt,
         toolIds: runtime.advertisedToolIds ?? runtime.toolIds,
+        skillMode: runtime.skillMode,
         messages: [
           // 与引擎组装顺序逐字同源：初始上下文 → 本轮用户消息 → 合成激活轮
           ...runtime.initialContext,
-          ...(runtime.userInput || runtime.attachmentPrompt || runtime.userImages.length > 0
-            ? [composeLlmUserMessage(runtime.userInput, runtime.attachmentPrompt, runtime.userImages)]
+          ...(runtime.userInput || runtime.attachmentPrompt || runtime.pageQuotePrompt || runtime.userImages.length > 0
+            ? [composeLlmUserMessage(runtime.userInput, runtime.attachmentPrompt, runtime.userImages, runtime.pageQuotePrompt)]
             : []),
           ...runtime.activationContext,
         ],
@@ -4182,6 +4215,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
         runtime.userInput,
         runtime.attachmentPrompt,
         runtime.userImages,
+        runtime.pageQuotePrompt,
       );
       const messageTokens = estimateMessageTokens(currentUserMessage);
       const systemTokens = estimateTextTokens(runtime.systemPrompt);
@@ -4192,6 +4226,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
           `[SendMessage] 本轮消息体积 ${messageTokens} token 超过可用预算 ${availableBudget} token（阈值−systemPrompt），阻断发送`,
         );
         restoreSendDraft(runChatId, currentInput, currentAttachments);
+        restoreQuote();
         await showAlert(
           t('sidepanel.attachments.messageExceedsContext', {
             size: formatTokensK(messageTokens),
@@ -4217,6 +4252,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
     const settlePreRunStop = (): void => {
       // 输入框为空才回填原输入：用户在间隙里已敲了新内容时，以他们正在编辑的内容为准
       restoreSendDraft(runChatId, currentInput, currentAttachments);
+      restoreQuote();
       // 会话已切换时通知不落入新会话视图（被停止的是旧会话的发送流程，
       // 与引擎事件流的 chatId 守卫同语义）
       if (activeChatId.value === runChatId) {
@@ -4664,15 +4700,37 @@ onMounted(async () => {
   // 监听来自content script的录制消息
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'TEXT_SELECTED') {
-      // 处理文字选择
-      console.log('收到文字选择消息', message.text);
-      selectedText.value = message.text;
-      showSelectedText.value = true;
+      // 页面选区 → 待引用。
+      // 已引用态下不再响应新的选区：用户须先「取消引用」，否则随手一选就会
+      // 把已确认的引用顶掉（引用是用户明确确认过的内容，不该被顺带的手势覆盖）。
+      if (confirmedQuote.value) {
+        console.log('已有已确认引用，忽略新的文字选择（需先取消引用）');
+        return;
+      }
+      const raw = typeof message.text === 'string' ? message.text.trim() : '';
+      if (!raw) return;
+      // 超长选区在入口即归一（与 <page_quote> 信封同源的 8000 字上限）：
+      // 引用条、落库记录、气泡、信封四个下游共用同一份结果，大选区不会
+      // 撑爆转录库（引用条本身另有三行 + 块内滚动的展示封顶）
+      const text = normalizeQuoteText(raw);
+      if (!text) return;
+      console.log('收到文字选择消息', text);
+      // 来源优先取标签页顶层 URL/标题（选区可能发生在 iframe 内，用户看到的
+      // 是顶层页面）；content script 自报的地址仅作兜底。
+      // 用 || 而非 ??：标签页地址缺失时是 undefined/空串，两种都该回落到兜底值。
+      pendingQuote.value = {
+        text,
+        source: normalizePageQuoteSource(
+          sender?.tab?.url || message.url,
+          sender?.tab?.title || message.title,
+        ),
+      };
     } else if (message.type === 'TEXT_DESELECTED') {
-      // 处理文字取消选择
+      // 页面取消选区 → 清掉待引用。
+      // 已引用态下忽略：引用已被用户确认并固定，页面选区变化不应动它。
+      if (confirmedQuote.value) return;
       console.log('收到文字取消选择消息');
-      selectedText.value = '';
-      showSelectedText.value = false;
+      pendingQuote.value = null;
     } else if (message.type === 'SCREEN_CAPTURED') {
       // 处理截图完成
       console.log('收到截图完成消息');
@@ -4683,6 +4741,31 @@ onMounted(async () => {
       // 处理截图取消
       console.log('截图已取消');
       isCapturingScreen.value = false;
+    } else if (message.type === SESSION_BRIDGE_MSG.OPEN_IN_SIDEPANEL) {
+      // 管理中心「会话管理」：请求侧边栏打开指定会话。
+      // **应答方唯一**：只有侧边栏应答该类型（后台与管理中心都忽略）——
+      // Chrome 的 sendMessage 是「先应答者胜」，多应答方会让结果随机来自
+      // 错误的上下文。
+      const targetChatId = typeof message.chatId === 'string' ? message.chatId : '';
+      if (!targetChatId) {
+        sendResponse({ ok: false });
+        return;
+      }
+      void (async () => {
+        try {
+          await loadHistorySession(targetChatId);
+          sendResponse({ ok: true });
+        } catch (error) {
+          console.warn('[App] 按管理中心请求切换会话失败:', error);
+          sendResponse({ ok: false });
+        }
+      })();
+      return true; // 异步应答
+    } else if (message.type === SESSION_BRIDGE_MSG.DELETED) {
+      // 管理中心删除了某个会话：正打开它时按侧边栏内部的删除收尾逻辑复位
+      // （清缓存 / 中止运行 / 回主页），与侧边栏自己删除时的行为完全一致。
+      const deletedChatId = typeof message.chatId === 'string' ? message.chatId : '';
+      if (deletedChatId) handleSessionDeleted(deletedChatId);
     }
   });
 

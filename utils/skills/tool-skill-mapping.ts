@@ -27,8 +27,8 @@ const BILIBILI_TOOL_IDS: readonly string[] = [
   'bilibili_jump_tool',
 ];
 
-/** 统一多平台检索工具（website 枚举区分平台，导航 + 解析一步完成） */
-const SEARCH_TOOL_IDS: readonly string[] = ['web_search'];
+/** 检索工具（web_search 通用网页 / platform_search 站点平台，导航 + 解析一步完成） */
+const SEARCH_TOOL_IDS: readonly string[] = ['web_search', 'platform_search'];
 
 /** 表格生成工具 */
 const SPREADSHEET_TOOL_IDS: readonly string[] = ['xlsx_tool'];

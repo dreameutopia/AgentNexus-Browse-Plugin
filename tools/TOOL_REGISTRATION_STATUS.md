@@ -48,35 +48,42 @@ registerAllTools()                      (tools/index.ts)
   2. 需要 background 上下文的工具（`BaseBrowserTool.ensureBackgroundContext()` 抛错）
      转发 `chrome.runtime.sendMessage({ type: 工具名, ...参数 })`；
   3. background `tools-manager-listener.ts` 按 **「白名单 ∪ 注册表」** 路由回
-     `handleCallTool()`：白名单覆盖 `browser_refresh` / `browser_set_zoom` 这类
-     无注册工具的内联处理器与参数别名；凡已注册工具名（含 `browser_vector_search`、
-     `browser_bookmark_create` 等未登记进白名单的 browser_* 工具）一律由注册表命中，
+     `handleCallTool()`：白名单只覆盖 `browser_set_zoom` 这类
+     无注册工具的内联处理器；凡已注册工具名（`browser_navigation`、`browser_tabs`、
+     `browser_vector_search`、`browser_bookmark_create` 等全部）一律由注册表命中，
      新增工具无需同步维护白名单。
 
 ## 二、命名约定
 
-- 新一代工具统一 **`browser_` 前缀 + snake_case**：`browser_navigate`、`browser_get_page_text`。
+- 新一代工具统一 **`browser_` 前缀 + snake_case**：`browser_navigation`、`browser_get_page_text`。
 - 例外（保持既有调用方兼容）：`page-source`、`task-submit`、`task-result`、`formFiller`、`semantic_compressor`、`interact`。
 - **`getPageMarkdown` 已下线**：结构化 Markdown 提取已并入 `browser_get_page_text`
   （`tools/base/page-info-tool.ts` + `tools/browser/structured-page-payload.ts`，
   结构化正文 + url 直读 + 超 15000 字符 ref 分页），预设与 Agent 提示词不要再引用旧名。
 - **`browser_screenshot` 已下线**：视觉截图统一由 `screenshot`（`tools/vision/screenshot-tool.ts`）提供，预设与 Agent 提示词里不要混用两个名字。
-- 有些名字只是**消息类型别名**，不是注册工具：`browser_go_back` / `browser_go_forward`（映射到 `browser_go_back_or_forward`）。脚本求值统一为 `browser_page_exec`。
-- `browser_refresh`、`browser_set_zoom` **没有注册工具**，只在 `tools-manager-listener.ts` 内联处理——仅当调用方直接发 `{ type: 'browser_refresh' }` 消息时可用，`CALL_TOOL` 通道不可达。
+- **导航与标签页工具已按域合并（项目未发布，无兼容别名）**：
+  `browser_navigate` / `browser_go_back_or_forward` / `wait_page_load` / `browser_refresh`（原内联）→
+  **`browser_navigation`**（action: open / refresh / back / forward / wait）；
+  `browser_get_all_tabs` / `browser_switch_tab` / `browser_close_tab` / `browser_close_tabs` / `browser_create_tab` / `browser_window` →
+  **`browser_tabs`**（action: list / switch / close / create / windows）。
+  预设、Agent 提示词、技能 allowed-tools 与工具面板里不得再出现旧名（旧名调用会报「工具不存在」）。
+- **消息类型别名已删除**：`browser_go_back` / `browser_go_forward` / `browser_refresh` 不再是可发送的消息类型——
+  统一走 `browser_navigation` 的 back / forward / refresh action。脚本求值统一为 `browser_page_exec`。
+- `browser_set_zoom` **没有注册工具**，只在 `tools-manager-listener.ts` 内联处理——仅当调用方直接发 `{ type: 'browser_set_zoom' }` 消息时可用。
 - 分类（`metadata.category`）是**运行期分组**（`toolRegistry.getStats()` / `getByCategory()`），
   与磁盘目录不必一一对应（如 `browser_interact` 属 `browser`、`python_run` 属 `code`）；
   文档表格按运行期分类记录，由测试强制对齐。
 
-## 三、分类清单（截至本次核对，共 74 个）
+## 三、分类清单（截至本次核对，共 67 个）
 
 | 分类 | 数量 | 工具名 |
 | --- | --- | --- |
 | automation | 9 | `ai_action`、`ai_locate`、`check_restricted_url`、`extract_data`、`file_upload_getter`、`file_uploader`、`formFiller`、`get_downloads_status`、`xiaozhi_config` |
 | base | 3 | `page-source`、`task-result`、`task-submit` |
 | bilibili | 2 | `bilibili_jump_tool`、`bilibili_subtitle_tool` |
-| browser | 28 | `browser_bookmark_create`、`browser_bookmark_delete`、`browser_clean_page`、`browser_close_tab`、`browser_close_tabs`、`browser_console`、`browser_create_tab`、`browser_dom_explore`、`browser_extract_data`、`browser_get_all_tabs`、`browser_get_page_html`、`browser_get_page_info`、`browser_get_page_text`、`browser_go_back_or_forward`、`browser_interact`、`browser_navigate`、`browser_network_capture`、`browser_network_request`、`browser_observe`、`browser_page_exec`、`browser_scroll`、`browser_search_bookmarks`、`browser_search_history`、`browser_send_command_to_inject_script`、`browser_switch_tab`、`browser_vector_search`、`browser_wait_for_element`、`browser_window` |
+| browser | 22 | `browser_bookmark_create`、`browser_bookmark_delete`、`browser_clean_page`、`browser_console`、`browser_dom_explore`、`browser_extract_data`、`browser_get_page_html`、`browser_get_page_info`、`browser_get_page_text`、`browser_interact`、`browser_navigation`、`browser_network_capture`、`browser_network_request`、`browser_observe`、`browser_page_exec`、`browser_scroll`、`browser_search_bookmarks`、`browser_search_history`、`browser_send_command_to_inject_script`、`browser_tabs`、`browser_vector_search`、`browser_wait_for_element` |
 | code | 2 | `mermaid_renderer`、`python_run` |
-| common | 2 | `generic_wait`、`wait_page_load` |
+| common | 1 | `generic_wait` |
 | data | 1 | `data_ref_tool` |
 | excalidraw | 3 | `draw_on_canvas`、`excalidraw_tool`、`setup_excalidraw_canvas` |
 | interact | 1 | `interact` |
@@ -86,8 +93,8 @@ registerAllTools()                      (tools/index.ts)
 | office | 1 | `xlsx_tool` |
 | plan | 1 | `plan_tool` |
 | resource | 7 | `clear_captured_files`、`get_captured_file_by_id`、`list_captured_files`、`resource_downloader`、`resource_sniffer`、`start_download_interception`、`stop_download_interception` |
-| search | 1 | `web_search` |
-| skill | 2 | `load_skill`、`read_skill_file` |
+| search | 2 | `web_search`、`platform_search` |
+| skill | 1 | `skill_tool` |
 | text-processing | 1 | `semantic_compressor` |
 | upload-file | 1 | `read_file` |
 | vision | 3 | `ocr`、`screenshot`、`vision_gui` |
@@ -105,7 +112,7 @@ registerAllTools()                      (tools/index.ts)
 
 ```ts
 import { toolRegistry } from '@/tools/registry';
-toolRegistry.getTool('browser_navigate');   // undefined = 未注册
+toolRegistry.getTool('browser_navigation');  // undefined = 未注册
 toolRegistry.getToolIds();                  // 全量已注册工具名
 ```
 

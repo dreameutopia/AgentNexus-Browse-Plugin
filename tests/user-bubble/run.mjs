@@ -74,7 +74,9 @@ async function compileComponent(file, { vueImports = {} } = {}) {
     bundle: true,
     platform: 'node',
     format: 'esm',
-    external: ['vue'],
+    // vue 与 lucide 图标走真实实现（气泡的引用标记图标），不进 bundle——
+    // lucide 是 CJS，被 esbuild 内联后会触发 ESM 的 dynamic require 报错
+    external: ['vue', 'lucide-vue-next'],
     loader: { '.css': 'empty' },
     plugins: [
       {
@@ -100,7 +102,7 @@ async function compileComponent(file, { vueImports = {} } = {}) {
             }
             if (args.path.endsWith('UserMessageBubble.vue')) {
               return {
-                contents: `import {h} from 'vue';export default {name:'UserMessageBubble',props:['content','messageId'],setup(p){return()=>h('div',{class:'user-bubble'},String(p.content||''));}};`,
+                contents: `import {h} from 'vue';export default {name:'UserMessageBubble',props:['content','messageId','quote'],setup(p){return()=>h('div',{class:'user-bubble'},[p.quote?h('blockquote',{class:'user-bubble-quote'},String(p.quote.text)):'',String(p.content||'')]);}};`,
                 loader: 'js',
               };
             }
@@ -282,7 +284,136 @@ const MessageItem = (await compileComponent(
   assert.ok(container.querySelector('.user-bubble'), '用户消息渲染出气泡');
   assert.equal(container.querySelectorAll('.message-parts-stub').length, 0, '用户消息不走模型消息的片段渲染');
   assert.equal(container.querySelectorAll('.message-content').length, 1, '正文只渲染一次（气泡内的正文）');
+  assert.equal(container.querySelectorAll('.user-bubble-quote').length, 0, '无 pageQuote 的消息不渲染引用块');
   unmount();
+}
+
+// ── D2. MessageItem 接线：pageQuote 透传进气泡并渲染引用块 ──
+{
+  fakeContentHeight = 40;
+  const { container, errors, unmount } = await mount(MessageItem, {
+    message: {
+      id: 'm-user-quote',
+      role: 'user',
+      content: '请解释这段话',
+      parts: [{ type: 'text', content: '请解释这段话' }],
+      toolCalls: [],
+      pageQuote: {
+        text: '被引用的网页原文',
+        source: { url: 'https://example.com/article', title: '示例文章' },
+      },
+    },
+    isLive: false,
+  });
+  assert.deepEqual(errors, [], '带引用的用户消息渲染不得抛错');
+  assert.ok(container.querySelector('.user-bubble'), '渲染出用户消息气泡');
+  assert.ok(container.querySelector('.user-bubble-quote'), 'MessageItem 的 pageQuote 透传进气泡并渲染引用块');
+  unmount();
+}
+
+// ── F. 引用块结构：标记 / 来源 / 原文；独立于正文折叠层 ──
+{
+  fakeContentHeight = 40;
+  const { container, errors, unmount } = await mount(UserMessageBubble, {
+    content: '基于这段引用作答',
+    quote: {
+      text: '被引用的网页原文',
+      source: { url: 'https://example.com/article', title: '示例文章' },
+    },
+  });
+  assert.deepEqual(errors, [], '带引用的气泡渲染不得抛错');
+  const quote = container.querySelector('.user-bubble-quote');
+  assert.ok(quote, '渲染引用块');
+  assert.ok(
+    container.querySelector('.user-bubble .user-bubble-quote'),
+    '引用块在气泡内',
+  );
+  assert.ok(
+    !container.querySelector('.user-bubble-clip .user-bubble-quote'),
+    '引用块在正文折叠层之外（正文收起不裁剪引用）',
+  );
+  // i18n 桩返回 key 本体，断言用 key 而非中文文案
+  assert.equal(
+    container.querySelector('.user-bubble-quote-tag').textContent.trim(),
+    'sidepanel.chat.userMessageQuoteTag',
+    '引用标记可见',
+  );
+  assert.equal(
+    container.querySelector('.user-bubble-quote-source').textContent.trim(),
+    '示例文章',
+    '来源显示页面标题',
+  );
+  assert.equal(
+    container.querySelector('.user-bubble-quote-text').textContent,
+    '被引用的网页原文',
+    '引用原文逐字可见',
+  );
+  assert.equal(container.querySelectorAll('.message-content').length, 1, '正文照常渲染');
+  unmount();
+}
+
+// ── G. 来源回退：标题缺失时取域名，都缺则中性文案 ──
+{
+  fakeContentHeight = 40;
+  const noTitle = await mount(UserMessageBubble, {
+    content: '正文',
+    quote: { text: '原文', source: { url: 'https://docs.example.org/page', title: '' } },
+  });
+  assert.equal(
+    noTitle.container.querySelector('.user-bubble-quote-source').textContent.trim(),
+    'docs.example.org',
+    '标题缺失时来源回退到主机名',
+  );
+  noTitle.unmount();
+
+  const noSource = await mount(UserMessageBubble, {
+    content: '正文',
+    quote: { text: '原文', source: { url: '', title: '' } },
+  });
+  assert.equal(
+    noSource.container.querySelector('.user-bubble-quote-source').textContent.trim(),
+    'sidepanel.chat.userMessageQuoteSourceFallback',
+    '来源全缺时回落到中性文案（key）',
+  );
+  noSource.unmount();
+}
+
+// ── H. 复制口径：引用原文计入；引用独存时复制不禁用 ──
+{
+  fakeContentHeight = 40;
+
+  // 引用 + 正文：两段都复制（引用在前，与「这条消息实际发了什么」一致）
+  clipboardWrites.length = 0;
+  const both = await mount(UserMessageBubble, {
+    content: '请解释这段话',
+    quote: { text: '被引用的网页原文', source: { url: '', title: '' } },
+  });
+  click(both.container.querySelector('.user-bubble-copy'));
+  await nextTick();
+  await nextTick();
+  assert.deepEqual(clipboardWrites, ['被引用的网页原文\n请解释这段话'], '复制 = 引用原文 + 正文');
+  both.unmount();
+
+  // 仅引用（正文为空）：气泡不渲染正文区，但复制按钮可用且复制的是引用
+  clipboardWrites.length = 0;
+  const quoteOnly = await mount(UserMessageBubble, {
+    content: '',
+    quote: { text: '被引用的网页原文', source: { url: '', title: '' } },
+  });
+  assert.deepEqual(quoteOnly.errors, [], '引用独存的气泡渲染不得抛错');
+  assert.ok(quoteOnly.container.querySelector('.user-bubble-quote'), '引用块可见');
+  assert.equal(
+    quoteOnly.container.querySelectorAll('.user-bubble-body').length,
+    0,
+    '正文为空时不渲染正文区',
+  );
+  const quoteCopy = quoteOnly.container.querySelector('.user-bubble-copy');
+  assert.ok(quoteCopy && !quoteCopy.disabled, '引用独存时复制按钮不禁用');
+  click(quoteCopy);
+  await nextTick();
+  await nextTick();
+  assert.deepEqual(clipboardWrites, ['被引用的网页原文'], '复制的是引用原文');
+  quoteOnly.unmount();
 }
 
 // ── E. 助手消息不受影响（仍走片段渲染，无用户气泡） ──
@@ -304,5 +435,26 @@ const MessageItem = (await compileComponent(
   unmount();
 }
 
+// ── I. 宽度链防回归（静态样式断言：JSDOM 无排版引擎，坍缩类缺陷只能在源码层兜底）──
+{
+  const bubbleCss = readFileSync(
+    path.join(root, 'entrypoints/sidepanel/components/chat/user-message-bubble.css'),
+    'utf8',
+  );
+  // 气泡处在 fit-content 宽度链（.message.user auto 宽 → wrapper 100% → 气泡 100%）
+  // 上：任何 container-type（布局/行内尺寸容器化）都会把气泡的内在宽度贡献
+  // 归零，整条链坍缩成 ~30px 细竖条（2026-11 宽度坍塌事故）。
+  // 窄宽度降级必须走 @media（侧边栏文档视口 = 面板宽度）。
+  assert.ok(
+    !/container-type\s*:/.test(bubbleCss),
+    'user-message-bubble.css 禁止 container-type（会坍塌气泡宽度）',
+  );
+  assert.match(
+    bubbleCss,
+    /@media \(max-width: 360px\)/,
+    '引用块窄宽度降级走 @media 断点',
+  );
+}
+
 dom.window.close();
-console.log('[user-bubble] SFC 挂载渲染（超长自动收起 / 展开交互 / 复制按钮 / 用户消息接线）全部通过。');
+console.log('[user-bubble] SFC 挂载渲染（超长自动收起 / 展开交互 / 复制按钮 / 用户消息接线 / 网页引用块）与宽度链防回归全部通过。');

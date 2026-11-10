@@ -38,6 +38,7 @@ await build({
       "export { buildEnvelopeComponentBlock, buildDiffBlock } from './entrypoints/sidepanel/utils/chat/rich-components/component-blocks';",
       "export { RICH_COMPONENTS, findRichComponentByFenceLang, COMPONENT_FENCE_LANG } from './entrypoints/sidepanel/utils/chat/rich-components/registry';",
       "export { buildRichOutputSystemPrompt } from './entrypoints/sidepanel/utils/chat/rich-components/rich-output-prompt';",
+      "export { chartNaturalWidth, computeChartLayout, parseChartOption } from './entrypoints/sidepanel/utils/chat/chart-layout';",
       "export { sanitizeEchartsOptionJson } from './entrypoints/sidepanel/utils/chat/echarts-option-sanitizer';",
       "export { t, setLocale } from './utils/i18n/core';",
     ].join('\n'),
@@ -80,6 +81,9 @@ const {
   RICH_COMPONENTS,
   findRichComponentByFenceLang,
   buildRichOutputSystemPrompt,
+  chartNaturalWidth,
+  computeChartLayout,
+  parseChartOption,
   COMPONENT_FENCE_LANG,
   sanitizeEchartsOptionJson,
   setLocale,
@@ -615,7 +619,59 @@ function envelopeOf(json) {
   assert.equal((stat.match(/class="[^"]*component-save-btn/g) || []).length, 1, 'stat：恰一个保存按钮');
 }
 
-// ==================== 6. markdown 渲染器集成 ====================
+// ==================== 6.5 图表布局：自然宽度 / 渲染宽度 / 显示缩放 ====================
+
+{
+  const catOption = (labels) => ({
+    xAxis: { type: 'category', data: labels },
+    yAxis: { type: 'value' },
+    series: [{ name: '新增', type: 'line', data: labels.map((_, i) => i + 1) }],
+  });
+
+  // 自然宽度：类目越多越宽；且与容器宽度无关（同数据在宽窄侧边栏里一致）
+  const narrow = chartNaturalWidth(catOption(['周一', '周二']));
+  const wide = chartNaturalWidth(catOption(Array.from({ length: 12 }, () => '下周一')));
+  assert.ok(wide > narrow, `类目越多自然宽度越大（${wide} > ${narrow}）`);
+  assert.equal(
+    chartNaturalWidth(catOption(['周一', '周二'])),
+    narrow,
+    '自然宽度与容器宽度无关（同一数据恒定）',
+  );
+  assert.ok(narrow >= 360 && wide <= 1600, '自然宽度落在 [360, 1600] 区间内');
+
+  // legend 太宽也要算进去（legend 放不下时右侧会被切）
+  const withLongLegend = chartNaturalWidth({
+    xAxis: { type: 'category', data: ['周一'] },
+    series: [{ name: '一个非常长的系列名称用于撑开 legend', type: 'line', data: [1] }],
+  });
+  assert.ok(withLongLegend > 0, 'legend 宽度参与自然宽度计算');
+
+  // 非法输入不炸
+  assert.equal(chartNaturalWidth(null), chartNaturalWidth({}), '空输入走默认宽度');
+  assert.equal(parseChartOption('not json'), null, '非法 JSON → null');
+  assert.equal(parseChartOption('[]'), null, '数组不是 option 对象');
+
+  // 布局：容器够宽 → 不缩放、不滚动
+  const wideLayout = computeChartLayout(800, 500);
+  assert.equal(wideLayout.scale, 1, '容器够宽时不缩放');
+  assert.equal(wideLayout.scrollable, false, '容器够宽时不滚动');
+  assert.equal(wideLayout.renderWidth, 800, '渲染宽度 = 容器宽度');
+
+  // 布局：容器窄但缩放后仍可读 → 等比缩小到可用宽度（不滚动、不截断）
+  const scaled = computeChartLayout(300, 400);
+  assert.ok(scaled.scale < 1 && scaled.scale >= 0.65, `缩放比在可读区间（${scaled.scale.toFixed(2)}）`);
+  assert.equal(scaled.scrollable, false, '可读区间内不滚动');
+  assert.ok(scaled.paintedWidth <= 300, `缩小后宽度不超过容器（${scaled.paintedWidth} ≤ 300）`);
+
+  // 布局：缩到看不清 → 保持原始尺寸 + 横向滚动（宁可滚动也不隐藏内容）
+  const scrolled = computeChartLayout(300, 1600);
+  assert.equal(scrolled.scale, 1, '过窄时不缩放');
+  assert.equal(scrolled.scrollable, true, '过窄时横向滚动');
+  assert.equal(scrolled.renderWidth, 1600, '渲染宽度 = 自然宽度');
+  assert.ok(scrolled.paintedWidth > 300, '内容宽于容器 → 由滚动查看剩余部分');
+}
+
+// ==================== 7. markdown 渲染器集成 ====================
 
 {
   // 信封 chart → 骨架（信封源码保真存 .chart-source）

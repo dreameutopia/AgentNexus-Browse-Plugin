@@ -25,6 +25,8 @@ const STORAGE_KEY = 'deepSearchSiteFlags';
 export interface WebsiteItem {
   id: string;
   name: string;
+  /** platform_search 的 platform 枚举值（提示词与模型侧只认这个值，非 UI 键） */
+  platform: string;
   labelKey: MessageKey;
   icon: string;
   enabled: boolean;
@@ -56,6 +58,7 @@ const websites = ref<WebsiteItem[]>(
     return {
       id: site.id,
       name: site.label,
+      platform: site.platform,
       labelKey: (meta?.labelKey ?? '') as MessageKey,
       icon: meta?.icon ?? '',
       enabled: false,

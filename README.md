@@ -95,14 +95,12 @@ Restricted-URL protection, a guard confirmation bar for dangerous actions, and d
 ## 🧭 Skill Design
 
 ### Positioning
-Agents running in the browser **have no Bash tool at this stage**, so skills cannot ship executable scripts. Skills in this project are therefore positioned as **reusable experience documents**: a structured `SKILL.md` that teaches the agent how to combine existing tools to handle a class of tasks. The format follows a browser-extension adaptation of the Agent Skills open spec (agentskills.io) — the spec's `scripts/` directory is never executed in this environment and is kept as plain-text reference only.
+Skills combine reusable workflows in `SKILL.md` with optional scripts, templates, fonts, datasets, and other assets. The browser runtime supports compatible Python scripts through Pyodide and exposes the resulting files through the chat workspace.
 
 ### What Belongs in a Skill
 - **Workflow experience**: a complete methodology, e.g. the web research report flow of "decompose → multi-source search → cross-validate → log progress → summarize";
 - **Scenario-specific solutions**: tool orchestration and parameter know-how for a specific task, such as the field conventions for creating an XLSX spreadsheet;
 - **Site-specific guides**: an operating manual for a particular website, e.g. Bilibili video summarization — page-pattern recognition, prerequisites (logged-in state), when to call dedicated tools, and fallback strategies.
-
-In short, a skill captures "the experience of how to get this done", not "code that runs for you".
 
 ### Skill Format
 One skill = one `SKILL.md` (YAML frontmatter + Markdown body) + optional resource files (e.g. `references/*.md`). Key frontmatter fields:
@@ -116,8 +114,16 @@ One skill = one `SKILL.md` (YAML frontmatter + Markdown body) + optional resourc
 
 ### Progressive Disclosure (context-friendly)
 1. **Discover**: the system prompt carries a persistent `<available-skills>` list — skill id + one-line description per entry;
-2. **Activate**: skills pre-selected with `/` are injected automatically as one synthetic `load_skill` round when the message is sent; otherwise, when a task matches, the model calls `load_skill` itself to inject the full instruction (priority rules + SKILL.md body, soft cap: 15,000 characters);
-3. **Dig deeper**: `read_skill_file` loads additional resource files by path (100,000-character cap per file).
+2. **Activate**. Skills pre-selected with `/` are loaded when the message is sent. The agent can also call `skill_tool` with `action: "load"` to read instructions for a discovered skill.
+3. **Read resources**. Use `skill_tool` with `action: "read"` to read a text resource by exact skill-relative path.
+
+### Running Python scripts
+
+After installing Python, turn on **Runtime Skill script support** in the Python Environment section of the management hub. The setting starts off and resets when Python is removed. With it enabled, eligible chats offer `skill_tool(action="copy")` to copy files or directories. Pass `paths: ["."]` to copy the entire skill. Copies retain bytes and relative paths under `skills/<id>/<revision>/` in the chat workspace. Use scripts from trusted sources.
+
+Pass a staged `.py` path as `scriptPath` to `python_run`. Skill scripts start in their copied skill root. `AGENTNEXUS_WORKSPACE` points to the chat workspace, where user files are under `inputs/` and deliverables belong under `outputs/`. Use `argv`, `stdin`, and `env` for arguments, input, and non-secret configuration. For package entry points, pass the dotted `module` alongside its file path. Link a saved output with `<workspace-file path="outputs/report.csv" />`.
+
+Set `preflight: true` to inspect static imports, PEP 723 metadata, `requirements.txt` or static `pyproject.toml` metadata, and environment references. The default resolver uses the Pyodide catalog and explicitly supplied local wheels. Public PyPI wheel resolution requires approval in chat. Scripts that need Bash, subprocesses, native programs, or packages with no compatible wheel need an equivalent Python implementation or another available tool.
 
 ### Getting Started
 The three built-in skills (`skills/web-research-report`, `skills/bilibili-video-summary`, `skills/xlsx-creator`) serve as official templates — read and imitate them directly; enable/disable and import/export are available in the management hub.

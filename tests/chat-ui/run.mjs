@@ -63,9 +63,13 @@ const streamingMarkdown = spawnSync(process.execPath, [path.resolve('tests/chat-
 assert.equal(streamingMarkdown.status, 0, 'Streaming incremental freeze (boundary + MarkdownText host) regression');
 const pythonWorkspace = spawnSync(process.execPath, [path.resolve('tests/chat-ui/python-workspace.test.mjs')], { stdio: 'inherit' });
 assert.equal(pythonWorkspace.status, 0, 'Python workspace storage and download card regression');
+const micropipManifest = spawnSync(process.execPath, [path.resolve('tests/chat-ui/micropip-manifest.test.mjs')], { stdio: 'inherit' });
+assert.equal(micropipManifest.status, 0, 'micropip reuse manifest (probe/record/scope/restore) regression');
 const chatDatabase = spawnSync(process.execPath, [path.resolve('tests/chat-ui/chat-database.test.mjs')], { stdio: 'inherit' });
 assert.equal(chatDatabase.status, 0, 'Chat database migrations and stream persistence regression');
 const visionTimeline = spawnSync(process.execPath, [path.resolve('tests/chat-ui/vision-timeline.test.mjs')], { stdio: 'inherit' });
 assert.equal(visionTimeline.status, 0, 'Vision screenshot timeline ordering regression');
 const guardConfirm = spawnSync(process.execPath, [path.resolve('tests/chat-ui/guard-confirm.test.mjs')], { stdio: 'inherit' });
 assert.equal(guardConfirm.status, 0, 'Guard confirm bar (plan-card design language) regression');
+const pageQuote = spawnSync(process.execPath, [path.resolve('tests/chat-ui/page-quote.test.mjs')], { stdio: 'inherit' });
+assert.equal(pageQuote.status, 0, 'Page quote bar (pending/confirmed) and <page_quote> envelope regression');

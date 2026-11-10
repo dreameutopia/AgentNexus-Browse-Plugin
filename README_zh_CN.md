@@ -95,7 +95,7 @@ Markdown 渲染支持 Mermaid 图表、KaTeX 公式、PlantUML、代码高亮与
 ## 🧭 技能（Skill）设计
 
 ### 设计定位
-浏览器内的智能体**当前阶段没有 Bash 工具**，无法执行技能自带的任何脚本。因此本项目的技能不采用「可执行脚本」路线，而是定位为**可复用的经验文档**：用一份结构化的 `SKILL.md` 教会智能体如何组合现有工具完成一类任务。格式遵循 Agent Skills 开放规范（agentskills.io）的浏览器扩展适配版——规范中的 `scripts/` 目录在本环境中不会被执行，仅作为文字参考保留。
+技能用 `SKILL.md` 描述可复用的工作流程，并可携带脚本、模板、字体、数据集等资源。浏览器通过 Pyodide 运行兼容的 Python 脚本，产物保存在当前会话工作区。
 
 ### 适合沉淀为技能的内容
 - **工作流经验**：一套完整的方法论，如网络调研报告的「拆解问题 → 多源检索 → 交叉验证 → 过程留痕 → 汇总产出」；
@@ -116,8 +116,16 @@ Markdown 渲染支持 Mermaid 图表、KaTeX 公式、PlantUML、代码高亮与
 
 ### 渐进式披露（控制上下文占用）
 1. **发现**：系统提示词常驻 `<available-skills>` 清单，每项为技能标识 + 一行描述；
-2. **激活**：用 `/` 预选的技能会在发送时自动封装成一轮 `load_skill` 调用注入上下文；未预选时由模型判定任务相关后自行调用 `load_skill`，注入完整指令（优先级约定 + SKILL.md 正文，软上限 15,000 字符）；
-3. **深入**：需要更多背景时调用 `read_skill_file` 按路径读取资源文件（单文件上限 100,000 字符）。
+2. **激活**。用 `/` 预选的技能会在发送时自动加载。智能体也可以通过 `skill_tool` 的 `load` 操作加载任务相关的技能指令。
+3. **读取资源**。用 `skill_tool` 的 `read` 操作按技能相对路径分页读取文本。
+
+### 运行 Python 脚本
+
+安装 Python 后，可在管理中心的「Python 环境」开启 **运行时 Skill 脚本支持**。默认关闭，删除 Python 环境时自动关闭。开启后，符合会话权限的技能可使用 `skill_tool(action="copy")` 复制文件或目录。传 `paths: ["."]` 可复制整个技能，原始字节和目录结构保存在当前会话的 `skills/<id>/<revision>/` 下。请只运行可信来源的脚本。
+
+把复制后的 `.py` 相对路径作为 `scriptPath` 传给 `python_run`。技能脚本默认从复制后的技能根目录运行。`AGENTNEXUS_WORKSPACE` 指向会话工作区，上传文件在 `inputs/`，交付物写到 `outputs/`。用 `argv`、`stdin` 和 `env` 分别传入参数、输入和非敏感配置。包内入口可额外传入点分隔的 `module`。回复中用 `<workspace-file path="outputs/report.csv" />` 引用已保存的产物。
+
+先用 `preflight: true` 检查静态导入、PEP 723 元数据、`requirements.txt` 或静态 `pyproject.toml` 声明，以及环境变量引用。默认使用 Pyodide 官方包目录和显式指定的本地 wheel。通过会话审批后才会解析公开 PyPI wheel。依赖 Bash、子进程、系统程序或缺少兼容 wheel 的技能，需要改用等效 Python 实现或其他可用工具。
 
 ### 上手参考
 内置的三个技能（`skills/web-research-report`、`skills/bilibili-video-summary`、`skills/xlsx-creator`）即为官方模板，可直接阅读仿写；技能的启用 / 停用、导入 / 导出均可在管理中心完成。

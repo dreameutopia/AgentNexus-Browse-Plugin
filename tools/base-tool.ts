@@ -16,7 +16,7 @@ import { OpenAITool } from '@/common/openai-types';
  * 判定是否为「仅限 background 上下文」错误。
  * 这类错误必须向上抛出而非转为错误结果：tool-executor 依据该消息把整个工具
  * 调用转发到 background 执行；若在组合工具内部被吞掉（转为普通错误结果），
- * 转发时机将永远无法触发（依赖 browser_navigate 的组合工具即败于此）。
+ * 转发时机将永远无法触发（依赖 browser_navigation 的组合工具即败于此）。
  */
 function isBackgroundContextError(error: unknown): boolean {
   return error instanceof Error && error.message.includes('background context');
@@ -94,7 +94,9 @@ export abstract class BaseTool implements ExtendedTool {
  *
  * 注：原 BaseSearchTool（9 个平台 *_search 纯导航工具的基类）已随统一搜索
  * web_search 的落地移除——新工具自带导航（chrome.tabs）与解析，不再经由
- * browser_navigate 组合，也不再需要 background 上下文转发舞蹈。
+ * browser_navigation 组合，也不再需要 background 上下文转发舞蹈。
+ * 现行的搜索工具基类是 tools/search/search-tool-base.ts 的 BaseSearchTool
+ * （web_search / platform_search 共用执行链路），与本文件的导航基类无关。
  */
 export abstract class BaseNavigationTool extends BaseTool {
   protected async navigateToUrl(url: string, options?: {
@@ -104,15 +106,16 @@ export abstract class BaseNavigationTool extends BaseTool {
   }): Promise<ToolResult> {
     try {
       this.log(`Navigating to: ${url}`);
-      // 通过注册表获取 navigateTool，避免循环依赖
-      const navTool = toolRegistry.get('browser_navigate');
+      // 通过注册表获取统一导航工具，避免循环依赖
+      const navTool = toolRegistry.get('browser_navigation');
       if (!navTool) {
         return this.createErrorResponse('Navigation tool not available');
       }
       return await navTool.execute({
+        action: 'open',
         url,
         newTab: options?.newTab ?? true,
-        waitForLoad: true,
+        waitForLoad: options?.waitForLoad ?? true,
         timeout: options?.timeout || 50000
       });
     } catch (error) {

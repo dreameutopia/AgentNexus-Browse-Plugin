@@ -11,13 +11,11 @@ tools/
 ├── index.ts                 # 主入口文件，工具注册中心
 ├── base-tool.ts            # 基础工具抽象类
 ├── search/                 # 搜索工具类别
-│   ├── index.ts
-│   ├── zhihu-search.ts
-│   ├── baidu-search.ts
-│   ├── bing-search.ts
-│   ├── csdn-search.ts
-│   ├── github-search.ts
-│   └── stackoverflow-search.ts
+│   ├── index.ts            # 注册 web_search / platform_search
+│   ├── search-targets.ts   # 搜索目标注册表（引擎 bing/baidu + 站点平台 7 个）
+│   ├── search-tool-base.ts # 两个搜索工具共用的执行链路（导航 + 解析）
+│   ├── web-search-tool.ts  # 通用网页检索（engine 枚举）
+│   └── platform-search-tool.ts # 站点平台检索（platform 枚举）
 ├── navigation/             # 导航工具类别
 │   ├── index.ts
 │   ├── quick-navigation.ts
@@ -45,26 +43,32 @@ tools/
 
 ### 使用现有工具
 
-浏览器导航只在**现有窗口**内进行：`browser_navigate({url})` 默认新标签页，`newTab:false` 使用当前标签页，同 URL 标签可复用。`newWindow` 已从导航及快捷／书签／历史导航接口删除，导航没有新建窗口兜底；没有现成窗口时返回错误，标签创建始终显式绑定现有 windowId。
+浏览器导航只在**现有窗口**内进行：`browser_navigation({action:"open", url})` 默认新标签页，`newTab:false` 使用当前标签页，同 URL 标签可复用；历史前进后退与加载等待同属该工具（`action` 为 `back` / `forward` / `refresh` / `wait`）。`newWindow` 已从导航及快捷／书签／历史导航接口删除，导航没有新建窗口兜底；没有现成窗口时返回错误，标签创建始终显式绑定现有 windowId。
 
 `generic_wait({waitSeconds})` 接受非负有限秒数，超过 600 自动按 600 秒执行，支持中止；视觉循环在工具完成后另强制间隔 3 秒再自动截图。等待仅表示时间经过，完成状态仍需重新观察。
 
 ```typescript
 import { toolRegistry } from './tools';
 
-// 获取统一搜索工具并执行（website 枚举区分平台）
+// 获取通用网页搜索工具并执行（engine 枚举：bing / baidu）
 const searchTool = toolRegistry.getTool('web_search');
 const result = await searchTool.execute({
-  website: 'zhihu',
+  engine: 'bing',
   query: 'TypeScript 最佳实践',
   newTab: false
 });
 
 // 或者直接通过名称执行
 const result2 = await toolRegistry.executeTool('web_search', {
-  website: 'baidu',
+  engine: 'baidu',
   query: 'Vue.js 教程',
   newTab: true
+});
+
+// 站点平台检索走另一个工具（platform 枚举）
+const result3 = await toolRegistry.executeTool('platform_search', {
+  platform: 'zhihu',
+  query: 'TypeScript 最佳实践'
 });
 ```
 
@@ -82,21 +86,35 @@ const searchSchema = toolRegistry.getTool('web_search')?.openaiSchema;
 
 ### 1. 选择合适的基类
 
-- `BaseTool`: 通用工具基类
-- `BaseSearchTool`: 搜索类工具基类
-- `BaseNavigationTool`: 导航类工具基类
+- `BaseTool`（`tools/base-tool.ts`）: 通用工具基类
+- `BaseSearchTool`（`tools/search/search-tool-base.ts`）: 搜索类工具基类——`web_search` 与 `platform_search` 共用同一执行链路（导航 → 等待 → 解析 → Markdown 表），子类只声明差异面
+- `BaseNavigationTool`（`tools/base-tool.ts`）: 导航类工具基类
 
 ### 2. 实现工具类
 
+搜索类工具只需声明三处差异面（目标集合 / 参数名 / 文案），执行逻辑由基类承担：
+
 ```typescript
-import { BaseSearchTool } from '../base-tool';
-import { ToolMetadata } from '../index';
-import { OpenAITool } from '@/common/openai-types';
-import { ToolResult } from '@/common/tool-handler';
+import { ToolMetadata } from '../registry';
+import { BaseSearchTool, type SearchToolSpec } from './search-tool-base';
 
 export class MyCustomSearchTool extends BaseSearchTool {
   name = 'my_custom_search';
-  
+
+  /** 差异面：目标集合与参数口径（枚举取自 search-targets.ts 注册表） */
+  protected readonly spec: SearchToolSpec = {
+    targets: SEARCH_ENGINE_IDS,   // 或 SEARCH_PLATFORM_IDS
+    paramName: 'engine',          // 或 'platform'
+    paramLabel: '搜索引擎',
+    targetKindLabel: '搜索引擎',
+  };
+
+  /** 工具描述主体（能力边界 + 并发禁令 + 结果契约） */
+  protected readonly usageDescription = '我的自定义搜索工具……';
+
+  /** 目标参数说明（枚举由注册表派生，此处只补充语义） */
+  protected readonly paramDescription = '目标搜索引擎（枚举值，小写）：…';
+
   metadata: ToolMetadata = {
     name: 'my_custom_search',
     description: '我的自定义搜索工具',
@@ -106,47 +124,8 @@ export class MyCustomSearchTool extends BaseSearchTool {
     tags: ['search', 'custom']
   };
 
-  openaiSchema: OpenAITool = {
-    type: 'function',
-    function: {
-      name: 'my_custom_search',
-      description: '在自定义平台上搜索内容',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: {
-            type: 'string',
-            description: '搜索查询'
-          },
-          category: {
-            type: 'string',
-            enum: ['all', 'articles', 'videos'],
-            description: '搜索类别',
-            default: 'all'
-          }
-        },
-        required: ['query']
-      }
-    }
-  };
-
-  async execute(args: {
-    query: string;
-    category?: string;
-    newTab?: boolean;
-  }): Promise<ToolResult> {
-    try {
-      this.validateArgs(args, ['query']);
-      
-      const { query, category = 'all', newTab = true } = args;
-      const searchUrl = `https://example.com/search?q=${encodeURIComponent(query)}&cat=${category}`;
-      
-      return await this.navigateToUrl(searchUrl, { newTab });
-      
-    } catch (error) {
-      return this.createErrorResponse('搜索失败', error);
-    }
-  }
+  /** Schema 由基类按 spec 组装（枚举不手抄，杜绝与注册表漂移） */
+  openaiSchema = this.buildOpenAISchema('my_custom_search');
 }
 ```
 
@@ -230,14 +209,16 @@ const workflowResult = await toolRegistry.executeTool('workflow_automation', {
 ### 批量操作
 
 ```typescript
-// 统一搜索工具 web_search：website 枚举区分平台，一次调用完成导航 + 结果解析。
-// 注意：web_search 自带页面导航（等同 browser_navigate），并发调用会互相争抢
-// 活动标签页——多平台搜索必须逐个串行执行，禁止 Promise.all 并发。
+// 两个搜索工具：web_search（通用网页，engine 枚举 bing/baidu）与
+// platform_search（站点平台，platform 枚举 zhihu/csdn/github/…）——一次调用
+// 都完成导航 + 结果解析。
+// 注意：两者都自带页面导航（等同 browser_navigation 的 open action），并发调用会互相争抢
+// 活动标签页——多次搜索必须逐个串行执行，禁止 Promise.all 并发。
 const searchQuery = 'React Hooks';
 
-for (const website of ['zhihu', 'baidu', 'bing'] as const) {
+for (const engine of ['bing', 'baidu'] as const) {
   const result = await toolRegistry.executeTool('web_search', {
-    website,
+    engine,
     query: searchQuery,
     newTab: false // 串行复用同一标签页，避免标签页堆积
   });
@@ -253,9 +234,9 @@ const pageInfo = await toolRegistry.executeTool('page_analyzer', {
 });
 
 if (pageInfo.content[0]?.text.includes('github.com')) {
-  // 在GitHub页面，执行GitHub相关搜索
-  await toolRegistry.executeTool('web_search', {
-    website: 'github',
+  // 在GitHub页面，执行GitHub站内检索
+  await toolRegistry.executeTool('platform_search', {
+    platform: 'github',
     query: 'typescript'
   });
 } else {
@@ -284,7 +265,7 @@ import { toolRegistry } from './tools';
 
 async function testTool() {
   const result = await toolRegistry.executeTool('web_search', {
-    website: 'zhihu',
+    engine: 'bing',
     query: '测试查询'
   });
   
@@ -328,7 +309,7 @@ const aiRequest = {
 import { toolRegistry } from './tools';
 
 // 执行工具
-const result = await toolRegistry.getTool('browser_navigate')?.execute({ url: 'https://example.com' });
+const result = await toolRegistry.getTool('browser_navigation')?.execute({ action: 'open', url: 'https://example.com' });
 ```
 
 ## 📈 性能优化

@@ -5,6 +5,7 @@ import { satisfies } from 'semver';
 import { readArchive } from './archive';
 import { strictJson } from './json';
 import { checkSchema } from './schema';
+import { decodeSkillText, encodeSkillBytes, isSkillResourcePath, validateSkillBinaries } from '../skills/skill-resources';
 import {
   agentSchema,
   LIMITS,
@@ -231,11 +232,17 @@ export async function verifyPackage(
         typeof data['allowed-tools'] === 'string',
       'INVALID_SKILL_TOOLS',
     );
-    const root = entry.path.slice(0, -'SKILL.md'.length),
-      resources = Object.create(null);
-    for (const path of files.keys())
-      if (path.startsWith(root))
-        resources[path.slice(root.length)] = text(path);
+    const root = entry.path.slice(0, -'SKILL.md'.length);
+    const resources: Record<string, string> = Object.create(null);
+    const binaries: Record<string, string> = Object.create(null);
+    for (const [path, bytes] of files) {
+      if (!path.startsWith(root)) continue;
+      const relative = path.slice(root.length);
+      invariant(isSkillResourcePath(relative), 'INVALID_SKILL_RESOURCE', path);
+      const content = decodeSkillText(bytes);
+      if (content === undefined) binaries[relative] = encodeSkillBytes(bytes);
+      else resources[relative] = content;
+    }
     return {
       id: entry.id,
       ref: `${key}/${entry.id}`,
@@ -243,6 +250,7 @@ export async function verifyPackage(
       description: data.description,
       body: renderReferences(match[2]),
       files: resources,
+      ...(Object.keys(binaries).length ? { resourceBytes: validateSkillBinaries(binaries, resources) } : {}),
       allowedTools: (
         data['allowed-tools']?.split(/\s+/).filter(Boolean) ?? []
       ).map(resolve),

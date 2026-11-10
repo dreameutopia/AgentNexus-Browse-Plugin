@@ -208,18 +208,18 @@ storage 事件即时同步，页面重新获得焦点/可见及点击创建前�
 | --- | --- | --- | --- |
 | 文本 | 文本 | `siteLearnText` | 完整文本观察/交互与页面脚本，不启动截图循环；验证仅靠文本线索能重定位 |
 | 文本 | 视觉 | `siteLearnVisionForText` | 文本全套 + `screenshot`（自动截图**仅用于帮助理解屏幕元素**）；**不提供 vision_gui**，操作与取证一律走 DOM 文本通道，截图不得成为执行前提 |
-| 视觉 | 视觉 | `siteLearnVision` | 文本全套 + `vision_gui` 手势 + `screenshot` + `browser_window`；按需 mark→inspect 核对，额外记录位置、外观、组件形式、周围锚点和交互反馈 |
+| 视觉 | 视觉 | `siteLearnVision` | 文本全套 + `vision_gui` 手势 + `screenshot`；按需 mark→inspect 核对，额外记录位置、外观、组件形式、周围锚点和交互反馈 |
 
 共同文本工具（`SITE_LEARN_DOM_TOOLS`，学习域自有清单）：
 
 - `browser_observe`：`controls/buttons/inputs` 枚举；`element` 查询指定节点属性；`structure/accessibility` 处理复杂页面。
 - `browser_interact`：点击、填充、聚焦、键盘、输入和容器滚动。
 - `browser_page_exec`：常规观察不足时探测页面结构或组件作用域。
-- `browser_get_page_text`（核心注入）、`browser_get_page_info`、`browser_navigate`、`wait_page_load`、`browser_go_back_or_forward`。
-- `browser_get_all_tabs`、`browser_switch_tab`、`browser_network_capture`、`web_search`、`generic_wait`。
+- `browser_get_page_text`（核心注入）、`browser_get_page_info`、`browser_navigation`（open/refresh/back/forward/wait 五 action，含加载等待）。
+- `browser_tabs`（list/switch/close/create/windows 五 action）、`browser_network_capture`、`web_search`、`generic_wait`。
 - `plan_tool`、`note_tool` 与交互征询工具（同为 CORE_SESSION_TOOL_IDS 核心注入，所有会话恒定可用，学习域逐步留痕/记录卡点的用法由 learn-prompts 约束）、学习终止工具 `submit_skill`。
 
-视觉目标组合额外具备：`vision_gui`（12 个 action，参数由 schema 与学习域自有的 `<vision-gui-tool>` 分区描述）、`screenshot`、`browser_window`；文本目标×视觉策略仅额外具备 `screenshot`。
+视觉目标组合额外具备：`vision_gui`（12 个 action，参数由 schema 与学习域自有的 `<vision-gui-tool>` 分区描述）、`screenshot`；文本目标×视觉策略仅额外具备 `screenshot`（标签页/窗口枚举随 `browser_tabs` 基座对所有目标在场）。
 
 `<vision-gui-tool>` 分区是 prompt-hooks 钩子的协议标记：学习提示词携带该分区时，钩子不再注入视觉通用助手的 `vision-gui-prompt` 规程。视觉目标在该分区放学习域自有的手势契约（含按需 mark/inspect）；文本目标放「本阶段没有视觉 GUI 工具」的禁用分区，同时显式禁止模型激活技能清单中的视觉工具。
 

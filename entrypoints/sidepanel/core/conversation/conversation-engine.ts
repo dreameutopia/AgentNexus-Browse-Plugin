@@ -32,6 +32,8 @@ import { aiChatApi, type ChatMessage } from '../../utils/ai/ai-chat-api';
 import { strictToolArguments } from '../../utils/stream/adapters/unified-normalize';
 import { trimDanglingSurrogate } from '../../utils/ai/token-estimate';
 import { openaiToolsConverter } from '../../utils/tools/openai-tools-converter';
+import { isSkillToolId, SKILL_TOOL_ID } from '@/utils/skills/skill-tool-contract';
+import { isSkillScriptSupportEnabled } from '@/utils/pyodide/pyodide-env';
 /**
  * 工具执行引擎（单一事实源）：所有工具的执行都经由它——
  * 强制串行、强制中断、有界执行、轮次完整性（结果写入上下文前校验轮次仍有效）。
@@ -45,6 +47,7 @@ import {
 } from '../tools/tool-execution-engine';
 import { appSettingsStore } from '../../utils/channels/app-settings';
 import { appendSystemTimestamp } from '../../utils/system-time';
+import { composeUserMessageBody } from '../../utils/chat/llm-message-body';
 import { t } from '@/utils/i18n/core';
 import type { ToolExecutionContext } from '@/tools/registry';
 import type { BeginPageOperation } from './runtime-protocol';
@@ -301,7 +304,8 @@ const TOOL_APPROVAL_PREVIEW_MAX_CHARS = 400;
 
 /**
  * 组装发给模型的本轮用户消息（引擎运行与发送前上下文计量共用，保证逐字同源）：
- *   - 转录可见正文（runtime.userInput，含附件摘要标记）+ <upload_file> 信封
+ *   - 转录可见正文（runtime.userInput，含附件摘要标记）+ 网页引用信封
+ *     （<page_quote>：来源 URL + 页面标题 + 选区原文）+ <upload_file> 信封
  *     （文件元信息 + 第 1 页预览，全文在会话文件库由 read_file 分页续读）+ 系统时间戳；
  *   - images 非空时输出多模态数组（text 在前、图片按传入顺序排列），
  *     引擎侧传入「用户上传图片 + vision 截图」，计量侧传入用户上传图片
@@ -311,11 +315,13 @@ export function composeLlmUserMessage(
   userInput: string,
   attachmentPrompt: string,
   images: readonly string[],
+  pageQuotePrompt = '',
   highDetailLastImage = false,
 ): ChatMessage {
-  const llmText = appendSystemTimestamp(
-    attachmentPrompt ? `${userInput}\n\n${attachmentPrompt}` : userInput,
-  );
+  // 正文拼装顺序：用户输入 → 引用信封 → 附件信封（单一事实源见
+  // utils/chat/llm-message-body.ts；无引用信封时与既有实现逐字一致）。
+  const body = composeUserMessageBody(userInput, pageQuotePrompt, attachmentPrompt);
+  const llmText = appendSystemTimestamp(body);
   if (images.length === 0) {
     return { role: 'user', content: llmText };
   }
@@ -410,7 +416,10 @@ export class ConversationEngine {
     if (this.runs.has(runtime.chatId) || this.pendingAborts.has(runtime.chatId)) {
       throw new ChatBusyError(runtime.chatId);
     }
-    if (!runtime.userInput.trim() && runtime.initialContext.length === 0) {
+    // 空输入校验：本轮必须有可发内容——用户正文、引用信封或历史上下文三者
+    // 之一。引用信封计入是因为「只引用一段网页原文、不另写文字」本身是一条
+    // 完整的请求（模型据此对该段原文作答）。
+    if (!runtime.userInput.trim() && !runtime.pageQuotePrompt && runtime.initialContext.length === 0) {
       throw new EmptyRunInputError();
     }
 
@@ -443,7 +452,9 @@ export class ConversationEngine {
        */
       const viewportDedup = new ViewportImageDeduplicator();
       for (const ref of runtime.priorViewportImageRefs ?? []) viewportDedup.remember(ref);
-      if (runtime.userInput.trim()) {
+      // 本轮入档条件：有用户正文**或**有引用信封——「只引用一段网页原文、
+      // 不另写文字」也是一条完整的请求，必须照常入档与构造模型用户消息
+      if (runtime.userInput.trim() || runtime.pageQuotePrompt) {
         // 上传图片先入库取引用（失败降级为无引用，绝不阻断发送）
         const userImageRefs =
           runtime.userImages.length > 0 ? await imageStore.putFromDataUrls(runtime.userImages) : [];
@@ -451,6 +462,7 @@ export class ConversationEngine {
           runtime.chatId,
           runtime.userInput,
           userImageRefs,
+          runtime.pageQuote,
         );
         emit({ type: 'user-message', chatId: runtime.chatId, record });
 
@@ -489,6 +501,7 @@ export class ConversationEngine {
           runtime.userInput + (visionImage ? `\n${visionImage.description}${initialImageDuplicated ? '\n(The viewport is pixel-identical to a screenshot already in this conversation; the image is not repeated here. The screenshotId above is the valid one for GUI actions.)' : ''}` : runtime.vision ? '\nCurrent viewport screenshot unavailable. Call screenshot to recover; do not use attachment images or old screenshot IDs for GUI coordinates.' : ''),
           runtime.attachmentPrompt,
           userMessageImages,
+          runtime.pageQuotePrompt,
           // 末位高细节：仅当视口截图真的附在末尾时才有意义（用户上传图恒为 auto）
           !!visionImage && !initialImageDuplicated,
         );
@@ -661,7 +674,9 @@ export class ConversationEngine {
         const sessionToolIds = runtime.toolPolicy === 'vision-assistant'
           ? filterVisionAssistantTools(advertised) : advertised;
         const toolSchemas = handle.toolSchemas ??= new Map();
-        for (const schema of openaiToolsConverter.getToolsByIds(sessionToolIds.filter(id => !toolSchemas.has(id)))) {
+        for (const schema of openaiToolsConverter.getToolsByIds(
+          sessionToolIds.filter(id => !toolSchemas.has(id)), { skillMode: runtime.skillMode },
+        )) {
           toolSchemas.set(schema.function.name, structuredClone(schema));
         }
         const toolDefinitions = sessionToolIds.flatMap(id => toolSchemas.has(id) ? [structuredClone(toolSchemas.get(id)!)] : []);
@@ -1506,16 +1521,20 @@ export class ConversationEngine {
     // ── 审批门：声明 requiresApproval 的工具先经用户放行（缺省拒绝，安全侧）──
     // 拒绝（或无审批通道）不走执行，直接以「可控失败」回传模型——
     // 模型可向用户说明意图并换路径，与工具错误的两级模型完全一致
-    if (runtime.pluginToolCeiling && toolName === 'load_skill') {
+    if (runtime.pluginToolCeiling && toolName === SKILL_TOOL_ID) {
       const ref = (args as { skill_name?: string })?.skill_name;
       const skill = typeof ref === 'string' ? skillEngine.get(ref) : undefined;
-      invariant(skill?.enabled && skill.allowedTools.every(id => runtime.pluginToolCeiling!.includes(id)), 'SKILL_NOT_ALLOWED');
+      invariant(skill?.enabled && skill.allowedTools.every(id => isSkillToolId(id) || runtime.pluginToolCeiling!.includes(id)), 'SKILL_NOT_ALLOWED');
     }
-    if (runtime.toolPolicy === 'vision-assistant' && toolName === 'load_skill') {
+    if (runtime.toolPolicy === 'vision-assistant' && toolName === SKILL_TOOL_ID) {
       const ref = (args as { skill_name?: unknown })?.skill_name;
       const skill = typeof ref === 'string' ? skillEngine.get(ref) : undefined;
-      if (!skill || !skill.enabled || !skill.allowedTools.every(isVisionAssistantTool))
+      if (!skill || !skill.enabled || !skill.allowedTools.every(id => isSkillToolId(id) || isVisionAssistantTool(id)))
         throw new Error('SKILL_NOT_ALLOWED: 该技能不存在、未启用或需要代操作工具；请切换合适的执行智能体。');
+    }
+    if (toolName === 'python_run' && (args as { scriptPath?: unknown } | null)?.scriptPath !== undefined &&
+        (runtime.skillMode !== 'workspace' || !await isSkillScriptSupportEnabled())) {
+      return createErrorResponse('[PY_SKILL_SCRIPTS_DISABLED] 当前会话未启用脚本模式。开启设置后请发起新一轮对话。');
     }
     if (runtime.toolPolicy === 'vision-assistant' && toolName === 'browser_get_page_text' &&
         (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length > 0))
@@ -1529,7 +1548,8 @@ export class ConversationEngine {
       if (typeof action !== 'string' || !VISION_ASSISTANT_GUI_ACTIONS.has(action))
         throw new Error(`TOOL_NOT_ALLOWED: 视觉助手仅开放只读观察 action（${[...VISION_ASSISTANT_GUI_ACTIONS].join(' / ')}），action="${typeof action === 'string' ? action : String(action)}" 不在观察者能力内；代操作请切换视觉通用助手 / 文本通用助手。`);
     }
-    if (this.deps.requiresApproval(toolName, args)) {
+    const needsApproval = this.deps.requiresApproval(toolName, args);
+    if (needsApproval) {
       const approved = options.onToolApproval
         ? await this.awaitToolApproval(options.onToolApproval, {
             id: plan.callId,
@@ -1567,6 +1587,10 @@ export class ConversationEngine {
         runtime.toolPolicy === 'vision-assistant' && toolName === 'screenshot' ? { mode: 'observe' } : args,
         {
           chatId: runtime.chatId,
+          skillResourceIds: runtime.skillResourceIds,
+          availableSkillIds: runtime.availableSkillIds,
+          skillMode: runtime.skillMode,
+          toolApproved: needsApproval,
           signal: ctx.signal,
           pluginBindings: runtime.pluginBindings,
           pluginApproved: true,
@@ -1652,7 +1676,8 @@ export class ConversationEngine {
       });
       // load_skill 成功后：把该技能的预授权工具并入本会话后续请求，
       // 使 L1 发现（未预先选择技能）的调用路径同样具备技能配套工具
-      if (success && toolName === 'load_skill' && outcome.result) {
+      if (success && toolName === SKILL_TOOL_ID && outcome.result &&
+          (safeParseToolArguments(plan?.rawArgs) as { action?: unknown } | null)?.action === 'load') {
         this.injectSkillTools(runtime, handle, outcome.result);
       }
       // 终止型工具（submit_skill / submit_validation 等）成功 → 标记本轮收尾。
@@ -1801,7 +1826,7 @@ export class ConversationEngine {
     for (const raw of skill.allowedTools) {
       if (typeof raw !== 'string') continue;
       const toolId = raw.trim();
-      if (!toolId) continue;
+      if (!toolId || isSkillToolId(toolId) || (runtime.advertisedToolIds && !runtime.advertisedToolIds.includes(toolId))) continue;
       if (runtime.toolPolicy === 'vision-assistant' && !isVisionAssistantTool(toolId)) continue;
       if (runtime.pluginToolCeiling && !runtime.pluginToolCeiling.includes(toolId)) continue;
       if (toolRegistry.getTool(toolId)) known.push(toolId);

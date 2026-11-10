@@ -468,7 +468,7 @@ export class SubmitSkillTool extends BaseTool {
         return skillFailure(
           '参数错误',
           'allowedTools 为空——没有声明工具的技能不会出现在任何智能体的「/」引用清单中，建完也引用不到',
-          '列出执行本技能真正用到的工具 ID（如 browser_interact、browser_observe、browser_navigate）',
+          '列出执行本技能真正用到的工具 ID（如 browser_interact、browser_observe、browser_navigation）',
         );
       }
       const knownTools: string[] = [];

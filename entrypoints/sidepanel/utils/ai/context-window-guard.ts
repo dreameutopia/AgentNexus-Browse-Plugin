@@ -45,7 +45,7 @@ const TOOL_CONTENT_LIMIT = 8 * 1024;
  * 一刀切会静默砍页，模型读到残缺指令却以为读全了。
  * 其余工具（页面抽取等）可能返回数十万字符，仍按 TOOL_CONTENT_LIMIT 截断。
  */
-const SKILL_CONTEXT_TOOL_NAMES: ReadonlySet<string> = new Set(['load_skill', 'read_skill_file']);
+const SKILL_CONTEXT_TOOL_NAMES: ReadonlySet<string> = new Set(['skill_tool', 'load_skill', 'read_skill_file']);
 
 /** NUL 控制字符（OpenAI 等对话 API 会拒绝包含它的文本） */
 const NUL_CHAR = String.fromCharCode(0);

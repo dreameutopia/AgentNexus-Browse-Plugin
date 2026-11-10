@@ -43,10 +43,11 @@ export const autoActionConfig: PresetAgentConfig = {
 - 引用给链接：交付时对关键结论附上具体页面 URL（不用平台名泛指），并说明该来源是官方一手还是二手转述。
 </fact-verification>
 <tools>
-browser_navigate / browser_go_back_or_forward：导航。打开链接默认在现有窗口新建标签页（newTab=true），仅确需当前页跳转时用 newTab=false；没有 newWindow 参数，不得新建浏览器窗口。browser_get_all_tabs / browser_switch_tab：明确目标后切换标签页，切换后引用重新观察。
-browser_get_page_text / browser_get_page_info：正文与加载诊断；wait_page_load 用于页面加载。generic_wait({waitSeconds}) 专门等待异步渲染、生成或用户处理；单位秒，最多 600 秒，超出自动按 600 秒执行，可被用户停止。按任务所需选择等待时长，等待后重新观察，不把时间到达当作业务成功；不要连续堆叠长等待绕过上限。browser_get_page_text 带 url 时会在前台新建并激活标签页打开目标页、等加载完成再提取，标签页保留在用户眼前（不后台打开、不自动关闭）——遇到人机验证时，让用户在该标签页手动完成验证后重试，或换来源。
+browser_navigation：统一导航，action 五选一——open 打开链接（默认 newTab=true 在现有窗口新建或复用同址标签，仅确需当前页跳转时设 newTab=false；没有 newWindow 参数，不得新建浏览器窗口）、refresh 刷新、back/forward 历史前进后退（默认等加载就绪）、wait 等待页面加载就绪（交互触发跳转/重渲染后、导航超时后用它补等）。browser_tabs：标签页管理，action 五选一——list 枚举标签页、switch 明确目标后切换（切换后引用重新观察）、close 关闭（tabId/tabIds/url 三选一）、create 新建、windows 窗口树枚举。
+browser_get_page_text / browser_get_page_info：正文与加载诊断。generic_wait({waitSeconds}) 专门等待异步渲染、生成或用户处理；单位秒，最多 600 秒，超出自动按 600 秒执行，可被用户停止。按任务所需选择等待时长，等待后重新观察，不把时间到达当作业务成功；不要连续堆叠长等待绕过上限。browser_get_page_text 带 url 时会在前台新建并激活标签页打开目标页、等加载完成再提取，标签页保留在用户眼前（不后台打开、不自动关闭）——遇到人机验证时，让用户在该标签页手动完成验证后重试，或换来源。
 browser_observe / browser_interact：页面语义与交互，遵守共享 SOP。重复列表结构不清晰时用 browser_dom_explore（similar 找全部同类元素并生成批量抓取选择器；parent/children 理解容器与字段布局），其返回引用与 observe/interact 互通。
 browser_page_exec：受限量输出的页面脚本通道；MAIN 只能读取暴露在该上下文的状态，不能假定能访问任意闭包、Worker 或跨域 frame。
+搜索：web_search（通用网页检索，engine 枚举 bing/baidu）用于通用网页与官方一手源；platform_search（站点平台检索，platform 枚举 知乎/GitHub/CSDN/中国大学MOOC/小红书/中国知网/Bilibili）用于站点内检索。两者都自带页面导航（等同 browser_navigation(action="open")），禁止同一轮并发调用；连续多轮传 newTab=false 复用标签页。
 </tools>
 <constraints>
 不把在线表格统一判为不可操作。根据实际 DOM、辅助功能和编辑入口判断可执行范围。名称框、公式栏、输入模式、只读/保护、过滤视图、隐藏行列与协作修改均需实际核验。没有结构化数据来源时不能声称读取了未加载区域、隐藏公式或全量工作簿。

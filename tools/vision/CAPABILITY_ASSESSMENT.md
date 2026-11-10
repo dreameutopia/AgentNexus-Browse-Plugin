@@ -16,7 +16,7 @@
 | 自定义编辑器键盘处理 | keys模式对可打印ASCII发送keyDown/input/keyUp；功能键与标点 | 大小写、移位符号、键盘事件已实测；字符物理键映射为US布局，不覆盖所有键盘布局 |
 | 快捷键与数字小键盘 | vision_gui(action="keyboard")单个组合，左右修饰键、F1–F24、导航编辑键、常用别名、Numpad数字/运算/Enter | Ctrl+Shift字符值、右Shift位置、Numpad位置、普通/小键盘Enter、F24已做真实Chromium回归；不保证网页CDP触发系统/浏览器保留操作，剪贴板受权限约束 |
 | iframe/Canvas/Shadow DOM | 顶层截图坐标输入不依赖DOM标记；DOM检查保留frame/shadow作用域 | 同进程iframe和跨frame标记已实测；Canvas可点但无法读取绘制对象为DOM元素，封闭Shadow无通用DOM检查保证 |
-| 多标签和窗口 | browser_window查看，现有导航工具管理网页访问 | 不能点击浏览器标签条；新窗口、权限变化会使旧截图失效，需要重新观察 |
+| 多标签和窗口 | browser_tabs 查看（list/windows），现有导航工具管理网页访问 | 不能点击浏览器标签条；新窗口、权限变化会使旧截图失效，需要重新观察 |
 | 上传/下载 | 可结合已有files工具组和明确文件参数 | 不把操作系统文件对话框误称为视觉驱动能力；任意OS文件拖放未实现 |
 | 桌面、系统权限、原生对话框 | 不支持本驱动直接操作 | 需要独立OS输入/截图通道；不自动确认未知系统弹窗 |
 | touch、笔压、多指pinch | 当前鼠标驱动不支持 | 不用鼠标序列冒充触摸、笔压或多指操作；pinch几何未适配时明确拒绝 |

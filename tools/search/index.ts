@@ -1,25 +1,36 @@
 /**
  * 搜索工具集合
  *
- * 原 9 个平台专属 *_search（纯导航）已与结果抓取、集成搜索合并为统一的
- * web_search（website 枚举区分平台，集成语义：导航 + 解析一步完成）。
- * 平台清单与解析通道见 ./search-platforms.ts。
+ * 两个工具、同一执行链路：
+ *   - web_search     —— 通用网页检索（engine 枚举：bing / baidu）
+ *   - platform_search —— 站点平台检索（platform 枚举：知乎 / GitHub / CSDN /
+ *     MOOC / 小红书 / 中国知网 / Bilibili）
+ *
+ * 目标注册表与解析通道见 ./search-targets.ts，执行链路见 ./search-tool-base.ts。
  */
 
 import { toolRegistry } from '../registry';
 import { WebSearchTool } from './web-search-tool';
+import { PlatformSearchTool } from './platform-search-tool';
 
 // 注册函数
 export function registerSearchTools() {
   toolRegistry.register(new WebSearchTool());
+  toolRegistry.register(new PlatformSearchTool());
 }
 
 export { WebSearchTool };
+export { PlatformSearchTool };
+export { BaseSearchTool, type SearchToolSpec } from './search-tool-base';
 export {
-  SEARCH_PLATFORMS,
+  SEARCH_TARGETS,
+  SEARCH_TARGET_IDS,
+  SEARCH_ENGINE_IDS,
   SEARCH_PLATFORM_IDS,
+  isSearchTargetId,
   isSearchPlatformId,
-  formatSupportedPlatforms,
+  type SearchEngineId,
   type SearchPlatformId,
-  type SearchPlatformConfig,
-} from './search-platforms';
+  type SearchTargetId,
+  type SearchTargetConfig,
+} from './search-targets';

@@ -7,7 +7,8 @@
  *      全部渲染，且**实时订阅**——引擎推送新快照后视图立即刷新；
  *   3. Python 环境：运行时详情四宫格 / 包芯片 / 目录搜索 / 测试运行台渲染，
  *      且**跨上下文实时同步**——watchPyodideEnv 推送新状态后视图立即刷新；
- *   4. 危险操作走行内二次确认（不弹 window.confirm）；
+ *   4. 危险操作不弹 window.confirm：删环境走 HubDialog 弹窗二次确认
+ *      （确认后 micropip 复用清单同步清空），删包 / 清记录行内二次确认；
  *   5. 样式契约：两个分区不得出现原生 <select>，配色不含任何蓝紫。
  *
  * 运行：node tests/hub/usage-python.test.mjs
@@ -87,6 +88,7 @@ export { default as UsageSection } from './entrypoints/hub/usage/UsageSection.vu
 export { default as PythonSection } from './entrypoints/hub/python/PythonSection.vue';
 export { __setRequests } from './entrypoints/sidepanel/utils/metrics/usage-metrics-engine';
 export { __pushEnv } from './utils/pyodide/index';
+export { __pushMicropip, __micropipSnapshot } from './utils/pyodide/pyodide-micropip';
 `,
     resolveDir: root,
     loader: 'ts',
@@ -141,30 +143,59 @@ export const driverRegistry={ tryGet(id){ return LABELS[id]?{meta:{label:LABELS[
           contents: `export const PYODIDE_VERSION='0.28.3';
 export const PYODIDE_CORE_FILES=[{label:'python311.wasm',url:'https://x/python311.wasm',contentType:'application/wasm'}];
 export const PYODIDE_FEATURED_PACKAGES=['numpy','pandas'];
-export const DEFAULT_PYODIDE_ENV_STATE={status:'idle',pythonVersion:'',version:PYODIDE_VERSION,verifiedAt:0,packages:[],lastError:''};
+export const DEFAULT_PYODIDE_ENV_STATE={status:'idle',pythonVersion:'',version:PYODIDE_VERSION,verifiedAt:0,packages:[],lastError:'',skillScriptsEnabled:false};
 const listeners=new Set();
 let envState={status:'ready',pythonVersion:'3.14.0',version:PYODIDE_VERSION,verifiedAt:1000,
-  packages:[{name:'numpy',version:'2.3.1'}],lastError:''};
+  packages:[{name:'numpy',version:'2.3.1'}],lastError:'',skillScriptsEnabled:false};
 export async function getPyodideEnvState(){ return JSON.parse(JSON.stringify(envState)); }
 export async function updatePyodideEnvState(patch){ envState={...envState,...patch}; listeners.forEach(l=>l(JSON.parse(JSON.stringify(envState)))); return envState; }
+export async function setSkillScriptsEnabled(enabled){ if(enabled && envState.status!=='ready') throw new Error('Python runtime is not ready'); envState={...envState,skillScriptsEnabled:enabled}; listeners.forEach(l=>l(JSON.parse(JSON.stringify(envState)))); return envState; }
+export async function isSkillScriptSupportEnabled(){ return !!envState.skillScriptsEnabled; }
 export function watchPyodideEnv(l){ listeners.add(l); return ()=>listeners.delete(l); }
 export async function ensurePyodideRuntime(){ return {}; }
 export async function verifyPyodideRuntime(){ return {pythonVersion:'3.14.0',implementation:'CPython',checksumOk:true}; }
 export async function clearFiles(){ envState={...DEFAULT_PYODIDE_ENV_STATE}; }
+export async function purgePyodideEnvironment(){
+  await clearFiles();
+  await clearMicropipManifest();
+  await updatePyodideEnvState({status:'idle',pythonVersion:'',version:PYODIDE_VERSION,verifiedAt:0,packages:[],lastError:'',skillScriptsEnabled:false});
+}
 export async function downloadPyodideFile(){}
 export async function listFileMeta(){ return [{name:'python311.wasm',size:1048576}]; }
 export async function runPythonCode(){ return {ok:true,stdout:'ok',stderr:'',result:'42',durationMs:12,timedOut:false,errorName:'',errorDetail:''}; }
 export async function getPackageCatalog(){ return [
-  {name:'numpy',version:'2.3.1',fileName:'numpy.whl',imports:['numpy'],depends:[]},
-  {name:'pandas',version:'2.3.0',fileName:'pandas.whl',imports:['pandas'],depends:['numpy']},
-  {name:'scikit-learn',version:'1.6.1',fileName:'sk.whl',imports:['sklearn'],depends:['numpy']},
+  {name:'numpy',version:'2.3.1',fileName:'numpy.whl',imports:['numpy'],depends:[],sha256:'aa'},
+  {name:'pandas',version:'2.3.0',fileName:'pandas.whl',imports:['pandas'],depends:['numpy'],sha256:'bb'},
+  {name:'scikit-learn',version:'1.6.1',fileName:'sk.whl',imports:['sklearn'],depends:['numpy'],sha256:'cc'},
 ]; }
 export async function installPackages(names){ return names.map(name=>({name,version:'1.0.0'})); }
 export async function uninstallPackages(){}
-export function __pushEnv(next){ envState={...envState,...next}; listeners.forEach(l=>l(JSON.parse(JSON.stringify(envState)))); }`,
+export function __pushEnv(next){ envState={...envState,...next}; listeners.forEach(l=>l(JSON.parse(JSON.stringify(envState)))); }
+
+// ── pyodide-downloader：批量预下载桩（返回可控结果，验证进度/消息链路） ──
+export async function preloadWheels(items, options){
+  options?.onProgress?.({ done: items.length, total: items.length, bytes: 1048576, current: '' });
+  return { succeeded: items.length, cached: 1, downloaded: items.length - 1, bytes: 1048576, failures: [], cancelled: false };
+}
+export const PYODIDE_CDN_BASE = 'https://cdn.example/pyodide/full/';
+
+// ── pyodide-micropip：复用清单桩（可推送，验证实时同步） ──
+let micropipState = {
+  globalReuse: true,
+  packages: [{ name: 'openpyxl', version: '3.1.5', url: 'https://x/openpyxl.whl', sha256: 'dd', installedAt: 1 }],
+};
+const micropipListeners = new Set();
+export async function readMicropipManifest(){ return JSON.parse(JSON.stringify(micropipState.packages)); }
+export async function getMicropipGlobalReuse(){ return micropipState.globalReuse; }
+export async function setMicropipGlobalReuse(v){ micropipState = { ...micropipState, globalReuse: v }; micropipListeners.forEach(l=>l(JSON.parse(JSON.stringify(micropipState)))); }
+export async function removeMicropipPackage(name){ micropipState = { ...micropipState, packages: micropipState.packages.filter(p=>p.name!==name) }; micropipListeners.forEach(l=>l(JSON.parse(JSON.stringify(micropipState)))); }
+export async function clearMicropipManifest(){ micropipState = { ...micropipState, packages: [] }; micropipListeners.forEach(l=>l(JSON.parse(JSON.stringify(micropipState)))); }
+export function __micropipSnapshot(){ return JSON.parse(JSON.stringify(micropipState)); }
+export function watchMicropipState(listener){ micropipListeners.add(listener); return ()=>micropipListeners.delete(listener); }
+export function __pushMicropip(next){ micropipState = { ...micropipState, ...next }; micropipListeners.forEach(l=>l(JSON.parse(JSON.stringify(micropipState)))); }`,
         }));
         api.onLoad({ filter: /\.vue$/ }, args => {
-          const real = /hub[\\/]App\.vue$|hub[\\/]usage[\\/]UsageSection\.vue$|hub[\\/]python[\\/]PythonSection\.vue$|hub[\\/]components[\\/](HubSelect|HubSwitch|HubSegmented)\.vue$/.test(args.path);
+          const real = /hub[\\/]App\.vue$|hub[\\/]usage[\\/]UsageSection\.vue$|hub[\\/]python[\\/]PythonSection\.vue$|hub[\\/]components[\\/](HubSelect|HubSwitch|HubSegmented|HubDialog)\.vue$/.test(args.path);
           if (!real) return { contents: `export default {render:()=>null};`, loader: 'js' };
           const { descriptor } = parse(readFileSync(args.path, 'utf8'), { filename: args.path });
           return { contents: compileScript(descriptor, { id: args.path, inlineTemplate: true }).content, loader: 'ts', resolveDir: path.dirname(args.path) };
@@ -278,6 +309,17 @@ assert.ok(q('.hub-usage__meta')?.textContent?.includes('最近更新'), '渲染�
 const pythonRoot = q('.hub-python');
 assert.ok(pythonRoot, 'Python 环境分区渲染');
 const pythonText = pythonRoot.textContent;
+const skillSwitch = () => q('input[role="switch"][aria-label="运行时 Skill 脚本支持"]');
+assert.equal(skillSwitch()?.checked, false, 'Skill 脚本默认关闭');
+const skillHelp = q('[aria-controls="python-skill-scripts-help"]');
+assert.equal(skillHelp.previousElementSibling, null, '问号位于设置标题左侧');
+skillHelp.click();
+await flush();
+assert.equal(skillHelp.getAttribute('aria-expanded'), 'true');
+assert.match(q('#python-skill-scripts-help').textContent, /恶意代码/);
+skillSwitch().click();
+await flush();
+assert.equal(skillSwitch()?.checked, true, '用户可以独立启用 Skill 脚本支持');
 
 assert.ok(pythonText.includes('Python 环境'), '渲染标题「Python 环境」');
 assert.ok(pythonText.includes('BETA'), '渲染 BETA 徽标');
@@ -294,6 +336,72 @@ assert.ok(pythonText.includes('常用包'), '渲染常用包快捷安装');
 assert.ok(pythonText.includes('测试运行'), '渲染测试运行台');
 assert.ok(q('.hub-python__code'), '渲染代码编辑区');
 
+// ── 一键预下载：按钮渲染 + 目录未就绪时禁用 ──
+const preloadBtns = qa('.hub-python__preload .hub-btn');
+assert.equal(preloadBtns.length, 2, '渲染两个独立预下载按钮（常用包 / 全目录）');
+assert.ok(preloadBtns[0].textContent.includes('一键预下载常用包'), '常用包按钮带数量文案');
+assert.ok(preloadBtns[1].textContent.includes('一键预下载全目录'), '全目录按钮带数量文案');
+assert.ok(!preloadBtns[0].disabled, '目录就绪后常用包按钮可点');
+assert.ok(pythonText.includes('不注册为已安装'), '预下载语义说明可见（仅写缓存）');
+
+// 点击常用包预下载：桩返回完成结果 → 完成消息可见、进度条收起
+preloadBtns[0].click();
+await flush();
+const pythonAfterPreload = q('.hub-python')?.textContent ?? '';
+assert.ok(pythonAfterPreload.includes('预下载完成'), '预下载完成后展示完成消息');
+assert.ok(pythonAfterPreload.includes('缓存命中'), '完成消息含缓存命中统计');
+assert.equal(q('.hub-python__preload ~ .hub-python__progress'), null, '完成后进度条收起');
+
+// ── micropip 设置卡片 ──
+const micropipCard = q('.hub-python__micropip');
+assert.ok(micropipCard, '渲染 micropip 设置卡片');
+const micropipText = micropipCard.textContent;
+assert.ok(micropipText.includes('micropip 设置'), '渲染 micropip 卡片标题');
+assert.ok(micropipText.includes('openpyxl'), '渲染已记录的 micropip 包芯片');
+assert.ok(micropipText.includes('全局复用'), '渲染全局复用开关标签');
+assert.ok(micropipText.includes('已开启（默认）'), '默认展示全局复用开启语义');
+assert.equal(micropipCard.querySelectorAll('.hub-switch__input').length, 1, '渲染一个 HubSwitch 开关');
+assert.ok(!micropipCard.querySelector('select'), 'micropip 卡片不得出现原生 select');
+
+// 开关切换：关闭后语义文案立即变化
+const micropipSwitch = micropipCard.querySelector('.hub-switch__input');
+micropipSwitch.click();
+await flush();
+assert.ok(micropipCard.textContent.includes('已关闭'), '关闭开关后展示会话级复用语义');
+assert.ok(micropipCard.textContent.includes('仅当前浏览器会话内复用'), '关闭语义完整');
+// 切回开启（保持默认行为）
+micropipCard.querySelector('.hub-switch__input').click();
+await flush();
+assert.ok(micropipCard.textContent.includes('已开启（默认）'), '重新开启恢复全局复用语义');
+
+// 实时同步：其它上下文入账 micropip 包后本页立即刷新
+api.__pushMicropip({
+  packages: [
+    { name: 'openpyxl', version: '3.1.5', url: 'https://x/openpyxl.whl', sha256: 'a', installedAt: 1 },
+    { name: 'flask', version: '3.0.0', url: 'https://x/flask.whl', sha256: 'b', installedAt: 2 },
+  ],
+});
+await flush();
+assert.ok(micropipCard.textContent.includes('flask'), 'micropip 清单推送后芯片实时刷新');
+
+// 芯片删除：行内二次确认（首点待确认、二点执行），不弹原生 confirm
+let micropipConfirmCalls = 0;
+dom.window.confirm = () => { micropipConfirmCalls++; return true; };
+const flaskChipRemove = [...micropipCard.querySelectorAll('.hub-python__chip-remove')]
+  .find(btn => btn.closest('.hub-python__chip')?.textContent.includes('flask'));
+assert.ok(flaskChipRemove, 'flask 芯片带删除按钮');
+flaskChipRemove.click();
+await flush();
+assert.equal(micropipConfirmCalls, 0, '删除 micropip 记录不弹原生 confirm');
+assert.ok(flaskChipRemove.classList.contains('is-armed'), '首点进入待确认态');
+flaskChipRemove.click();
+await flush();
+// 注意：不能用整卡文本判断——删除成功的反馈消息本身含包名
+const flaskChipGone = ![...micropipCard.querySelectorAll('.hub-python__chip-name')]
+  .some(el => el.textContent === 'flask');
+assert.ok(flaskChipGone, '二点执行后芯片消失');
+assert.ok(micropipCard.textContent.includes('已删除 flask 的复用记录'), '删除反馈消息可见');
+
 const snippetButtons = qa('.hub-python__snippets .hub-python__chip');
 assert.ok(snippetButtons.length >= 3, '提供代码片段一键载入');
 snippetButtons[1].click();
@@ -307,18 +415,53 @@ const pythonAfter = q('.hub-python')?.textContent ?? '';
 assert.ok(pythonAfter.includes('pandas'), '环境状态推送后已装包列表立即刷新');
 assert.ok(pythonAfter.includes('已安装 1 个包'), '已装包计数同步刷新');
 
-// 危险操作：行内二次确认，不弹 window.confirm
+// 危险操作 · 删环境：HubDialog 弹窗二次确认，不弹 window.confirm、无行内 armed 态
 let confirmCalls = 0;
 dom.window.confirm = () => { confirmCalls++; return true; };
-const removeBtn = qa('.hub-python__card .hub-python-btn-danger')[0];
-assert.ok(removeBtn, '存在「彻底删除」按钮');
+const removeBtn = qa('.hub-python__card .hub-python-btn-danger').find(btn => btn.textContent.includes('删除Python环境'));
+assert.ok(removeBtn, '存在「删除Python环境」按钮');
 removeBtn.click();
 await flush();
-assert.equal(confirmCalls, 0, '删除环境不弹原生 confirm');
-assert.ok(removeBtn.classList.contains('is-armed'), '首次点击进入待确认态');
+assert.equal(confirmCalls, 0, '打开确认弹窗不弹原生 confirm');
+assert.ok(!removeBtn.classList.contains('is-armed'), '删环境不再使用行内待确认态');
+const removeDialog = q('.hub-dialog');
+assert.ok(removeDialog, '渲染 HubDialog 删除确认弹窗');
+const dialogText = removeDialog.textContent ?? '';
+assert.ok(dialogText.includes('删除 Python 环境？'), '弹窗标题为删除确认');
+assert.ok(dialogText.includes('micropip'), '弹窗正文点名 micropip 复用记录将被清除');
+assert.ok(dialogText.includes('已安装的 1 个 Python 包'), '弹窗正文量化已装包数量');
+
+// 取消：弹窗关闭，环境原样保留
+q('.hub-dialog__btn--secondary').click();
+await flush();
+assert.equal(q('.hub-dialog'), null, '取消后弹窗关闭');
+assert.ok(q('.hub-python__card .hub-python-btn-danger'), '取消后环境仍就绪（未执行删除）');
+
+// 确认：执行完整删除——环境状态回落 + micropip 复用清单清空
 removeBtn.click();
 await flush();
-assert.equal(confirmCalls, 0, '二次点击也不弹原生 confirm');
+q('.hub-dialog__btn--primary').click();
+await flush();
+assert.equal(q('.hub-dialog'), null, '确认后弹窗关闭');
+assert.deepEqual(api.__micropipSnapshot().packages, [], '确认删除后 micropip 复用清单清空');
+const pythonAfterRemove = q('.hub-python')?.textContent ?? '';
+assert.ok(pythonAfterRemove.includes('未安装'), '删除后状态回落「未安装」');
+assert.ok(!pythonAfterRemove.includes('已就绪'), '删除后不再展示就绪态');
+assert.equal(skillSwitch(), null, '卸载后隐藏脚本支持开关');
+api.__pushEnv({ status: 'ready' });
+await flush();
+assert.equal(skillSwitch()?.checked, false, '重新安装后仍默认关闭');
+
+// 静态契约：桩掩盖了真实删除实现，这里锁住真实编排的覆盖面——
+// UI 走单一入口、运行时层清 micropip 清单 + 丢单例、离屏宿主回收 Worker
+const sectionSource = readFileSync(path.resolve('entrypoints/hub/python/PythonSection.vue'), 'utf8');
+assert.ok(sectionSource.includes('purgePyodideEnvironment'), 'UI 删除流程走 purgePyodideEnvironment 单一入口');
+assert.ok(!/requestRemoveEnv|remove-env/.test(sectionSource), '行内 armed 删环境流程已移除');
+const runtimeSource = readFileSync(path.resolve('utils/pyodide/pyodide-runtime.ts'), 'utf8');
+assert.ok(/purgePyodideEnvironment\(\)[\s\S]*?clearMicropipManifest\(\)/.test(runtimeSource), '删除编排清空 micropip 复用清单');
+assert.ok(runtimeSource.includes('resetPyodideRuntime'), '删除编排丢弃本页运行时单例');
+const hostSource = readFileSync(path.resolve('entrypoints/screen-share-offscreen/python-host.ts'), 'utf8');
+assert.ok(hostSource.includes('PYTHON_HOST_RESET'), '离屏宿主处理环境重置消息（回收 Worker）');
 
 // ════════════════ 4. 样式契约：纯黑白灰，无蓝紫 ════════════════
 
@@ -338,4 +481,4 @@ assert.equal(/UsageSection|PythonSection/.test(settingsModal), false, '设置弹
 const sectionsIndex = readFileSync(path.resolve('entrypoints/sidepanel/components/modals/sections/index.ts'), 'utf8');
 assert.equal(/UsageSection|PythonSection/.test(sectionsIndex), false, '分区出口不再导出这两个分区');
 
-console.log('[hub] 使用监控 + Python 环境：导航入口、指标渲染、筛选、实时同步、行内二次确认、配色契约 —— 通过');
+console.log('[hub] 使用监控 + Python 环境：导航入口、指标渲染、筛选、实时同步、删除确认弹窗、配色契约 —— 通过');

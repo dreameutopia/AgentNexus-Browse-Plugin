@@ -15,6 +15,8 @@ import { chatDatabase, chatPreviewOf, type SessionListOptions } from './chat-dat
 import { normalizeModelRef, type ModelRef } from '../../utils/channels';
 import { imageStore, normalizeImageRefs } from '../images/image-store';
 import { prepareProtocolHistory } from './protocol-history';
+import type { PageQuote } from '../../utils/chat/page-quote';
+import { notifySessionsChanged, type SessionChangeReason } from '@/utils/sessions/session-bridge';
 
 /** 自动标题取用户消息前缀长度 */
 const AUTO_TITLE_MAX = 30;
@@ -159,13 +161,36 @@ class TranscriptEngine {
       // 会话类型：只接受合法枚举值，其余（脏数据 / 旧版本）一律归一为 'chat'
       kind: input.kind === 'site-learn' ? 'site-learn' : 'chat',
     };
-    return chatDatabase.createSession(meta);
+    const created = await chatDatabase.createSession(meta);
+    this.notifySessionChange('created');
+    return created;
   }
 
   async renameSession(chatId: string, title: string): Promise<ChatSessionMeta | null> {
     const trimmed = title.trim().slice(0, AUTO_TITLE_MAX * 2);
     if (!trimmed) return null;
-    return this.patchSessionMeta(chatId, { title: trimmed });
+    const updated = await this.patchSessionMeta(chatId, { title: trimmed });
+    if (updated) this.notifySessionChange('renamed');
+    return updated;
+  }
+
+  /**
+   * 归档会话（收纳：从常规列表隐去，数据原地保留）。
+   *
+   * 归档不是删除：全部关联数据（消息 / 图片 / 上传文件 / 工作区 / 计划）
+   * 一律保留，可在管理中心「会话管理」里恢复或到期自动清理。
+   */
+  async archiveSession(chatId: string): Promise<ChatSessionMeta | null> {
+    const updated = await chatDatabase.setSessionArchived(chatId, true);
+    if (updated) this.notifySessionChange('archived');
+    return updated;
+  }
+
+  /** 取消归档（从归档列表回到常规列表） */
+  async unarchiveSession(chatId: string): Promise<ChatSessionMeta | null> {
+    const updated = await chatDatabase.setSessionArchived(chatId, false);
+    if (updated) this.notifySessionChange('unarchived');
+    return updated;
   }
 
   /**
@@ -176,6 +201,7 @@ class TranscriptEngine {
    */
   async deleteSession(chatId: string): Promise<void> {
     await chatDatabase.deleteSession(chatId);
+    this.notifySessionChange('deleted');
     this.seqCounters.delete(chatId);
     this.seeded.delete(chatId);
     this.seeding.delete(chatId);
@@ -354,11 +380,14 @@ class TranscriptEngine {
    * 追加用户消息并更新会话元信息（含自动标题）。
    * @param imageRefs 本轮上传图片的内容哈希引用（图片本体已由会话引擎写入
    *   独立图片库；此处只落引用。缺省 = 无图片）
+   * @param pageQuote 本轮用户确认引用的网页原文（落库后用户气泡据此渲染
+   *   引用块；缺省 = 无引用。引用内容只落用户面转录，模型面另走信封）
    */
   async appendUserMessage(
     chatId: string,
     content: string,
     imageRefs: readonly string[] = [],
+    pageQuote?: PageQuote,
   ): Promise<ChatMessageRecord> {
     const seq = await this.nextSeq(chatId);
     const now = Date.now();
@@ -377,6 +406,8 @@ class TranscriptEngine {
       // 只把用户上传展示为气泡底部图片；vision 首截图等引擎注入的引用
       // 仅进 imageRefs（落库归一化补入），不进本字段
       uploadImageRefs: [...imageRefs],
+      // 用户确认的网页引用随本条消息落库（气泡引用块的唯一来源）
+      ...(pageQuote ? { pageQuote } : {}),
       createdAt: now,
       updatedAt: now,
     };
@@ -389,9 +420,12 @@ class TranscriptEngine {
     // 绝不连同已落库的用户消息一起把整次发送打断
     try {
       const session = await chatDatabase.getSession(chatId);
-      const shouldAutoTitle = session?.title === DEFAULT_TITLE && content.trim().length > 0;
+      // 引用独存的首条消息（正文为空）以引用原文作标题素材——否则新会话只能
+      // 停在默认标题上，历史里认不出这是哪次对话
+      const titleSource = content.trim() || pageQuote?.text.trim() || '';
+      const shouldAutoTitle = session?.title === DEFAULT_TITLE && titleSource.length > 0;
       if (shouldAutoTitle) {
-        await this.patchSessionMeta(chatId, { title: content.trim().slice(0, AUTO_TITLE_MAX) });
+        await this.patchSessionMeta(chatId, { title: titleSource.slice(0, AUTO_TITLE_MAX) });
       }
     } catch (error) {
       console.warn('[TranscriptEngine] 自动标题更新失败（不影响消息入档）:', error);
@@ -446,9 +480,10 @@ class TranscriptEngine {
       if (skipped) {
         return;
       }
-      // 预览只在消息进入终态时刷新：流式过程中的半截文本不代表会话最后一条内容
+      // 预览只在消息进入终态时刷新：流式过程中的半截文本不代表会话最后一条内容。
+      // 引用独存的用户消息（正文为空）以引用原文作预览——否则历史抽屉会看到一条空白
       if (record.status !== 'streaming') {
-        const preview = record.content.trim() || record.error || '';
+        const preview = record.content.trim() || record.pageQuote?.text.trim() || record.error || '';
         await this.patchSessionMeta(record.chatId, {
           lastMessagePreview: chatPreviewOf(preview),
         });
@@ -569,11 +604,27 @@ class TranscriptEngine {
     patch: Partial<ChatSessionMeta>,
   ): Promise<ChatSessionMeta | null> {
     try {
-      return await chatDatabase.patchSession(chatId, { ...patch, updatedAt: Date.now() });
+      const updated = await chatDatabase.patchSession(chatId, { ...patch, updatedAt: Date.now() });
+      if (updated) this.notifySessionChange('updated');
+      return updated;
     } catch (error) {
       console.warn('[TranscriptEngine] 会话元信息更新失败:', error);
       this.notifyPersistenceIssue('session-meta', error);
       return null;
+    }
+  }
+
+  /**
+   * 广播会话变更（跨上下文实时同步）。
+   *
+   * 通知失败绝不抛错：本方法只是「让管理中心尽快刷新」的加速手段，
+   * 真正的权威源是 IndexedDB —— 管理中心另有定时与聚焦刷新兜底。
+   */
+  private notifySessionChange(reason: SessionChangeReason): void {
+    try {
+      notifySessionsChanged(reason);
+    } catch (error) {
+      console.warn('[TranscriptEngine] 会话变更广播失败:', error);
     }
   }
 }

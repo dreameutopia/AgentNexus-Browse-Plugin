@@ -86,4 +86,10 @@ const usagePython = spawnSync(process.execPath, [path.join(here, 'usage-python.t
   stdio: 'inherit',
   cwd: root,
 });
-process.exit(usagePython.status ?? 1);
+if (usagePython.status !== 0) process.exit(usagePython.status ?? 1);
+
+const sessionsSection = spawnSync(process.execPath, [path.join(here, 'sessions-section.test.mjs')], {
+  stdio: 'inherit',
+  cwd: root,
+});
+process.exit(sessionsSection.status ?? 1);

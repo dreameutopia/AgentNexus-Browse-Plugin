@@ -1,7 +1,7 @@
 ---
 name: web-research-report
 description: 围绕一个主题进行多来源网络调研，交叉验证与对抗检验后产出带引用来源与来源性质标注的结构化研究报告。当用户要求"调研/研究/深入分析某主题、对比多个方案、给出有出处的报告"时使用。
-allowed-tools: browser_navigate browser_get_page_text browser_get_page_info browser_observe browser_interact browser_dom_explore browser_page_exec web_search note_tool
+allowed-tools: browser_navigation browser_get_page_text browser_get_page_info browser_observe browser_interact browser_dom_explore browser_page_exec web_search note_tool
 category: search
 tags: 调研报告 引用来源 多平台 交叉验证 来源核验
 ---
@@ -18,7 +18,7 @@ tags: 调研报告 引用来源 多平台 交叉验证 来源核验
 
 0. **启动建账**（一轮完成）：判断任务规模（简单事实 ≤2 轮 / 方案对比 ≤6 次检索 / 深度调研 ≤12 次检索 + ≤10 页深访）。深度调研做**多视角拆解**：领域专家（术语/机理）、实际用户（体验/代价）、质疑者（反面证据）各出一组子问题。`note_tool(action="create")` 建笔记并记录拆解与计划；`plan_tool(action="create")` 把每个视角组写成一步（粒度=可独立验证的阶段成果，不是单次检索）。拆解结果与计划步骤一一对应，笔记与计划两边不重复记录。
 1. **逐阶段推进**（每阶段闭环）：开工标 `plan_tool(action="edit", status="in_progress")` → 按下方检索/深访/验证规则执行 → 每读完一页立即 `note_tool(action="append")`（与下一检索同轮合并发出省轮次）→ **阶段门**：子问题都有结论（或记录"无相关内容"）+ 笔记追加「阶段小结：视角X——2~4 句结论 + 已交叉/未交叉清单」+ plan 标 done。过门后下一阶段开工前**双回读**：`plan_tool(action="read")` + `note_tool(action="get")`（仅阶段切换时做）。
-2. **检索**：`web_search`（bing / baidu / zhihu / csdn / github 等枚举值），**短宽查询先行逐轮收窄**，关键词带专有名词，禁止同轮并发（连续多轮 newTab=false 复用标签页）。结果表逐条给出标题、链接与摘要——**来源性质由你自己按域名判断**：官方一手源与通讯社/主流媒体可信度高，百科社区、聚合站、自媒体论坛只是线索入口；非一手来源的关键结论必须独立来源交叉。
+2. **检索**：`web_search`（通用网页检索，engine 枚举 bing / baidu）与 `platform_search`（站点平台检索，platform 枚举 zhihu / csdn / github / cnki / mooc / xiaohongshu / bilibili——仅当本轮工具列表中出现时使用，站点内结果多为二手与社区观点，只作线索不作定论），**短宽查询先行逐轮收窄**，关键词带专有名词，禁止同轮并发（连续多轮 newTab=false 复用标签页）。结果表逐条给出标题、链接与摘要——**来源性质由你自己按域名判断**：官方一手源与通讯社/主流媒体可信度高，百科社区、聚合站、自媒体论坛只是线索入口；非一手来源的关键结论必须独立来源交叉。
 3. **深访与提取**：`browser_get_page_text`（结构化 Markdown，覆盖 iframe 与 shadow root，超 15000 字符自动缓存 ref 分页续读；需结构信息（表格/代码/标题层级）或直读指定 URL 时用它）；SPA / 滚动加载先 `browser_observe` 判断形态，`browser_interact` 滚动展开，`browser_dom_explore`（similar 相似元素 + 选择器）定位结构，`browser_page_exec` 只读脚本批量抽取（需用户确认；被拒不重试，降级 dom_explore + browser_get_page_text 组合）。登录墙/验证码：记录不可读换来源，不臆测、不绕过。
 4. **过程留痕**：每条记录——**来源**（页面 URL + 标题 + 平台 + 来源性质：官方一手 / 主流媒体 / 百科社区 / 自媒体论坛）、**事实**（保留数字/日期/专有名词原文）、**见解**（「分析：」开头）、**交叉/分歧**（第二来源印证记「交叉：与 [URL] 一致」；冲突记双方说法不擅自裁决）；无效线索记 URL 与放弃原因。没有来源的事实视为未记录。
 5. **对抗验证**（深度调研必做）：对每个关键结论构造反例检索（"结论 + 缺点/争议/失败/被质疑"）。**独立来源 = 不同注册域名**（同平台两篇不算独立；转载通稿算一个）。高置信充分条件：两个独立的一手/主流媒体来源一致 + 对抗检索无反证；有反证 → 如实记录分歧并降级。

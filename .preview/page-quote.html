@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>网页引用条宽度适配预览</title>
+<!-- 复刻 .app-container 的中性 token，模拟真实挂载环境 -->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: #faf9f7;
+    color: #292824;
+  }
+  .app-container {
+    --surface-canvas: #faf9f7;
+    --surface-card: #ffffff;
+    --surface-soft: #f3f1ed;
+    --surface-hover: #eeece7;
+    --surface-user: #eeece7;
+    --line-soft: #e4e2de;
+    --ink-primary: #292824;
+    --ink-secondary: #787671;
+    --ink-muted: #9b9790;
+    --focus-ring: #a5a09a;
+    min-height: 100vh;
+    padding: 20px;
+  }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+  p.lead { font-size: 12px; color: var(--ink-secondary); margin: 0 0 18px; line-height: 1.6; }
+  .grid { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .col-label {
+    font-size: 11px; color: var(--ink-muted); font-variant-numeric: tabular-nums;
+  }
+  /* 忠实复刻真实消息列的宽度链：.messages-container 是纵向 flex，且
+     .message.user 带 align-self:flex-end（不拉伸 → fit-content 收缩）。
+     用普通块级容器的话气泡会按块级拉伸填满，测不出 fit-content 坍塌类缺陷 */
+  .mock-input-section {
+    padding: 0 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  /* align-self:flex-end 与 max-width:80% 由 chat-message-list.css 的
+     .message.user 提供（真实链路的收缩 + 上限两个要素）；此处只补列间距 */
+  .mock-input-section .message.user {
+    margin-bottom: 8px;
+  }
+  /* 输入容器（引用条位于其正上方），用于观察与真实输入区的间距关系 */
+  .mock-input-container {
+    border: 1px solid var(--line-soft);
+    border-radius: 20px;
+    background: var(--surface-card);
+    padding: 12px 16px;
+    min-height: 68px;
+    font-size: 12.5px;
+    color: var(--ink-muted);
+  }
+</style>
+<link rel="stylesheet" href="/entrypoints/sidepanel/components/chat/chat-message-list.css" />
+<link rel="stylesheet" href="/entrypoints/sidepanel/components/chat/page-quote-bar.css" />
+<link rel="stylesheet" href="/entrypoints/sidepanel/components/chat/user-message-bubble.css" />
+<style>
+  /* 气泡引用块的最小承载：user-message-bubble.css 的部分规则挂在
+     `.message.user` 祖先下（正文反色适配），引用块与气泡壳本身独立生效 */
+  .bubble-slot { margin-top: 14px; }
+  .bubble-slot .slot-label { font-size: 11px; color: var(--ink-muted); margin-bottom: 6px; }
+</style>
+</head>
+<body>
+  <div class="app-container">
+    <h1>网页引用条 · 宽度适配预览</h1>
+    <p class="lead">
+      每列宽度 = 侧边栏宽度（含 input-section 的 12px 侧向留白），消息列复刻真实
+      fit-content 链（.message.user align-self:flex-end 收缩）。
+      降级链：≤340px 隐藏来源标题 → ≤260px 按钮收为纯图标 → ≤200px 整条换行。
+      引用原文最多三行多行展示，超出在原文块内出现滚动条（按钮与来源不位移）；
+      气泡引用块的来源让位走视口断点（侧边栏视口即面板宽度，整页共用一个断点）。
+    </p>
+
+    <div class="grid" id="grid"></div>
+  </div>
+
+<script>
+const ICONS = {
+  textQuote: '<path d="M17 5H3"/><path d="M21 12H8"/><path d="M21 19H8"/><path d="M3 12v7"/>',
+  bookmarkCheck: '<path d="M17 3a2 2 0 0 1 2 2v15a1 1 0 0 1-1.496.868l-4.512-2.578a2 2 0 0 0-1.984 0l-4.512 2.578A1 1 0 0 1 5 20V5a2 2 0 0 1 2-2z"/><path d="m9 10 2 2 4-4"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+};
+const svg = (name, size, width) =>
+  `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
+  `stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+
+const LONG = '在浏览器扩展的侧边栏里，用户从当前网页上选中一段文字后，' +
+  '这条引用会以待引用状态出现在输入框正上方，等待用户确认之后才会随消息一起发送给模型。';
+
+/** 五行长文本：验证「最多三行 + 超出块内滚动条」 */
+const MULTI = [
+  '第一行：被选中的网页原文第一段，用于确认多行换行是否逐行保留。',
+  '第二行：读者必须能判断这段话是否可信——引用系统要把来源标清楚。',
+  '第三行：选区里的换行符原样进入引用条，pre-wrap 负责逐行显示。',
+  '第四行：超过三行之后，这一块内部应出现细滚动条，按钮不位移。',
+  '第五行（被滚动隐藏）：悬浮在原文上可滚动查看本行及后续内容。',
+].join('\n');
+
+function bar(state, opts) {
+  const text = opts.text || LONG;
+  const source = opts.source
+    ? `<span class="pq-source" title="${opts.source}">${opts.source}</span>`
+    : '';
+  const actions = state === 'pending'
+    ? `<button type="button" class="pq-btn pq-btn-confirm" title="确认引用">${svg('check', 12, 2.4)}<span class="pq-btn-text">确认引用</span></button>` +
+      `<button type="button" class="pq-btn pq-btn-ghost" title="放弃这条待引用" aria-label="放弃这条待引用">${svg('x', 12, 2.2)}</button>`
+    : `<button type="button" class="pq-btn pq-btn-cancel" title="取消引用">${svg('x', 12, 2.2)}<span class="pq-btn-text">取消引用</span></button>`;
+  const mark = state === 'pending'
+    ? svg('textQuote', 12, 2)
+    : svg('bookmarkCheck', 12, 2);
+  return `<div class="page-quote-bar is-${state}" role="status" aria-live="polite">` +
+    `<span class="pq-mark" aria-hidden="true">${mark}</span>` +
+    `<span class="pq-label">${state === 'pending' ? '待引用:' : '已引用:'}</span>` +
+    `<span class="pq-text" title="${text}">${text}</span>` +
+    source +
+    `<div class="pq-actions">${actions}</div>` +
+    `</div>`;
+}
+
+const WIDTHS = [640, 480, 400, 340, 300, 260, 220];
+
+/** 用户消息气泡 + 引用块（与 UserMessageBubble 的模板同构） */
+function bubble() {
+  const quoteText = '「我们必须先把引用原文的来源标清楚，' +
+    '读者才能判断这段话是否可信——这是所有引用系统的底线要求。」';
+  return `<div class="message user"><div class="user-bubble">` +
+    `<blockquote class="user-bubble-quote">` +
+    `<div class="user-bubble-quote-head">${svg('textQuote', 12, 2)}` +
+    `<span class="user-bubble-quote-tag">引用</span>` +
+    `<span class="user-bubble-quote-source" title="https://example.com/articles/long-title">Example Domain — 一篇标题相当长的示例文章标题用于省略测试</span>` +
+    `</div>` +
+    `<div class="user-bubble-quote-text">${quoteText}</div>` +
+    `</blockquote>` +
+    `<div class="user-bubble-body"><div class="user-bubble-clip">` +
+    `<div class="user-bubble-text"><div class="message-content">请结合这段引用解释一下。</div></div>` +
+    `</div></div>` +
+    `<div class="user-bubble-actions"></div>` +
+    `</div></div>`;
+}
+
+const grid = document.getElementById('grid');
+for (const width of WIDTHS) {
+  const col = document.createElement('div');
+  col.className = 'col';
+  col.style.width = width + 'px';
+  col.innerHTML =
+    `<div class="col-label">${width}px</div>` +
+    `<div class="mock-input-section">${bar('pending', { source: 'Example Domain — 示例文章标题', text: MULTI })}` +
+    `<div class="mock-input-container">发消息，输入 @ 选智能体</div></div>` +
+    `<div class="mock-input-section">${bar('confirmed', { source: 'Example Domain — 示例文章标题' })}` +
+    `<div class="mock-input-container">发消息，输入 @ 选智能体</div></div>` +
+    `<div class="mock-input-section bubble-slot">` +
+    `<div class="slot-label">消息气泡引用块</div>${bubble()}</div>`;
+  grid.appendChild(col);
+}
+</script>
+</body>
+</html>

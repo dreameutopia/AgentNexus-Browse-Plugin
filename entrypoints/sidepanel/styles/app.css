@@ -2198,93 +2198,9 @@ h1 {
   flex-direction: column;
 }
 
-/* 选中文字展示组件样式 */
-.selected-text-display {
-  background: var(--surface-canvas, #faf9f7);
-  border: 1px solid var(--line-soft, #e4e2de);
-  border-radius: 12px;
-  padding: 12px 16px;
-  margin-bottom: 12px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-  animation: slideInDown 0.3s ease;
-}
-
-.selected-text-content {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.selected-text-body {
-  flex: 1;
-  min-width: 0;
-}
-
-.selected-text-label {
-  font-size: 12px;
-  color: var(--ink-secondary, #787671);
-  font-weight: 500;
-  display: block;
-  margin-bottom: 4px;
-}
-
-.selected-text-value {
-  font-size: 14px;
-  color: var(--ink-primary, #292824);
-  line-height: 1.4;
-  word-break: break-word;
-  display: block;
-  /* 限制最大高度：超长选中文字在内部滚动，避免无限撑高输入区上方容器 */
-  max-height: 120px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.selected-text-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.quote-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  background: #6366f1;
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.quote-btn:hover {
-  background: #5856eb;
-  transform: translateY(-1px);
-}
-
-.close-selected-text {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  background: transparent;
-  border: none;
-  border-radius: 6px;
-  color: var(--ink-muted, #9b9790);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.close-selected-text:hover {
-  background: var(--surface-soft, #f3f1ed);
-  color: var(--ink-secondary, #787671);
-}
+/* 网页引用条样式已迁至 components/chat/page-quote-bar.css：
+   组件自带样式（app.css 经 App.vue 的 <style scoped> 引入，其规则带 App.vue
+   的作用域属性，对子组件内部节点不生效——放在这里等于没放）。 */
 
 @keyframes slideInDown {
   from {

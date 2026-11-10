@@ -1,0 +1,292 @@
+/* 网页引用条（输入框上方）样式
+ *
+ * 组件自带样式（./page-quote-bar.css）：app.css 经 App.vue 的 <style scoped>
+ * 引入，其规则带 App.vue 的作用域属性，对本组件根元素之外的节点不生效——
+ * 放在 app.css 里等于没放（与 plan-board.css / user-message-bubble.css 同一约定）。
+ *
+ * 空间口径：高度随内容 1–3 行（≈32–62px）：原文最多三行多行展示，超出在
+ * 原文块内出现滚动条（滚动只在文本里发生，按钮与来源不位移）。此前是
+ * 「标签独占一行 + 正文可滚动到 120px + 右侧按钮组」的卡片（约 160px），
+ * 在侧边栏这种窄视口里代价过高。
+ *
+ * 宽度适配（逐级降级，任何宽度都不变形、不溢出）：
+ *   ≤ 340px  隐藏来源页面标题（引用原文优先）
+ *   ≤ 260px  按钮收为纯图标（图标本身即语义：✓ 确认 / ✕ 取消）
+ *   ≤ 200px  整条换行：引用原文独占第二行，按钮靠右
+ *
+ * 容器查询以本条自身宽度为基准（container-type: inline-size），不依赖视口宽度
+ * ——侧边栏可拖拽变窄，视口查询会滞后一档；媒体查询仅作老浏览器的兜底。
+ */
+
+.page-quote-bar {
+  container-type: inline-size;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  margin: 0 0 8px;
+  padding: 3px 4px 3px 6px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 10px;
+  background: var(--surface-soft, #f3f1ed);
+  overflow: hidden; /* 圆角裁剪：任何子项都不得溢出条外 */
+  animation: pq-slide-in 0.18s ease;
+}
+
+/* 状态徽标：待引用为中性灰底，已引用为深墨底（与发送按钮同一主色体系） */
+.pq-mark {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  background: var(--surface-hover, #eeece7);
+  color: var(--ink-secondary, #787671);
+}
+
+.page-quote-bar.is-confirmed .pq-mark {
+  background: var(--ink-primary, #292824);
+  color: #ffffff;
+}
+
+/* 状态标签：待引用 / 已引用（两态靠文案 + 徽标底色双重区分） */
+.pq-label {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--ink-secondary, #787671);
+  white-space: nowrap;
+}
+
+/* 引用原文：最多三行多行展示（换行保留），超出在块内出现滚动条。
+   flex-basis: 0 + min-width: 0 —— 原文吃掉所有剩余空间，换行策略生效、
+   永不把按钮挤出容器；滚动只发生在这块文本里，按钮与来源不位移。
+   行高 1.45 → 三行 = 4.35em（按 em 计，随字号缩放精确贴合三行） */
+.pq-text {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink-primary, #292824);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: calc(3 * 1.45em);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-soft, #e4e2de) transparent;
+}
+
+/* WebKit 滚动条瘦身：6px 细条贴合扁平条设计，出现时不挤动布局 */
+.pq-text::-webkit-scrollbar {
+  width: 6px;
+}
+
+.pq-text::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.pq-text::-webkit-scrollbar-thumb {
+  background: var(--line-soft, #e4e2de);
+  border-radius: 3px;
+}
+
+/* 来源页面标题：次要信息，窄宽度下先让位 */
+.pq-source {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 30%;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-muted, #9b9790);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pq-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pq-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 9px;
+  border: none;
+  border-radius: 7px;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.pq-btn:active {
+  transform: scale(0.97);
+}
+
+.pq-btn:focus-visible {
+  outline: 2px solid var(--ink-secondary, #787671);
+  outline-offset: 2px;
+}
+
+/* 主行动（确认引用）：深墨底白字，与发送按钮同一主色 */
+.pq-btn-confirm {
+  background: var(--ink-primary, #292824);
+  color: #ffffff;
+}
+
+.pq-btn-confirm:hover {
+  background: #44413b;
+}
+
+/* 次行动（取消引用）：中性灰字，hover 才出底 */
+.pq-btn-cancel {
+  background: transparent;
+  color: var(--ink-secondary, #787671);
+}
+
+.pq-btn-cancel:hover {
+  background: var(--surface-hover, #eeece7);
+  color: var(--ink-primary, #292824);
+}
+
+/* 图标按钮（放弃待引用）：始终无底，hover 才出底 */
+.pq-btn-ghost {
+  width: 24px;
+  padding: 0;
+  background: transparent;
+  color: var(--ink-muted, #9b9790);
+}
+
+.pq-btn-ghost:hover {
+  background: var(--surface-hover, #eeece7);
+  color: var(--ink-secondary, #787671);
+}
+
+/* 宽度降级 1：来源标题让位（引用原文优先） */
+@container (max-width: 340px) {
+  .pq-source {
+    display: none;
+  }
+}
+
+/* 宽度降级 2：按钮收为纯图标（图标本身即语义） */
+@container (max-width: 260px) {
+  .pq-btn-text {
+    display: none;
+  }
+
+  .pq-btn {
+    padding: 0 7px;
+  }
+
+  .pq-btn-ghost {
+    width: 24px;
+    padding: 0;
+  }
+}
+
+/* 宽度降级 3：整条换行——引用原文独占第二行，操作按钮靠右 */
+@container (max-width: 200px) {
+  .page-quote-bar {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .pq-mark {
+    order: 0;
+  }
+
+  .pq-label {
+    order: 1;
+  }
+
+  .pq-actions {
+    order: 2;
+    margin-left: auto;
+  }
+
+  .pq-text {
+    order: 3;
+    flex: 1 1 100%;
+  }
+}
+
+/* 老浏览器兜底（不支持容器查询时按视口宽度降级） */
+@media (max-width: 340px) {
+  .pq-source {
+    display: none;
+  }
+}
+
+@media (max-width: 260px) {
+  .pq-btn-text {
+    display: none;
+  }
+
+  .pq-btn {
+    padding: 0 7px;
+  }
+
+  .pq-btn-ghost {
+    width: 24px;
+    padding: 0;
+  }
+}
+
+@media (max-width: 200px) {
+  .page-quote-bar {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .pq-mark {
+    order: 0;
+  }
+
+  .pq-label {
+    order: 1;
+  }
+
+  .pq-actions {
+    order: 2;
+    margin-left: auto;
+  }
+
+  .pq-text {
+    order: 3;
+    flex: 1 1 100%;
+  }
+}
+
+@keyframes pq-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-quote-bar {
+    animation: none;
+  }
+}

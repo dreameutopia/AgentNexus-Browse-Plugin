@@ -34,11 +34,12 @@ import {
 import { modelSkillIdOf } from '@/utils/skills/skill-types';
 import { buildSkillInstruction, skillLoadToolContent } from '@/utils/skills/skill-instruction';
 import { computeAvailableSkills } from '@/utils/skills/skill-availability';
+import { isSkillToolId, SKILL_TOOL_ID } from '@/utils/skills/skill-tool-contract';
 import type { AgentConfig } from '@/utils/agents/agent-store';
 import type { ChatMessage } from '../../utils/ai/ai-chat-api';
 
 /** 技能承载工具 ID（存在可用技能时注入会话） */
-export const SKILL_TOOL_IDS: readonly string[] = ['load_skill', 'read_skill_file'] as const;
+export const SKILL_TOOL_IDS: readonly string[] = [SKILL_TOOL_ID];
 
 /**
  * 防止技能内容破坏 systemPrompt 的 XML 分区结构：
@@ -75,6 +76,7 @@ export interface ActivationRound {
   messages: ChatMessage[];
   /** 激活技能的预授权工具 ID（有序去重） */
   toolIds: string[];
+  skillIds: string[];
 }
 
 type ChangeListener = () => void;
@@ -173,10 +175,11 @@ class SkillEngine {
    *
    * @param skillRefs 用户显式选择的技能引用（id 为主；名称/模型标识宽容解析）
    */
-  buildActivationRound(skillRefs: readonly string[]): ActivationRound {
+  buildActivationRound(skillRefs: readonly string[], workspaceIds: ReadonlySet<string> = new Set()): ActivationRound {
     const toolIds = new Set<string>();
     const calls: NonNullable<ChatMessage['tool_calls']> = [];
     const results: ChatMessage[] = [];
+    const skillIds: string[] = [];
     // 按解析后的技能 id 去重：同一技能可能以多种引用形态并存于 refs
     //（id 与名称 / 模型标识混存——v1 历史、跨设备导入、备份恢复的常见形态），
     // 字符串级去重（normalizeSkillRefs）无法识别它们指向同一技能；
@@ -192,7 +195,7 @@ class SkillEngine {
       // 单条记录异常（存储损坏 / 未来装配逻辑缺陷）只跳过该技能并告警，
       // 绝不让整次装配失败——挂死或损坏的技能不应阻断用户发送
       try {
-        const loaded = buildSkillInstruction(skill);
+        const loaded = buildSkillInstruction(skill, 1, workspaceIds.has(skill.id) ? 'workspace' : 'text');
         // 先把两条消息的内容都构造完再入队，保证 calls 与 results 恒等长配对
         const content = skillLoadToolContent(loaded);
         const callId = `${ACTIVATION_CALL_ID_PREFIX}${calls.length}`;
@@ -200,17 +203,18 @@ class SkillEngine {
           id: callId,
           type: 'function',
           function: {
-            name: 'load_skill',
-            arguments: JSON.stringify({ skill_name: loaded.skill }),
+            name: SKILL_TOOL_ID,
+            arguments: JSON.stringify({ action: 'load', skill_name: loaded.skill }),
           },
         });
         results.push({
           role: 'tool',
           tool_call_id: callId,
-          name: 'load_skill',
+          name: SKILL_TOOL_ID,
           content,
         });
-        for (const toolId of skill.allowedTools) toolIds.add(toolId);
+        skillIds.push(skill.id);
+        for (const toolId of skill.allowedTools) if (!isSkillToolId(toolId)) toolIds.add(toolId);
       } catch (error) {
         console.warn(
           `[SkillEngine] 技能 "${skill.name}"（${skill.id}）的激活装配失败，本轮已跳过:`,
@@ -220,7 +224,7 @@ class SkillEngine {
     }
 
     if (calls.length === 0) {
-      return { messages: [], toolIds: [] };
+      return { messages: [], toolIds: [], skillIds: [] };
     }
     return {
       messages: [
@@ -228,6 +232,7 @@ class SkillEngine {
         ...results,
       ],
       toolIds: [...toolIds],
+      skillIds,
     };
   }
 
@@ -264,9 +269,10 @@ class SkillEngine {
     return (
       `\n\n<available-skills>\n` +
       `以下是针对特定任务的深化指令（技能）。使用规则：\n` +
-      `1. 开始执行任务前，先对照清单判断是否有技能的描述与当前任务相关；命中时必须先调用 load_skill(skill_name="<标识>") 获取完整指令，再按其流程执行（技能流程优先于智能体的通用流程）。\n` +
+      `1. 开始执行任务前，对照清单判断哪些技能与任务相关。用 skill_tool 的 load 操作逐个加载所需技能，读完相关指令再按其流程执行。\n` +
       `2. 若任务分多个阶段而当前阶段与技能不相关，可在推进到对应阶段时再加载该技能。\n` +
-      `3. 清单中的技能标识是全局唯一的，调用 load_skill / read_skill_file 时必须原样传入。\n` +
+      `3. 每次调用传入清单中对应的唯一 skill_name。多个技能的文件按各自的技能相对路径读取，避免混用。\n` +
+      `4. 多个技能共同完成任务时，按各自适用的步骤组合使用。若规程冲突且会改变用户要求的结果，先让用户明确选择。\n` +
       `${listing.join('\n')}\n` +
       `</available-skills>`
     );

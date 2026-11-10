@@ -1,26 +1,34 @@
 import { isWorkspacePath } from '@/utils/python-workspace/paths';
-import { SKILL_IMPORT_MAX_FILES, SKILL_IMPORT_MAX_FILE_CHARS, SKILL_IMPORT_MAX_TOTAL_CHARS, type SkillRecord } from './skill-types';
+import { arrayBufferToBase64 } from '@/utils/shared/base64';
+import { SKILL_IMPORT_MAX_FILES, SKILL_RESOURCE_MAX_FILE_BYTES, SKILL_RESOURCE_MAX_TOTAL_BYTES, type SkillRecord } from './skill-types';
 
 export function isSkillResourcePath(path: string): boolean {
   return isWorkspacePath(path) && !/^[a-z]:/i.test(path) &&
     !path.split('/').some(part => part === '__proto__');
 }
 
-export function encodeSkillBytes(bytes: Uint8Array): string {
-  const chunks: string[] = [];
-  for (let i = 0; i < bytes.length; i += 8192) {
-    chunks.push(String.fromCharCode(...bytes.subarray(i, i + 8192)));
-  }
-  return btoa(chunks.join(''));
-}
+export { arrayBufferToBase64 as encodeSkillBytes };
 
 export function decodeSkillBytes(encoded: string): Uint8Array<ArrayBuffer> {
-  if (encoded.length > Math.ceil(SKILL_IMPORT_MAX_FILE_CHARS / 3) * 4) {
+  if (encoded.length > Math.ceil(SKILL_RESOURCE_MAX_FILE_BYTES / 3) * 4) {
     throw new Error('Skill binary resource exceeds the file size limit');
   }
   const raw = atob(encoded);
-  if (raw.length > SKILL_IMPORT_MAX_FILE_CHARS) throw new Error('Skill binary resource exceeds the file size limit');
-  return Uint8Array.from(raw, char => char.charCodeAt(0));
+  if (raw.length > SKILL_RESOURCE_MAX_FILE_BYTES) throw new Error('Skill binary resource exceeds the file size limit');
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
+const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+export function decodeSkillText(bytes: Uint8Array): string | undefined {
+  if (bytes.includes(0)) return undefined;
+  try {
+    return decoder.decode(bytes);
+  } catch {
+    return undefined;
+  }
 }
 
 export function validateSkillBinaries(value: unknown, files: Record<string, string>): Record<string, string> {
@@ -34,13 +42,13 @@ export function validateSkillBinaries(value: unknown, files: Record<string, stri
     if (!isSkillResourcePath(path) || Object.hasOwn(files, path) || typeof content !== 'string') {
       throw new Error(`Invalid or conflicting skill resource: ${JSON.stringify(path)}`);
     }
-    for (const other of paths) {
-      if (other.startsWith(path + '/') || path.startsWith(other + '/')) {
-        throw new Error(`File and directory conflict: ${JSON.stringify(path)}`);
-      }
-    }
     total += decodeSkillBytes(content).length;
-    if (total > SKILL_IMPORT_MAX_TOTAL_CHARS) throw new Error('Skill resources exceed the total size limit');
+    if (total > SKILL_RESOURCE_MAX_TOTAL_BYTES) throw new Error('Skill resources exceed the total size limit');
+  }
+  for (const path of paths) {
+    for (let slash = path.lastIndexOf('/'); slash >= 0; slash = path.lastIndexOf('/', slash - 1)) {
+      if (paths.has(path.slice(0, slash))) throw new Error(`File and directory conflict: ${JSON.stringify(path)}`);
+    }
   }
   return Object.fromEntries(binaries);
 }

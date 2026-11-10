@@ -22,6 +22,7 @@ export interface PyodideInstalledPackage {
 
 export interface PyodideEnvState {
   status: PyodideEnvStatus;
+  skillScriptsEnabled: boolean;
   /** 就绪时的 pyodide 版本（与打包的 npm 版本一致） */
   version: string;
   /** 就绪时的 CPython 版本（核验时从解释器读取，如 "3.14.0"） */
@@ -36,6 +37,7 @@ export interface PyodideEnvState {
 
 export const DEFAULT_PYODIDE_ENV_STATE: PyodideEnvState = {
   status: 'idle',
+  skillScriptsEnabled: false,
   version: PYODIDE_VERSION,
   pythonVersion: '',
   verifiedAt: 0,
@@ -47,49 +49,96 @@ export const DEFAULT_PYODIDE_ENV_STATE: PyodideEnvState = {
 /** 读取状态（存储缺失/形态异常时回退默认值，永不抛错） */
 export async function getPyodideEnvState(): Promise<PyodideEnvState> {
   try {
-    const container = await chrome.storage.local.get(PYODIDE_ENV_STORAGE_KEY);
-    const raw = container?.[PYODIDE_ENV_STORAGE_KEY];
-    if (!raw || typeof raw !== 'object') return { ...DEFAULT_PYODIDE_ENV_STATE };
-    return {
-      ...DEFAULT_PYODIDE_ENV_STATE,
-      ...(raw as Partial<PyodideEnvState>),
-      packages: Array.isArray(raw.packages) ? raw.packages : [],
-    };
+    return await readState();
   } catch {
     return { ...DEFAULT_PYODIDE_ENV_STATE };
   }
 }
 
+async function readState(): Promise<PyodideEnvState> {
+  const container = await chrome.storage.local.get(PYODIDE_ENV_STORAGE_KEY);
+  return normalizeState(container?.[PYODIDE_ENV_STORAGE_KEY]);
+}
+
+function normalizeState(raw: unknown): PyodideEnvState {
+  const state = raw && typeof raw === 'object' ? raw as Partial<PyodideEnvState> : {};
+  return {
+    ...DEFAULT_PYODIDE_ENV_STATE,
+    ...state,
+    skillScriptsEnabled: state.status === 'ready' && state.skillScriptsEnabled === true,
+    packages: Array.isArray(state.packages) ? state.packages : [],
+  };
+}
+
+async function withEnvLock<T>(operation: () => Promise<T>): Promise<T> {
+  return typeof navigator !== 'undefined' && navigator.locks
+    ? navigator.locks.request(PYODIDE_ENV_STORAGE_KEY, operation)
+    : operation();
+}
+
+async function writeState(state: PyodideEnvState): Promise<PyodideEnvState> {
+  const next = normalizeState({ ...state, updatedAt: Date.now() });
+  await chrome.storage.local.set({ [PYODIDE_ENV_STORAGE_KEY]: next });
+  return next;
+}
+
 /** 全量写入状态 */
 export async function setPyodideEnvState(state: PyodideEnvState): Promise<void> {
-  const next: PyodideEnvState = { ...state, updatedAt: Date.now() };
-  await chrome.storage.local.set({ [PYODIDE_ENV_STORAGE_KEY]: next });
+  await withEnvLock(() => writeState(state));
 }
 
 /** 局部更新（基于最新值合并，避免并发覆盖） */
 export async function updatePyodideEnvState(patch: Partial<PyodideEnvState>): Promise<PyodideEnvState> {
-  const current = await getPyodideEnvState();
-  const next = { ...current, ...patch, updatedAt: Date.now() };
-  await chrome.storage.local.set({ [PYODIDE_ENV_STORAGE_KEY]: next });
-  return next;
+  return withEnvLock(async () => writeState({ ...await readState(), ...patch }));
+}
+
+export function setSkillScriptsEnabled(enabled: boolean): Promise<PyodideEnvState> {
+  return withEnvLock(async () => {
+    const current = await readState();
+    if (enabled && current.status !== 'ready') throw new Error('Python runtime is not ready');
+    return writeState({ ...current, skillScriptsEnabled: enabled });
+  });
+}
+
+/** Publish revocation before deleting files, and serialize the cleanup against setup and toggles. */
+export async function resetPyodideEnvState(cleanup: () => Promise<void>): Promise<void> {
+  await withEnvLock(async () => {
+    await writeState(DEFAULT_PYODIDE_ENV_STATE);
+    await cleanup();
+  });
+}
+
+export async function isSkillScriptSupportEnabled(): Promise<boolean> {
+  return (await getPyodideEnvState()).skillScriptsEnabled;
+}
+
+/** Guard a workspace mutation during the gap between authorization and its IndexedDB commit. */
+export async function withSkillScriptSupport<T>(
+  signal: AbortSignal | undefined,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const revoked = new AbortController();
+  const deny = () => revoked.abort(new Error('Skill script support was disabled'));
+  const unwatch = watchPyodideEnv(state => { if (!state.skillScriptsEnabled) deny(); });
+  const combined = signal ? AbortSignal.any([signal, revoked.signal]) : revoked.signal;
+  try {
+    if (!await isSkillScriptSupportEnabled()) deny();
+    combined.throwIfAborted();
+    return await operation(combined);
+  } finally {
+    unwatch();
+  }
 }
 
 /**
  * 订阅状态变化（chrome.storage.onChanged，天然跨上下文）。
  * @returns 取消订阅函数
  */
-export function watchPyodideEnv(listener: (state: PyodideEnvState) => void): () => void {
-  const handler = (changes: Record<string, { newValue?: unknown }>, areaName: string) => {
+export function watchPyodideEnv(listener: (state: PyodideEnvState, previous: PyodideEnvState) => void): () => void {
+  const handler = (changes: Record<string, { oldValue?: unknown; newValue?: unknown }>, areaName: string) => {
     if (areaName !== 'local' || !(PYODIDE_ENV_STORAGE_KEY in changes)) return;
-    const raw = changes[PYODIDE_ENV_STORAGE_KEY]?.newValue;
-    if (!raw || typeof raw !== 'object') return;
-    listener({
-      ...DEFAULT_PYODIDE_ENV_STATE,
-      ...(raw as Partial<PyodideEnvState>),
-      packages: Array.isArray((raw as { packages?: unknown }).packages)
-        ? ((raw as { packages: PyodideInstalledPackage[] }).packages)
-        : [],
-    });
+    const change = changes[PYODIDE_ENV_STORAGE_KEY];
+    listener(normalizeState(change?.newValue), normalizeState(change?.oldValue));
   };
   chrome.storage.onChanged.addListener(handler);
   return () => chrome.storage.onChanged.removeListener(handler);

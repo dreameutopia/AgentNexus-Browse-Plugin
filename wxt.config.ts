@@ -1,8 +1,8 @@
 import { defineConfig } from 'wxt';
 import { config } from 'dotenv';
-import { resolve } from 'path';
+import { isAbsolute, relative, resolve, sep } from 'path';
 import fg from 'fast-glob';
-import { readFileSync } from 'fs';
+import { readFileSync, realpathSync } from 'fs';
 import { browserBuildTarget } from './scripts/browser-build-target.mjs';
 
 config({ path: resolve(process.cwd(), '.env') });
@@ -128,6 +128,21 @@ export default defineConfig({
     },
   },
   vite: (env) => ({
+    plugins: [{
+      name: 'agentnexus-skill-bytes',
+      enforce: 'pre',
+      load(id) {
+        const query = '?agentnexus-skill-bytes';
+        if (!id.endsWith(query)) return;
+        const file = realpathSync(id.slice(0, -query.length));
+        const path = relative(realpathSync(resolve(process.cwd(), 'skills')), file);
+        if (!path || path === '..' || path.startsWith('..' + sep) || isAbsolute(path)) {
+          return this.error('Bundled skill resource must be inside skills/');
+        }
+        this.addWatchFile(file);
+        return 'export default ' + JSON.stringify(readFileSync(file).toString('base64'));
+      },
+    }],
     worker: { format: 'es' },
     define: {
       __APP_VERSION__: JSON.stringify(APP_VERSION),

@@ -25,6 +25,7 @@ await build({
   stdin: {
     contents: `
 export { default as Hub } from './entrypoints/hub/App.vue';
+export { normalizeVision } from './utils/agents/agent-types';
 `,
     resolveDir: root,
     loader: 'ts',
@@ -120,6 +121,23 @@ assert.ok(q('.hub-sidebar-foot .hub-locale'), '语言切换在左卡底部');
 assert.equal(q('.hub-content-body'), q('.hub-content-body'), '右卡内有内容滚动区');
 assert.equal(q('.api-config-modal'), null, '旧的整壳结构已移除');
 
+// ──── 1.5 智能体概览卡：视觉能力徽章双语化（中文「视觉」/ 英文 Vision）+ 眼睛图标 ────
+
+const visionBadges = () => qa('.hub-badge-vision');
+assert.ok(visionBadges().length > 0, '概览卡展示视觉能力徽章');
+assert.ok(
+  visionBadges().every(badge => badge.textContent.trim() === '视觉'),
+  '中文界面下视觉徽章显示「视觉」（随界面语言切换，不再硬编码英文）',
+);
+assert.ok(
+  visionBadges().every(badge => badge.querySelector('.hub-badge-vision__icon')),
+  '视觉徽章带眼睛图标（语义提示）',
+);
+assert.ok(
+  !qa('.hub-badge-vision').some(badge => badge.textContent.includes('Vision')),
+  '中文界面下不残留英文 Vision 文案',
+);
+
 // ──── 2. 进入智能体编辑页 ────
 
 const newAgentButton = qa('.hub-btn').find(button => button.textContent.trim() === '新建智能体');
@@ -196,11 +214,14 @@ assert.ok(visionPop.textContent.includes('AI默认会看到当前正在操作的
 visionTip.click();
 await flush();
 assert.equal(q('.hub-help-pop'), null, '再点问号收起解释框');
-// 开关关闭时隐藏子行（截图工具 / 重截图 / 坐标提示），开启后出现
-assert.equal(visionField.querySelector('.hub-vision-row'), null, '关闭时不展示视觉子配置');
+// 视觉操作只保留「标题 + 问号 + 主开关」与坐标说明：截图工具下拉与
+// 「每轮工具执行后重新截图」开关是内部实现细节（截图工具恒为 screenshot、
+// 重拍恒开），已从编辑器移除，不做用户开关
+assert.equal(visionField.querySelector('.hub-vision-row'), null, '不展示视觉子配置行（截图工具 / 重截图开关已移除）');
+assert.ok(!visionField.textContent.includes('0–1000'), '关闭时不展示坐标提示');
 visionSwitch.click();
 await flush();
-assert.ok(visionField.querySelector('.hub-vision-row'), '开启后展示截图工具与重截图子配置');
+assert.equal(visionField.querySelector('.hub-vision-row'), null, '开启后仍不提供截图工具 / 重截图控件');
 assert.ok(visionField.textContent.includes('0–1000'), '开启后展示坐标提示');
 visionSwitch.click();
 await flush();
@@ -213,6 +234,53 @@ assert.ok(
 const listsCard = q('.hub-editor-col--lists');
 assert.ok(listsCard, '右卡（清单）存在');
 assert.ok(!listsCard.contains(visionField), '视觉声明不在右卡');
+
+// ──── 字段排布：名称 / 描述 / 分类 / 标签各占一行；视觉操作左端与字段标签对齐 ────
+
+// 不再使用双列栅格：短字段不再并排，四个字段各占整行
+assert.equal(formCard.querySelector('.hub-form-row'), null, '短字段不再并排（名称 / 描述 / 分类 / 标签各占一行）');
+const formFieldLabels = [...formCard.querySelectorAll(':scope > .hub-field')].map(field =>
+  field.querySelector('.hub-field-label')?.textContent.trim() ?? '',
+);
+assert.deepEqual(
+  formFieldLabels,
+  ['头像', '名称*', '描述（做什么 + 何时使用）*', '视觉操作', '分类', '标签', '系统提示词*'],
+  '左卡基础字段自上而下各占一行（头像 / 名称 / 描述 / 视觉操作 / 分类 / 标签 / 系统提示词）',
+);
+
+// 左对齐契约：名称标签与视觉操作标题同属左卡直系子级，且视觉操作行无左内边距
+assert.ok(
+  nameField.parentElement === visionField.parentElement,
+  '名称与视觉操作同属左卡直系子级（左端自然对齐，无栅格包裹）',
+);
+const visionHeadCss = /\.hub-vision-head\s*\{([^}]*)\}/.exec(
+  readFileSync(path.join(root, 'entrypoints/hub/hub.css'), 'utf8'),
+)?.[1] ?? '';
+const visionHeadPadding = /padding:\s*([^;]+);/.exec(visionHeadCss)?.[1]?.trim() ?? '';
+const visionPaddingParts = visionHeadPadding.split(/\s+/);
+const visionLeftPadding =
+  visionPaddingParts.length === 1
+    ? visionPaddingParts[0]
+    : visionPaddingParts.length === 2 || visionPaddingParts.length === 3
+      ? visionPaddingParts[1]
+      : visionPaddingParts[3];
+assert.equal(
+  visionLeftPadding,
+  '0',
+  '视觉操作行左内边距为 0（标题与「名称」等字段标签严格对齐）',
+);
+
+// 数据层归一：视觉重拍恒开（编辑器已移除该开关，存量记录里的 false 在此收口）
+assert.equal(
+  api.normalizeVision({ screenshotTool: 'screenshot', screenshotArgs: {}, reScreenshotAfterTools: false })?.reScreenshotAfterTools,
+  true,
+  '视觉重拍恒为 true：存量 false 记录在归一层收口',
+);
+assert.equal(
+  api.normalizeVision({ screenshotTool: 'screenshot', screenshotArgs: {}, reScreenshotAfterTools: true })?.reScreenshotAfterTools,
+  true,
+  '视觉重拍恒为 true',
+);
 
 // ──── 工具区：默认「按工具」视图（每个工具独立一个元素），可切到「按组」视图 ────
 const groupSearch = q('.hub-section--groups .hub-list-search');
@@ -615,6 +683,6 @@ assert.ok(q('.external-tools'), '外部插件工具分区存在');
 assert.ok(q('.external-tools .hub-section-toggle'), '外部插件工具提供折叠按钮');
 
 assert.deepEqual(errors, [], '组件渲染与交互过程无未捕获异常');
-console.log('[hub] 智能体编辑器：填满态两卡布局（级联回归锁）、头部按钮位、卡片上下布局、查看按钮与详情悬浮窗、三区可折叠、搜索框占满宽度（工具组 + 关联技能）、emoji 悬浮卡片、视觉操作开关（改名/左右布局/问号解释框/子行开合）与工具组永不含 vision_gui —— 通过');
+console.log('[hub] 智能体编辑器：填满态两卡布局（级联回归锁）、头部按钮位、卡片上下布局、查看按钮与详情悬浮窗、三区可折叠、搜索框占满宽度（工具组 + 关联技能）、emoji 悬浮卡片、视觉操作开关（标题+问号+主开关，与字段标签左对齐；截图工具/重截图控件已移除、重拍恒开）、概览卡视觉徽章双语化（中文「视觉」+ 眼睛图标）、基础字段各占一行、工具组永不含 vision_gui —— 通过');
 app.unmount();
 dom.window.close();

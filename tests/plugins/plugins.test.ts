@@ -142,6 +142,15 @@ await test('signed package, canonical identities and reference compilation', () 
   assert.equal(verified.skills[0].allowedTools[0], verified.tools[0].ref);
   assert(verified.agents[0].system.includes(verified.tools[0].ref));
 });
+await test('signed skills retain binary resources and literal script contents', async () => {
+  const asset = Uint8Array.of(0, 255, 10);
+  const plugin = await verifyPackage(await bundle('1.0.0', { extra: {
+    'skills/research/assets/data.bin': asset,
+    'skills/research/scripts/run.py': strToU8('print("ok")\r\n'),
+  } }), '0.0.1');
+  assert.equal(plugin.skills[0].resourceBytes?.['assets/data.bin'], Buffer.from(asset).toString('base64'));
+  assert.equal(plugin.skills[0].files['scripts/run.py'], 'print("ok")\r\n');
+});
 await test('publisher namespace separates identically named plugins', async () => {
   const other = await verifyPackage(
     await bundle('1.0.0', { pair: generateKeyPairSync('ed25519') }),

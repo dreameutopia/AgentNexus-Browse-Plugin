@@ -36,7 +36,17 @@ import { t } from '@/utils/i18n';
 import { escapeHtml } from './html-escape';
 import { sanitizeEchartsOptionJson } from './echarts-option-sanitizer';
 import { parseRichEnvelope, deriveChartOption } from './rich-components';
-import { registerChartImageSource, type ChartImageSource } from './component-image-save';
+import {
+  registerChartImageSource,
+  exportPixelRatio,
+  type ChartImageSource,
+} from './component-image-save';
+import {
+  CHART_VIEW_HEIGHT,
+  chartNaturalWidth,
+  computeChartLayout,
+  parseChartOption,
+} from './chart-layout';
 
 /** 消息协议常量（与 entrypoints/chart-sandbox/main.ts 严格对齐） */
 const PARENT_SOURCE = 'an-chart-parent';
@@ -51,9 +61,6 @@ const RENDER_TIMEOUT_MS = 15_000;
 /** resize 通知去抖间隔 */
 const RESIZE_DEBOUNCE_MS = 150;
 
-/** 图表默认高度（iframe 高度 = 可视图表区高度） */
-const CHART_HEIGHT_PX = 340;
-
 /** IntersectionObserver 可视区预载边距：即将滚入视口的图表提前挂载 */
 const VIEWPORT_ROOT_MARGIN = '200px';
 
@@ -67,6 +74,14 @@ interface ChartEntry {
   block: HTMLElement;
   body: HTMLElement;
   iframe: HTMLIFrameElement | null;
+  /** 显示框容器（可见区域；横向滚动容器） */
+  stage: HTMLElement | null;
+  /** 缩放后的占位容器（承载缩放尺寸，滚动范围按它计算） */
+  fit: HTMLElement | null;
+  /** 图表的自然宽度（数据决定的舒适渲染宽度；见 chart-layout.ts） */
+  naturalWidth: number;
+  /** 当前渲染宽度（iframe 的逻辑宽度；沙箱按此排版） */
+  renderWidth: number;
   /** 沙箱页是否已发过 ready（决定 render 消息可否直发） */
   sandboxReady: boolean;
   /** 沙箱就绪前暂存的净化后 option JSON */
@@ -116,6 +131,14 @@ function ensureResizeObserver(): ResizeObserver {
         if (!id) continue;
         const entry = entries.get(id);
         if (!entry || !entry.sandboxReady || !entry.iframe) continue;
+
+        // 容器宽度变化 → 重算布局（渲染宽度 / 显示缩放）。
+        // 渲染宽度变了才需要通知沙箱重排；缩放变了只需父页更新 transform。
+        const available = entry.body.clientWidth || record.contentRect.width;
+        const previousRenderWidth = entry.renderWidth;
+        applyChartLayout(entry, available);
+        if (entry.renderWidth === previousRenderWidth) continue;
+
         window.clearTimeout(entry.resizeTimer);
         entry.resizeTimer = window.setTimeout(() => {
           entry.iframe?.contentWindow?.postMessage(
@@ -155,6 +178,41 @@ function failChart(id: string, detail: string): void {
 
 // ==================== 挂载与渲染 ====================
 
+/**
+ * 应用显示缩放：iframe 宽 = 渲染宽度（图表按此排版），父页用 transform
+ * 等比缩小到可见框内。
+ *
+ * 布局计算见 chart-layout.ts：窄侧边栏下图表先按自然宽度排版（标签一个
+ * 不落）再缩小显示；缩到看不清就不缩、改为横向滚动——任何情况下都不截断内容。
+ *
+ * DOM 结构（三层，各司其职）：
+ *   .chart-stage  可见框（= 可用宽度）；横向滚动容器
+ *   .chart-fit    缩放后的实际占位（= paintedWidth × paintedHeight）
+ *   iframe        按渲染宽度排版、由 transform 等比缩放
+ */
+function applyChartLayout(entry: ChartEntry, availableWidth: number): void {
+  const layout = computeChartLayout(availableWidth, entry.naturalWidth);
+  const iframe = entry.iframe;
+  const stage = entry.stage;
+  const fit = entry.fit;
+  if (!iframe || !stage || !fit) return;
+
+  iframe.style.width = `${layout.renderWidth}px`;
+  iframe.style.height = `${CHART_VIEW_HEIGHT}px`;
+  iframe.style.transform = layout.scale < 1 ? `scale(${layout.scale})` : '';
+
+  // fit 承载缩放后的占位：滚动范围按它算（transform 不改变布局尺寸）
+  fit.style.width = `${layout.paintedWidth}px`;
+  fit.style.height = `${layout.paintedHeight}px`;
+
+  // stage 是可见框：宽度=可用宽度；需要滚动时才允许横向溢出
+  stage.style.width = `${Math.round(availableWidth)}px`;
+  stage.style.height = `${layout.paintedHeight}px`;
+  stage.style.overflowX = layout.scrollable ? 'auto' : 'hidden';
+
+  entry.renderWidth = layout.renderWidth;
+}
+
 /** 创建沙箱 iframe 并挂到块 body（option 已在排队阶段净化暂存） */
 function mountSandbox(entry: ChartEntry): void {
   if (entry.iframe) return;
@@ -176,15 +234,25 @@ function mountSandbox(entry: ChartEntry): void {
   iframe.src = src;
   iframe.title = t('sidepanel.chat.chartEchartsLabel');
   iframe.setAttribute('aria-label', iframe.title);
-  iframe.style.width = '100%';
-  iframe.style.height = `${CHART_HEIGHT_PX}px`;
+  iframe.style.height = `${CHART_VIEW_HEIGHT}px`;
   iframe.style.border = '0';
   iframe.style.display = 'block';
   iframe.style.background = 'transparent';
 
+  // stage（可见框 / 横向滚动容器）> fit（缩放后占位）> iframe（按渲染宽度排版）
+  const stage = document.createElement('div');
+  stage.className = 'chart-stage';
+  const fit = document.createElement('div');
+  fit.className = 'chart-fit';
+
   entry.iframe = iframe;
+  entry.stage = stage;
+  entry.fit = fit;
   entry.body.innerHTML = '';
-  entry.body.appendChild(iframe);
+  entry.body.appendChild(stage);
+  stage.appendChild(fit);
+  fit.appendChild(iframe);
+  applyChartLayout(entry, entry.body.clientWidth || entry.body.getBoundingClientRect().width);
   ensureResizeObserver().observe(entry.body);
 }
 
@@ -280,41 +348,61 @@ async function chartImageSource(block: HTMLElement): Promise<ChartImageSource | 
     const echarts = await import('echarts');
     const option = JSON.parse(entry.pendingOptionJson) as Record<string, unknown>;
     const body = block.querySelector<HTMLElement>('.chart-body');
-    const width = Math.max(
+    const available = Math.max(
       1,
       Math.round(Math.max(body?.getBoundingClientRect().width || 0, body?.scrollWidth || 0) || 640),
     );
-    const height = CHART_HEIGHT_PX;
+    // 导出按**与屏幕相同的逻辑宽度**排版（renderWidth），只是像素密度更高——
+    // 版式与所见一致，每个像素却清晰。屏幕是「按 renderWidth 排版后缩小显示」，
+    // 导出是「按 renderWidth 排版后 1:1 呈现」，因此不会丢任何标签。
+    const layout = computeChartLayout(available, entry.naturalWidth);
+    const width = layout.renderWidth;
+    const height = CHART_VIEW_HEIGHT;
+    const ratio = exportPixelRatio(width, height);
 
+    // 关键：**不要**给画布预先设 width/height。传了 devicePixelRatio 后，
+    // ECharts 会按 width×ratio 自己创建内部画布并接管尺寸——预先设过外层
+    // 尺寸会让它读到不一致的值，产物是一张空白图（曾表现为「保存出白图」）。
+    // 正确做法是把尺寸只交给 init 的 width/height/devicePixelRatio 三个参数。
     const canvas = document.createElement('canvas');
-    const ratio = Math.min(window.devicePixelRatio || 1, 3);
-    canvas.width = Math.round(width * ratio);
-    canvas.height = Math.round(height * ratio);
-    canvas.style.width = `${width}px`;
-    canvas.style.height = `${height}px`;
-
     const chart = echarts.init(canvas, undefined, {
       width,
       height,
       devicePixelRatio: ratio,
       renderer: 'canvas',
     });
+    // 关键顺序：**必须在 dispose 之前读取画布**。chart.dispose() 会清空
+    // canvas 的位图内容，之后再 toDataURL() 只能得到一张纯白图
+    //（曾表现为「图表保存出白图」）。
+    let dataUrl: string;
     try {
       // 与沙箱页同口径：setOption 即完成同步绘制（沙箱不额外调用 render）
       chart.setOption({ ...option, animation: false } as Parameters<typeof chart.setOption>[0], {
         notMerge: true,
       });
+      dataUrl = canvas.toDataURL('image/png');
     } finally {
       chart.dispose();
     }
-    return { kind: 'dataUrl', dataUrl: canvas.toDataURL('image/png') };
+    return { kind: 'dataUrl', dataUrl };
   } catch (error) {
     console.warn('[ChartRenderer] 离屏重绘失败，保存回落源码文本:', error);
     return null;
   }
 }
 
+/**
+ * 导出像素密度：不低于 2x（1x 屏上导出的图只有屏幕大小，看着糊），
+ * 同时按画布面积设上限，避免超大图表把内存/显存吃满。
+ */
+
 registerChartImageSource(chartImageSource);
+
+/**
+ * 图表产物解析器（供测试与诊断直接调用；生产路径经 registerChartImageSource 注册）。
+ * 导出它是为了让回归测试能断言「离屏重绘产物非空」——白图问题曾在这里静默发生。
+ */
+export { chartImageSource };
 
 // ==================== 对外入口 ====================
 
@@ -368,6 +456,11 @@ export function processCharts(root: ParentNode): void {
       block,
       body,
       iframe: null,
+      stage: null,
+      fit: null,
+      // 自然宽度由数据决定（与容器宽度无关）——窄侧边栏时按它排版再等比缩小
+      naturalWidth: chartNaturalWidth(parseChartOption(sanitized.json)),
+      renderWidth: 0,
       sandboxReady: false,
       pendingOptionJson: sanitized.json,
       renderTimer: undefined,

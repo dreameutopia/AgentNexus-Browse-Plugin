@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { GenericWaitTool } from '../../tools/common/generic-wait';
 import { normalizeWaitSeconds, waitExecutionTimeout } from '../../tools/common/wait-contract';
-import { NavigateTool } from '../../tools/browser/navigation';
-import { CreateTabTool } from '../../tools/browser/tab-management';
+import { BrowserNavigationTool } from '../../tools/browser/navigation';
+import { BrowserTabsTool } from '../../tools/browser/tab-management';
 import { ConversationEngine } from '../../entrypoints/sidepanel/core/conversation/conversation-engine';
 import { toolExecutionEngine } from '../../entrypoints/sidepanel/core/tools/tool-execution-engine';
 import { imageStore } from '../../entrypoints/sidepanel/core/images/image-store';
@@ -167,29 +167,74 @@ try {
   assert.deepEqual(order,['delay']);
 }finally{imageStore.putFromDataUrl=imageWrite;(globalThis as any).window=oldWindow;}
 
+// —— 统一导航 browser_navigation 与统一标签页 browser_tabs（chrome 桩）——
 // Navigation API mocks fail loudly if any path attempts to create a window.
-const originalChrome=(globalThis as any).chrome;let windowCreates=0;const tabCreates:any[]=[],updated:any[]=[];
+const originalChrome=(globalThis as any).chrome;let windowCreates=0;const tabCreates:any[]=[],updated:any[]=[],removed:number[]=[],historyCalls:string[]=[];let reloadCalls=0;
 let tabs:any[]=[{id:1,windowId:7,url:'https://old.example/',status:'complete'}],windowAvailable=true;
+// 一次性消失：get 首次命中的 id 在本次调用返回后立即从 tabs 移除（模拟
+// 「预检拿到标签、轮询期间被用户关闭」的竞态）；remove 拒绝：模拟底层关闭失败
+const vanishOnce=new Set<number>();const failRemoveIds=new Set<number>();
 (globalThis as any).chrome={runtime:{getManifest:()=>({})},windows:{
   create:async()=>{windowCreates++;throw new Error('Forbidden window creation');},
-  getLastFocused:async()=>windowAvailable?{id:7,type:'normal'}:{},update:async()=>({id:7})},tabs:{
-  query:async()=>tabs,get:async(id:number)=>tabs.find(tab=>tab.id===id),reload:async()=>{},
+  getLastFocused:async()=>windowAvailable?{id:7,type:'normal'}:{},
+  update:async()=>({id:7}),
+  getAll:async()=>[{id:7,tabs:tabs.map(t=>({id:t.id,url:t.url||'',title:t.title||'',active:!!t.active}))}],
+},tabs:{
+  // 仅 url 过滤在桩内生效（close 的 URL 匹配用例）；其余 query 原样返回全量，
+  // 保持与旧用例一致的「tabs[0] 即活动标签」语义
+  query:async(q?:any)=>{
+    if(q&&typeof q==='object'&&typeof q.url==='string'){
+      const pat=q.url;const base=pat.endsWith('/*')?pat.slice(0,-2):pat;
+      return tabs.filter(t=>typeof t.url==='string'&&(t.url===base||t.url.startsWith(base+'/')));
+    }
+    return tabs;
+  },
+  get:async(id:number)=>{
+    const tab=tabs.find(tab=>tab.id===id);
+    if(tab&&vanishOnce.has(id)){
+      vanishOnce.delete(id);
+      queueMicrotask(()=>{const i=tabs.findIndex(t=>t.id===id);if(i>=0)tabs.splice(i,1);});
+    }
+    return tab;
+  },
+  reload:async()=>{reloadCalls++;},
+  goBack:async(id:number)=>{historyCalls.push(`back:${id}`);},
+  goForward:async(id:number)=>{historyCalls.push(`forward:${id}`);},
+  remove:async(ids:any)=>{for(const id of (Array.isArray(ids)?ids:[ids])){
+    if(failRemoveIds.has(id))throw new Error(`Mock remove rejected for tab ${id}`);
+    removed.push(id);const i=tabs.findIndex(t=>t.id===id);if(i>=0)tabs.splice(i,1);
+  }},
   update:async(id:number,args:any)=>{updated.push({id,args});const tab=tabs.find(tab=>tab.id===id);Object.assign(tab,args);return tab;},
-  create:async(args:any)=>{assert.equal(args.windowId,7,'Always specify existing windowId');tabCreates.push(args);const tab={id:2+tabCreates.length,windowId:7,url:args.url,status:'complete'};tabs.push(tab);return tab;},
+  create:async(args:any)=>{assert.equal(args.windowId,7,'Always specify existing windowId');tabCreates.push(args);const tab={id:2+tabCreates.length,windowId:7,url:args.url,status:'complete',active:args.active!==false};tabs.push(tab);return tab;},
 }};
 try {
-  const nav=new NavigateTool();assert.equal('newWindow' in nav.openaiSchema.function.parameters.properties,false);
-  assert.equal((await nav.execute({url:'https://new.example/',waitForLoad:false})).success,true);
+  const nav=new BrowserNavigationTool();
+  assert.equal('newWindow' in nav.openaiSchema.function.parameters.properties,false);
+  // ── action 参数矩阵：整体形态 / 未知参数 / 张冠李戴 / 类型错误全报错 ──
+  for (const bad of [
+    'not-an-object', null, [],
+    {}, {action:'browse'}, {action:'open',newWindow:true}, {url:'https://no-action.example/'},
+    {action:'wait',url:'https://x.example/'}, {action:'refresh',newTab:true},
+    {action:'open',url:'https://x.example/',tabId:1}, {action:'back',checkInterval:500},
+    {action:'open'}, {action:'open',url:'   '}, {action:'open',url:'https://x.example/',timeout:0},
+    // timeout 上限：有界执行（先于引擎工具超时收敛），超限必须拒绝并指引 generic_wait
+    {action:'open',url:'https://x.example/',timeout:100001}, {action:'wait',timeout:600000},
+    {action:'wait',tabId:-1}, {action:'wait',tabId:1,checkInterval:10},
+  ]) assert.equal((await nav.execute(bad as any)).success,false,`参数矩阵拒绝 ${JSON.stringify(bad)}`);
+  assert.ok(((await nav.execute({action:'wait',timeout:600000})).error??'').includes('generic_wait'),
+    '超时上限错误必须指引改用 generic_wait 而不是只说「不合法」');
+  // ── open 主路径（原 browser_navigate 语义等价迁移） ──
+  assert.equal((await nav.execute({action:'open',url:'https://new.example/',waitForLoad:false})).success,true);
   assert.equal(tabCreates.length,1);assert.equal(updated.length,0,'Default navigation preserves the original page');
-  assert.equal((await nav.execute({url:'https://current.example/',newTab:false,waitForLoad:false})).success,true);
+  assert.equal((await nav.execute({action:'open',url:'https://current.example/',newTab:false,waitForLoad:false})).success,true);
   assert.equal(tabCreates.length,1);assert.equal(updated[0].args.url,'https://current.example/');
   tabs.push({id:77,windowId:7,url:'https://duplicate.example/',status:'complete'});
   const priorUpdates = updated.length;
-  assert.equal((await nav.execute({url:'https://duplicate.example/',newTab:false,waitForLoad:false})).success,true);
+  assert.equal((await nav.execute({action:'open',url:'https://duplicate.example/',newTab:false,waitForLoad:false})).success,true);
   assert.equal(updated[priorUpdates].id,1,'Explicit current-tab navigation must not activate an existing matching tab');
   assert.equal(updated[priorUpdates].args.url,'https://duplicate.example/');
   tabs.push({id:78,windowId:7,url:'https://reuse.example/',status:'complete'});
-  const reused = await nav.execute({url:'https://reuse.example/',newTab:true,waitForLoad:false});
+  const reused = await nav.execute({action:'open',url:'https://reuse.example/',newTab:true,waitForLoad:false});
   assert.equal(reused.success,true);assert.equal(reused.data.navigationAction,'reused');assert.equal(reused.data.tabId,78);
   assert.equal(tabCreates.length,1,'Default new-tab mode still reuses a matching page');
   for (const [source,target] of [
@@ -200,29 +245,137 @@ try {
   ]) {
     tabs[0].url=source;
     const previous: number=updated.length;
-    const routed=await nav.execute({url:target,newTab:false,waitForLoad:false});
+    const routed=await nav.execute({action:'open',url:target,newTab:false,waitForLoad:false});
     assert.equal(routed.success,true);assert.equal(routed.data.navigationAction,'navigated');
     assert.equal(updated[previous].args.url,target,'Do not erase hash routes, case-sensitive state or trailing slash semantics');
   }
   const clockNow = Date.now; let navigationClock = 1000;
   Date.now=()=>navigationClock;
   try {
-    const timed = new NavigateTool() as any; let waitedFor=0;
+    const timed = new BrowserNavigationTool() as any; let waitedFor=0;
     timed.waitForUrlChange=async()=>{navigationClock+=800;return {changed:true,currentUrl:'https://budget.example/'};};
-    timed.waitForPageLoad=async(_id:number,ms:number)=>{waitedFor=ms;throw Error('load timeout');};
-    const outcome=await timed.execute({url:'https://budget.example/',newTab:false,waitForLoad:true,timeout:1000});
+    // 桩必须与 waitForPageLoad 的真实错误契约一致（超时中文标记 / closed 英文标记），
+    // 否则会被分类器当未知错误如实上抛——这正是分类器防「静默降级」的语义
+    timed.waitForPageLoad=async(_id:number,ms:number)=>{waitedFor=ms;throw Error(`等待页面加载超时 (${ms}ms)`);};
+    const outcome=await timed.execute({action:'open',url:'https://budget.example/',newTab:false,waitForLoad:true,timeout:1000});
     assert.equal(waitedFor,200,'URL wait consumes the same navigation timeout budget');
     assert.equal(outcome.data.loadStatus,'timeout');
     assert.ok(!outcome.data.message.includes('load complete'),'Loading timeout cannot claim page readiness');
+    assert.ok(outcome.data.warning,'加载未确认必须携带补等指引（action=wait）');
   } finally {Date.now=clockNow;}
+  // ── refresh action（原 navigate 的 refresh 分支；超时不再谎报就绪） ──
+  assert.equal((await nav.execute({action:'refresh',waitForLoad:false})).success,true);
+  assert.equal(reloadCalls,1,'refresh 必须触发 tabs.reload');
+  // ── back / forward action（原 browser_go_back_or_forward 并入；默认等就绪） ──
+  const backFast=await nav.execute({action:'back',waitForLoad:false});
+  assert.equal(backFast.success,true);assert.equal(backFast.data.navigationAction,'back');assert.equal(backFast.data.loadStatus,'not_waited');
+  assert.deepEqual(historyCalls,['back:1'],'back 在活动标签上执行');
+  const forwardWaited=await nav.execute({action:'forward'});
+  assert.equal(forwardWaited.success,true);assert.equal(forwardWaited.data.navigationAction,'forward');
+  assert.equal(forwardWaited.data.loadStatus,'complete','forward 默认等待就绪（双检连续 2 次）后返回');
+  assert.deepEqual(historyCalls,['back:1','forward:1']);
+  // ── wait action（原 wait_page_load 并入；参数真正生效） ──
+  tabs[0].status='complete';
+  const waited=await nav.execute({action:'wait',checkInterval:50});
+  assert.equal(waited.success,true);assert.equal(waited.data.status,'complete');assert.equal(waited.data.loading,false);
+  assert.equal(typeof waited.data.elapsedMs,'number');
+  const waitedByTab=await nav.execute({action:'wait',tabId:1,checkInterval:50,timeout:500});
+  assert.equal(waitedByTab.success,true);assert.equal(waitedByTab.data.tabId,1);
+  tabs[0].status='loading';
+  const waitTimeout=await nav.execute({action:'wait',checkInterval:50,timeout:250});
+  assert.equal(waitTimeout.success,false,'加载未就绪时 wait 必须报失败而不是谎称完成');
+  assert.ok(/未完成加载/.test(waitTimeout.error??''),'失败文案带「未完成加载」与诊断');
+  assert.equal((await nav.execute({action:'wait',tabId:9999,checkInterval:50})).success,false,'不存在的 tabId 报可读错误');
+  // 竞态：预检拿到标签、轮询期间标签页被关闭 → wait 以可读「被关闭」错误收口
+  tabs.push({id:40,windowId:7,url:'https://vanish.example/',status:'complete'});
+  vanishOnce.add(40);
+  const waitVanished=await nav.execute({action:'wait',tabId:40,checkInterval:50,timeout:500});
+  assert.equal(waitVanished.success,false,'等待期间消失的标签页 → 失败而非空转到超时');
+  assert.ok(/被关闭/.test(waitVanished.error??''),'关闭态错误文案可读且指明原因');
+  assert.ok(!tabs.some(t=>t.id===40),'一次性消失语义已生效（标签确实没了）');
+  tabs[0].status='complete';
+  // refresh 默认等待就绪：status+readyState 双检连续两次后才报 complete
+  const refreshed=await nav.execute({action:'refresh'});
+  assert.equal(refreshed.success,true);
+  assert.equal(refreshed.data.navigationAction,'refreshed');
+  assert.equal(refreshed.data.loadStatus,'complete','refresh 默认 waitForLoad=true 等到就绪才返回');
+  assert.equal(reloadCalls,2,'refresh 每次都触发 tabs.reload');
+  // ── 无可用窗口：open/create 都必须失败，且绝不创建窗口 ──
   assert.equal((await nav.execute({url:'https://bad.example/',newWindow:true} as any)).success,false);
   assert.equal((await nav.execute({url:'https://bad.example/',newTab:'true'} as any)).success,false);
   tabs=[];windowAvailable=false;const before=tabCreates.length;
-  assert.equal((await nav.execute({url:'https://no-window.example/',waitForLoad:false})).success,false);
-  assert.equal((await new CreateTabTool().execute({url:'https://no-window.example/'})).success,false);
+  assert.equal((await nav.execute({action:'open',url:'https://no-window.example/',waitForLoad:false})).success,false);
+  assert.equal((await new BrowserTabsTool().execute({action:'create',url:'https://no-window.example/'})).success,false);
   assert.equal(tabCreates.length,before);assert.equal(windowCreates,0);
   windowAvailable=true;
-  assert.equal((await nav.execute({url:'https://fallback-tab.example/',newTab:false,waitForLoad:false})).success,true);
+  assert.equal((await nav.execute({action:'open',url:'https://fallback-tab.example/',newTab:false,waitForLoad:false})).success,true);
   assert.equal(tabCreates.length,before+1);assert.equal(windowCreates,0,'No-window fallback must never create a window');
+
+  // ── browser_tabs 五 action（原六个标签页/窗口工具并入） ──
+  tabs.push({id:30,windowId:7,url:'https://tab-a.example/',title:'A',status:'complete'});
+  tabs.push({id:31,windowId:7,url:'https://tab-b.example/',title:'B',status:'complete'});
+  const tabsTool=new BrowserTabsTool();
+  // 参数矩阵：未知参数 / 张冠李戴 / 必填缺失 / close 三寻址互斥
+  for (const bad of [
+    'nope', null, [], {}, {action:'list',tabId:1}, {action:'windows',currentWindow:true},
+    {action:'switch'}, {action:'switch',tabId:1.5}, {action:'switch',tabId:-2},
+    {action:'close',tabId:30,url:'https://tab-a.example/'}, {action:'close',tabId:30,tabIds:[31]},
+    {action:'close',tabIds:[]}, {action:'close',tabIds:['x']}, {action:'create',active:'yes'},
+    {action:'list',url:'https://x.example/'}, {action:'create',tabId:1},
+  ]) assert.equal((await tabsTool.execute(bad as any)).success,false,`tabs 参数矩阵拒绝 ${JSON.stringify(bad)}`);
+  // list / windows：纯枚举
+  const listed=await tabsTool.execute({action:'list'});
+  assert.equal(listed.success,true);assert.equal(listed.data.count,tabs.length);
+  const currentOnly=await tabsTool.execute({action:'list',currentWindow:true});
+  assert.equal(currentOnly.success,true);
+  const windows=await tabsTool.execute({action:'windows'});
+  assert.equal(windows.success,true);assert.equal(windows.data.windowCount,1);assert.equal(windows.data.tabCount,tabs.length);
+  // switch：激活 + 聚焦
+  const switched=await tabsTool.execute({action:'switch',tabId:30});
+  assert.equal(switched.success,true);assert.equal(switched.data.tabId,30);assert.equal(switched.data.title,'A');
+  assert.ok(updated.some(u=>u.id===30&&u.args.active===true),'switch 激活目标标签');
+  const switchMissing=await tabsTool.execute({action:'switch',tabId:9999});
+  assert.equal(switchMissing.success,false,'不存在的标签页 switch 报错');
+  assert.ok((switchMissing.error??'').includes('不存在'),'switch 与 close/wait 同族的可读文案（不抛 chrome 裸错）');
+  // create：绑定现有窗口 + active=false 时上报页面目标
+  const targetCalls:number[]=[];
+  const created=await tabsTool.execute({action:'create',url:'https://tab-c.example/',active:false},{onTabTarget:(id:number)=>targetCalls.push(id)});
+  assert.equal(created.success,true);assert.equal(created.data.windowId,7);assert.equal(windowCreates,0);
+  assert.equal(targetCalls.length,1,'active=false 的后台创建回传 onTabTarget');
+  const createdActive=await tabsTool.execute({action:'create',url:'https://tab-d.example/'});
+  assert.equal(createdActive.success,true);
+  // close：互斥已验证；缺失 id 报错；URL 匹配批量关闭
+  assert.equal((await tabsTool.execute({action:'close',tabId:9999})).success,false,'关闭不存在的标签页报可读错误');
+  const closedByUrl=await tabsTool.execute({action:'close',url:'https://tab-a.example'});
+  assert.equal(closedByUrl.success,true);assert.equal(closedByUrl.data.closedCount,1,'URL 不含结尾斜杠按前缀组匹配');
+  assert.ok(removed.includes(30));
+  const closedNone=await tabsTool.execute({action:'close',url:'https://never-opened.example'});
+  assert.equal(closedNone.success,true);assert.equal(closedNone.data.closedCount,0);
+  const closedSingle=await tabsTool.execute({action:'close',tabId:31});
+  assert.equal(closedSingle.success,true);assert.equal(closedSingle.data.closedCount,1);
+  assert.equal((await tabsTool.execute({action:'close'})).success,true,'缺省关闭活动标签（close_tabs 兜底语义保留）');
+  // ── close 批量语义：去重 / 无效 id 汇报 / 单点失败不拖垮整批 ──
+  tabs.push({id:32,windowId:7,url:'https://tab-d.example/',status:'complete'});
+  tabs.push({id:33,windowId:7,url:'https://tab-e.example/',status:'complete'});
+  tabs.push({id:666,windowId:7,url:'https://tab-fail.example/',status:'complete'});
+  failRemoveIds.add(666);
+  const batchMixed=await tabsTool.execute({action:'close',tabIds:[32,32,9999]});
+  assert.equal(batchMixed.success,true,'混合批量：可关的关、不存在的汇报');
+  assert.equal(batchMixed.data.closedCount,1,'重复 id 已去重，只关一次');
+  assert.deepEqual(batchMixed.data.invalidTabIds,[9999]);
+  assert.equal(removed.filter(id=>id===32).length,1,'底层只收到一次 remove(32)');
+  const batchAllMissing=await tabsTool.execute({action:'close',tabIds:[9997,9998]});
+  assert.equal(batchAllMissing.success,true);
+  assert.equal(batchAllMissing.data.closedCount,0);
+  assert.deepEqual(batchAllMissing.data.invalidTabIds,[9997,9998],'全部不存在 → success + invalidTabIds（原 close_tabs 口径）');
+  const batchAllFail=await tabsTool.execute({action:'close',tabIds:[666]});
+  assert.equal(batchAllFail.success,false,'存在但全部关闭失败 → 报失败，不谎报成功');
+  assert.ok((batchAllFail.error??'').includes('666'),'失败文案含具体 tabId 与底层原因');
+  assert.equal((await tabsTool.execute({action:'close',tabId:666})).success,false,'单个关闭失败返回可分析错误');
+  const batchPartial=await tabsTool.execute({action:'close',tabIds:[666,33]});
+  assert.equal(batchPartial.success,true,'单点失败不拖垮整批');
+  assert.equal(batchPartial.data.closedCount,1);
+  assert.deepEqual(batchPartial.data.failedTabIds,[666],'失败项单独汇报');
+  assert.ok(tabs.some(t=>t.id===666),'关闭被拒的标签页仍在（如实反映底层状态）');
 }finally{(globalThis as any).chrome=originalChrome;}
-console.log('[wait-navigation] Capped/cancellable 10-minute waits, engine deadlines, mandatory 3s capture gap and tab-only navigation passed.');
+console.log('[wait-navigation] Capped/cancellable waits, engine deadlines, mandatory 3s gap, unified navigation/tabs actions and tab-only boundary passed.');

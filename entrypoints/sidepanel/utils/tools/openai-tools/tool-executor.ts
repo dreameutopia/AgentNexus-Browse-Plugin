@@ -76,9 +76,9 @@ export async function executeTool(
   }
 
   // 2. 转发到 background 执行
-  //    background 端的 tools-manager-listener 已注册所有 browser_* 消息类型，
-  //    会自动路由到 toolRegistry 中对应的工具定义执行。
-  //    不再需要为每个工具维护单独的 case 分支。
+  //    background 端的 tools-manager-listener 按「白名单 ∪ 注册表」路由：
+  //    凡已注册工具名（browser_navigation、browser_tabs 等）都由注册表兜底
+  //    自动命中，不再需要为每个工具维护单独的 case 分支或白名单。
   try {
     const cancellableGui = toolName === 'browser_interact' || toolName === 'screenshot' || toolName.startsWith('vision_');
     const requestId = cancellableGui && context?.signal ? crypto.randomUUID() : undefined;

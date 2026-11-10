@@ -20,8 +20,8 @@ import { verifyPackage } from '@/utils/plugins/package';
 export const PUBLIC_HOST_TOOLS = new Set([
   'browser_get_page_text',
   'browser_get_page_info',
-  'browser_get_all_tabs',
-  'browser_navigate',
+  'browser_tabs',
+  'browser_navigation',
   'browser_search_bookmarks',
   'browser_search_history',
 ]);

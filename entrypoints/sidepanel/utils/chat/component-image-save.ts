@@ -96,13 +96,36 @@ export function registerDiagramImageSource(
  * 宽表 / 宽图在消息容器里是横向滚动的：外壳若按容器的可视宽度定尺寸，
  * 导出图会把右侧内容裁掉——表现为「只有白底、没有内容」。因此宽高一律
  * 取滚动尺寸（scrollWidth / scrollHeight）与矩形尺寸的较大者。
+ *
+ * 高度还要再考虑一层：`overflow: hidden` 的祖先会把 `scrollHeight` 也压到
+ * 可视高度（表格外层容器就是如此），此时必须递归累加被裁掉的内容高度，
+ * 否则导出图仍会在底部被截断。
  */
 function contentSize(element: HTMLElement): { width: number; height: number } {
   const rect = element.getBoundingClientRect();
   return {
     width: Math.max(1, Math.ceil(Math.max(rect.width, element.scrollWidth))),
-    height: Math.max(1, Math.ceil(Math.max(rect.height, element.scrollHeight))),
+    height: Math.max(
+      1,
+      Math.ceil(Math.max(rect.height, element.scrollHeight, clippedHeight(element))),
+    ),
   };
+}
+
+/**
+ * 递归累加被裁掉的内容高度：对每个「有溢出内容但高度被压住」的后代
+ * （scrollHeight > clientHeight），把差值加回总高。只在确有溢出时才累加，
+ * 避免把正常布局撑高。
+ */
+function clippedHeight(element: HTMLElement): number {
+  let extra = 0;
+  for (const child of Array.from(element.children) as HTMLElement[]) {
+    if (child.scrollHeight > child.clientHeight + 1) {
+      extra += child.scrollHeight - child.clientHeight;
+    }
+    extra += clippedHeight(child);
+  }
+  return extra;
 }
 
 /**
@@ -122,24 +145,31 @@ function contentSize(element: HTMLElement): { width: number; height: number } {
  */
 async function buildSvgShell(
   clone: HTMLElement,
-  width: number,
-  height: number,
+  contentWidth: number,
+  contentHeight: number,
   css: string,
-): Promise<string> {
+): Promise<{ svg: string; width: number; height: number }> {
   const html = new XMLSerializer().serializeToString(clone);
+  // 外壳尺寸 = 内容尺寸 + 内边距：外壳用滚动尺寸（内容真实尺寸）定边界，
+  // 内层按内容尺寸铺开——两者差值正好是 SERIALIZE_PAD，否则内容会被裁掉右/下边
+  const outerWidth = contentWidth + SERIALIZE_PAD * 2;
+  const outerHeight = contentHeight + SERIALIZE_PAD * 2;
   // xmlns 必须显式声明：foreignObject 内的 HTML 按 XML 解析
-  return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">` +
-    `<foreignObject width="100%" height="100%">` +
-    `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px;background:#ffffff;box-sizing:border-box;padding:${SERIALIZE_PAD}px;">` +
-    `<style>${css}</style>` +
-    html +
-    `</div></foreignObject></svg>`
-  );
+  return {
+    svg:
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${outerWidth}" height="${outerHeight}" viewBox="0 0 ${outerWidth} ${outerHeight}">` +
+      `<foreignObject width="100%" height="100%">` +
+      `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${outerWidth}px;height:${outerHeight}px;background:#ffffff;box-sizing:border-box;padding:${SERIALIZE_PAD}px;">` +
+      `<style>${css}</style>` +
+      html +
+      `</div></foreignObject></svg>`,
+    width: outerWidth,
+    height: outerHeight,
+  };
 }
 
 /** 收集文档样式表文本（跨源样式表规则不可读则跳过） */
-function collectStyles(): Promise<string> {
+async function collectStyles(): Promise<string> {
   const parts: string[] = [];
   const sheets = Array.from(document.styleSheets);
   for (const sheet of sheets) {
@@ -150,7 +180,42 @@ function collectStyles(): Promise<string> {
       // 跨源样式表：读取被浏览器拒绝，跳过（不阻断导出）
     }
   }
-  return inlineFonts(parts.join('\n'));
+  return sanitizeStyles(parts.join('\n'));
+}
+
+/**
+ * 样式净化：剔除一切会**污染画布**的外部引用。
+ *
+ * 这是「保存出白图」的根因之一：SVG 经 `<img>` 绘进 canvas 时，只要图里
+ * 有任何跨源资源（远程字体、远程图片、@import），canvas 就被标记为
+ * tainted，`toBlob()` 直接抛 SecurityError——整个保存静默失败，用户看到
+ * 的就是「什么都没有」。
+ *
+ * 处理口径：
+ *   - `url(...)` 指向 http(s):// 或 chrome-extension:// 的资源：整条
+ *     声明删除（字体也一并去掉——组件正文用系统字体族，不依赖远程字体）；
+ *   - `@import`：整条删除（会拉入外部样式表，同样污染画布）；
+ *   - 本地相对路径（如 `fonts/KaTeX_*.woff2`）保持原样：它们解析到扩展
+ *     自身 origin，不会跨源污染。
+ */
+function sanitizeStyles(css: string): string {
+  // 1) @import 整条删除（跨源样式表拉入）
+  let result = css.replace(/@import[^;]*;/g, '');
+
+  // 2) 含远程 url(...) 的整条声明删除（含 @font-face 的 src）
+  const remoteUrlPattern = /url\(\s*(['"]?)(?:(?:https?:)?\/\/|chrome-extension:)[^)]*\1\s*\)/gi;
+  result = result.replace(/[^{};]*\{[^{}]*\}/g, block => {
+    if (!remoteUrlPattern.test(block)) return block;
+    remoteUrlPattern.lastIndex = 0;
+    // 远程资源出现在 @font-face 里 → 删除整个 at-rule；否则只删该声明
+    if (/^\s*@/.test(block)) return '';
+    return block.replace(/[^{};]*url\(\s*(['"]?)(?:(?:https?:)?\/\/|chrome-extension:)[^)]*\1\s*\)[^{};]*;?/gi, '');
+  });
+  remoteUrlPattern.lastIndex = 0;
+
+  // 3) 清掉被删空的 @font-face / @media / @supports 块
+  result = result.replace(/@(?:font-face|media|supports)[^{]*\{\s*\}/g, '');
+  return result;
 }
 
 /**
@@ -178,67 +243,67 @@ async function withInjectedStyles<T>(work: (css: string) => Promise<T>): Promise
   }
 }
 
-/** 把 @font-face 的 src url(...) 换成 data URL（字体文件内联，导出图不依赖网络） */
-async function inlineFonts(css: string): Promise<string> {
-  const urlPattern = /url\(\s*(['"]?)([^)'"]+)\1\s*\)/g;
-  const matches = [...css.matchAll(urlPattern)];
-  if (matches.length === 0) return css;
-
-  const cache = new Map<string, string>();
-  let result = css;
-  for (const match of matches) {
-    const rawUrl = match[2];
-    if (!rawUrl || rawUrl.startsWith('data:')) continue;
-    // 只处理字体类资源；其它 url()（如背景图）保持原样
-    if (!/\.(woff2?|ttf|otf|eot)(\?|#|$)/i.test(rawUrl)) continue;
-    let dataUrl = cache.get(rawUrl);
-    if (dataUrl === undefined) {
-      try {
-        const response = await fetch(rawUrl);
-        if (!response.ok) continue;
-        const blob = await response.blob();
-        dataUrl = await blobToDataUrl(blob);
-      } catch {
-        continue;
-      }
-      cache.set(rawUrl, dataUrl);
-    }
-    result = result.split(match[0]).join(`url("${dataUrl}")`);
-  }
-  return result;
-}
-
-function blobToDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error('读取字体资源失败'));
-    reader.readAsDataURL(blob);
-  });
-}
 
 // ==================== 栅格化与下载 ====================
 
-/** SVG 文本 → PNG Blob（矢量源按像素比放大，天然高清） */
-async function svgToPngBlob(svgText: string, width: number, height: number): Promise<Blob> {
-  const svgBlob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
-  const url = URL.createObjectURL(svgBlob);
-  try {
-    const image = await loadImage(url);
-    const ratio = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(width * ratio));
-    canvas.height = Math.max(1, Math.round(height * ratio));
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('无法创建画布上下文');
-    context.scale(ratio, ratio);
-    context.fillStyle = '#ffffff';
-    context.fillRect(0, 0, width, height);
-    context.drawImage(image, 0, 0, width, height);
-    return await canvasToBlob(canvas);
-  } finally {
-    URL.revokeObjectURL(url);
+/**
+ * SVG 文本 → PNG Blob（矢量源按像素比放大，天然高清）。
+ *
+ * SVG 必须走 **data URL**，不能走 blob URL：在扩展页里 `URL.createObjectURL`
+ * 产出的 blob URL 属于不透明 origin，任何经它加载的图像都会把画布标记为
+ * tainted，`toDataURL()` / `toBlob()` 直接抛 SecurityError——整个保存
+ * 静默失败，用户看到的就是「一张纯白图」。
+ *
+ * data URL 没有跨源问题（它是内联数据），配合 sanitizeStyles 剔除一切远程
+ * 资源后，画布保持干净，导出正常。
+ */
+/**
+ * 导出像素密度：不低于 2x。
+ *
+ * 「保存为图片」是**交付**动作，不是截图——1x 屏上导出的图只有屏幕那么大，
+ * 放大后必然发糊。统一按至少 2x 栅格化（小图 3x），观感与清晰度都更好。
+ * 同时按画布面积与单边设上限，避免超大组件把内存吃满。
+ */
+export function exportPixelRatio(width: number, height: number): number {
+  const maxArea = 40_000_000; // 像素点上限（约 160MB RGBA）
+  const maxSide = 8000; // 单边上限（浏览器画布上限约 16384，留足余量）
+  let ratio = Math.max(2, Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO));
+  while (
+    ratio > 1 &&
+    (width * ratio > maxSide ||
+      height * ratio > maxSide ||
+      width * height * ratio * ratio > maxArea)
+  ) {
+    ratio -= 0.5;
   }
+  return Math.max(1, ratio);
+}
+
+/**
+ * SVG 文本 → PNG Blob（矢量源按像素比放大，天然高清）。
+ *
+ * SVG 必须走 **data URL**，不能走 blob URL：在扩展页里 `URL.createObjectURL`
+ * 产出的 blob URL 属于不透明 origin，任何经它加载的图像都会把画布标记为
+ * tainted，`toDataURL()` / `toBlob()` 直接抛 SecurityError——整个保存
+ * 静默失败，用户看到的就是「一张纯白图」。
+ *
+ * data URL 没有跨源问题（它是内联数据），配合 sanitizeStyles 剔除一切远程
+ * 资源后，画布保持干净，导出正常。
+ */
+async function svgToPngBlob(svgText: string, width: number, height: number): Promise<Blob> {
+  const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgText)}`;
+  const image = await loadImage(dataUrl);
+  const ratio = exportPixelRatio(width, height);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(width * ratio));
+  canvas.height = Math.max(1, Math.round(height * ratio));
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('无法创建画布上下文');
+  context.scale(ratio, ratio);
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, width, height);
+  context.drawImage(image, 0, 0, width, height);
+  return canvasToBlob(canvas);
 }
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -317,7 +382,7 @@ async function sourceTextToPngBlob(text: string): Promise<Blob> {
   const padding = 16;
   const lines = text.split('\n');
   const height = Math.max(120, lines.length * lineHeight + padding * 2);
-  const ratio = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
+  const ratio = exportPixelRatio(width, height);
 
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(width * ratio);
@@ -356,19 +421,20 @@ async function saveComponentImage(root: HTMLElement): Promise<void> {
         downloadBlob(blob, buildFilename());
         return;
       }
+      // 产物已是高分辨率 PNG（图表侧按 renderWidth × 导出像素比离屏栅格化），
+      // 这里**不再二次放大**——放大只会插值糊图。唯一要做的是把透明底
+      // 铺成白色（离屏画布默认透明，直接保存会在深色背景上看不清）。
       const image = await loadImage(source.dataUrl);
-      const ratio = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
       const width = image.naturalWidth || 640;
       const height = image.naturalHeight || 360;
       const canvas = document.createElement('canvas');
-      canvas.width = Math.round(width * ratio);
-      canvas.height = Math.round(height * ratio);
+      canvas.width = width;
+      canvas.height = height;
       const context = canvas.getContext('2d');
       if (!context) throw new Error('无法创建画布上下文');
-      context.scale(ratio, ratio);
       context.fillStyle = '#ffffff';
-      context.fillRect(0, 0, width, height);
-      context.drawImage(image, 0, 0, width, height);
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0);
       downloadBlob(await canvasToBlob(canvas), buildFilename());
       return;
     }
@@ -424,8 +490,9 @@ async function serializeComponent(root: HTMLElement): Promise<{ svg: string; wid
 
     try {
       const { width, height } = contentSize(clone);
-      const svg = await buildSvgShell(clone, width, height, css);
-      return { svg, width, height };
+      // buildSvgShell 自己把内边距加到外壳尺寸上，返回最终可栅格化的宽高
+      const { svg, width: outerWidth, height: outerHeight } = await buildSvgShell(clone, width, height, css);
+      return { svg, width: outerWidth, height: outerHeight };
     } finally {
       overlay.remove();
     }

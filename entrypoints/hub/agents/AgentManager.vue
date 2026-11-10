@@ -57,7 +57,13 @@
           <div class="hub-card-meta">
             <span class="hub-card-tools">{{ t('hub.toolCount', { count: agent.tools.length }) }}</span>
             <span v-if="agent.skills?.length" class="hub-card-tools">{{ t('hub.agentSkillCount', { count: agent.skills.length }) }}</span>
-            <span v-if="agent.vision" class="hub-badge hub-badge-vision">Vision</span>
+            <span v-if="agent.vision" class="hub-badge hub-badge-vision" :title="t('hub.fieldVision')">
+              <svg class="hub-badge-vision__icon" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M1.6 8s2.5-4.2 6.4-4.2S14.4 8 14.4 8s-2.5 4.2-6.4 4.2S1.6 8 1.6 8z" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round" />
+                <circle cx="8" cy="8" r="1.85" fill="currentColor" />
+              </svg>
+              <span class="hub-badge-vision__text">{{ t('hub.visionBadge') }}</span>
+            </span>
             <!-- 启用 / 停用：停用后该智能体不再出现在输入框的 @ 选择器中 -->
             <HubSwitch
               class="hub-switch-inline"
@@ -147,20 +153,20 @@
             </div>
           </div>
 
-          <!-- 名称 + 描述：两个单行输入并排（宽度足够时） -->
-          <div class="hub-form-row">
-            <label class="hub-field" :class="{ 'is-invalid': nameInvalid }">
-              <span class="hub-field-label">{{ t('hub.fieldName') }}<span class="hub-required" aria-hidden="true">*</span></span>
-              <input v-model.trim="form.name" type="text" :maxlength="AGENT_NAME_MAX_CHARS" :placeholder="t('hub.fieldNamePlaceholder')" />
-            </label>
+          <!-- 名称：单行独占一行 -->
+          <label class="hub-field" :class="{ 'is-invalid': nameInvalid }">
+            <span class="hub-field-label">{{ t('hub.fieldName') }}<span class="hub-required" aria-hidden="true">*</span></span>
+            <input v-model.trim="form.name" type="text" :maxlength="AGENT_NAME_MAX_CHARS" :placeholder="t('hub.fieldNamePlaceholder')" />
+          </label>
 
-            <label class="hub-field" :class="{ 'is-invalid': descriptionInvalid }">
-              <span class="hub-field-label">{{ t('hub.fieldDescription') }}<span class="hub-required" aria-hidden="true">*</span></span>
-              <input v-model.trim="form.description" type="text" :maxlength="AGENT_DESCRIPTION_MAX_CHARS" :placeholder="t('hub.fieldDescriptionPlaceholder')" />
-            </label>
-          </div>
+          <!-- 描述：单行独占一行 -->
+          <label class="hub-field" :class="{ 'is-invalid': descriptionInvalid }">
+            <span class="hub-field-label">{{ t('hub.fieldDescription') }}<span class="hub-required" aria-hidden="true">*</span></span>
+            <input v-model.trim="form.description" type="text" :maxlength="AGENT_DESCRIPTION_MAX_CHARS" :placeholder="t('hub.fieldDescriptionPlaceholder')" />
+          </label>
 
-          <!-- 视觉操作开关（原「视觉循环」）：标题 + 问号说明 + 开关同一行（左右布局）。
+          <!-- 视觉操作开关（原「视觉循环」）：标题 + 问号说明在左、开关在右的整行设置项。
+               左端与「名称 / 描述 / 分类 / 标签」的字段标签严格对齐（同一条文本基准线）。
                问号弹自定义解释框（挂编辑器层，机制与关联技能说明共用）。
                本开关是 vision_gui 进入智能体工具面的唯一入口：工具组从不提供
                vision_gui 勾选，运行时按此开关注入工具并触发规程注入 -->
@@ -186,43 +192,30 @@
               </span>
               <HubSwitch v-model="form.visionEnabled" :aria-label="t('hub.visionEnable')" />
             </div>
-            <template v-if="form.visionEnabled">
-              <div class="hub-vision-row">
-                <HubSelect
-                  :model-value="form.screenshotTool"
-                  :options="[{ value: 'screenshot', label: 'screenshot' }]"
-                  :aria-label="t('hub.screenshotTool')"
-                  style="width: 160px"
-                  @update:model-value="form.screenshotTool = 'screenshot'"
-                />
-                <HubSwitch v-model="form.reScreenshotAfterTools">{{ t('hub.reScreenshot') }}</HubSwitch>
-              </div>
-              <p class="hub-hint">{{ t('hub.visionCoordinatesHint') }}</p>
-            </template>
+            <!-- 视觉操作开启后只留坐标与模型要求的说明：截图工具与「工具后重截图」
+                 都是内部实现细节（截图工具恒为 screenshot、重拍恒开），不做成用户开关 -->
+            <p v-if="form.visionEnabled" class="hub-hint">{{ t('hub.visionCoordinatesHint') }}</p>
           </fieldset>
 
-          <!-- 分类 + 标签：并排 -->
-          <div class="hub-form-row">
-            <!-- 分类：自定义下拉（内置分类 + 智能体/技能中已有自定义分类可复用）；
-                 选择「新建自定义分类」时，新分类名称输入框与选择器位于同一行，
-                 保存前经 normalizeCategory 归一化为稳定 id -->
-            <div class="hub-field" :class="{ 'is-invalid': customCategoryInvalid }">
-              <span class="hub-field-label">
-                {{ t('hub.fieldCategory') }}<span v-if="form.category === CATEGORY_CUSTOM_VALUE" class="hub-required" aria-hidden="true">*</span>
-              </span>
-              <CategorySelect
-                v-model="form.category"
-                v-model:custom="form.customCategory"
-                :allow-uncategorized="true"
-                :invalid="customCategoryInvalid"
-              />
-            </div>
+          <!-- 分类：自定义下拉（内置分类 + 智能体/技能中已有自定义分类可复用）；
+               选择「新建自定义分类」时，新分类名称输入框与选择器位于同一行，
+               保存前经 normalizeCategory 归一化为稳定 id -->
+          <div class="hub-field" :class="{ 'is-invalid': customCategoryInvalid }">
+            <span class="hub-field-label">
+              {{ t('hub.fieldCategory') }}<span v-if="form.category === CATEGORY_CUSTOM_VALUE" class="hub-required" aria-hidden="true">*</span>
+            </span>
+            <CategorySelect
+              v-model="form.category"
+              v-model:custom="form.customCategory"
+              :allow-uncategorized="true"
+              :invalid="customCategoryInvalid"
+            />
+          </div>
 
-            <!-- 标签：多选；回车 / 逗号 / 空格分隔逐个添加（提示与上限反馈由组件内置） -->
-            <div class="hub-field">
-              <span class="hub-field-label">{{ t('hub.fieldTags') }}</span>
-              <TagInput v-model="form.tags" />
-            </div>
+          <!-- 标签：多选；回车 / 逗号 / 空格分隔逐个添加（提示与上限反馈由组件内置） -->
+          <div class="hub-field">
+            <span class="hub-field-label">{{ t('hub.fieldTags') }}</span>
+            <TagInput v-model="form.tags" />
           </div>
 
           <label class="hub-field hub-field--grow" :class="{ 'is-invalid': systemInvalid }">
@@ -560,10 +553,10 @@
 <script setup lang="ts">
 /**
  * 智能体管理：预置（只读展示）+ 自定义（新建/编辑/删除）。
- * 编辑器为左右两张等高卡片：左卡（整卡内部滚动）头像 / 名称 / 视觉声明 / 描述 /
- * 分类 / 标签 / 系统提示词；右卡（各区占比限高、区内滚动）工具组（带搜索，上限
- * 30 个工具）/ 外部插件工具 / 关联技能。emoji 头像选择为悬浮卡片，选中或点击
- * 外部自动收起；图片头像可点开放大查看并下载。
+ * 编辑器为左右两张等高卡片：左卡（整卡内部滚动）头像 / 名称 / 描述 / 视觉操作 /
+ * 分类 / 标签 / 系统提示词（各占整行，左端共用同一条文本基准线）；右卡（各区占比限高、
+ * 区内滚动）工具组（带搜索，上限 30 个工具）/ 外部插件工具 / 关联技能。emoji 头像选择为
+ * 悬浮卡片，选中或点击外部自动收起；图片头像可点开放大查看并下载。
  * 采样参数（temperature / maxTokens）与流式开关已移除——统一取用户全局 API 配置，流式恒开。
  * 写入经 utils/agents/agent-store（chrome.storage 权威源），跨上下文实时同步到 sidepanel。
  */
@@ -651,7 +644,6 @@ const toolGroups: ReadonlyArray<ToolGroupMeta> = [
   { id: 'data', nameKey: 'hub.groupData', descKey: 'hub.groupDataDesc' },
   { id: 'networkTools', nameKey: 'hub.groupNetworkTools', descKey: 'hub.groupNetworkToolsDesc' },
   { id: 'visionTools', nameKey: 'hub.groupVisionTools', descKey: 'hub.groupVisionToolsDesc' },
-  { id: 'skillLoad', nameKey: 'hub.groupSkillLoad', descKey: 'hub.groupSkillLoadDesc' },
   { id: 'python', nameKey: 'hub.groupPython', descKey: 'hub.groupPythonDesc' },
   { id: 'excalidraw', nameKey: 'hub.groupExcalidraw', descKey: 'hub.groupExcalidrawDesc' },
   { id: 'bilibili', nameKey: 'hub.groupBilibili', descKey: 'hub.groupBilibiliDesc' },
@@ -1018,8 +1010,6 @@ const form = reactive({
   /** 头像（图片或 emoji）；未选择时为 undefined，由 UI 回退默认 emoji */
   avatar: undefined as AgentConfig['avatar'],
   visionEnabled: false,
-  screenshotTool: 'screenshot' as const,
-  reScreenshotAfterTools: true,
 });
 
 /**
@@ -1170,8 +1160,6 @@ function resetForm(): void {
   form.skills = [];
   form.avatar = undefined;
   form.visionEnabled = false;
-  form.screenshotTool = 'screenshot';
-  form.reScreenshotAfterTools = true;
   errorMessage.value = '';
   showLimitHint.value = false;
   attempted.value = false;
@@ -1209,8 +1197,6 @@ function copyPluginAgent(agent: AgentConfig): void {
   // 视觉操作声明随复制带入（与 startEdit 同口径）：否则复制视觉智能体会静默
   // 丢掉开关——新不变量下 vision_gui 由开关驱动，丢开关等于丢能力
   form.visionEnabled = !!agent.vision;
-  form.screenshotTool = agent.vision?.screenshotTool ?? 'screenshot';
-  form.reScreenshotAfterTools = agent.vision?.reScreenshotAfterTools ?? true;
 }
 
 function startEdit(agent: AgentConfig): void {
@@ -1239,8 +1225,6 @@ function startEdit(agent: AgentConfig): void {
     return ids;
   }, []);
   form.visionEnabled = !!agent.vision;
-  form.screenshotTool = agent.vision?.screenshotTool ?? 'screenshot';
-  form.reScreenshotAfterTools = agent.vision?.reScreenshotAfterTools ?? true;
   // 头像回填：图片（含历史预置图片与上传的 data URL）或 emoji 形态原样保留
   form.avatar = agent.avatar;
   // 非内置分类（历史自定义分类）归入「自定义创建」态并回填名称，
@@ -1385,10 +1369,13 @@ function save(): void {
     tags: [...form.tags],
     ...(form.visionEnabled
       ? {
+          // 视觉运行配置的两个字段都是内部常量：截图工具恒为 screenshot，
+          // 「工具后重截图」恒开（视觉循环的心跳，关掉模型就看不到自己刚操作的页面）。
+          // 编辑器不再暴露这两个控件，落库时直接写死。
           vision: {
-            screenshotTool: form.screenshotTool,
+            screenshotTool: 'screenshot',
             screenshotArgs: {},
-            reScreenshotAfterTools: form.reScreenshotAfterTools,
+            reScreenshotAfterTools: true,
           },
         }
       : {}),

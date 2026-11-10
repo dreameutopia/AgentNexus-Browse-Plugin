@@ -1,12 +1,15 @@
 import { initPluginHost } from './plugins/host';
 import { backgroundWebSocket } from './ws/websocket-background';
 import { initToolsManagerListener } from './tools/tools-manager-listener';
-import { initConversationRuntime } from './conversation-runtime';
+import { initConversationRuntime, listBusySessionIds } from './conversation-runtime';
+import { initPythonSkillPolicy } from './python-skill-policy';
 import { downloadDB } from '@/utils/download-database';
 import { initLocale, t } from '@/utils/i18n/core';
 import { notesDB, broadcastNotesChanged } from '@/utils/notes-database';
 import { webCaptureToNoteInput } from '@/utils/web-clip';
 import { SCREEN_SHARE_MSG, OffscreenMsgType } from './screen-share/types';
+import { SESSION_BRIDGE_MSG } from '@/utils/sessions/session-bridge';
+import { sweepExpiredArchivedSessions } from '@/utils/sessions/session-archive-sweeper';
 
 // --- 文件拦截状态管理 ---
 interface InterceptionState {
@@ -315,6 +318,13 @@ export default defineBackground(() => {
   initToolsManagerListener();
   void initPluginHost().catch(error => console.error('[Plugins] Host startup failed', error));
   initConversationRuntime();
+  initPythonSkillPolicy();
+  // 归档会话到期清理（保留策略的执行端）：worker 启动即跑一次。
+  // 失败仅告警 —— 清理是后台动作，绝不能影响后台的正常启动；
+  // 真正到期删不掉的会话会在下一次启动时再次被清理（幂等）。
+  void sweepExpiredArchivedSessions().catch(error => {
+    console.warn('[Background] 归档会话清理失败:', error);
+  });
 
   // --- 右键菜单：保存页面功能 ---
   const CONTEXT_MENU_ID = 'save-page-content';
@@ -474,6 +484,21 @@ export default defineBackground(() => {
   });
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // ── 管理中心「会话管理」：查询后台持有的运行态 ──
+    // 应答方唯一：只有后台应答 RUNTIME_STATUS（侧边栏与管理中心都忽略该类型），
+    // 否则 Chrome「先应答者胜」的语义会让查询结果随机来自错误的上下文。
+    if (message.type === SESSION_BRIDGE_MSG.RUNTIME_STATUS) {
+      const requested: string[] = Array.isArray(message.chatIds)
+        ? message.chatIds.filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
+        : [];
+      const busy = new Set(listBusySessionIds());
+      sendResponse({
+        ok: true,
+        busy: requested.length > 0 ? requested.filter(id => busy.has(id)) : [...busy],
+      });
+      return;
+    }
+
     // 处理页面脚本注入请求（用于绕过 CSP）
     if (message.type === 'INJECT_PAGE_SCRIPT') {
       (async () => {

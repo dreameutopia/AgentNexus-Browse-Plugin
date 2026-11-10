@@ -5,6 +5,7 @@ import {
   type NonDefaultLocale,
 } from '../i18n/locales';
 import { VISION_GUI_TOOL_ID } from '../../tools/vision/gui-contract';
+import { isSkillToolId } from '../skills/skill-tool-contract';
 /**
  * 智能体领域类型与纯逻辑（无副作用层）
  *
@@ -105,7 +106,11 @@ export interface VisionRuntimeConfig {
   screenshotTool: 'screenshot';
   /** 截图工具参数 */
   screenshotArgs: Record<string, unknown>;
-  /** 每轮工具成功执行后重截图并注入合成多模态用户消息 */
+  /**
+   * 每轮工具成功执行后重截图并注入合成多模态用户消息。
+   * 恒为 true（视觉循环的心跳，不可关闭）——字段保留只为兼容存量存储结构，
+   * 归一化见 normalizeVision。
+   */
   reScreenshotAfterTools: boolean;
 }
 
@@ -393,7 +398,13 @@ export function normalizeSkillRefs(value: unknown): string[] {
   return result;
 }
 
-/** 视觉配置归一化：结构不完整时返回 undefined（= 不启用视觉循环） */
+/** 视觉配置归一化：结构不完整时返回 undefined（= 不启用视觉循环）
+ *
+ * reScreenshotAfterTools 恒为 true：它是视觉循环的心跳（工具批次结束后自动
+ * 回传新视口截图），关掉后模型既看不见自己刚操作的页面，手势消耗掉的
+ * screenshotId 也没有新的来源——而注入给模型的视觉规程无条件承诺「工具结束后
+ * 约 3 秒回传新截图」。该开关已从管理中心移除，存量记录里的 false 在此收口。
+ */
 export function normalizeVision(value: unknown): VisionRuntimeConfig | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const candidate = value as Partial<VisionRuntimeConfig>;
@@ -405,7 +416,7 @@ export function normalizeVision(value: unknown): VisionRuntimeConfig | undefined
   return {
     screenshotTool,
     screenshotArgs: args,
-    reScreenshotAfterTools: candidate.reScreenshotAfterTools !== false,
+    reScreenshotAfterTools: true,
   };
 }
 
@@ -501,7 +512,7 @@ export function normalizeAgentConfig(value: unknown): AgentConfig | null {
     // 提供勾选入口——存量记录里的历史勾选残留（旧版界面 / 外部写入）在本收敛点统一
     // 剔除，保证「存储的 tools 恒不含 vision_gui」。数据层归一之外，装配层另有一道
     // 兜底（插件智能体与预置表不经过本函数），两层共同维护该不变量。
-    tools: normalizeToolIds(candidate.tools).filter(toolId => toolId !== VISION_GUI_TOOL_ID),
+    tools: normalizeToolIds(candidate.tools).filter(toolId => toolId !== VISION_GUI_TOOL_ID && !isSkillToolId(toolId)),
     category: normalizeCategory(candidate.category),
     tags: normalizeTags(candidate.tags),
   };

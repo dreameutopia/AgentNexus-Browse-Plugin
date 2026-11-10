@@ -127,8 +127,8 @@
         <template v-if="editorMode === 'simple'">
           <div class="hub-editor-col">
             <!-- 多文件技能防御性提示：简单模式不触碰资源文件，保存绝不丢文件 -->
-            <div v-if="resourceFileCount > 0" class="hub-notice">
-              <p>{{ t('hub.resourceFilesNotice', { count: resourceFileCount }) }}</p>
+            <div v-if="resourceFileCount + binaryResourcePaths.length > 0" class="hub-notice">
+              <p>{{ t('hub.resourceFilesNotice', { count: resourceFileCount + binaryResourcePaths.length }) }}</p>
               <div class="hub-resource-chips">
                 <span
                   v-for="(content, path) in resourceFiles"
@@ -136,6 +136,7 @@
                   class="hub-badge hub-badge-tag"
                   :title="t('hub.resourceFileChars', { count: content.length })"
                 >{{ path }}</span>
+                <span v-for="path in binaryResourcePaths" :key="path" class="hub-badge hub-badge-tag">{{ path }}</span>
               </div>
               <p class="hub-hint">{{ t('hub.resourceFilesSimpleHint') }}</p>
             </div>
@@ -407,6 +408,12 @@
             ></textarea>
           </div>
 
+          <div v-if="binaryResourcePaths.length" class="hub-editor-status">
+            <div class="hub-resource-chips">
+              <span v-for="path in binaryResourcePaths" :key="path" class="hub-badge hub-badge-tag">{{ path }}</span>
+            </div>
+          </div>
+
           <!-- 状态条（通栏，位于文件树与文件编辑器下方）：入口文件 = 实时校验；资源文件 = 环境与读取说明 -->
           <div
             class="hub-editor-status"
@@ -592,7 +599,8 @@ const categoryLabel = (categoryId: string): string => categoryLabelOf(categoryId
 
 /** 卡片徽章用：技能的资源文件数（SKILL.md 之外） */
 function resourceCountOf(skill: SkillRecord): number {
-  return Object.keys(skill.files ?? {}).filter(path => path !== 'SKILL.md').length;
+  return Object.keys(skill.files ?? {}).filter(path => path !== 'SKILL.md').length +
+    Object.keys(skill.resourceBytes ?? {}).length;
 }
 
 const toggleEnabled = (skill: SkillRecord) => {
@@ -843,6 +851,7 @@ let preservedFrontmatterLines: string[] = [];
  */
 const resourceFiles = ref<Record<string, string>>({});
 const resourceFileCount = computed(() => Object.keys(resourceFiles.value).length);
+const binaryResourcePaths = computed(() => Object.keys(editingSource.value?.resourceBytes ?? {}));
 
 /**
  * 显式目录（含空目录）：用户新建、尚未放入文件的目录。
@@ -1043,6 +1052,10 @@ function validateResourcePath(path: string, originalPath: string | null): string
   const others = { ...resourceFiles.value };
   if (originalPath !== null) delete others[originalPath];
   if (others[path] !== undefined) {
+    return t('hub.resourceFileDuplicate');
+  }
+  if (binaryResourcePaths.value.some(binary => binary === path ||
+      binary.startsWith(path + '/') || path.startsWith(binary + '/'))) {
     return t('hub.resourceFileDuplicate');
   }
   return null;

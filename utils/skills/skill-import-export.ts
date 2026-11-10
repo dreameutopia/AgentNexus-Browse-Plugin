@@ -16,19 +16,22 @@
  *   - 解压前限制包大小、展开体积与条目数，二进制资源按原始字节保留。
  */
 
-import { unzipSync, zipSync, strToU8, strFromU8 } from 'fflate';
+import { zipSync, strToU8 } from 'fflate';
+import { readBoundedZip } from '@/utils/shared/bounded-zip';
 import {
   SKILL_IMPORT_MAX_FILES,
   SKILL_IMPORT_MAX_FILE_CHARS,
   SKILL_IMPORT_MAX_TOTAL_CHARS,
   SKILL_IMPORT_MAX_SKILLS,
   SKILL_IMPORT_MAX_PACKAGE_BYTES,
+  SKILL_RESOURCE_MAX_FILE_BYTES,
+  SKILL_RESOURCE_MAX_TOTAL_BYTES,
   SKILL_NAME_MAX_CHARS,
   type SkillRecord,
 } from './skill-types';
 import { parseFrontmatter, normalizeSkillName } from './frontmatter-parser';
 import { setCustomSkill } from './skill-store';
-import { decodeSkillBytes, encodeSkillBytes, isSkillResourcePath } from './skill-resources';
+import { decodeSkillBytes, decodeSkillText, encodeSkillBytes, isSkillResourcePath } from './skill-resources';
 
 // ──── 解析 ────
 
@@ -39,6 +42,7 @@ export interface SkillImportCandidate {
   /** 相对路径 → 文本（键含 'SKILL.md'） */
   files: Record<string, string>;
   resourceBytes?: Record<string, string>;
+  folders?: string[];
   /** 全部文件的 UTF-8 字节总量（解析器产出；手工构造的候选缺省视为 0，不做预警） */
   bytes?: number;
 }
@@ -88,31 +92,13 @@ export interface SkillImportReport {
   /** 成功写入的技能（同名照常入库：同名合法，id 由存储层随机生成，绝不覆盖既有技能） */
   imported: Array<{ name: string; id: string }>;
   skipped: SkillImportSkip[];
-  /** 被丢弃的二进制/超限文件（不阻断技能导入，仅提示） */
-  droppedFiles: Array<{ path: string; reason: 'binary' | 'file-too-large' }>;
+  /** 被丢弃的超限文件（不阻断技能导入，仅提示） */
+  droppedFiles: Array<{ path: string; reason: 'file-too-large' }>;
 }
 
-/** 严格 UTF-8 解码：非法字节序列抛错（二进制检测） */
-const strictDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }) : null;
-
-function decodeTextOrUndefined(bytes: Uint8Array): string | undefined {
-  // 快速路径：含 NUL 字节几乎必为二进制（文本文件极少出现）
-  if (bytes.indexOf(0) !== -1) return undefined;
-  if (!strictDecoder) {
-    // 环境无 TextDecoder（理论不会发生）：宽松解码并做替换符检测
-    const loose = strFromU8(bytes);
-    return loose.includes('\uFFFD') ? undefined : loose;
-  }
-  try {
-    return strictDecoder.decode(bytes);
-  } catch {
-    return undefined;
-  }
-}
-
-/** 清洗 zip 条目路径：去首尾空白与 './' 前缀；绝对路径或含 '..' 段视为非法返回 null */
+/** Normalize legacy separators and leading './' without changing literal filenames. */
 function sanitizeEntryPath(path: string): string | null {
-  let cleaned = path.replace(/\\/g, '/').trim().replace(/^\.\/+/, '');
+  let cleaned = path.replace(/\\/g, '/').replace(/^\.\/+/, '');
   if (!cleaned || cleaned.startsWith('/')) return null;
   const segments: string[] = [];
   for (const segment of cleaned.split('/')) {
@@ -124,7 +110,7 @@ function sanitizeEntryPath(path: string): string | null {
   return isSkillResourcePath(cleaned) ? cleaned : null;
 }
 
-/** 噪音条目判定：目录条目 / macOS 元数据 / 隐藏文件 / 嵌套 zip */
+/** 忽略版本控制和 macOS 元数据，保留实际技能资源（包括点文件和嵌套归档）。 */
 function isNoiseEntry(path: string): boolean {
   if (path.endsWith('/')) return true;
   const segments = path.split('/');
@@ -140,7 +126,7 @@ function isSkillMdPath(path: string): boolean {
 }
 
 /**
- * 从「zip 全量条目（已解码文本）」中提取技能候选列表。
+ * 从 ZIP 条目中提取技能候选列表。
  *
  * 分组规则：
  *   - 每个 SKILL.md 的所在目录是一个「技能根候选」；
@@ -150,12 +136,22 @@ function isSkillMdPath(path: string): boolean {
  *     不属于任何目录根的根级文件；不匹配任何技能根的文件忽略
  *     （如多技能包根部的 README / LICENSE）。
  *
- * 注意：二进制/超限文件的丢弃发生在解码阶段（parseSkillZipBytes），
- * 本函数只处理已成功解码的文本条目，不持有 droppedFiles。
  */
 type ZipResource = { path: string; bytes: Uint8Array; content?: string };
 
-function groupCandidates(entries: ZipResource[], fallbackTopName: string): {
+function zipParent(path: string): string {
+  const slash = path.lastIndexOf('/');
+  return slash < 0 ? '' : path.slice(0, slash);
+}
+
+function findRoot(path: string, roots: ReadonlySet<string>): string | undefined {
+  for (let parent = zipParent(path); ; parent = zipParent(parent)) {
+    if (roots.has(parent)) return parent;
+    if (!parent) return undefined;
+  }
+}
+
+function groupCandidates(entries: ZipResource[], directories: Set<string>, fallbackTopName: string): {
   candidates: SkillImportCandidate[];
   skipped: SkillImportSkip[];
 } {
@@ -163,43 +159,30 @@ function groupCandidates(entries: ZipResource[], fallbackTopName: string): {
 
   // 第一遍：收集全部 SKILL.md 条目（路径 → 目录）
   const skillMdEntries = entries.filter(entry => isSkillMdPath(entry.path));
-  const skillMdDirs = new Set(
-    skillMdEntries.map(entry => (entry.path.includes('/') ? entry.path.slice(0, entry.path.lastIndexOf('/')) : '')),
-  );
+  const skillMdDirs = new Set(skillMdEntries.map(entry => zipParent(entry.path)));
 
   // 技能根集合：未被更浅技能根吸收的 SKILL.md 目录（含根级 ''）。
   // 吸收判定：根级（''）视为吸收一切子目录——根级 SKILL.md 存在时整个包即
   // 一个技能（Anthropic 根级形态），references/SKILL.md 等嵌套入口降级为普通
   // 文件；非根目录间按路径前缀判定（a/b 被 a 吸收）。
-  const rootDirs = [...skillMdDirs].filter(dir =>
-    ![...skillMdDirs].some(
-      parent => parent !== dir && (parent === '' || dir.startsWith(parent + '/')),
-    ),
-  );
+  const rootDirs = new Set([...skillMdDirs].filter(dir => !dir || findRoot(dir, skillMdDirs) === undefined));
 
-  if (rootDirs.length === 0) {
+  if (!rootDirs.size) {
     skipped.push({ source: fallbackTopName, reason: 'no-skill-md' });
     return { candidates: [], skipped };
   }
 
-  // 第二遍：全部条目归入技能根（rootDirs 按长度降序尝试，最长前缀优先）
-  const orderedRoots = [...rootDirs].sort((a, b) => b.length - a.length);
-  const roots = new Map<string, Map<string, ZipResource>>(orderedRoots.map(dir => [dir, new Map()]));
+  const roots = new Map([...rootDirs].map(dir => [dir, { files: new Map<string, ZipResource>(), directories: [] as string[] }]));
+  for (const path of directories) {
+    if (rootDirs.has(path)) continue;
+    const owner = findRoot(path, rootDirs);
+    if (owner !== undefined) roots.get(owner)!.directories.push(owner ? path.slice(owner.length + 1) : path);
+  }
   for (const entry of entries) {
-    let owner: string | null = null;
-    // 非空技能根按最长前缀优先认领（子树文件全部归属该根）
-    for (const dir of orderedRoots) {
-      if (dir === '') continue;
-      if (entry.path === dir || entry.path.startsWith(dir + '/')) {
-        owner = dir;
-        break;
-      }
-    }
-    // 根级技能（'' 根）兜底接收未被认领的全部文件（含 scripts/ 等子目录——
-    // Anthropic 根级形态下整个压缩包即一个技能，子目录文件理所当然属于它）
-    if (owner === null && orderedRoots.includes('')) owner = '';
-    if (owner === null) continue;
-    const files = roots.get(owner)!;
+    if (rootDirs.has(entry.path)) throw new Error('File shadows a skill directory: ' + entry.path);
+    const owner = findRoot(entry.path, rootDirs);
+    if (owner === undefined) continue;
+    const { files } = roots.get(owner)!;
     const relative = owner === '' ? entry.path : entry.path.slice(owner.length + 1);
     if (!relative) continue;
     // 本根入口 SKILL.md（任意大小写变体、无目录层级）→ 统一规范键名，首个生效；
@@ -214,7 +197,21 @@ function groupCandidates(entries: ZipResource[], fallbackTopName: string): {
 
   // 每个技能根 → 候选（frontmatter 名称优先，回落目录名 / 传入名）
   const candidates: SkillImportCandidate[] = [];
-  for (const [dir, files] of roots) {
+  for (const [dir, { files, directories }] of roots) {
+    const derived = new Set<string>();
+    for (const path of files.keys()) {
+      for (let slash = path.lastIndexOf('/'); slash >= 0; slash = path.lastIndexOf('/', slash - 1)) {
+        const parent = path.slice(0, slash);
+        if (files.has(parent)) throw new Error('Conflicting file and directory in skill ZIP: ' + path);
+        derived.add(parent);
+      }
+    }
+    const folders = directories.filter(path => !derived.has(path));
+    for (const folder of folders) {
+      if (files.has(folder) || folder.split('/').some((_, index, parts) => files.has(parts.slice(0, index).join('/')))) {
+        throw new Error('Conflicting file and directory in skill ZIP: ' + folder);
+      }
+    }
     const skillMd = files.get('SKILL.md')?.content;
     if (skillMd === undefined) {
       skipped.push({ source: dir || fallbackTopName, reason: 'no-skill-md' });
@@ -224,7 +221,7 @@ function groupCandidates(entries: ZipResource[], fallbackTopName: string): {
       skipped.push({ source: dir || fallbackTopName, reason: 'skill-limit' });
       continue;
     }
-    if (files.size > SKILL_IMPORT_MAX_FILES) {
+    if (files.size + folders.length > SKILL_IMPORT_MAX_FILES) {
       skipped.push({ source: dir || fallbackTopName, reason: 'too-many-files' });
       continue;
     }
@@ -248,13 +245,12 @@ function groupCandidates(entries: ZipResource[], fallbackTopName: string): {
     }
     // 总量校验（超限时整技能跳过，不做截断——半套资源比没有更糟）
     let total = 0;
-    for (const [path, resource] of files) {
+    let textBytes = 0;
+    for (const resource of files.values()) {
       total += resource.bytes.length;
-      for (let slash = path.lastIndexOf('/'); slash >= 0; slash = path.lastIndexOf('/', slash - 1)) {
-        if (files.has(path.slice(0, slash))) throw new Error('Conflicting file and directory in skill ZIP: ' + path);
-      }
+      if (resource.content !== undefined) textBytes += resource.bytes.length;
     }
-    if (total > SKILL_IMPORT_MAX_TOTAL_CHARS) {
+    if (textBytes > SKILL_IMPORT_MAX_TOTAL_CHARS || total > SKILL_RESOURCE_MAX_TOTAL_BYTES) {
       skipped.push({ source: name, reason: 'total-too-large' });
       continue;
     }
@@ -267,6 +263,7 @@ function groupCandidates(entries: ZipResource[], fallbackTopName: string): {
     candidates.push({
       name, files: Object.fromEntries(textEntries), bytes: total,
       ...(binaryEntries.length ? { resourceBytes: Object.fromEntries(binaryEntries) } : {}),
+      ...(folders.length ? { folders } : {}),
     });
   }
 
@@ -280,38 +277,48 @@ function groupCandidates(entries: ZipResource[], fallbackTopName: string): {
 export function parseSkillZipBytes(bytes: Uint8Array, fallbackTopName = 'imported-skill'): {
   candidates: SkillImportCandidate[];
   skipped: SkillImportSkip[];
-  droppedFiles: Array<{ path: string; reason: 'binary' | 'file-too-large' }>;
+  droppedFiles: SkillImportReport['droppedFiles'];
 } {
-  if (bytes.length > SKILL_IMPORT_MAX_PACKAGE_BYTES) throw new Error('Skill ZIP exceeds the package size limit');
   const entries: ZipResource[] = [];
-  const droppedFiles: Array<{ path: string; reason: 'binary' | 'file-too-large' }> = [];
-  const accepted = new Map<string, number>();
-  let count = 0;
-  let expandedBytes = 0;
-  const unzipped = unzipSync(bytes, {
-    filter(entry) {
-      if (++count > SKILL_IMPORT_MAX_SKILLS * SKILL_IMPORT_MAX_FILES * 2) throw new Error('Too many ZIP entries');
-      if (/[\\/]$/.test(entry.name)) return false;
-      const path = sanitizeEntryPath(entry.name);
+  const droppedFiles: SkillImportReport['droppedFiles'] = [];
+  const paths = new Set<string>();
+  const directories = new Set<string>();
+  const normalized = new Map<string, string>();
+  const unzipped = readBoundedZip(bytes, {
+    archive: SKILL_IMPORT_MAX_PACKAGE_BYTES,
+    expanded: SKILL_IMPORT_MAX_PACKAGE_BYTES,
+    files: SKILL_IMPORT_MAX_SKILLS * SKILL_IMPORT_MAX_FILES * 2,
+    allowEmpty: true,
+    accept(rawPath, size) {
+      const directory = /[\\/]$/.test(rawPath);
+      const path = sanitizeEntryPath(rawPath);
       if (!path || isNoiseEntry(path)) return false;
-      if (accepted.has(path)) throw new Error('Duplicate ZIP resource: ' + path);
-      accepted.set(path, entry.originalSize);
-      if (entry.originalSize > SKILL_IMPORT_MAX_FILE_CHARS) {
+      if (paths.has(path)) throw new Error('Duplicate ZIP resource: ' + path);
+      paths.add(path);
+      if (directory) {
+        if (size !== 0) throw new Error('Invalid ZIP directory: ' + path);
+        directories.add(path);
+        return false;
+      }
+      if (size > SKILL_RESOURCE_MAX_FILE_BYTES) {
         droppedFiles.push({ path, reason: 'file-too-large' });
         return false;
       }
-      expandedBytes += entry.originalSize;
-      if (expandedBytes > SKILL_IMPORT_MAX_PACKAGE_BYTES) throw new Error('Skill ZIP exceeds the expanded size limit');
+      normalized.set(rawPath, path);
       return true;
     },
   });
-  for (const [rawPath, data] of Object.entries(unzipped)) {
-    const path = sanitizeEntryPath(rawPath);
-    if (!path || accepted.get(path) !== data.length) throw new Error('ZIP resource size does not match its manifest');
-    entries.push({ path, bytes: data, content: decodeTextOrUndefined(data) });
+  for (const [rawPath, data] of unzipped) {
+    const path = normalized.get(rawPath)!;
+    const content = decodeSkillText(data);
+    if (content !== undefined && content.length > SKILL_IMPORT_MAX_FILE_CHARS) {
+      droppedFiles.push({ path, reason: 'file-too-large' });
+      continue;
+    }
+    entries.push({ path, bytes: data, content });
   }
 
-  const grouped = groupCandidates(entries, fallbackTopName);
+  const grouped = groupCandidates(entries, directories, fallbackTopName);
   return {
     candidates: grouped.candidates,
     skipped: grouped.skipped,
@@ -361,7 +368,9 @@ export function parseSkillMdText(text: string, fallbackName: string): {
 export function commitImportCandidates(candidates: readonly SkillImportCandidate[]): SkillImportReport {
   const report: SkillImportReport = { imported: [], skipped: [], droppedFiles: [] };
   for (const candidate of candidates) {
-    const result = setCustomSkill({ name: candidate.name, files: candidate.files, resourceBytes: candidate.resourceBytes });
+    const result = setCustomSkill({
+      name: candidate.name, files: candidate.files, resourceBytes: candidate.resourceBytes, folders: candidate.folders,
+    });
     if (!result.ok) {
       report.skipped.push({ source: candidate.name, reason: 'store-reject' });
       continue;
@@ -399,8 +408,7 @@ export interface SkillExportPayload {
  * 把单个技能序列化为规范形态 zip：
  * `<name>/SKILL.md` + `<name>/<资源文件>`（可被本解析器与遵循规范的平台再次导入）。
  *
- * 只写文件：空目录在 zip 里没有对应物（目录由文件路径派生），故显式空目录
- * 不出现在导出物中——需要保留目录结构时，往目录里放文件即可。
+ * 显式目录使用 ZIP 目录条目保存。
  */
 export function exportSkillToZip(skill: SkillRecord): SkillExportPayload {
   const zipEntries: Record<string, Uint8Array> = {};
@@ -413,6 +421,9 @@ export function exportSkillToZip(skill: SkillRecord): SkillExportPayload {
   for (const [path, content] of Object.entries(skill.resourceBytes ?? {})) {
     if (!isSkillResourcePath(path) || Object.hasOwn(skill.files, path)) throw new Error('Invalid binary resource: ' + path);
     zipEntries[skill.name + '/' + path] = decodeSkillBytes(content);
+  }
+  for (const path of skill.folders ?? []) {
+    if (isSkillResourcePath(path)) zipEntries[skill.name + '/' + path + '/'] = new Uint8Array();
   }
   // 存储数据异常（无 SKILL.md）时兜底写入口文件，保证导出物永远可再导入
   if (!zipEntries[`${skill.name}/SKILL.md`]) {

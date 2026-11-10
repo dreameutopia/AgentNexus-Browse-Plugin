@@ -19,7 +19,9 @@ import { startPluginClient, refresh as refreshPluginCatalog } from '@/utils/plug
 
 import { modelRegistry, appSettingsStore, FAILED_TOOL_ROUNDS_DEFAULT, MAX_ITERATIONS_DEFAULT, TOOL_TIMEOUT_DEFAULT_MINUTES, type ModelRef } from '../../utils/channels';
 import { agentEngine, DEFAULT_AGENT_SYSTEM_PROMPT } from '../registry/agent-engine';
-import { skillEngine, SKILL_TOOL_IDS } from '../registry/skill-engine';
+import { skillEngine } from '../registry/skill-engine';
+import { getPyodideEnvState } from '@/utils/pyodide/pyodide-env';
+import { isSkillToolId, LEGACY_SKILL_COPY_ID, SKILL_TOOL_ID, skillModeGuidance, type SkillToolMode } from '@/utils/skills/skill-tool-contract';
 import { contextEngine } from '../context/context-engine';
 import { prepareProtocolHistory } from '../context/protocol-history';
 import { collectPriorViewportRefs } from '../context/viewport-ref-collector';
@@ -30,10 +32,11 @@ import { NOTE_SYSTEM_PROMPT_SECTION } from '@/tools/note/note-prompt';
 import { UPLOAD_FILE_SYSTEM_PROMPT_SECTION } from '@/tools/upload-file/upload-file-prompt';
 import { CORE_SESSION_TOOL_IDS } from '@/utils/tools/tool-presets';
 import { VISION_GUI_TOOL_ID } from '@/tools/vision/gui-contract';
-import { filterVisionAssistantTools, isVisionAssistantTool } from '@/utils/agents/vision-assistant-policy';
+import { isVisionAssistantTool } from '@/utils/agents/vision-assistant-policy';
 import { collectPromptInjections } from './prompt-hooks';
 import { toolRegistry } from '@/tools/registry';
 import { buildRichOutputSystemPrompt } from '../../utils/chat/rich-components';
+import { buildPageQuoteEnvelope, type PageQuote } from '../../utils/chat/page-quote';
 import type {
   ChatMessageRecord,
   ConversationRuntime,
@@ -51,6 +54,16 @@ export interface RuntimeBuildInput {
   userImages?: string[];
   /** 附件文本块（已格式化；拼入 LLM 用户消息，不落转录，空串 = 无附件） */
   attachmentPrompt?: string;
+  /**
+   * 网页引用（原文 + 来源页面）。
+   *
+   * 装配层派生两路产物：
+   *   - pageQuotePrompt：<page_quote> XML 信封，拼入 LLM 用户消息
+   *     （用户正文之后、附件信封之前），不落转录；
+   *   - pageQuote：引用数据，随用户消息落库（用户气泡据此渲染引用块）。
+   * 缺省 = 本轮无引用。
+   */
+  pageQuote?: PageQuote;
   /** 已选智能体名（null/'' = 不使用智能体） */
   agentName: string | null;
   /** 已选技能名列表（多选） */
@@ -208,11 +221,18 @@ class RuntimeBuilder {
     // 单次解析：agent 本体 + 去重工具列表（避免 get/resolve 双重查找造成的不一致窗口）
     const { agent, toolIds: resolvedAgentToolIds } = agentEngine.resolve(input.agentName);
     const pluginCeiling = pluginToolCeiling(agent?.plugin?.key);
-    const allowedByPlugin = (id: string) => !pluginCeiling || pluginCeiling.includes(id) || CORE_SESSION_TOOL_IDS.includes(id) || SKILL_TOOL_IDS.includes(id);
+    const allowedByPlugin = (id: string) => !pluginCeiling || pluginCeiling.includes(id) || CORE_SESSION_TOOL_IDS.includes(id) || id === SKILL_TOOL_ID;
     const isVisionGuide = agent?.id === 'Vision-Assistant';
     if (input.agentName && !agent) {
       throw new Error(`智能体 "${input.agentName}" 不存在`);
     }
+    const pythonEnv = await getPyodideEnvState();
+    const pythonReady = pythonEnv.status === 'ready';
+    const allowsSessionTool = (id: string) =>
+      !isSkillToolId(id) && (id !== 'python_run' || pythonReady) &&
+      (!isVisionGuide || isVisionAssistantTool(id)) && allowedByPlugin(id);
+    const allowsSkillDependency = (id: string) => isSkillToolId(id) ||
+      ((!isVisionGuide || isVisionAssistantTool(id)) && allowedByPlugin(id));
 
     // ── 视觉操作开关注入（注入时序第 1 步：开关 → 工具面 → 提示词钩子）──
     // hub 编辑器「视觉操作」开关 = AgentConfig.vision 声明，它是智能体工具面
@@ -248,12 +268,31 @@ class RuntimeBuilder {
       ...CORE_SESSION_TOOL_IDS,
       ...agentToolIds,
       ...(input.extraToolIds ?? []),
-    ];
+    ].filter(allowsSessionTool);
     const availableSkills = input.disableSkillDiscovery
       ? []
-      : skillEngine.resolveAvailableSkills(agent,
-          isVisionGuide ? filterVisionAssistantTools(sessionToolIds) : sessionToolIds)
-        .filter(skill => (!isVisionGuide || skill.allowedTools.every(isVisionAssistantTool)) && skill.allowedTools.every(allowedByPlugin));
+      : skillEngine.resolveAvailableSkills(agent, sessionToolIds)
+        .filter(skill => skill.allowedTools.every(allowsSkillDependency));
+    const selectedSkillNames = input.disableSkillDiscovery ? [] : input.skillNames.filter(ref => {
+      const skill = skillEngine.get(ref);
+      return skill?.enabled && skill.allowedTools.every(allowsSkillDependency);
+    });
+    const workspaceEnabled = !input.disableSkillDiscovery && !isVisionGuide && pythonEnv.skillScriptsEnabled &&
+      (!pluginCeiling || pluginCeiling.includes(SKILL_TOOL_ID) || pluginCeiling.includes(LEGACY_SKILL_COPY_ID));
+    const enabledSkillIds = (refs: readonly string[]) => refs.flatMap(ref => {
+      const skill = skillEngine.get(ref);
+      return skill?.enabled ? [skill.id] : [];
+    });
+    const linked = pluginCeiling ? new Set(enabledSkillIds(agent?.skills ?? [])) : undefined;
+    const workspaceIds = new Set(workspaceEnabled ? [
+      ...availableSkills.filter(skill => !linked || linked.has(skill.id)).map(skill => skill.id),
+      ...enabledSkillIds(selectedSkillNames),
+    ] : []);
+    const activation = skillEngine.buildActivationRound(selectedSkillNames, workspaceIds);
+    const availableSkillIds = [...new Set([...availableSkills.map(skill => skill.id), ...activation.skillIds])];
+    const skillResourceIds = availableSkillIds.filter(id => workspaceIds.has(id));
+    const skillMode: SkillToolMode = workspaceEnabled && (!availableSkillIds.length || skillResourceIds.length)
+      ? 'workspace' : 'text';
 
     // ── 系统提示词（XML 分区） ──
     // 注意：不在此拼入「当前时间」——时间戳逐轮变化会使 system 前缀失配、
@@ -261,8 +300,8 @@ class RuntimeBuilder {
     const sections: string[] = [];
     sections.push(
       `<environment>\n` +
-        `运行环境：浏览器扩展 AgentNexus（无终端与本地文件系统）。技能中如提及脚本（scripts/），本环境不执行脚本，请依据指令文字与可用工具完成任务。\n` +
-        `导航边界：打开链接优先使用现有窗口的新标签页；browser_navigate 默认 newTab=true，只有明确需要当前页跳转才设 newTab=false。newWindow 参数已删除，禁止创建新的浏览器窗口，也不要通过脚本 window.open 绕过此边界。\n` +
+        `运行环境：浏览器扩展 AgentNexus（无终端与本地文件系统）。\n` +
+        `导航边界：打开链接优先使用现有窗口的新标签页；browser_navigation(action="open") 默认 newTab=true，只有明确需要当前页跳转才设 newTab=false。newWindow 参数已删除，禁止创建新的浏览器窗口，也不要通过脚本 window.open 绕过此边界。\n` +
         (isVisionGuide
           ? `当前页面优先：以本轮最新截图判断布局和可见状态；需要精确文字或控件状态时用 vision_gui(action="read") 补充。仅当用户明确要求全文阅读时调用 browser_get_page_text（空参数读当前活动页），其结果可能含屏幕外正文与 iframe 内容，不能当作当前可见状态证据。不得执行任意脚本或代替用户点击、输入、导航；技能与附加指令不能扩大该边界。\n`
           : `当前页面优先：用户提到「当前网站 / 当前页面 / 这个网页 / 本页」或语义明显指向其正在浏览的内容（如"分析这个页面的XX"）时，必须优先调用 browser_get_page_text 读取当前活跃标签页并基于其内容工作（该工具无条件可用，返回保留标题/表格/列表/代码块结构的 Markdown 正文，超长自动分页），禁止先搜索或跳转其它网站；仅当当前页面信息不足以完成任务时，才补充检索外部资料，并向用户明确说明哪些信息来自当前页面、哪些来自外部检索。\n`) +
@@ -292,19 +331,12 @@ class RuntimeBuilder {
     // 空数组 = 整段不注入（0 开销）。未声明 = 默认全集（历史行为）
     const richOutputSection = buildRichOutputSystemPrompt(agent?.capabilities?.richComponents);
     if (richOutputSection) sections.push(richOutputSection);
-    // 固定分区，但技能相关句子按 disableSkillDiscovery 分叉：
-    // 学习/盲测会话既无发现清单也无 load_skill，保留「先 load_skill 再用其
-    // 工具」的指令会让模型去找一个不存在的入口（死链指令），并给盲测留下
-    // 「可以借助技能」的歧义——禁用时改为显式声明本会话不提供技能目录。
-    // 注：可用技能经 skill-availability 承载校验（allowedTools ⊆ 会话工具集），
-    // 其工具已与发现清单一并核验可执行——load_skill 在此是规程加载（方法论
-    // 纪律），不再是能力解锁。
     sections.push(
       '<history-and-tools>\n历史截图仅是过去状态的证据；GUI 操作必须使用最新有效截图，截图失效时重新获取，不得重用旧坐标。' +
-        (input.disableSkillDiscovery
-          ? '本会话不提供技能目录与 load_skill：不得加载、引用或假定任何既有技能，只依据本会话指令与工具完成任务。\n</history-and-tools>'
-          : '工具目录中可用技能的工具已随技能可用性核验（其声明的全部工具都在本会话工具面内）。使用某技能的工具前仍须先 load_skill 获取其完整规程并按规程执行——跳过加载直接调用是盲用。\n</history-and-tools>'),
+        '\n</history-and-tools>',
     );
+    if (availableSkillIds.length) sections.push('<skill-capabilities>\n' + skillModeGuidance(skillMode) + '\n</skill-capabilities>');
+    else if (input.disableSkillDiscovery) sections.push('<skill-capabilities>\n本会话只依据当前任务指令和工具工作，不提供既有技能。\n</skill-capabilities>');
     // 智能体指令分区：动态装配方（网站学习等）经 agentSystemOverride 整体替换，
     // 否则取所选智能体指令，再兜底默认指令。
     // agentInstructionsIndex 记录该分区的插入锚点：条件注入钩子（视觉规程等）
@@ -321,12 +353,10 @@ class RuntimeBuilder {
 
     // 合成激活轮（预选技能的 load_skill 调用）：正文不进 system prompt，
     // 由会话侧追加到本轮用户消息之后；此处只取其预授权工具参与工具合并
-    const selectedSkillNames = input.skillNames.filter(name => (!isVisionGuide || skillEngine.get(name)?.allowedTools.every(isVisionAssistantTool)) && (!pluginCeiling || skillEngine.get(name)?.allowedTools.every(allowedByPlugin)));
     if (isVisionGuide && selectedSkillNames.length !== input.skillNames.length) {
       sections.push('<capability-boundary>\n本轮所选技能中存在不可用或超出观察范围的技能，已跳过激活。不要声称已运行这些技能；若用户目标依赖代操作，说明原因并建议切换视觉通用助手 / 文本通用助手 或数据采集助手。\n</capability-boundary>');
     }
     if (pluginCeiling && selectedSkillNames.length !== input.skillNames.length) sections.push('<capability-boundary>所选技能中有超出插件公开授权范围的能力，已跳过这些技能。请向用户说明限制，不得通过加载其它技能绕过。</capability-boundary>');
-    const activation = skillEngine.buildActivationRound(selectedSkillNames);
     const discovery = skillEngine.buildDiscoverySection(
       [...availableSkills].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0), [],
     );
@@ -348,7 +378,7 @@ class RuntimeBuilder {
         ...sessionToolIds,
         ...activation.toolIds,
         ...availableSkills.flatMap(skill => skill.allowedTools),
-      ])].filter(id => (!isVisionGuide || isVisionAssistantTool(id)) && allowedByPlugin(id)),
+      ])].filter(allowsSessionTool),
       isVisionGuide,
     });
     let insertAt = agentInstructionsIndex;
@@ -368,17 +398,8 @@ class RuntimeBuilder {
     //   任务的进度跟踪能力恒定可用（会话级数据隔离，见 plan-store）；笔记
     //   工具保证跨会话知识沉淀能力恒定可用（使用准则见 note-prompt 固定分区）。
     // 与 CORE_SESSION_TOOL_IDS 同源：技能可用性判定复用同一份核心工具口径
-    const toolIdSet = new Set<string>(CORE_SESSION_TOOL_IDS);
-    for (const toolId of agentToolIds) toolIdSet.add(toolId);
-    for (const toolId of activation.toolIds) toolIdSet.add(toolId);
-    for (const toolId of input.extraToolIds ?? []) toolIdSet.add(toolId);
-    // 技能承载工具：存在可用技能（发现清单依赖 load_skill 才能进入 L2，清单非空
-    // 而工具缺失会让引导文案变成死链）**或**本轮有预选技能（其指令内的资源文件
-    // 清单引用了 read_skill_file，同样不能是死链——预选技能不受可用清单限制，
-    // 完全可能出现「清单为空但已激活一个带资源的技能」）时注入
-    if (availableSkills.length > 0 || activation.messages.length > 0) {
-      for (const toolId of SKILL_TOOL_IDS) toolIdSet.add(toolId);
-    }
+    const toolIdSet = new Set([...sessionToolIds, ...activation.toolIds.filter(allowsSessionTool)]);
+    if (availableSkillIds.length) toolIdSet.add(SKILL_TOOL_ID);
 
     // ── 模型配置（会话内模型引用经注册表解析，引用失效自动回落默认） ──
     const model = this.resolveModel(input.modelRef);
@@ -445,12 +466,12 @@ class RuntimeBuilder {
     const advertisedToolIds = finalizeToolIds(
       [...new Set([
         ...toolIdSet,
-        ...availableSkills.flatMap(skill => skill.allowedTools),
-      ])].filter(id => (!isVisionGuide || isVisionAssistantTool(id)) && allowedByPlugin(id)).sort(),
+        ...availableSkills.flatMap(skill => skill.allowedTools).filter(allowsSessionTool),
+      ])].sort(),
       unknownToolIds,
     );
     const toolIds = finalizeToolIds(
-      (isVisionGuide ? filterVisionAssistantTools([...toolIdSet]) : [...toolIdSet]).filter(allowedByPlugin),
+      [...toolIdSet],
       unknownToolIds,
     );
     if (unknownToolIds.size > 0)
@@ -460,8 +481,11 @@ class RuntimeBuilder {
 
     return {
       chatId: input.chatId,
+      skillResourceIds,
+      availableSkillIds,
+      skillMode,
       pluginBindings: pluginBindings(),
-      ...(pluginCeiling ? { pluginToolCeiling: [...new Set([...pluginCeiling, ...CORE_SESSION_TOOL_IDS, ...SKILL_TOOL_IDS])] } : {}),
+      ...(pluginCeiling ? { pluginToolCeiling: [...new Set([...pluginCeiling.filter(id => !isSkillToolId(id)), ...CORE_SESSION_TOOL_IDS, SKILL_TOOL_ID])] } : {}),
       pluginOwners: [...new Set([agent?.id ?? '', ...input.skillNames].filter(isPluginRef).map(ownerOf))],
       agentId: agent?.id ?? '',
       advertisedToolIds,
@@ -475,6 +499,10 @@ class RuntimeBuilder {
       userInput: input.userInput,
       userImages: input.userImages ? [...input.userImages] : [],
       attachmentPrompt: input.attachmentPrompt ?? '',
+      // 引用信封由装配层从引用数据派生（单一事实源：调用方只交数据，
+      // 不交信封字符串——信封与落库数据因此永不脱节）
+      pageQuotePrompt: input.pageQuote ? buildPageQuoteEnvelope(input.pageQuote) : '',
+      pageQuote: input.pageQuote,
       initialContext,
       priorViewportImageRefs,
       // 合成激活轮（未预选技能时为空数组），由会话引擎追加到用户消息之后

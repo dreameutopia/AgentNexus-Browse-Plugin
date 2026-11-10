@@ -5,13 +5,11 @@
 
 import { toolRegistry } from '../registry';
 import { GenericWaitTool } from './generic-wait';
-import { WaitPageLoadTool } from './wait-page-load';
 
 // 创建通用工具实例
 function createCommonTools() {
   return [
     new GenericWaitTool(),
-    new WaitPageLoadTool()
   ];
 }
 
@@ -25,5 +23,4 @@ export function registerCommonTools() {
 
 export {
   GenericWaitTool,
-  WaitPageLoadTool
 };

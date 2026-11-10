@@ -27,7 +27,7 @@ import { pluginSkills, onPluginsChange } from '@/utils/plugins/catalog';
  */
 
 import type { SkillRecord, StoredSkill } from './skill-types';
-import { validateSkillBinaries } from './skill-resources';
+import { decodeSkillBytes, decodeSkillText, isSkillResourcePath, validateSkillBinaries } from './skill-resources';
 import {
   SKILL_NAME_PATTERN,
   SKILL_NAME_MAX_CHARS,
@@ -45,39 +45,38 @@ import { LocalWriteFingerprint, subscribeStorageKey } from '../shared/storage-sy
 
 // ──── 预置技能加载（构建期打包） ────
 
-/** /skills/<技能名>/<相对路径> → 文件文本 */
-const presetFileModules = import.meta.glob('/skills/**/*.md', {
-  query: '?raw',
+/** The Vite asset loader preserves bytes for all resource types, including SVG. */
+const presetFileModules = import.meta.glob(['/skills/**/*', '!/skills/**/.git/**'], {
+  query: '?agentnexus-skill-bytes',
   import: 'default',
   eager: true,
+  exhaustive: true,
 }) as Record<string, string>;
 
 /** 从 glob 结果分组，返回「目录名 → 文件集」（记录构建与 id 分配由 initStore 统一执行） */
-function collectPresetSkillFiles(): Array<{ folderName: string; files: Record<string, string> }> {
-  const bySkill = new Map<string, Map<string, string>>();
-
-  for (const [path, content] of Object.entries(presetFileModules)) {
-    // path 形如 '/skills/bilibili-video-summary/SKILL.md' 或 '/skills/xxx/references/a.md'
+function collectPresetSkillFiles() {
+  const bySkill = new Map<string, { folderName: string; files: Record<string, string>; resourceBytes: Record<string, string> }>();
+  const invalid = new Set<string>();
+  for (const [path, encoded] of Object.entries(presetFileModules)) {
     const match = path.match(/^\/skills\/([^/]+)\/(.+)$/);
-    if (!match || typeof content !== 'string') continue;
-    const [, skillName, relPath] = match;
-    if (!bySkill.has(skillName)) bySkill.set(skillName, new Map());
-    bySkill.get(skillName)!.set(relPath, content);
-  }
-
-  const collected: Array<{ folderName: string; files: Record<string, string> }> = [];
-  for (const [folderName, files] of bySkill) {
-    if (!files.has('SKILL.md')) {
-      console.warn(`[SkillStore] 预置技能目录 ${folderName} 缺少 SKILL.md，跳过`);
-      continue;
+    if (!match) continue;
+    const [, folderName, relative] = match;
+    try {
+      if (!isSkillResourcePath(relative)) throw new Error('Invalid bundled skill asset');
+      const content = decodeSkillText(decodeSkillBytes(encoded));
+      let entry = bySkill.get(folderName);
+      if (!entry) {
+        entry = { folderName, files: Object.create(null), resourceBytes: Object.create(null) };
+        bySkill.set(folderName, entry);
+      }
+      if (content === undefined) entry.resourceBytes[relative] = encoded;
+      else entry.files[relative] = content;
+    } catch (error) {
+      invalid.add(folderName);
+      console.warn('[SkillStore] Cannot load bundled skill resource:', path, error);
     }
-    // 同名冲突防御：后加载的预置技能目录覆盖前者，显式告警便于排查打包内容
-    if (collected.some(existing => existing.folderName === folderName)) {
-      console.warn(`[SkillStore] 预置技能目录冲突: "${folderName}"（后者覆盖前者）`);
-    }
-    collected.push({ folderName, files: Object.fromEntries(files) });
   }
-  return collected;
+  return [...bySkill.values()].filter(entry => !invalid.has(entry.folderName) && !!entry.files['SKILL.md']);
 }
 
 // ──── 记录构建 ────
@@ -102,7 +101,7 @@ function buildSkillRecord(
     return null;
   }
 
-  const { data, body } = parseFrontmatter(skillMd);
+  const { data, body } = parseFrontmatter(skillMd.replace(/^\uFEFF/, ''));
   // 名称以 frontmatter 为准（缺省回落目录/传入名），统一走规范化
   const normalizedName = normalizeSkillName(data['name'] || name);
   if (!normalizedName || !SKILL_NAME_PATTERN.test(normalizedName)) {
@@ -507,15 +506,23 @@ function rebuildCustomSkills(items: unknown): number {
 
 /** 启动时同步恢复：预置技能（保留区间确定性分配 id）→ 预置启停覆盖 → localStorage 自定义技能 */
 function initStore(): void {
-  for (const { folderName, files } of collectPresetSkillFiles()) {
+  for (const { folderName, files, resourceBytes } of collectPresetSkillFiles()) {
     // 预置 id：保留区间 + 名称哈希（确定性，跨上下文 / 跨版本稳定），与智能体
     // 预设、工具→技能映射表里硬编码的 presetSkillIdFromName(...) 必须同源——
     // 两侧传入同一个技能名（frontmatter name），否则硬编码引用会落空
-    const name = normalizeSkillName(parseFrontmatter(files['SKILL.md']).data['name'] || folderName);
+    const name = normalizeSkillName(parseFrontmatter(files['SKILL.md'].replace(/^\uFEFF/, '')).data['name'] || folderName);
     if (!name) continue;
     const id = presetSkillIdFromName(name);
     const preset = buildSkillRecord(folderName, files, 'preset', id);
     if (!preset) continue;
+    if (Object.keys(resourceBytes).length) {
+      try {
+        preset.resourceBytes = validateSkillBinaries(resourceBytes, files);
+      } catch (error) {
+        console.warn('[SkillStore] Invalid bundled skill resources:', folderName, error);
+        continue;
+      }
+    }
     // 理论不可达：两个内置技能同名（或确定性哈希碰撞）。跳过并显式告警，
     // 绝不覆盖先注册者——预置技能不落持久化，覆盖即静默丢失
     if (skillMap.has(preset.id)) {

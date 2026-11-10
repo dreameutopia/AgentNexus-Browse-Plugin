@@ -5,7 +5,7 @@ import { BaseTool } from '../base-tool';
 import { ToolResult } from '@/common/tool-handler';
 import { ToolMetadata } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
-import { waitPageLoadTool } from '../common/wait-page-load';
+import { waitForTabReady } from '../browser/page-load';
 
 export class SetupExcalidrawCanvasTool extends BaseTool {
   name = 'setup_excalidraw_canvas';
@@ -92,14 +92,19 @@ export class SetupExcalidrawCanvasTool extends BaseTool {
       const targetTabId = newTab.id;
       console.log(`已导航至新的标签页: ${targetTabId}`);
 
-      // 4. 等待页面加载完成
+      // 4. 等待页面加载完成（就绪判定与 browser_navigation 同源；
+      //    直接等待刚创建的目标标签页，而非旧实现的「活动标签页」——
+      //    等待期间用户切换标签也不会等错对象）
       this.log(`[${new Date().toISOString()}] 等待页面加载完成...`);
-      const waitResult = await waitPageLoadTool.execute();
-      if (!waitResult.success) {
-        this.log(`[${new Date().toISOString()}] 页面加载等待失败: ${waitResult.message}`, 'warn');
+      const waitOutcome = await waitForTabReady(targetTabId, { timeoutMs: 30_000 });
+      if (!waitOutcome.ready) {
+        this.log(
+          `[${new Date().toISOString()}] 页面加载等待${waitOutcome.reason === 'closed' ? '失败（标签页被关闭）' : '超时'}，继续尝试注入`,
+          'warn',
+        );
         // 即使等待失败，也继续执行后续逻辑
       } else {
-        this.log(`[${new Date().toISOString()}] 页面加载完成`);
+        this.log(`[${new Date().toISOString()}] 页面加载完成（${waitOutcome.elapsedMs}ms）`);
       }
       
       // 注入通用桥接脚本至隔离世界

@@ -84,6 +84,7 @@ import {
   forceValidateMessage,
 } from '@/utils/learn/learn-prompts';
 import { clearLearnDraft, saveLearnDraft } from '@/utils/learn/learn-draft-store';
+import { setLocalRunningChat } from '@/utils/sessions/session-bridge';
 import { validationToolIds } from '@/utils/learn/learn-tool-policy';
 
 // ──── 弹窗视图模型 ────
@@ -774,13 +775,21 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
         throw new LearnRunAbortedError();
       }
 
-      return conversationEngine.run(runtime, {
-        beginPageOperation: glow?.beginPageOperation,
-        observer: makeObserver(kind, cfg.targetMode),
-        onLimitReached: limitKind => handleLimitReached(limitKind, runtime.limits, kind),
-        resetBudgetOnContinue: true,
-        onToolApproval: request => deps.requestToolApproval(request),
-      });
+      // 本地运行自报：学习 / 验证类运行由侧边栏本地引擎持有（不走后台端口），
+      // 后台看不到它们 —— 自报到 chrome.storage.session，管理中心才能在
+      // 「切换 / 删除会话」前拦住正在跑的学习会话。
+      await setLocalRunningChat(runtime.chatId, true);
+      try {
+        return await conversationEngine.run(runtime, {
+          beginPageOperation: glow?.beginPageOperation,
+          observer: makeObserver(kind, cfg.targetMode),
+          onLimitReached: limitKind => handleLimitReached(limitKind, runtime.limits, kind),
+          resetBudgetOnContinue: true,
+          onToolApproval: request => deps.requestToolApproval(request),
+        });
+      } finally {
+        await setLocalRunningChat(runtime.chatId, false);
+      }
     })();
 
     activeRun = runPromise;

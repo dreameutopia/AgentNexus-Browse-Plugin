@@ -1,3 +1,5 @@
+import { SKILL_TOOL_ID } from '@/utils/skills/skill-tool-contract';
+
 /** Capability ceiling for the built-in guide, including skills and extra tools.
  * Deliberately explicit: registering a new tool must not silently grant it here.
  * note_tool / plan_tool / read_file 与 interact 同属 CORE_SESSION_TOOL_IDS 全局工具：
@@ -9,7 +11,7 @@
  * 由会话引擎在执行前拒绝手势类 action（见 conversation-engine 执行闸门）。 */
 export const VISION_ASSISTANT_TOOLS = [
   'screenshot', 'vision_gui', 'generic_wait',
-  'browser_get_page_text', 'interact', 'plan_tool', 'note_tool', 'read_file', 'load_skill', 'read_skill_file',
+  'browser_get_page_text', 'interact', 'plan_tool', 'note_tool', 'read_file', SKILL_TOOL_ID,
 ] as const;
 
 /**

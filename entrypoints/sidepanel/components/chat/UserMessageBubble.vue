@@ -1,8 +1,21 @@
 <template>
   <div class="user-bubble" :class="{ 'is-expanded': expanded, 'is-clamped': clamped }">
+    <!-- 引用块：用户确认引用的网页原文（落库字段 pageQuote，气泡内唯一来源）。
+         独立于正文折叠层——正文再长也不裁剪引用块，引用始终完整可读。 -->
+    <blockquote v-if="quote" class="user-bubble-quote">
+      <div class="user-bubble-quote-head">
+        <TextQuote class="user-bubble-quote-icon" :size="12" :stroke-width="2" aria-hidden="true" />
+        <span class="user-bubble-quote-tag">{{ t('sidepanel.chat.userMessageQuoteTag') }}</span>
+        <span v-if="quoteSource" class="user-bubble-quote-source" :title="quote.source.url || quoteSource">
+          {{ quoteSource }}
+        </span>
+      </div>
+      <div class="user-bubble-quote-text">{{ quote.text }}</div>
+    </blockquote>
+
     <!-- 正文区：折叠只裁剪这一层（.user-bubble-clip），正文容器本身不被限高，
          测量到的始终是完整高度，展开/收起不需要重新测量 -->
-    <div class="user-bubble-body">
+    <div v-if="content" class="user-bubble-body">
       <div
         class="user-bubble-clip"
         :style="clamped ? { maxHeight: `${clampHeightPx}px` } : undefined"
@@ -49,7 +62,7 @@
         :class="{ copied }"
         :title="copied ? t('sidepanel.chat.copiedLabel') : t('sidepanel.chat.userMessageCopy')"
         :aria-label="copied ? t('sidepanel.chat.copiedLabel') : t('sidepanel.chat.userMessageCopy')"
-        :disabled="!content"
+        :disabled="!content && !quote"
         @click="copy"
       >
         <svg v-if="!copied" width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -79,6 +92,7 @@
  * 因此测量到的始终是完整高度——展开 / 收起都不需要重新测量内容。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { TextQuote } from 'lucide-vue-next';
 import { t } from '@/utils/i18n';
 import {
   USER_MESSAGE_MAX_LINES,
@@ -87,6 +101,7 @@ import {
   resolveLineHeightPx,
 } from '../../utils/chat/user-message-collapse';
 import { useCopyToClipboard } from '../../utils/chat/use-copy-to-clipboard';
+import { pageQuoteSourceDisplay, type PageQuote } from '../../utils/chat/page-quote';
 import MarkdownText from './MarkdownText.vue';
 import './user-message-bubble.css';
 
@@ -95,6 +110,11 @@ const props = defineProps<{
   content: string;
   /** 消息 id（仅用于失败日志定位，缺省不影响渲染） */
   messageId?: string;
+  /**
+   * 本条消息携带的网页引用（用户在页面选中文本并确认引用）。
+   * 缺省 = 无引用（普通消息不渲染引用块）。
+   */
+  quote?: PageQuote;
 }>();
 
 /** 正文容器（不限高，scrollHeight 即完整正文高度） */
@@ -109,6 +129,27 @@ const clampHeightPx = ref(0);
 
 /** 当前是否处于收起态（超长且未展开） */
 const clamped = computed(() => overflowable.value && !expanded.value);
+
+/**
+ * 引用来源展示：页面标题优先，其次域名，都没有则回落到中性文案。
+ * 空串 = 本条消息无引用（不渲染引用块）。
+ */
+const quoteSource = computed<string>(() => {
+  if (!props.quote) return '';
+  return pageQuoteSourceDisplay(props.quote) || t('sidepanel.chat.userMessageQuoteSourceFallback');
+});
+
+/**
+ * 复制口径：本条消息的全部文本（引用原文 + 用户正文）。
+ * 与「这条消息实际发了什么」保持一致——只引用网页原文、不另写文字时，
+ * 复制到的就是那段原文（正文为空时复制按钮不得是死的）。
+ */
+const copyText = computed<string>(() => {
+  const quoteText = props.quote?.text?.trim() ?? '';
+  const body = props.content ?? '';
+  if (!quoteText) return body;
+  return body ? `${quoteText}\n${body}` : quoteText;
+});
 
 const toggleExpand = (): void => {
   expanded.value = !expanded.value;
@@ -146,7 +187,7 @@ const handleClipClick = (event: MouseEvent): void => {
 
 // 复制（与模型消息操作栏共用口径）
 const { copied, copy } = useCopyToClipboard(
-  () => props.content,
+  () => copyText.value,
   () => `用户消息（messageId=${props.messageId ?? '无'}）`,
 );
 

@@ -241,6 +241,8 @@ const runBindings = {
     assert.equal(glowActive, false, 'Explicit stop retires the glow before engine cleanup');
     completeRun({ status: 'aborted' });
   } },
+  // 本地运行自报（session-bridge）：测试环境无 chrome，按 no-op 注入
+  setLocalRunningChat: async () => {},
   sessionDeletionEngine: { deleteSession: async () => {
     assert.equal(dialogs.size, 0, 'Close approval before deleting the session');
   } },
@@ -314,7 +316,10 @@ try {
     const running = runOnce(stage);
     assert.equal(glowActive, true, 'Light the target during local runtime assembly');
     assert.equal(bindings.isAiResponding.value, true, 'Responding must include runtime assembly');
-    await Promise.resolve();
+    // 排空微任务队列（而非单次 flush）：装配完成后到引擎 run 之间可能隔着
+    // 多级 await（如本地运行自报的 session-bridge 上报），单次 Promise.resolve
+    // 恢复时机早于 run 调用，会把「还没跑到」误判成「没跑」。
+    await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(builtInput.limitsOverride, stage === 'learning'
       ? { maxIterations: 12, maxDurationMs: 7 * 60000 } : { maxIterations: 8, maxDurationMs: 4 * 60000 }, '阶段独立预算进入真实运行装配');
     assert.equal(runOptions.resetBudgetOnContinue, true);
@@ -359,7 +364,8 @@ try {
   }
   for (const terminal of ['assistant-error', 'aborted']) {
     const running = runOnce('learning');
-    await Promise.resolve();
+    // 与上同因：排空微任务队列，等装配后的多级 await 走完、run 真正登记
+    await new Promise(resolve => setImmediate(resolve));
     adapter.event({ type: 'assistant-start', chatId: 'learn-chat', messageId: terminal });
     adapter.event({ type: 'token', chatId: 'learn-chat', messageId: terminal, delta: '部分输出' });
     await flush(); checkLive();
@@ -378,7 +384,7 @@ try {
   // Explicit learning stop must settle approval BEFORE waiting for activeRun,
   // otherwise a local engine can wait up to its approval timeout to exit.
   const stoppedRun = runOnce('validating');
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   const stoppedApproval = runOptions.onToolApproval({ name: 'browser_interact', argumentsPreview: '支付订单' });
   await learning.cleanup();
   await stoppedRun;

@@ -1,0 +1,400 @@
+/**
+ * 管理中心「会话管理」分区样式
+ *
+ * 设计语言：沿用 hub.css 的液态玻璃体系（中性黑白灰，无任何蓝紫）。
+ *   - 卡片 = 半透明白面 + 内侧高光 + 柔影（--glass-* token）；
+ *   - 强调色一律走中性墨色；语义色（成功 / 警告 / 失败 / 执行中）仅用于状态表达。
+ *
+ * **布局契约（本分区的核心约束）**：右侧内容整体不出现滚动条，
+ * 只有 .hub-sessions__scroll（会话元素容器）超出时出现滚动条。
+ * 实现 = 弹性链逐级 min-height:0：
+ *   .hub-content-body → .api-section → .hub-sessions → __scroll
+ * 头部 / 提示条 / 工具栏全部 flex:none 固定，滚动只发生在 __scroll 内部。
+ * 任何给头部或工具栏加 margin 导致溢出的改动都会打破该契约 —— 改动前先跑
+ * tests/hub/sessions-section.test.mjs 的布局断言。
+ *
+ * 类名一律带 `hub-sessions__` 前缀，避免与管理中心其它分区串扰；
+ * 需要覆盖 hub.css 既有类时用复合选择器提升特异性，不依赖样式表先后顺序。
+ */
+
+.hub-sessions {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ──── 头部（固定不滚动） ──── */
+
+.hub-sessions__head {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hub-sessions__head-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hub-sessions__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hub-sessions__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--ink-primary, #292824);
+}
+
+.hub-sessions__head-actions {
+  flex: none;
+  display: inline-flex;
+  gap: 8px;
+}
+
+/* ──── 反馈条（固定不滚动） ──── */
+
+.hub-sessions__notice {
+  flex: none;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid rgba(41, 40, 36, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.66);
+  color: var(--ink-secondary, #787671);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.hub-sessions__load-error {
+  flex: none;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid rgba(239, 68, 68, 0.24);
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.07);
+  color: var(--error-color, #ef4444);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* ──── 工具栏（固定不滚动） ──── */
+
+.hub-sessions__toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.hub-sessions__search {
+  flex: 1 1 240px;
+  min-width: 180px;
+}
+
+.hub-sessions__content-switch {
+  flex: none;
+}
+
+.hub-sessions__searching {
+  flex: none;
+  font-size: 12px;
+  color: var(--ink-muted, #9b9790);
+}
+
+.hub-sessions__view {
+  flex: none;
+  margin-left: auto;
+}
+
+/* ──── 滚动区：唯一出现滚动条的容器 ──── */
+
+.hub-sessions__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  /* 滚动条贴内容区右缘，不与工具栏/头部争空间 */
+  padding-right: 2px;
+}
+
+/* ──── 归档保留策略卡 ──── */
+
+.hub-sessions__policy {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.78));
+  border-radius: 14px;
+  background: var(--glass-tint, rgba(255, 255, 255, 0.55));
+  backdrop-filter: var(--glass-blur, blur(18px) saturate(165%));
+  -webkit-backdrop-filter: var(--glass-blur, blur(18px) saturate(165%));
+  box-shadow: var(--glass-inset, none);
+}
+
+.hub-sessions__policy-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hub-sessions__policy-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink-primary, #292824);
+}
+
+.hub-sessions__retention {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--ink-secondary, #787671);
+}
+
+.hub-sessions__retention-label {
+  flex: none;
+}
+
+.hub-sessions__retention-input {
+  width: 88px;
+  border: 1px solid rgba(41, 40, 36, 0.12);
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink-primary, #292824);
+  background: rgba(255, 255, 255, 0.66);
+  box-shadow: inset 0 1px 2px rgba(41, 40, 36, 4%);
+  outline: none;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.hub-sessions__retention-input:focus {
+  border-color: rgba(41, 40, 36, 0.32);
+  box-shadow: var(--ring-primary, 0 0 0 3.5px rgba(41, 40, 36, 0.12));
+}
+
+.hub-sessions__retention-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* 去掉 number 输入的原生步进钮（自绘外观约定，与全站表单一致） */
+.hub-sessions__retention-input::-webkit-outer-spin-button,
+.hub-sessions__retention-input::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+.hub-sessions__retention-input {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+/* ──── 会话列表 ──── */
+
+.hub-sessions__list {
+  flex: none;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hub-sessions__row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.78));
+  border-radius: 14px;
+  background: var(--glass-tint, rgba(255, 255, 255, 0.55));
+  backdrop-filter: var(--glass-blur, blur(18px) saturate(165%));
+  -webkit-backdrop-filter: var(--glass-blur, blur(18px) saturate(165%));
+  box-shadow: var(--glass-inset, none);
+  transition: box-shadow 0.22s ease, transform 0.25s var(--ease-spring, cubic-bezier(0.32, 0.72, 0, 1)),
+    border-color 0.18s ease;
+}
+
+.hub-sessions__row:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--glass-inset, none), var(--glass-shadow, 0 12px 32px rgb(41 40 36 / 9%));
+  border-color: rgba(41, 40, 36, 0.14);
+}
+
+/* 侧边栏当前打开的会话：中性墨色描边标记（不引入彩色） */
+.hub-sessions__row.is-current {
+  border-color: rgba(41, 40, 36, 0.32);
+}
+
+.hub-sessions__row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.hub-sessions__row-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink-primary, #292824);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.hub-sessions__row-time {
+  flex: none;
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--ink-muted, #9b9790);
+}
+
+.hub-sessions__row-preview {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-secondary, #787671);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+/* 内容搜索命中：与预览区分隔，弱化底色 */
+.hub-sessions__row-hit {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink-secondary, #787671);
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: rgba(41, 40, 36, 0.05);
+  border: 1px dashed rgba(41, 40, 36, 0.14);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.hub-sessions__row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--ink-muted, #9b9790);
+}
+
+.hub-sessions__row-retention {
+  color: var(--ink-muted, #9b9790);
+}
+
+.hub-sessions__row-ops {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+/* 悬停 / 键盘聚焦时浮现操作钮（与技能文件树行尾操作同一交互） */
+.hub-sessions__row:hover .hub-sessions__row-ops,
+.hub-sessions__row:focus-within .hub-sessions__row-ops {
+  opacity: 1;
+}
+
+/* 无指针设备（触屏）：操作钮常驻可见，避免「看不见按钮」 */
+@media (hover: none) {
+  .hub-sessions__row-ops {
+    opacity: 1;
+  }
+}
+
+/* ──── 行内重命名 ──── */
+
+.hub-sessions__rename {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hub-sessions__rename-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid rgba(41, 40, 36, 0.24);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink-primary, #292824);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: var(--ring-primary, 0 0 0 3.5px rgba(41, 40, 36, 0.12));
+  outline: none;
+}
+
+/* ──── 加载更多 ──── */
+
+.hub-sessions__more {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 8px;
+}
+
+/* ──── 徽章（复合选择器提升特异性，压过 hub-badge 基类） ──── */
+
+.hub-badge.hub-sessions-badge-neutral {
+  color: var(--ink-secondary, #787671);
+  background: rgba(41, 40, 36, 0.05);
+  border-color: rgba(41, 40, 36, 0.14);
+}
+
+/* 执行中：琥珀语义色（状态表达，非装饰） */
+.hub-badge.hub-sessions-badge-run {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.32);
+}
+
+/* 侧边栏打开中：中性墨色实底（唯一强调，与 active 导航项同语言） */
+.hub-badge.hub-sessions-badge-current {
+  color: #ffffff;
+  background: var(--ink-primary, #292824);
+  border-color: transparent;
+}
+
+/* ──── 窄屏回落 ──── */
+
+@media (max-width: 860px) {
+  .hub-sessions__head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .hub-sessions__view {
+    margin-left: 0;
+  }
+}

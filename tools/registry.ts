@@ -5,6 +5,7 @@
 
 import { ToolExecutor, ToolResult } from '@/common/tool-handler';
 import { OpenAITool } from '@/common/openai-types';
+import type { SkillToolMode } from '@/utils/skills/skill-tool-contract';
 
 // 工具元数据接口
 export interface ToolMetadata {
@@ -94,14 +95,27 @@ export interface ToolExecutionContext {
   requestId?: string;
   /** 发起本次工具调用的会话 id（数据隔离键） */
   chatId?: string;
+  /** Skill IDs authorized by the conversation runtime, never taken from tool arguments. */
+  skillResourceIds?: readonly string[];
+  availableSkillIds?: readonly string[];
+  skillMode?: SkillToolMode;
+  /** Set by the conversation engine after a required approval was granted. */
+  toolApproved?: boolean;
   /** Report the actual tab once the tool has resolved its page target. */
   onTabTarget?: (tabId: number) => void;
+}
+
+export interface ToolSchemaOptions {
+  skillMode?: SkillToolMode;
 }
 
 // 扩展工具接口
 export interface ExtendedTool extends ToolExecutor {
   name: string;
   metadata: ToolMetadata;
+  getSchema?(options: ToolSchemaOptions): OpenAITool;
+  /** Tool-specific approval condition when the generic action and confirmation rules do not apply. */
+  requiresApprovalFor?(args: unknown): boolean;
   openaiSchema: OpenAITool;
   execute(args: any, context?: ToolExecutionContext): Promise<ToolResult>;
   /**

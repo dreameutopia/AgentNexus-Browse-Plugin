@@ -334,33 +334,86 @@ export const categories: ToolCategory[] = [
     icon: '🌐',
     tools: [
       {
-        name: 'browser_navigate',
-        description: '在现有窗口内导航，默认打开新标签页，禁止创建浏览器窗口',
+        name: 'browser_navigation',
+        description: '统一页面导航：打开/刷新/历史前进后退/等待加载（action 驱动）',
         category: 'browser',
-        version: '2.0.0',
+        version: '3.0.0',
         parameters: {
+          action: {
+            type: 'string',
+            description: 'open=打开URL / refresh=刷新 / back=后退 / forward=前进 / wait=等待加载就绪',
+            enum: ['open', 'refresh', 'back', 'forward', 'wait']
+          },
           url: {
             type: 'string',
-            description: '要导航到的完整URL',
+            description: '仅 action=open：要导航到的完整URL',
             placeholder: 'https://example.com'
           },
           newTab: {
             type: 'boolean',
-            description: '是否在现有窗口新建标签页；false 使用当前标签页',
+            description: '仅 action=open：是否在现有窗口新建标签页；false 使用当前标签页',
             default: true
           },
           waitForLoad: {
             type: 'boolean',
-            description: '是否等待页面加载完成',
+            description: '仅 open/refresh/back/forward：是否等待页面就绪再返回',
             default: true
           },
           timeout: {
             type: 'number',
-            description: '等待超时时间（毫秒）',
+            description: '等待上限（毫秒），默认30000',
             default: 30000
+          },
+          checkInterval: {
+            type: 'number',
+            description: '仅 action=wait：轮询间隔（毫秒），默认500，50~10000',
+            default: 500
+          },
+          tabId: {
+            type: 'number',
+            description: '仅 action=wait：要等待的标签页ID（缺省当前活动标签）',
+            placeholder: '留空表示当前标签页'
           }
         },
-        required: []
+        required: ['action']
+      },
+      {
+        name: 'browser_tabs',
+        description: '标签页与窗口管理：枚举/切换/关闭/创建标签页与窗口树（action 驱动）',
+        category: 'browser',
+        version: '3.0.0',
+        parameters: {
+          action: {
+            type: 'string',
+            description: 'list=枚举标签页 / switch=切换 / close=关闭 / create=新建 / windows=窗口树枚举',
+            enum: ['list', 'switch', 'close', 'create', 'windows']
+          },
+          currentWindow: {
+            type: 'boolean',
+            description: '仅 action=list：是否只枚举当前窗口（默认全部窗口）'
+          },
+          tabId: {
+            type: 'number',
+            description: 'switch 必填 / close 单个：目标标签页ID',
+            placeholder: '输入标签页ID'
+          },
+          tabIds: {
+            type: 'array',
+            items: { type: 'number' },
+            description: '仅 action=close：批量关闭的标签页ID列表（与tabId、url互斥）'
+          },
+          url: {
+            type: 'string',
+            description: 'close=按URL匹配关闭（与tabId、tabIds互斥）；create=新标签页URL',
+            placeholder: 'https://example.com'
+          },
+          active: {
+            type: 'boolean',
+            description: '仅 action=create：是否激活新标签页',
+            default: true
+          }
+        },
+        required: ['action']
       },
       {
         name: 'browser_scroll',
@@ -507,67 +560,6 @@ export const categories: ToolCategory[] = [
         required: ['url', 'method']
       },
       {
-        name: 'browser_go_back_or_forward',
-        description: '在浏览器历史记录中前进或后退',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {
-          isForward: {
-            type: 'boolean',
-            description: 'true表示前进，false表示后退',
-            default: false
-          }
-        },
-        required: []
-      },
-      {
-        name: 'browser_switch_tab',
-        description: '切换到指定标签页',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {
-          tabId: {
-            type: 'number',
-            description: '标签页ID',
-            placeholder: '输入标签页ID'
-          }
-        },
-        required: ['tabId']
-      },
-      {
-        name: 'browser_close_tab',
-        description: '关闭指定标签页',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {
-          tabId: {
-            type: 'number',
-            description: '标签页ID',
-            placeholder: '输入标签页ID'
-          }
-        },
-        required: ['tabId']
-      },
-      {
-        name: 'browser_create_tab',
-        description: '创建新标签页',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {
-          url: {
-            type: 'string',
-            description: '新标签页URL',
-            placeholder: 'https://example.com'
-          },
-          active: {
-            type: 'boolean',
-            description: '是否激活新标签页',
-            default: true
-          }
-        },
-        required: ['url']
-      },
-      {
         name: 'browser_vector_search',
         description: '在所有打开的标签页内容中进行向量搜索',
         category: 'browser',
@@ -673,14 +665,7 @@ export const categories: ToolCategory[] = [
         required: []
       },
       // rightClick / drag 已移除：当前 toolRegistry 中无对应注册工具
-      {
-        name: 'browser_window',
-        description: '获取所有浏览器窗口和标签页信息',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {},
-        required: []
-      },
+      // 窗口枚举（原 browser_window）已并入 browser_tabs(action="windows")
       {
         name: 'browser_console',
         description: '捕获浏览器控制台输出和异常信息',
@@ -704,8 +689,8 @@ export const categories: ToolCategory[] = [
         },
         required: []
       },
-      // goBack / goForward 是 browser_go_back_or_forward 的消息类型别名；
-      // browser_refresh 无注册工具（CALL_TOOL 通道不可达）——均已移除
+      // 历史前进后退 / 刷新已并入 browser_navigation（action=back/forward/refresh）；
+      // 标签页关闭/创建/切换已并入 browser_tabs
     ]
   },
   {
@@ -716,15 +701,14 @@ export const categories: ToolCategory[] = [
       {
         name: 'web_search',
         description:
-          '统一多平台集成搜索：一次调用完成「导航到平台搜索结果页 → 等待加载 → 解析结构化结果 → Markdown 表格」。' +
-          '⚠ 自带页面导航（效果等同 browser_navigate），禁止同一轮并发调用；返回 navigation（是否成功 + 当前网址）与 results（条目与 Markdown 表，解析失败时用 browser_get_page_text 自行解析）',
+          '通用网页搜索：一次调用完成「导航到搜索引擎结果页 → 等待加载 → 解析结构化结果 → Markdown 表格」（bing / baidu）。' +
+          '⚠ 自带页面导航（效果等同 browser_navigation(action="open")），禁止同一轮并发调用；返回 navigation（是否成功 + 当前网址）与 results（条目与 Markdown 表，解析失败时用 browser_get_page_text 自行解析）',
         category: 'search',
         version: '1.0.0',
         parameters: {
-          website: {
+          engine: {
             type: 'string',
-            description:
-              '目标搜索平台（枚举）：baidu=百度、bing=Bing、zhihu=知乎、github=GitHub、csdn=CSDN、mooc=中国大学MOOC、xiaohongshu=小红书、cnki=中国知网、bilibili=Bilibili',
+            description: '目标搜索引擎（枚举）：bing=Bing、baidu=百度',
             placeholder: 'bing'
           },
           query: {
@@ -743,7 +727,39 @@ export const categories: ToolCategory[] = [
             default: 3000
           }
         },
-        required: ['website', 'query']
+        required: ['engine', 'query']
+      },
+      {
+        name: 'platform_search',
+        description:
+          '站点平台搜索：一次调用完成「导航到站点搜索结果页 → 等待加载 → 解析结构化结果 → Markdown 表格」（知乎 / GitHub / CSDN / MOOC / 小红书 / 知网 / Bilibili）。' +
+          '⚠ 自带页面导航（效果等同 browser_navigation(action="open")），禁止同一轮并发调用；知乎/小红书等需登录态，未登录可能返回登录墙或空结果',
+        category: 'search',
+        version: '1.0.0',
+        parameters: {
+          platform: {
+            type: 'string',
+            description:
+              '目标站点平台（枚举）：zhihu=知乎、github=GitHub、csdn=CSDN、mooc=中国大学MOOC、xiaohongshu=小红书、cnki=中国知网、bilibili=Bilibili',
+            placeholder: 'zhihu'
+          },
+          query: {
+            type: 'string',
+            description: '搜索查询关键词（必填，最长 300 字符）',
+            placeholder: '输入搜索内容'
+          },
+          newTab: {
+            type: 'boolean',
+            description: '是否在新标签页打开搜索结果（默认 true；连续搜索可传 false 复用当前标签页）',
+            default: true
+          },
+          waitTime: {
+            type: 'integer',
+            description: '页面加载完成后的额外等待毫秒数（0-10000，默认 3000）',
+            default: 3000
+          }
+        },
+        required: ['platform', 'query']
       }
     ]
   },
@@ -807,14 +823,6 @@ export const categories: ToolCategory[] = [
             placeholder: '留空表示当前标签页'
           }
         },
-        required: []
-      },
-      {
-        name: 'browser_get_all_tabs',
-        description: '获取所有打开的标签页信息',
-        category: 'base',
-        version: '1.0.0',
-        parameters: {},
         required: []
       },
       {
@@ -885,20 +893,6 @@ export const categories: ToolCategory[] = [
           }
         },
         required: ['waitSeconds']
-      },
-      {
-        name: 'wait_page_load',
-        description: '等待页面加载完成',
-        category: 'common',
-        version: '1.0.0',
-        parameters: {
-          timeout: {
-            type: 'number',
-            description: '超时时间（毫秒）',
-            default: 30000
-          }
-        },
-        required: []
       }
     ]
   },
@@ -1222,7 +1216,7 @@ export const categories: ToolCategory[] = [
             type: 'array',
             items: { type: 'string' },
             description: '执行本技能需要的工具 ID 数组（非空）',
-            placeholder: '["browser_navigate", "browser_interact"]'
+            placeholder: '["browser_navigation", "browser_interact"]'
           },
           mode: {
             type: 'string',

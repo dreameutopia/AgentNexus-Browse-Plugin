@@ -4,6 +4,7 @@
  */
 
 import type { ChatMessage } from '../utils/ai/ai-chat-api';
+import type { PageQuote } from '../utils/chat/page-quote';
 
 /**
  * 工具调用 UI 状态
@@ -118,6 +119,11 @@ export interface ExtendedChatMessage extends ChatMessage {
    * 渲染层据此展示可折叠图片区（默认收起，可查看 / 放大 / 下载）。
    */
   imageRefs?: string[];
+  /**
+   * 本条用户消息携带的网页引用（用户在页面选中文本并确认引用）。
+   * 用户气泡据此渲染引用块（原文 + 来源页面）；缺省 = 无引用。
+   */
+  pageQuote?: PageQuote;
   /** 仅用于向后兼容的 reasoning_content 收起状态 */
   _reasoningContentCollapsed?: boolean;
   /**

@@ -8,11 +8,26 @@
  */
 import * as echarts from 'echarts';
 import { markdownRenderer } from '../entrypoints/sidepanel/utils/chat/markdown-renderer';
+import { installComponentImageSaveHandler } from '../entrypoints/sidepanel/utils/chat/component-image-save';
+import { installDiagramRenderer, processDiagrams } from '../entrypoints/sidepanel/utils/chat/diagram-renderer';
+import { installChartRenderer, processCharts } from '../entrypoints/sidepanel/utils/chat/chart-renderer';
 import { parseRichEnvelope, deriveChartOption } from '../entrypoints/sidepanel/utils/chat/rich-components';
+import {
+  CHART_VIEW_HEIGHT,
+  chartNaturalWidth,
+  computeChartLayout,
+  parseChartOption,
+} from '../entrypoints/sidepanel/utils/chat/chart-layout';
 import { sanitizeEchartsOptionJson } from '../entrypoints/sidepanel/utils/chat/echarts-option-sanitizer';
 import { setLocale } from '../utils/i18n/core';
 
 setLocale('zh-CN');
+
+// 富组件头部的「保存」按钮走 document 级委托（与生产侧边栏同一处安装）；
+// 图表 / 图块的异步渲染器也一并接上，预览页才能真正渲染出产物供保存
+installComponentImageSaveHandler();
+installDiagramRenderer();
+installChartRenderer();
 
 interface PreviewCase {
   label: string;
@@ -82,6 +97,11 @@ const CASES: PreviewCase[] = [
       '顺手调整了净化器上限：\n\n```diff\n--- a/echarts-option-sanitizer.ts\n+++ b/echarts-option-sanitizer.ts\n@@ -34,7 +34,7 @@\n-const MAX_SERIES = 4;\n+const MAX_SERIES = 8;\n const MAX_DATA_POINTS_PER_SERIES = 500;\n+const MAX_DATASET_ROWS = 1_000;\n```\n',
   },
   {
+    label: 'mermaid 原生围栏：本地渲染 SVG（异步渲染器）',
+    markdown:
+      '导出链路：\n\n```mermaid\nflowchart LR\n  A[信封数据] --> B[宿主派生]\n  B --> C[ECharts 沙箱]\n  C --> D[保存为 PNG]\n```\n',
+  },
+  {
     label: 'legacy ```echarts 直连：历史消息继续渲染（骨架态）',
     markdown:
       '```echarts\n{"title":{"text":"旧版直连图表"},"xAxis":{"type":"category","data":["a","b","c"]},"series":[{"type":"bar","data":[3,5,8]}]}\n```\n',
@@ -109,7 +129,10 @@ function mount(): void {
     stage.appendChild(body);
     root.appendChild(stage);
 
-    // 模拟沙箱页：把信封 chart 的派生 option 用 echarts 直接渲染进骨架
+    // 模拟沙箱页：把信封 chart 的派生 option 用 echarts 直接渲染进骨架。
+    // 预览页没有 chrome.runtime.getURL，真实的沙箱 iframe 走不通，这里
+    // 复刻**同样的三层结构与缩放**（chart-stage > chart-fit > 画布），
+    // 保证预览所见与生产一致。
     if (testCase.liveChart) {
       const block = body.querySelector<HTMLElement>('.chart-block[data-chart-input="envelope"]');
       const source = block?.querySelector('.chart-source code')?.textContent ?? '';
@@ -121,9 +144,33 @@ function mount(): void {
           if (sanitized.ok) {
             const chartBody = block?.querySelector<HTMLElement>('.chart-body');
             if (chartBody && block) {
+              const natural = chartNaturalWidth(
+                parseChartOption(sanitized.json),
+              );
+              const available = chartBody.clientWidth || 640;
+              const layout = computeChartLayout(available, natural);
+
+              const stage = document.createElement('div');
+              stage.className = 'chart-stage';
+              const fit = document.createElement('div');
+              fit.className = 'chart-fit';
+              const canvas = document.createElement('div');
+              canvas.style.width = `${layout.renderWidth}px`;
+              canvas.style.height = `${CHART_VIEW_HEIGHT}px`;
+              canvas.style.transformOrigin = 'left top';
+              if (layout.scale < 1) canvas.style.transform = `scale(${layout.scale})`;
+
+              fit.appendChild(canvas);
+              stage.appendChild(fit);
               chartBody.innerHTML = '';
-              chartBody.style.height = '300px';
-              const instance = echarts.init(chartBody);
+              chartBody.appendChild(stage);
+              stage.style.width = `${available}px`;
+              stage.style.height = `${layout.paintedHeight}px`;
+              stage.style.overflowX = layout.scrollable ? 'auto' : 'hidden';
+              fit.style.width = `${layout.paintedWidth}px`;
+              fit.style.height = `${layout.paintedHeight}px`;
+
+              const instance = echarts.init(canvas);
               instance.setOption(JSON.parse(sanitized.json));
               block.dataset.chartState = 'done';
             }
@@ -132,6 +179,11 @@ function mount(): void {
       }
     }
   }
+
+  // 图表 / 图块（Mermaid / PlantUML）走生产异步渲染器；
+  // 预览页没有 [data-streaming] 标记，扫描会立即渲染
+  processDiagrams(root);
+  processCharts(root);
 }
 
 mount();

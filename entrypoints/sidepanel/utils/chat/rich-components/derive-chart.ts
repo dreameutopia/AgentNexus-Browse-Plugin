@@ -127,7 +127,10 @@ export function deriveChartOption(env: NormalizedEnvelope): DeriveChartResult {
   }
 
   const kind = resolveKind(env);
-  const title = env.title ? { text: env.title } : undefined;
+  // 标题左对齐（ECharts 默认居中）：图表在消息气泡里可能窄到需要横向滚动，
+  // 居中标题会落在可视区之外看不见；左对齐在所有呈现方式下都可见，
+  // 也与气泡内左对齐的正文流一致。
+  const title = env.title ? { text: env.title, left: 0, top: 0 } : undefined;
 
   if (CARTESIAN_KINDS.has(kind)) {
     // 空列名兜底（图例 / tooltip 引用系列名，不允许空串）
@@ -160,7 +163,9 @@ export function deriveChartOption(env: NormalizedEnvelope): DeriveChartResult {
           {
             type: 'pie',
             radius: '62%',
-            label: { formatter: '{b}: {c} ({d}%)' },
+            // overflow: 'none' —— ECharts 默认把超长标签截断成「404 失效: …」，
+            // 看着就是右侧被切；不截断后由 chart-layout 的自然宽度保证放得下
+            label: { formatter: '{b}: {c} ({d}%)', overflow: 'none' },
             data: env.rows
               .map(row => ({ name: cellText(row[0]), value: denseValue(row[1]) }))
               .filter(item => item.name !== ''),

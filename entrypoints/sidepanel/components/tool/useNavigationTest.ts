@@ -33,8 +33,9 @@ export function useNavigationTest() {
         const response = await chrome.runtime.sendMessage({
           type: 'CALL_TOOL',
           tool: {
-            name: 'browser_navigate',
+            name: 'browser_navigation',
             args: {
+              action: 'open',
               url: url,
               waitForLoad: true,
               timeout: 30000

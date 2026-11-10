@@ -63,6 +63,7 @@ export async function stagePythonWorkspace<T extends WorkspaceOutcome>(
   snapshot: WorkspaceSnapshot | undefined,
   run: () => Promise<T>,
   signal?: AbortSignal,
+  collect = true,
 ): Promise<{ outcome: T; entries?: WorkspaceEntry[] }> {
   const root = workspaceRoot(chatId);
   const previous = indexWorkspaceEntries(root, snapshot?.entries ?? []);
@@ -105,7 +106,7 @@ export async function stagePythonWorkspace<T extends WorkspaceOutcome>(
         (outcome.ok ? '' : ` Python also reported: ${'errorDetail' in outcome ? String(outcome.errorDetail) : 'execution failed'}`),
       );
     }
-    if (!outcome.ok) return { outcome };
+    if (!outcome.ok || !collect) return { outcome };
     signal?.throwIfAborted();
     const entries = collectWorkspace(fs, root, previous);
     return { outcome, entries };

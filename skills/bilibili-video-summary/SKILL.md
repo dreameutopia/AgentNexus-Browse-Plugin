@@ -1,7 +1,7 @@
 ---
 name: bilibili-video-summary
 description: 总结当前或指定的 Bilibili 视频：提取字幕要点、按时间线归纳章节、生成时间戳跳转建议。当用户要求"总结/速览 B 站视频、视频讲了什么、给我划重点"时使用。
-allowed-tools: bilibili_jump_tool bilibili_subtitle_tool browser_get_page_text browser_navigate
+allowed-tools: bilibili_jump_tool bilibili_subtitle_tool browser_get_page_text browser_navigation
 category: media
 tags: 视频总结 字幕 时间线
 ---
@@ -14,7 +14,7 @@ tags: 视频总结 字幕 时间线
 
 ## 前置条件
 
-- 用户当前已打开视频页，或给出了视频 URL/BV 号（用 `browser_navigate` 先打开）。
+- 用户当前已打开视频页，或给出了视频 URL/BV 号（用 `browser_navigation(action="open")` 先打开）。
 - 需要视频字幕可用；无字幕视频降级为"页面文字信息总结"模式。
 
 ## 工作流程

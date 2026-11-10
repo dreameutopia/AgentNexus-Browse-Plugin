@@ -138,6 +138,7 @@ export interface PluginSkill {
   description: string;
   body: string;
   files: Record<string, string>;
+  resourceBytes?: Record<string, string>;
   allowedTools: string[];
   category: string;
   tags: string[];

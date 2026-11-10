@@ -188,6 +188,28 @@ const cancelled = new Set<string>();
 let runtimeInitialized = false;
 
 /**
+ * 当前正在占用运行资源的会话（跨上下文唯一权威）。
+ *
+ * 覆盖三个维度：
+ *   - inFlightRuns   模型请求 / 工具轮次在途；
+ *   - preparingRuns  发送前压缩 / 运行时装配在途（此时引擎尚未登记运行）；
+ *   - stopStates     停止流程在途（已置位中止、尚未结算）。
+ *
+ * 任一为真都意味着「这个会话正在动」——管理中心据此拒绝切换 / 删除，
+ * 必须等用户主动停止或任务自然结束。侧边栏本地引擎持有的学习类运行
+ * 不在此列（那部分由侧边栏自报，见 utils/sessions/session-bridge）。
+ */
+export function listBusySessionIds(): string[] {
+  const ids = new Set<string>();
+  for (const id of inFlightRuns.keys()) ids.add(id);
+  for (const id of preparingRuns.keys()) ids.add(id);
+  for (const [id, state] of stopStates) {
+    if (state.phase !== 'done') ids.add(id);
+  }
+  return [...ids];
+}
+
+/**
  * 统一的中止动作：置位运行级中止 + 打断预运行阶段 + 收敛挂起提问。
  *
  * 两条停止路径（abort / abortAndWait）共用本函数——它们的差别只在
@@ -417,12 +439,14 @@ export function initConversationRuntime(): void {
             measureContextUsage({
               systemPrompt: runtime.systemPrompt,
               toolIds: runtime.advertisedToolIds ?? runtime.toolIds,
+              skillMode: runtime.skillMode,
               messages: [
                 ...runtime.initialContext,
                 composeLlmUserMessage(
                   runtime.userInput,
                   runtime.attachmentPrompt,
                   runtime.userImages,
+                  runtime.pageQuotePrompt,
                 ),
                 ...runtime.activationContext,
               ],

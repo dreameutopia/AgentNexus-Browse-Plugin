@@ -2,6 +2,7 @@
  *
  * 结构：
  *   .user-bubble            气泡容器（灰底圆角）
+ *   ├── .user-bubble-quote  引用块（用户确认引用的网页原文 + 来源页面）
  *   ├── .user-bubble-body   正文区（定位上下文，供底缘渐隐层贴附）
  *   │   ├── .user-bubble-clip   折叠层（超长时由组件加 max-height 裁剪）
  *   │   │   └── .user-bubble-text  正文容器（不限高 → 测量到的始终是完整高度）
@@ -15,6 +16,12 @@
   flex-direction: column;
   width: 100%;
   box-sizing: border-box;
+  /* ⚠ 禁止在此添加 container-type（含 inline-size）：气泡宽度沿
+     .message.user(fit-content，flex 子项 auto 宽) → wrapper(100%) → 气泡(100%)
+     链条自外向内传递，容器化会把气泡的内在宽度贡献归零 → fit-content 链
+     坍缩成 ~30px 的细竖条（文字逐字竖排，即 2026-11 的宽度坍塌事故）。
+     引用块的窄宽度降级用 @media——侧边栏文档的视口就是面板宽度，
+     媒体查询精确跟随面板拖拽缩放，无需容器查询。 */
   /* 中性灰气泡（对齐主流聊天客户端）：浅灰底 + 深色文字，
      代码块/链接等浅色系内嵌元素无需反色适配 */
   background: var(--surface-user, #eeece7);
@@ -30,6 +37,77 @@
   color: inherit;
   padding: 0;
   border-radius: 0;
+}
+
+/* ════ 引用块（用户确认引用的网页原文） ════
+ *
+ * 定位：气泡内的一层独立引用——左侧竖线 + 半透明凹陷底，与用户自己写的
+ * 正文形成层级差（引用是「引来的证据」，正文是「自己的话」）。
+ * 引用块在正文折叠层之外：正文再长也不裁剪引用，引用始终完整可读。
+ * 底色用 color-mix 与卡片色混合：换肤时无需另写一套变量。
+ */
+.user-bubble-quote {
+  margin: 0 0 8px;
+  padding: 6px 10px 7px 11px;
+  border-left: 2px solid var(--ink-muted, #9b9790);
+  border-radius: 0 10px 10px 0;
+  background: color-mix(in srgb, var(--surface-card, #ffffff) 52%, transparent);
+  color: var(--ink-secondary, #787671);
+}
+
+/* 引用头部：图标 + 「引用」标记 + 来源页面（窄宽度下来源先让位） */
+.user-bubble-quote-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  margin-bottom: 3px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-muted, #9b9790);
+}
+
+.user-bubble-quote-icon {
+  flex: 0 0 auto;
+}
+
+.user-bubble-quote-tag {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+/* 来源页面标题：单行省略（完整地址见 title 提示） */
+.user-bubble-quote-source {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 引用原文：逐字保留（pre-wrap 保行），比正文略小一号以让出层级。
+   超长引用（可确认长达 8000 字）在块内滚动——既不撑爆消息流，
+   也不像折叠那样把证据藏起来；overscroll-behavior 防止滚轮穿透到消息列表 */
+.user-bubble-quote-text {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-primary, #292824);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-height: 140px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* 窄宽度：来源标题让位（引用原文与标记优先）。
+   用 @media 而非 @container——气泡处在 fit-content 宽度链上，任何祖先容器化
+   都会触发宽度坍塌（见 .user-bubble 的警示注释）；侧边栏文档的视口即面板
+   宽度，媒体查询对「面板被拖窄」的跟随是精确的 */
+@media (max-width: 360px) {
+  .user-bubble-quote-source {
+    display: none;
+  }
 }
 
 .user-bubble-body {

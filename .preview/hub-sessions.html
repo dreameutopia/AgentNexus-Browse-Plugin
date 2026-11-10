@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Hub 会话管理预览</title>
+<link rel="stylesheet" href="../entrypoints/sidepanel/components/modals/settings-modal.css">
+<link rel="stylesheet" href="../entrypoints/hub/hub.css">
+<link rel="stylesheet" href="../entrypoints/hub/sessions/sessions-section.css">
+<style>
+  /* 预览页仅用于视觉核对 */
+  .hub { height: 100vh; }
+</style>
+</head>
+<body>
+<div class="hub">
+  <div class="hub-layout">
+    <!-- 左：导航卡 -->
+    <aside class="hub-sidebar">
+      <h1 class="hub-sidebar-title">管理中心</h1>
+      <nav class="hub-sidebar-nav">
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">智能体</span></button>
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">技能</span></button>
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">插件</span></button>
+        <button type="button" class="hub-nav-item active" data-nav="sessions"><span class="hub-nav-label">会话管理</span></button>
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">使用监控</span></button>
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">Python 环境</span></button>
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">备份</span></button>
+      </nav>
+      <div class="hub-sidebar-foot">
+        <div class="hub-locale" role="group">
+          <button type="button" class="hub-locale-btn active">中文</button>
+          <button type="button" class="hub-locale-btn">EN</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 右：内容卡 -->
+    <main class="hub-content">
+      <div class="hub-content-body">
+        <section class="api-section">
+          <div id="section-root"></div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+<script src="../node_modules/.cache/hub-sessions.js"></script>
+</body>
+</html>

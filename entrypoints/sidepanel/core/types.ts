@@ -13,6 +13,8 @@
 import type { ChatMessage } from '../utils/ai/ai-chat-api';
 import type { MessageFeedback, MessagePart, ToolCallUI } from '../types/chat';
 import type { ModelRef, ResolvedModelEndpoint } from '../utils/channels';
+import type { PageQuote } from '../utils/chat/page-quote';
+import type { SkillToolMode } from '@/utils/skills/skill-tool-contract';
 
 // ==================== 用户面：会话与消息记录（IndexedDB，无长度限制） ====================
 
@@ -91,6 +93,18 @@ export interface ChatSessionMeta {
    * 持久化的技能草稿做成果兜底（草稿暂存失败的降级路径）。
    */
   kind?: ChatSessionKind;
+  /**
+   * 归档时间戳（毫秒）。**缺省 = 未归档**；有值 = 已归档。
+   *
+   * 归档是「收纳」而非「删除」：会话与全部关联数据原地保留，只是从常规
+   * 列表中隐去，可在管理中心「会话管理」里单独展开查看与恢复。
+   *
+   * 用时间戳而非布尔量的原因：
+   *   - 归档顺序与保留期计算都以归档时刻为基准（保留 N 天后自动清理）；
+   *   - IndexedDB 索引不收录「键路径缺失」的记录 —— 借此一个索引即可把
+   *     归档会话与常规会话天然分流（未归档记录根本不进索引）。
+   */
+  archivedAt?: number;
 }
 
 export type ChatMessageStatus = 'streaming' | 'done' | 'error' | 'aborted';
@@ -144,6 +158,16 @@ export interface ChatMessageRecord {
    * 的内联「查看屏幕」片段展示。
    */
   uploadImageRefs?: string[];
+  /**
+   * 本条用户消息携带的网页引用（用户在页面选中文本并点「确认引用」）。
+   *
+   * 用户可见气泡据此渲染引用块（引用原文 + 来源页面），让「这条消息引用了
+   * 哪段网页原文」在会话历史里始终可见、可追溯。模型面另走
+   * runtime.pageQuotePrompt（<page_quote> 信封）——两者同源、互不替代：
+   * 信封给模型读、记录给用户看。
+   * 缺省 = 无引用（旧记录天然缺此字段）。
+   */
+  pageQuote?: PageQuote;
   usage?: ChatMessageUsage;
   /**
    * 用户对本条模型消息的反馈（赞/踩）。
@@ -198,6 +222,9 @@ type VisionRuntimeConfig = VisionRuntimeConfigImpl;
 
 export interface ConversationRuntime {
   pluginToolCeiling?: string[];
+  skillResourceIds?: readonly string[];
+  availableSkillIds?: readonly string[];
+  skillMode?: SkillToolMode;
   pluginOwners?: string[];
   pluginBindings?: Record<string, { digest: string; epoch: number }>;
   agentId?: string;
@@ -228,6 +255,22 @@ export interface ConversationRuntime {
    * 用户可见正文仅存 userInput（摘要标记）。空串 = 无文本附件。
    */
   attachmentPrompt: string;
+  /**
+   * 本轮网页引用信封（<page_quote> XML：来源 URL + 页面标题 + 选区原文）。
+   *
+   * 用户在页面上选中文本并点「确认引用」后装配：拼入本轮模型用户消息，
+   * 位置在用户正文之后、附件信封之前。**不进输入框**（用户正文保持原样），
+   * 也不落用户可见转录——与 <upload_file> 同构：信封只服务模型面。
+   * 缺省 / 空串 = 本轮无引用。
+   */
+  pageQuotePrompt?: string;
+  /**
+   * 本轮网页引用的**数据**（原文 + 来源页面）。
+   *
+   * 与 pageQuotePrompt 同源但用途不同：信封给模型读，本字段随用户消息
+   * 落库（用户气泡据此渲染引用块）。缺省 = 本轮无引用。
+   */
+  pageQuote?: PageQuote;
   /** AI 面初始上下文（历史派生，不含本轮用户消息与 system） */
   initialContext: ChatMessage[];
   /**

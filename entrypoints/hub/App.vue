@@ -68,6 +68,9 @@
             <SkillManager ref="skillManagerRef" @editor-state="onSkillEditorState" />
           </section>
           <section v-show="activeSection === 'plugins'" class="api-section"><PluginManager /></section>
+          <section v-show="activeSection === 'sessions'" class="api-section">
+            <SessionsSection :active="activeSection === 'sessions'" />
+          </section>
           <section v-show="activeSection === 'usage'" class="api-section">
             <UsageSection />
           </section>
@@ -113,15 +116,17 @@ import SkillManager from './skills/SkillManager.vue';
 import BackupSection from './BackupSection.vue';
 import UsageSection from './usage/UsageSection.vue';
 import PythonSection from './python/PythonSection.vue';
+import SessionsSection from './sessions/SessionsSection.vue';
 import { LEARN_DRAFT_HASH, type LearnDraftTransfer } from '@/utils/learn/learn-types';
 import { listLearnDrafts, readLearnDraft, watchLearnDrafts, isLearnTransferId } from '@/utils/learn/learn-draft-store';
 
-type HubSection = 'agents' | 'skills' | 'plugins' | 'usage' | 'python' | 'backup';
+type HubSection = 'agents' | 'skills' | 'plugins' | 'sessions' | 'usage' | 'python' | 'backup';
 
 const sections: ReadonlyArray<{ id: HubSection; labelKey: MessageKey }> = [
   { id: 'agents', labelKey: 'hub.tabAgents' },
   { id: 'skills', labelKey: 'hub.tabSkills' },
   { id: 'plugins', labelKey: 'hub.tabPlugins' },
+  { id: 'sessions', labelKey: 'hub.tabSessions' },
   { id: 'usage', labelKey: 'hub.tabUsage' },
   { id: 'python', labelKey: 'hub.tabPython' },
   { id: 'backup', labelKey: 'sidepanel.backup.title' },
@@ -208,6 +213,7 @@ const SECTION_HASHES: Readonly<Record<string, HubSection>> = {
   '#skills': 'skills',
   '#backup': 'backup',
   '#plugins': 'plugins',
+  '#sessions': 'sessions',
   '#usage': 'usage',
   '#python': 'python',
 };

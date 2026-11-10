@@ -133,7 +133,7 @@ export enum ExecutionWorld {
 
 // Tool Names
 // 仅登记「真实可调用」的规范名：已注册工具（tools/registry）或确实存在的内联消息
-// 处理器（browser_refresh / browser_set_zoom）。写入不存在的名字会让调用方误以为
+// 处理器（browser_set_zoom）。写入不存在的名字会让调用方误以为
 // 能直接调用——tests/tools 契约测试对本表做 ⊆ 注册表 ∪ 内联处理器 的强制校验。
 export const TOOL_NAMES = {
   BROWSER: {
@@ -151,11 +151,8 @@ export const TOOL_NAMES = {
     // DOM 关系探索（重复结构识别 / 批量抓取入口发现）
     DOM_EXPLORE: 'browser_dom_explore',
     
-    // Navigation tools
-    NAVIGATE: 'browser_navigate',
-    GO_BACK_OR_FORWARD: 'browser_go_back_or_forward',
-    CLOSE_TABS: 'browser_close_tabs',
-    RELOAD: 'browser_refresh',
+    // Navigation tools（统一导航：open/refresh/back/forward/wait 五 action）
+    NAVIGATION: 'browser_navigation',
     
     // History tools
     HISTORY_SEARCH: 'browser_search_history',
@@ -170,10 +167,7 @@ export const TOOL_NAMES = {
     
     // Content tools (extended)
     SEARCH_TABS_CONTENT: 'browser_vector_search',
-    
-    // Window tools
-    GET_WINDOWS_AND_TABS: 'browser_window',
-    
+
     // Interaction tools (extended)
     
     // Capture tools (extended)
@@ -184,9 +178,7 @@ export const TOOL_NAMES = {
     WAIT_FOR_ELEMENT: 'browser_wait_for_element',
     SET_ZOOM: 'browser_set_zoom',
     
-    // Tab management tools
-    SWITCH_TAB: 'browser_switch_tab',
-    CLOSE_TAB: 'browser_close_tab',
-    CREATE_TAB: 'browser_create_tab',
+    // Tab management tools（统一标签页与窗口：list/switch/close/create/windows 五 action）
+    TABS: 'browser_tabs',
   }
 } as const;

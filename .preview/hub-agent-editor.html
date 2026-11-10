@@ -65,17 +65,17 @@
                   </div>
                 </div>
 
-                <!-- 名称 + 描述并排 -->
-                <div class="hub-form-row">
-                  <label class="hub-field">
-                    <span class="hub-field-label">名称<span class="hub-required">*</span></span>
-                    <input type="text" value="网页调研助手">
-                  </label>
-                  <label class="hub-field">
-                    <span class="hub-field-label">描述<span class="hub-required">*</span></span>
-                    <input type="text" value="抓取网页并产出带引用的调研报告">
-                  </label>
-                </div>
+                <!-- 名称：独占一行 -->
+                <label class="hub-field">
+                  <span class="hub-field-label">名称<span class="hub-required">*</span></span>
+                  <input type="text" value="网页调研助手">
+                </label>
+
+                <!-- 描述：独占一行 -->
+                <label class="hub-field">
+                  <span class="hub-field-label">描述<span class="hub-required">*</span></span>
+                  <input type="text" value="抓取网页并产出带引用的调研报告">
+                </label>
 
                 <!-- 视觉操作开关：标题 + 问号 + 开关同一行（左右布局），子行按需展开 -->
                 <fieldset class="hub-field hub-vision-field" aria-label="视觉操作">
@@ -95,39 +95,33 @@
                       <span class="hub-switch__track"></span>
                     </label>
                   </div>
-                  <div class="hub-vision-row">
-                    <label class="hub-switch">
-                      <input class="hub-switch__input" type="checkbox" role="switch" checked>
-                      <span class="hub-switch__track"></span>
-                      <span class="hub-switch__label">工具执行后重新截图</span>
-                    </label>
-                  </div>
-                  <p class="hub-hint">GUI 使用最新截图的 0–1000 x/y 相对坐标，按需打标。</p>
+                  <!-- 视觉操作开启后只展示坐标说明 -->
+                  <p class="hub-hint">模型需具备 2D 相对坐标定位能力（基于最新截图的 0–1000 归一化坐标操作页面元素）；推荐 Qwen、Mimo、ChatGPT 等系列模型。</p>
                 </fieldset>
 
-                <!-- 分类 + 标签并排 -->
-                <div class="hub-form-row">
-                  <div class="hub-field">
-                    <span class="hub-field-label">分类</span>
-                    <div class="cat-select">
-                      <div class="cat-select-row">
-                        <button type="button" class="cat-select-trigger">
-                          <span class="cat-select-dot" style="background: #5c584f;"></span>
-                          <span class="cat-select-value">内容创作</span>
-                          <svg class="cat-select-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                        </button>
-                      </div>
+                <!-- 分类：独占一行 -->
+                <div class="hub-field">
+                  <span class="hub-field-label">分类</span>
+                  <div class="cat-select">
+                    <div class="cat-select-row">
+                      <button type="button" class="cat-select-trigger">
+                        <span class="cat-select-dot" style="background: #5c584f;"></span>
+                        <span class="cat-select-value">内容创作</span>
+                        <svg class="cat-select-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                      </button>
                     </div>
                   </div>
-                  <div class="hub-field">
-                    <span class="hub-field-label">标签</span>
-                    <div class="tag-input">
-                      <div class="hub-tags">
-                        <span class="hub-tag">调研<span class="hub-tag-remove">×</span></span>
-                        <span class="hub-tag">网页<span class="hub-tag-remove">×</span></span>
-                      </div>
-                      <input type="text" placeholder="回车添加标签">
+                </div>
+
+                <!-- 标签：独占一行 -->
+                <div class="hub-field">
+                  <span class="hub-field-label">标签</span>
+                  <div class="tag-input">
+                    <div class="hub-tags">
+                      <span class="hub-tag">调研<span class="hub-tag-remove">×</span></span>
+                      <span class="hub-tag">网页<span class="hub-tag-remove">×</span></span>
                     </div>
+                    <input type="text" placeholder="回车添加标签">
                   </div>
                 </div>
 
@@ -369,7 +363,7 @@
                   <strong class="hub-detail-card__title">统一网页搜索</strong>
                   <button type="button" class="hub-icon-btn"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
                 </div>
-                <p class="hub-detail-card__desc">统一多平台集成搜索：一次调用完成「导航到平台搜索结果页 → 等待加载 → 解析结构化结果 → Markdown 表格」。⚠ 自带页面导航（效果等同 browser_navigate），禁止同一轮并发调用。</p>
+                <p class="hub-detail-card__desc">统一多平台集成搜索：一次调用完成「导航到平台搜索结果页 → 等待加载 → 解析结构化结果 → Markdown 表格」。⚠ 自带页面导航（效果等同 browser_navigation 的 open action），禁止同一轮并发调用。</p>
 
                 <section class="hub-detail-tool">
                   <div class="hub-detail-tool__head">

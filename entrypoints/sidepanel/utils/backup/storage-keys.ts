@@ -50,6 +50,8 @@ export const PYODIDE_ENV_STORAGE_KEY = 'pyodide_env_state';
 export const BROWSER_UUID_STORAGE_KEY = 'browserUuid';
 /** chrome.storage.local：会话级暂存（utils/data-ref-store；2h TTL，仅统计，不备份） */
 export const DATA_REFS_STORAGE_KEY = 'agentNexusDataRefs';
+/** chrome.storage.local：归档会话保留策略（utils/sessions/session-archive-policy） */
+export const SESSION_ARCHIVE_POLICY_STORAGE_KEY = 'agentNexusSessionArchivePolicy';
 /** chrome.storage.local：网站校验缓存（entrypoints/background、entrypoints/content；可再生） */
 export const WEBSITE_VALIDATED_KEYS: readonly string[] = [
   '__websiteValidated',
@@ -113,6 +115,7 @@ export const CHROME_KEY_CATEGORY: Readonly<Record<string, StorageCategoryId>> = 
   // —— 其余（体积小、可再生或不备份，但必须计入合计） ——
   [BROWSER_UUID_STORAGE_KEY]: 'other',
   [DATA_REFS_STORAGE_KEY]: 'other',
+  [SESSION_ARCHIVE_POLICY_STORAGE_KEY]: 'other',
   [LEARN_DRAFT_STORAGE_KEY]: 'other',
   ...Object.fromEntries(WEBSITE_VALIDATED_KEYS.map(key => [key, 'other'] as const)),
 };

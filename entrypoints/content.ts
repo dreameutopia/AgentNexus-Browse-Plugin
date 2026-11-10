@@ -1,6 +1,7 @@
 import { injectWebsiteValidator } from '@/utils/inject-website-validator'
 import { htmlToMarkdown } from '@/utils/html-to-markdown'
 import { initLocale, t } from '@/utils/i18n/core'
+import { readSelectedText } from '@/utils/selection/read-selection'
 
 // 恢复用户语言（content script 与其它扩展上下文共享同一选择）
 void initLocale()
@@ -239,78 +240,122 @@ function injectRelayPortSniffer() {
 
 export default defineContentScript({
   matches: ['<all_urls>'],
+  // 注入到所有子 frame（iframe 内选区此前完全收不到——覆盖缺口的大头）；
+  // matchOriginAsFallback 覆盖 about:blank / about:srcdoc 继承父页来源的嵌入 frame
+  // （评论框、编辑器 widget 常见形态）。既有职责（验证脚本注入、中转嗅探、
+  // 消息应答）在下方用顶层 frame 判断保持原语义，子 frame 只承载选区监听。
+  allFrames: true,
+  matchOriginAsFallback: true,
   main() {
-    console.log('Content script loaded')
-    
-    // 注入网站验证脚本（所有站点）
-    injectWebsiteValidator()
-    
-    // V2026.09.24 前台中转链路：trigger 页嗅探 relayPort 参数。
-    // 桌面端打开诱导页（/trigger-connect?relayPort=52715）时，页面暴露
-    // window.getRelayPort()；检测到后通知 background 以该端口连接桌面端
-    // 本地 Server（而非直连后端）。页面 API 在主世界，content script
-    // 隔离世界需经 injected script 转发——这里用 postMessage 桥接。
-    injectRelayPortSniffer()
+    // 子 frame（allFrames 注入）只做选区监听：验证脚本注入 / 中转嗅探 /
+    // 验证标记落库等既有职责全部保持顶层 frame 语义，避免每个 iframe 重复
+    // 注入主世界脚本、重复写 storage、在广播消息上抢先应答
+    const isTopFrame = window.self === window.top;
+    if (isTopFrame) {
+      console.log('Content script loaded')
 
-    // 监听验证成功消息并持久化标记
-    chrome.runtime.onMessage.addListener((message) => {
-      if (message && message.type === 'WEBSITE_VALIDATION_SUCCESS') {
-        try {
-          const ok = !!(message.detail && message.detail.ok);
-          if (ok) {
-            chrome.storage.local.set({ __websiteValidated: true, __websiteValidatedAt: Date.now(), __websiteValidatedUrl: message.url || location.href });
+      // 注入网站验证脚本（所有站点）
+      injectWebsiteValidator()
+
+      // V2026.09.24 前台中转链路：trigger 页嗅探 relayPort 参数。
+      // 桌面端打开诱导页（/trigger-connect?relayPort=52715）时，页面暴露
+      // window.getRelayPort()；检测到后通知 background 以该端口连接桌面端
+      // 本地 Server（而非直连后端）。页面 API 在主世界，content script
+      // 隔离世界需经 injected script 转发——这里用 postMessage 桥接。
+      injectRelayPortSniffer()
+
+      // 监听验证成功消息并持久化标记
+      chrome.runtime.onMessage.addListener((message) => {
+        if (message && message.type === 'WEBSITE_VALIDATION_SUCCESS') {
+          try {
+            const ok = !!(message.detail && message.detail.ok);
+            if (ok) {
+              chrome.storage.local.set({ __websiteValidated: true, __websiteValidatedAt: Date.now(), __websiteValidatedUrl: message.url || location.href });
+            }
+          } catch (e) {
+            console.warn('存储网站验证标记失败', e);
           }
-        } catch (e) {
-          console.warn('存储网站验证标记失败', e);
         }
-      }
-    });
-    
-    // 添加文字选择监听
-    const isTextSelectionEnabled = true;
+      });
+    } // end isTopFrame：验证/嗅探职责到此为止
+
+    // ── 文字选区 → 侧边栏「待引用」（**所有 frame**，含 iframe） ──
+    // 覆盖面三处补强（此前只监听顶层 frame 的 getSelection，缺口很大）：
+    //   1. iframe 内选区：随 allFrames 注入每帧独立监听；消息携带本帧
+    //      url/title，侧边栏优先取 sender.tab 的顶层地址；
+    //   2. 表单控件（input/textarea，含 open Shadow DOM 内的）：从深层
+    //      activeElement 的 selectionStart/End 切片读值——getSelection 对
+    //      表单内选区恒为空，在输入框、评论框里划词此前一律不同步；
+    //   3. 读取实现收口在 utils/selection/read-selection（三段策略：表单切片
+    //      → Selection.toString → Range 级克隆兜底，覆盖 Shadow DOM 跨根
+    //      序列化返回空串的站点）；
+    //   4. 事件四通道：selectionchange（拖选/键盘）+ select 捕获（不冒泡的
+    //      表单选区）+ selectstart 捕获（选区起点，Shadow 边界外也可感知）
+    //      + keyup（Shift/方向键划词的最后兜底）。通道只负责「触发读取」，
+    //      读取结果按值去重——多通道重复触发零成本。
+    // 拖选过程 selectionchange 高频触发：150ms 尾随防抖合并成一条消息；
+    // mouseup 立即结算（松手即上屏的手感 + selectionchange 丢失时的清空兜底）。
+    // console.debug 便于现场排查：页面控制台过滤 "PageQuote" 即可确认
+    // 本帧是否真的发出过选区消息（云效/多维表格等站点排查的第一手信号）。
+
     let lastSelectedText = '';
-    
-    // 监听选择变化事件
-    document.addEventListener('selectionchange', () => {
-      if (!isTextSelectionEnabled) return;
-      
-      const selection = window.getSelection();
-      const currentSelectedText = selection ? selection.toString().trim() : '';
-      
-      if (currentSelectedText !== lastSelectedText) {
-        if (currentSelectedText.length > 0) {
-          // 发送选中的文字到sidepanel
-          chrome.runtime.sendMessage({
-            type: 'TEXT_SELECTED',
-            text: currentSelectedText
-          });
-        } else if (lastSelectedText.length > 0) {
-          // 发送取消选择的消息到sidepanel
-          chrome.runtime.sendMessage({
-            type: 'TEXT_DESELECTED'
-          });
-        }
-        lastSelectedText = currentSelectedText;
-      }
-    });
-    
-    // 保留mouseup事件作为备用
-    document.addEventListener('mouseup', () => {
-      if (!isTextSelectionEnabled) return;
-      
-      const selection = window.getSelection();
-      if (selection && selection.toString().trim().length > 0) {
-        const selectedText = selection.toString().trim();
-        // 发送选中的文字到sidepanel
+    let selectionFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+    /** 结算一次选区状态：值与上次一致则静默（多通道天然去重） */
+    const flushSelection = (): void => {
+      const text = readSelectedText();
+      if (text === lastSelectedText) return;
+      lastSelectedText = text;
+      if (text.length > 0) {
+        // 附带来源页面地址与标题：引用条与 <page_quote> 信封据此标注来源
+        // （本 frame 的地址，侧边栏优先用 sender.tab 顶层地址）
+        console.debug(`[PageQuote] 选区同步 → (${text.length}字)`, text.slice(0, 60));
         chrome.runtime.sendMessage({
           type: 'TEXT_SELECTED',
-          text: selectedText
+          text,
+          url: location.href,
+          title: document.title
+        });
+      } else {
+        // 仅当此前有选区时才会走到这（上面的等值守卫挡掉了「本来就空」）
+        console.debug('[PageQuote] 选区清空');
+        chrome.runtime.sendMessage({
+          type: 'TEXT_DESELECTED'
         });
       }
+    };
+
+    /** 尾随防抖：拖选高频变化只在最后一次变化后 150ms 结算一条 */
+    const scheduleSelectionFlush = (): void => {
+      if (selectionFlushTimer) clearTimeout(selectionFlushTimer);
+      selectionFlushTimer = setTimeout(() => {
+        selectionFlushTimer = null;
+        flushSelection();
+      }, 150);
+    };
+
+    document.addEventListener('selectionchange', scheduleSelectionFlush);
+    // 表单控件的 select 不冒泡：必须在捕获期监听（selectionchange 对表单
+    // 选区的支持随浏览器版本浮动，双通道互为兜底）
+    document.addEventListener('select', scheduleSelectionFlush, true);
+    // 选区起点：Shadow DOM 里开始的选区在宿主边界重定向，文档捕获期仍可感知
+    document.addEventListener('selectstart', scheduleSelectionFlush, true);
+    // 键盘划词（Shift+方向键 / 双击后 Shift+点击移动端点）的兜底触发
+    document.addEventListener('keyup', scheduleSelectionFlush);
+    document.addEventListener('mouseup', () => {
+      if (selectionFlushTimer) {
+        clearTimeout(selectionFlushTimer);
+        selectionFlushTimer = null;
+      }
+      flushSelection();
     });
     
     // 监听来自sidepanel的消息
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      // 子 frame 不应答：这些动作（截图 / 工作流 / 用户脚本）保持顶层 frame
+      // 语义——allFrames 注入后每帧都注册了本监听，广播消息若由子 frame
+      // 抢先应答会随机丢动作（Chrome「先应答者胜」）
+      if (window.self !== window.top) return;
       if (message.type === 'START_SCREEN_CAPTURE') {
         startScreenCapture();
       } else if (message.type === 'WORKFLOW_ACTION') {

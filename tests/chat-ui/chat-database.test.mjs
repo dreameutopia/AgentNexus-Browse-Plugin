@@ -41,6 +41,8 @@ function seed(factory, name, version) {
   return open(factory, name, version, db => {
     const sessions = db.createObjectStore('sessions', { keyPath: 'chatId' });
     sessions.createIndex('updatedAt', 'updatedAt');
+    // v4 起的会话表带归档分流索引（模拟真实 v4 库必须含它，否则结构校验会拒绝）
+    if (version > 3) sessions.createIndex('byArchived', 'archivedAt');
     sessions.put(historical);
     const messages = db.createObjectStore('messages', { keyPath: 'id' });
     messages.createIndex('byChatSeq', ['chatId', 'seq'], { unique: true });
@@ -87,7 +89,9 @@ for (const version of [0, 1, 2, 3, 4]) {
   assert.equal((await db.getSession(chatId)).messageCount, version ? 3 : 2);
   assert.equal((await db.getSession(chatId)).lastMessagePreview, 'complete');
   assert.deepEqual(issues, []);
-  assert.equal((await factory.databases())[0].version, Math.max(3, version));
+  // 打开即对齐到当前最低 schema 版本（v4 起为归档索引 byArchived）；
+  // 种子版本更高时保留种子版本（不得降版）
+  assert.equal((await factory.databases())[0].version, Math.max(4, version));
   if (version === 4) {
     const newer = await open(factory, name, 4);
     assert.equal(newer.objectStoreNames.contains('newerFeature'), true);
@@ -123,7 +127,8 @@ for (const version of [0, 1, 2, 3, 4]) {
   assert.equal(issues.length, 1, 'repeated snapshots report one degradation');
   blocker.close();
   // Queue behind the retained upgrade, then wait one turn for its success handler.
-  (await open({ open: originalOpen }, name, 3)).close();
+  // （与 chatDatabase 同版本排队：低版本打开会在升级完成后触发 VersionError）
+  (await open({ open: originalOpen }, name, 4)).close();
   assistant.content = 'recovered';
   assistant.status = 'done';
   await transcript.flush(assistant);
@@ -146,7 +151,13 @@ for (const version of [0, 1, 2, 3, 4]) {
     };
     externalUpgrade.onerror = () => reject(externalUpgrade.error);
   });
-  externalUpgrade.onupgradeneeded = () => externalUpgrade.result.createObjectStore('pythonWorkspaces');
+  externalUpgrade.onupgradeneeded = () => {
+    externalUpgrade.result.createObjectStore('pythonWorkspaces');
+    // 外部上下文的 v4 迁移同样要建归档索引（与当前 schema 一致），
+    // 否则后续 chatDatabase 的同版本重连会因结构缺索引被拒。
+    // 注意：升级事务挂在 request.transaction 上（db.transaction 是创建新事务的方法）
+    externalUpgrade.transaction.objectStore('sessions').createIndex('byArchived', 'archivedAt');
+  };
   await assert.rejects(db.getSession(historical.chatId), /连接超时/);
   blocker.close();
   await externalDone;
@@ -171,4 +182,70 @@ for (const version of [0, 1, 2, 3, 4]) {
   unchanged.close();
 }
 
-console.log('[chat-database] Fresh and legacy sessions, migrations, newer schemas, blocked opens and stream snapshots passed.');
+// ──── 归档分流（byArchived 索引）与内容搜索（真库语义，桩无法覆盖） ────
+{
+  const { db } = await fixture('archive-scope');
+  const mk = (chatId, updatedAt) => ({
+    chatId, title: chatId, createdAt: 1, updatedAt, messageCount: 0,
+    lastMessagePreview: '', agentName: '', skillNames: [],
+  });
+  await db.createSession(mk('a1', 100));
+  await db.createSession(mk('a2', 200));
+  await db.createSession(mk('a3', 300));
+
+  // 归档写入时间戳，常规视图立即排除（索引不收录键缺失的记录是分流的根基）
+  const archived = await db.setSessionArchived('a2', true, 150);
+  assert.equal(archived.archivedAt, 150, 'setSessionArchived 写入归档时间戳');
+  assert.deepEqual((await db.listSessions({ scope: 'active' })).map(s => s.chatId), ['a3', 'a1'],
+    '常规视图按 updatedAt 倒序且排除归档会话');
+  assert.deepEqual((await db.listSessions({ scope: 'archived' })).map(s => s.chatId), ['a2'],
+    '归档视图只含归档会话');
+  assert.deepEqual((await db.listSessions({ scope: 'all' })).map(s => s.chatId), ['a3', 'a2', 'a1'],
+    'all 视图含全部会话（备份口径）');
+
+  // 归档视图按归档时刻倒序（与常规视图的排序键不同）
+  await db.setSessionArchived('a1', true, 250);
+  assert.deepEqual((await db.listSessions({ scope: 'archived' })).map(s => s.chatId), ['a1', 'a2'],
+    '归档视图按归档时间倒序');
+  assert.deepEqual((await db.listSessions({ scope: 'active' })).map(s => s.chatId), ['a3'],
+    '归档后常规视图收敛');
+
+  // 分页配额只计命中项：active 仅剩 1 条，offset 1 应为空而非被过滤项吃掉配额
+  assert.deepEqual(await db.listSessions({ scope: 'active', limit: 5, offset: 1 }), [],
+    'active 分页 offset 跳过的是命中项');
+
+  // 取消归档：archivedAt 键真正删除（而非置 undefined —— 否则索引条目残留）
+  const unarchived = await db.setSessionArchived('a2', false);
+  assert.equal('archivedAt' in unarchived, false, '取消归档删除键而非置 undefined');
+  assert.deepEqual((await db.listSessions({ scope: 'archived' })).map(s => s.chatId), ['a1'],
+    '取消归档后离开归档视图');
+  assert.deepEqual((await db.listSessions({ scope: 'all' })).map(s => s.chatId), ['a3', 'a2', 'a1'],
+    'all 视图顺序不因归档态改变（按 updatedAt）');
+
+  // patchSession 显式 undefined = 删键（归档态的另一条清除路径，与消息侧同口径）
+  await db.setSessionArchived('a3', true, 400);
+  const patched = await db.patchSession('a3', { title: 'renamed', archivedAt: undefined });
+  assert.equal('archivedAt' in patched, false, 'patchSession 显式 undefined 删除 archivedAt');
+  assert.equal(patched.title, 'renamed', '同一 patch 的其它字段正常落库');
+  assert.deepEqual((await db.listSessions({ scope: 'active' })).map(s => s.chatId), ['a3', 'a2'],
+    'patchSession 清除归档态后回到常规视图');
+
+  // 内容搜索：大小写不敏感命中 / 片段上下文 / 未命中 null / 按会话隔离
+  await db.saveMessage({
+    id: 'm1', chatId: 'a1', seq: 1, role: 'user', content: '今天讨论了 Apple 发布会',
+    parts: [], reasoning: '', toolCalls: [], status: 'done', createdAt: 1, updatedAt: 1,
+  });
+  await db.saveMessage({
+    id: 'm2', chatId: 'a1', seq: 2, role: 'assistant', content: '好的，已整理要点',
+    parts: [], reasoning: '', toolCalls: [], status: 'done', createdAt: 2, updatedAt: 2,
+  });
+  const hit = await db.findContentMatch('a1', 'apple');
+  assert.ok(hit, '内容搜索命中（大小写不敏感）');
+  assert.equal(hit.count, 1, '命中一条消息');
+  assert.ok(hit.snippet.includes('Apple'), '片段携带命中上下文');
+  assert.equal(await db.findContentMatch('a1', '不存在的词'), null, '未命中返回 null');
+  assert.equal(await db.findContentMatch('a2', 'apple'), null, '内容搜索按会话隔离');
+  assert.equal(await db.findContentMatch('a1', '  '), null, '空白关键词直接返回 null');
+}
+
+console.log('[chat-database] Fresh and legacy sessions, migrations, newer schemas, blocked opens, stream snapshots, archive scope and content search passed.');

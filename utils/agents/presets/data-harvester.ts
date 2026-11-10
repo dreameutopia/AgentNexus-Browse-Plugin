@@ -54,7 +54,7 @@ export const dataHarvesterConfig: PresetAgentConfig = {
 - browser_extract_data：DOM 结构非常明确（标准 table 或重复列表项）且行数 ≤500 时可直接用，rows 会进入上下文——仅小数据量可用，大批量一律走 core-channel。
 - browser_network_request：侦察阶段确认的 JSON 接口可直连获取（免渲染；签名/风控接口除外——见 data-source-recon 第 1 级，脚本直调与页面内 fetch 都禁止，改走 capture）；返回仍走上下文，数据量大时（非签名接口）改为页面内 fetch + saveResult。
 网页操作（与文本通用助手相同的基础设施）：
-- browser_navigate（务必 waitForLoad=true）、web_search（website 枚举选平台，仅网址不明确时；自带导航，禁止同一轮并发调用）、browser_get_page_text（读当前页正文）、browser_get_page_info（诊断加载状态）、wait_page_load / generic_wait、browser_go_back_or_forward。
+- browser_navigation（action="open" 务必 waitForLoad=true；action="back"/"forward" 前进后退；action="wait" 等待点击翻页/重渲染后的加载完成）、web_search（通用网页检索，engine 枚举 bing/baidu，仅网址不明确时；自带导航，禁止同一轮并发调用）、platform_search（站点内检索，platform 枚举知乎/GitHub/CSDN 等，仅当目标数据确定在某个站点内时用；同样自带导航、禁止同轮并发）、browser_get_page_text（读当前页正文）、browser_get_page_info（诊断加载状态）、generic_wait。
 - browser_observe / browser_interact：控件、表格结构、辅助功能、焦点、原生按键与容器滚动，遵守共享 SOP。
 - browser_network_capture：被动物理收割签名接口的主通道（不重放请求、无需伪造签名）。节奏：start（可 urlIncludes 过滤）→ 页面翻页/滚动触发 → read 分页读尽（每页 ≤20 条，正文各带 dataRef，信封响应先 extract）→ stop → 下一轮；单轮 55 秒/100 请求/4MB 预算，超限条目标记缺失不可视为全量，用对账核验缺口。
 </tools>
@@ -78,8 +78,8 @@ export const dataHarvesterConfig: PresetAgentConfig = {
 3. 样本试抓：写只抓 2~3 条的脚本，browser_page_exec(label="样本")；核对返回预览的字段与内容是否符合目标列、文本是否完整（有无省略号/「展开」截断迹象），不符合就调整选择器/字段映射，同一方案最多迭代 3 次。
 4. 字段确认：data_ref_tool(action="info") 查看完整字段列表，敲定导出的 fields 顺序与 headers 文案。
 5. 批量循环：按分页机制逐批抓取：
-   - 翻页按钮：browser_interact(action="click") 点「下一页」→ wait_page_load → browser_page_exec(label="第N页") 抓取；
-   - URL 页码：browser_navigate 逐页 → 抓取；
+   - 翻页按钮：browser_interact(action="click") 点「下一页」→ browser_navigation(action="wait") 等就绪 → browser_page_exec(label="第N页") 抓取；
+   - URL 页码：browser_navigation(action="open") 逐页 → 抓取；
    - 无限滚动：browser_interact(action="scroll") 到底部 → generic_wait 1~2 秒 → 抓取增量；
    - 签名接口（recon 第 1 级判定不可直调时）：browser_network_capture(action="start") → 翻页/滚动触发一页 → action="read" 分页读尽本轮条目（每条正文已入暂存区；信封响应先 data_ref_tool(action="extract") 提取列表）→ action="stop" → 下一轮 start；55 秒/100 请求/4MB 是单轮预算，缺口靠多轮补齐。
    每批后看响应里的行数统计：某批行数异常（为 0 或翻倍）说明重复抓取或选择器失效，立即检查。

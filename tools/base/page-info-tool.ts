@@ -1,4 +1,5 @@
 import { structuredPagePayload } from '../browser/structured-page-payload';
+import { waitForTabReady } from '../browser/page-load';
 import { saveDataRefJson, getDataRef, listDataRefs } from '@/utils/data-ref-store';
 import { trimDanglingSurrogate } from '@/utils/text/truncate';
 import { isRestrictedUrl } from '@/common/constants';
@@ -79,10 +80,10 @@ function pageSlice(doc: string, page: number, limit: number): string {
  *   - 覆盖面：全部可注入 frame（allFrames）+ 可访问 shadow root（slot 分发感知）；
  *     自动剔除 script/style/svg/canvas 等噪声、隐藏内容与无意义空白/编码串；
  *   - url 参数（单个，http/https）：**前台**打开目标页（新建并激活标签页，等同
- *     browser_navigate 的 newTab=true），等待加载完成后再提取，标签页保留在用户
- *     眼前（不后台打开、不自动关闭）——后台加载拿不到真实浏览上下文，是触发
- *     人机验证（Cloudflare 等）的常见诱因；页面若弹出验证，用户可在该标签页
- *     手动完成后重试；
+ *     browser_navigation 的 open + newTab=true），等待加载完成后再提取，标签页
+ *     保留在用户**眼前**（不后台打开、不自动关闭）——后台加载拿不到真实浏览
+ *     上下文，是触发人机验证（Cloudflare 等）的常见诱因；页面若弹出验证，
+ *     用户可在该标签页手动完成后重试；
  *   - 分页：单次正文 ≤15k 字符；超长全文自动缓存为 dataRef（引用 ID + 页码续读，
  *     与 browser_page_exec 的 readRef 同一暂存区、同一 TTL）。
  */
@@ -111,7 +112,7 @@ export class GetPageTextTool extends BaseBrowserTool {
       description:
         '读取页面正文并转为结构化 Markdown：保留标题层级、表格（含合并单元格）、列表、代码块及语言、链接目标、引用、图片与表单控件；' +
         '覆盖当前页全部可注入 frame（iframe）与可访问 shadow root，自动剔除隐藏内容、脚本/样式/SVG/Canvas 与无意义空白。' +
-        '默认读当前活动标签页；url=单个网址 时**前台打开该页面**（新建并激活标签页，等同 browser_navigate）并等待加载完成后提取，' +
+        '默认读当前活动标签页；url=单个网址 时**前台打开该页面**（新建并激活标签页，等同 browser_navigation(action="open")）并等待加载完成后提取，' +
         '标签页会保留在用户眼前（不后台打开、不自动关闭）——遇到人机验证可在该标签页手动完成后再重试；tabId 可指定标签页。' +
         '单次正文最多 15000 字符：超出时全量自动缓存并返回引用 ID（ref）与总页数，' +
         '用 ref+page 分页续读（缓存浏览器会话内约 12 小时有效），响应含 totalChars/hasMore/nextPage。' +
@@ -214,7 +215,7 @@ export class GetPageTextTool extends BaseBrowserTool {
         return this.createErrorResponse(`url 仅支持 http/https 协议，实际收到 ${parsedUrl.protocol}`);
       }
       // 复用同址标签页：窗口内已有同 URL 的标签时直接切过去读，免开重复页面
-      // （与 browser_navigate「新建或复用相同完整 URL 标签」同策略）。
+      // （与 browser_navigation「新建或复用相同完整 URL 标签」同策略）。
       // 不做模糊归一——路径 / 查询的大小写与尾斜杠可能有业务含义。
       try {
         const windowId = await existingNavigationWindowId();
@@ -236,11 +237,11 @@ export class GetPageTextTool extends BaseBrowserTool {
       } catch { /* 查询失败不阻断，走正常前台打开 */ }
       if (targetTabId === undefined) {
         try {
-          // 前台打开（等同 browser_navigate 的 newTab=true 语义）：标签页可见、
+          // 前台打开（等同 browser_navigation 的 open + newTab=true 语义）：标签页可见、
           // 获得焦点并**保留在用户眼前**——后台打开的页面拿不到真实浏览上下文，
           // 正是人机验证（Cloudflare 等）最常见的触发原因。用户可在该标签页
           // 手动完成验证后重试，模型也不必猜内容。
-          // 窗口边界与 browser_navigate 一致：绑定现有普通窗口，绝不隐式新建窗口。
+          // 窗口边界与 browser_navigation 一致：绑定现有普通窗口，绝不隐式新建窗口。
           const windowId = await existingNavigationWindowId();
           const created = await chrome.tabs.create({ url, active: true, windowId });
           if (!created || typeof created.id !== 'number') {
@@ -306,45 +307,15 @@ export class GetPageTextTool extends BaseBrowserTool {
   /**
    * url 模式的前台标签页加载等待：完成 / 超时软失败（按已渲染内容继续）/ 标签页消失。
    *
-   * 判定比「tab.status === complete」更严一档：额外要求 document.readyState
-   * 为 complete 且连续两次命中——动态渲染站点（正文由 JS 异步注入）在
-   * status=complete 时往往还没出正文，早一步提取会拿到空壳。
+   * 就绪判定委托 tools/browser/page-load.ts 的单一实现（status + readyState
+   * 双检连续两次；受限页探测被拒时退化为只看 status）——与 browser_navigation
+   * 同源，杜绝多份等待逻辑漂移。本方法只做策略映射：
+   * 就绪 → ok；超时 → **软失败**（按已渲染内容继续提取，不阻断）；关闭 → 失败。
    */
   private async waitForUrlTab(tabId: number, timeoutMs: number): Promise<{ ok: boolean; note?: string }> {
-    const startedAt = Date.now();
-    let consecutive = 0;
-    while (Date.now() - startedAt < timeoutMs) {
-      try {
-        const tab = await chrome.tabs.get(tabId);
-        if (tab.status === 'complete') {
-          let readyState: unknown;
-          try {
-            const probe = await chrome.scripting.executeScript({
-              target: { tabId },
-              func: () => document.readyState,
-            });
-            readyState = probe?.[0]?.result;
-          } catch {
-            // 受限页面（扩展商店等）不允许注入：取不到就绪状态，按已就绪处理
-            readyState = 'complete';
-          }
-          // 只在**明确**知道未就绪时继续等待；取不到状态（脚本被拒 / 非字符串
-          // 返回）一律按就绪处理，避免在无法探测的页面上空等到超时
-          const ready = typeof readyState === 'string' ? readyState === 'complete' : true;
-          if (ready) {
-            consecutive += 1;
-            if (consecutive >= 2) return { ok: true };
-          } else {
-            consecutive = 0;
-          }
-        } else {
-          consecutive = 0;
-        }
-      } catch {
-        return { ok: false, note: '标签页在加载期间被关闭' };
-      }
-      await new Promise(resolve => setTimeout(resolve, 250));
-    }
+    const outcome = await waitForTabReady(tabId, { timeoutMs, pollIntervalMs: 250 });
+    if (outcome.ready) return { ok: true };
+    if (outcome.reason === 'closed') return { ok: false, note: '标签页在加载期间被关闭' };
     return { ok: true, note: '页面加载超时，已按当前已渲染内容提取' };
   }
 
@@ -718,75 +689,7 @@ export class GetCurrentPageInfoTool extends BaseBrowserTool {
   }
 }
 
-/**
- * 获取所有标签页工具
- */
-export class GetAllTabsTool extends BaseBrowserTool {
-  name = 'browser_get_all_tabs';
-
-  metadata: ToolMetadata = {
-    name: 'browser_get_all_tabs',
-    description: '获取所有打开的标签页信息',
-    category: 'browser',
-    version: '1.0.0',
-    author: 'AgentNexus',
-    tags: ['browser', 'tabs', 'info'],
-    // 纯读（chrome.tabs.query 枚举）：不改变活动标签页与视口，视觉循环无需重拍；
-    // 切换标签页是 browser_switch_tab 的职责（保持默认重拍）
-    noVisionRecapture: true
-  };
-
-  openaiSchema: OpenAITool = {
-    type: 'function',
-    function: {
-      name: 'browser_get_all_tabs',
-      description: '获取所有打开的标签页信息',
-      parameters: {
-        type: 'object',
-        properties: {
-          currentWindow: {
-            type: 'boolean',
-            description: '是否只获取当前窗口的标签页（可选，默认所有窗口）'
-          }
-        },
-        required: []
-      }
-    }
-  };
-
-  async execute(args: { currentWindow?: boolean }): Promise<ToolResult> {
-    this.ensureBackgroundContext();
-
-    try {
-      const tabs = await chrome.tabs.query(
-        args.currentWindow ? { currentWindow: true } : {}
-      );
-
-      const tabsInfo = tabs.map(tab => ({
-        tabId: tab.id,
-        windowId: tab.windowId,
-        url: tab.url,
-        title: tab.title,
-        active: tab.active,
-        status: tab.status,
-        index: tab.index,
-        pinned: tab.pinned,
-        audible: tab.audible,
-        incognito: tab.incognito
-      }));
-
-      return this.createSuccessResponse({
-        count: tabsInfo.length,
-        tabs: tabsInfo
-      }, `Found ${tabsInfo.length} tabs`);
-    } catch (error) {
-      return this.createErrorResponse('Failed to get tabs', error);
-    }
-  }
-}
-
 // 导出工具实例
 export const getPageTextTool = new GetPageTextTool();
 export const getPageHTMLTool = new GetPageHTMLTool();
 export const getCurrentPageInfoTool = new GetCurrentPageInfoTool();
-export const getAllTabsTool = new GetAllTabsTool();

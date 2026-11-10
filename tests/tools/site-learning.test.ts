@@ -74,9 +74,11 @@ export async function testSiteLearning(check: (condition: boolean, label: string
     // note_tool 升级核心层（与 plan_tool 同级）：场景清单不再登记，断言其随核心恒定可用
     check(CORE_SESSION_TOOL_IDS.includes('note_tool') && CORE_SESSION_TOOL_IDS.includes('plan_tool'), 'note_tool / plan_tool 由核心层无条件注入');
     check(!ids.includes('note_tool'), `${scenario} 场景清单不重复登记 note_tool`);
-    // 视觉 GUI 只属于视觉目标：文本目标无论何种策略都没有 vision_gui / browser_window
+    // 视觉 GUI 只属于视觉目标：文本目标无论何种策略都没有 vision_gui
+    //（标签页/窗口管理随 browser_tabs 基座对全部目标在场——枚举是纯只读，
+    //  与截图策略无关，不再是视觉目标专属标记）
     check(ids.includes('vision_gui') === (config.targetMode === 'vision'), `${scenario} vision_gui 仅视觉目标具备`);
-    check(ids.includes('browser_window') === (config.targetMode === 'vision'), `${scenario} 窗口管理仅视觉目标具备`);
+    check(ids.includes('browser_tabs'), `${scenario} 标签页/窗口管理随基座在场`);
     if (config.targetMode === 'text') {
       check(!ids.some(id => id.startsWith('vision_') || id === 'ocr'), `${scenario} 文本目标不携带任何 vision_* 手势工具`);
     }
@@ -343,7 +345,7 @@ export async function testSiteLearning(check: (condition: boolean, label: string
   }
   const validationIds = validationToolIds(draft);
   check(validationIds.includes('browser_observe') && validationIds.includes('submit_validation') && validationIds.includes('interact'), '验证保留声明工具和必要阶段基础能力');
-  check(!validationIds.includes('browser_page_exec') && !validationIds.includes('browser_switch_tab') && !validationIds.includes('browser_get_page_html'), '未声明的诊断工具不能掩盖依赖缺漏');
+  check(!validationIds.includes('browser_page_exec') && !validationIds.includes('browser_tabs') && !validationIds.includes('browser_get_page_html'), '未声明的诊断工具不能掩盖依赖缺漏');
   check(!validationToolIds({ ...draft, mode: 'text', allowedTools: ['vision_gui', 'submit_skill'] }).includes('vision_gui'), '验证边界不被错误模式扩大');
   check(validationToolIds({ ...draft, allowedTools: ['browser_get_page_html', 'data_ref_tool'] }).includes('browser_get_page_html'), '合法声明依赖不因不在预设中被静默剥离，注册表仍由runtime校验');
   for (const patch of [

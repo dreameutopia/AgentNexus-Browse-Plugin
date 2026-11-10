@@ -42,7 +42,6 @@ export type ToolScenario =
   | 'resourceCapture'
   | 'visionTools'
   | 'networkTools'
-  | 'skillLoad'
   | 'python'
   | 'all';
 
@@ -85,34 +84,39 @@ export const CORE_SESSION_TOOL_IDS: readonly string[] = [
 const BASIC_BROWSER_TOOLS = [
   'browser_observe',
   'browser_interact',
-  'browser_navigate',
+  'browser_navigation',
   'browser_get_page_info',
-  'wait_page_load',
-  'browser_go_back_or_forward',
-  'browser_get_all_tabs',
-  'browser_switch_tab',
-  'browser_close_tab',
-  'browser_create_tab',
+  'browser_tabs',
   'browser_page_exec',
-  // 统一集成搜索（website 枚举区分平台）：导航 + 解析一步完成
+  // 通用网页搜索（engine 枚举：bing / baidu）：导航 + 解析一步完成
   'web_search',
 ] as const;
 
 /**
- * 统一网页搜索工具组：单一 web_search（website 枚举覆盖全部 9 平台，一次调用
- * 完成导航 + 结果解析）。原「扩展搜索平台 / 结果抓取 / 集成搜索」三组 27 个
- * 平台专属工具已合并于此；hub 自定义智能体工具组使用本清单
- * （原搜索智能体预设已并入 Deep Search，该场景随之移除）。
+ * 通用网页搜索工具（engine 枚举 bing / baidu，一次调用完成导航 + 结果解析）
  */
 const WEB_SEARCH_TOOL_IDS = ['web_search'] as const;
 
-/** Bilibili 专用（检索走统一 web_search 的 website="bilibili"，视频页导航走浏览器工具） */
+/**
+ * 站点平台搜索工具（platform 枚举：知乎 / GitHub / CSDN / MOOC / 小红书 /
+ * 知网 / Bilibili）——与通用网页搜索共用执行链路，按「站点内检索」单列。
+ */
+const PLATFORM_SEARCH_TOOL_IDS = ['platform_search'] as const;
+
+/**
+ * 搜索工具组（hub 自定义智能体用）：通用网页检索 + 站点平台检索。
+ * 原「扩展搜索平台 / 结果抓取 / 集成搜索」三组 27 个平台专属工具已合并于此；
+ * 2026-11-10 起按语义拆为两个工具（web_search / platform_search），
+ * hub 编辑页仍以「搜索」一组呈现，避免组内再分细粒度勾选。
+ */
+const SEARCH_GROUP_TOOL_IDS = [...WEB_SEARCH_TOOL_IDS, ...PLATFORM_SEARCH_TOOL_IDS] as const;
+
+/** Bilibili 专用（检索走 platform_search 的 platform="bilibili"，视频页导航走浏览器工具） */
 const BILIBILI_TOOLS = [
   'bilibili_subtitle_tool',
   'bilibili_jump_tool',
-  'browser_navigate',
-  'browser_go_back_or_forward',
-  'web_search',
+  'browser_navigation',
+  'platform_search',
 ] as const;
 
 /**
@@ -131,14 +135,13 @@ const AUTOMATION_TOOLS = [
   'browser_observe',
   'browser_interact',
   'browser_dom_explore',
-  'browser_get_all_tabs',
-  'browser_switch_tab',
-  'browser_navigate',
+  'browser_tabs',
+  'browser_navigation',
   'browser_get_page_info',
-  'wait_page_load',
-  'browser_go_back_or_forward',
-  // 统一集成搜索（website 枚举区分平台，自带导航）
+  // 通用网页搜索（engine 枚举：bing / baidu，自带导航）
   'web_search',
+  // 站点平台搜索（platform 枚举：知乎 / GitHub / CSDN 等，自带导航）
+  'platform_search',
   'generic_wait',
   // 懒加载/无限滚动页面：getter 采样前先滚动触发渲染，再重新采集
   'browser_page_exec',
@@ -152,9 +155,9 @@ const AUTOMATION_TOOLS = [
 const VISION_AGENT_TOOLS = [
   VISION_GUI_TOOL_ID,
   // 视觉操作保留完整 DOM 感知/交互能力，生成的混合定位技能才能被实际执行。
+  // 标签页/窗口管理（含窗口树枚举）随 browser_tabs 基座在场，不再单独登记
   ...AUTOMATION_TOOLS,
   'screenshot',
-  'browser_window',
 ] as const;
 
 // ──── 网站学习（Site Learn）场景 ────
@@ -171,7 +174,7 @@ const VISION_AGENT_TOOLS = [
 // ── 组合口径 ──
 //   target=text  × strategy=text → siteLearnText         纯文本，无截图
 //   target=text  × strategy=vision → siteLearnVisionForText 文本全套 + 截图（仅辅助理解），**无 vision_gui**
-//   target=vision（策略恒 vision）→ siteLearnVision      文本全套 + vision_gui + 截图 + 窗口管理
+//   target=vision（策略恒 vision）→ siteLearnVision      文本全套 + vision_gui + 截图（标签页/窗口枚举随 browser_tabs 基座在场）
 // 验证段只看 targetMode（技能交给谁用就用谁的执行面盲测）。
 //
 // 共同部分（核心层已无条件注入，此处不重复登记）：
@@ -184,18 +187,17 @@ const VISION_AGENT_TOOLS = [
 /**
  * 学习/验证共用的 DOM 文本操作基座（学习域自有清单，不引用 AUTOMATION_TOOLS）。
  * browser_get_page_text 由核心层注入，不在此列。
+ * browser_tabs 同时承载原「窗口树枚举」（action="windows"），视觉/文本目标
+ * 统一随基座在场——窗口信息是纯枚举只读，不再是视觉目标专属。
  */
 const SITE_LEARN_DOM_TOOLS = [
   'browser_observe',
   'browser_interact',
   'browser_dom_explore',
-  'browser_get_all_tabs',
-  'browser_switch_tab',
-  'browser_navigate',
+  'browser_tabs',
+  'browser_navigation',
   'browser_get_page_info',
-  'wait_page_load',
-  'browser_go_back_or_forward',
-  // 统一集成搜索（website 枚举区分平台，自带导航）
+  // 通用网页搜索（engine 枚举：bing / baidu，自带导航）
   'web_search',
   'generic_wait',
   // 懒加载/无限滚动页面：getter 采样前先滚动触发渲染，再重新采集
@@ -212,8 +214,8 @@ const SITE_LEARN_TEXT_TOOLS = [
 /**
  * 网站学习·文本目标 × 视觉策略（siteLearnVisionForText）：
  * 文本全套 + screenshot——自动截图仅用于帮助理解屏幕元素。
- * **不携带 vision_gui / browser_window**：文本目标的学习、操作与取证
- * 一律走 DOM 文本通道，视觉手势工具不得出现在该组合的工具面
+ * **不携带 vision_gui**：文本目标的学习、操作与取证一律走 DOM 文本通道，
+ * 视觉手势工具不得出现在该组合的工具面
  * （与 learn-prompts 的 <vision-gui-tool> 禁用分区交叉锚定）。
  */
 const SITE_LEARN_VISION_FOR_TEXT_TOOLS = [
@@ -221,12 +223,11 @@ const SITE_LEARN_VISION_FOR_TEXT_TOOLS = [
   'screenshot',
 ] as const;
 
-/** 网站学习·视觉目标：文本全套 + 统一 GUI 手势 + 截图 + 窗口管理，按需打标 */
+/** 网站学习·视觉目标：文本全套 + 统一 GUI 手势 + 截图，按需打标 */
 const SITE_LEARN_VISION_TOOLS = [
   ...SITE_LEARN_TEXT_TOOLS,
   VISION_GUI_TOOL_ID,
   'screenshot',
-  'browser_window',
 ] as const;
 
 /** 按目标与学习策略共同选择学习段场景（学习看 strategy × targetMode） */
@@ -248,7 +249,6 @@ const SITE_VALIDATE_VISION_TOOLS = [
   NETWORK_CAPTURE_TOOL,
   VISION_GUI_TOOL_ID,
   'screenshot',
-  'browser_window',
   'submit_validation',
 ] as const;
 
@@ -325,14 +325,9 @@ const DOM_INTERACT_GROUP_TOOLS = [
   'browser_wait_for_element',
 ] as const;
 
-/** 标签页与窗口（全局窗口/标签枚举、切换、创建、关闭） */
+/** 标签页与窗口（统一枚举/切换/创建/关闭/窗口树，单工具五 action） */
 const TABS_WINDOWS_GROUP_TOOLS = [
-  'browser_window',
-  'browser_get_all_tabs',
-  'browser_switch_tab',
-  'browser_create_tab',
-  'browser_close_tab',
-  'browser_close_tabs',
+  'browser_tabs',
 ] as const;
 
 /** 页面脚本执行（注入 JS、向注入脚本发消息、页面级高权限执行/抽取/清理） */
@@ -355,10 +350,10 @@ const BOOKMARK_HISTORY_GROUP_TOOLS = [
 ] as const;
 
 /**
- * 统一网页搜索（hub 自定义智能体工具组；website 枚举覆盖全部平台）。
- * 直接引用 WEB_SEARCH_TOOL_IDS，杜绝两份同值清单漂移。
+ * 搜索工具组（hub 自定义智能体工具组）：通用网页检索 + 站点平台检索。
+ * 直接引用 SEARCH_GROUP_TOOL_IDS，杜绝两份同值清单漂移。
  */
-const WEB_SEARCH_GROUP_TOOLS = [...WEB_SEARCH_TOOL_IDS];
+const SEARCH_GROUP_TOOLS = [...SEARCH_GROUP_TOOL_IDS];
 
 /** 下载拦截与文件捕获（开启/停止拦截 + 已捕获文件列表/详情/清理） */
 const RESOURCE_CAPTURE_GROUP_TOOLS = [
@@ -386,12 +381,6 @@ const VISION_TOOLS_GROUP = [
 const NETWORK_TOOLS_GROUP = [
   'browser_network_request',
   'browser_console',
-] as const;
-
-/** 技能加载（按需读取已启用技能的指令与资源文件） */
-const SKILL_LOAD_GROUP_TOOLS = [
-  'load_skill',
-  'read_skill_file',
 ] as const;
 
 /**
@@ -435,8 +424,8 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
   /** Bilibili 检索与视频处理（站点搜索工具按会话动态扩展） */
   bilibili: [...BILIBILI_TOOLS],
 
-  /** Deep Search：多站点深度调研（站点 website 枚举值按已开启站点动态注入提示；
-   *  检索工具 web_search 由发送装配按已开启站点动态追加，见 deep-search-sites）。
+  /** Deep Search：多站点深度调研（通用检索 web_search 恒定在场，站点检索
+   *  platform_search 由发送装配按已开启站点动态追加，见 deep-search-sites）。
    *  页面深访工具组（observe / interact / page_exec / dom_explore）：
    *  应对 SPA 渲染、登录墙外可见内容、需滚动/翻页的结果页，以及结构化提取
    *  （相似元素 + JS 脚本）——与数据采集助手同源能力，
@@ -444,8 +433,7 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
    *  note_tool 由核心层无条件注入（调研留痕是 Deep Search 的核心工作方式），
    *  此处不重复登记 */
   deepSearch: [
-    'browser_go_back_or_forward',
-    'browser_navigate',
+    'browser_navigation',
     'browser_get_page_info',
     'browser_observe',
     'browser_interact',
@@ -486,8 +474,8 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
   /** 书签与历史（hub 自定义智能体工具组） */
   bookmarkHistory: [...BOOKMARK_HISTORY_GROUP_TOOLS],
 
-  /** 统一网页搜索（hub 自定义智能体工具组；website 枚举覆盖全部平台） */
-  webSearch: [...WEB_SEARCH_GROUP_TOOLS],
+  /** 搜索工具组（hub 自定义智能体工具组；通用网页检索 + 站点平台检索） */
+  webSearch: [...SEARCH_GROUP_TOOLS],
 
   /** 下载拦截与文件捕获（hub 自定义智能体工具组） */
   resourceCapture: [...RESOURCE_CAPTURE_GROUP_TOOLS],
@@ -497,9 +485,6 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
 
   /** 网络请求与控制台（hub 自定义智能体工具组） */
   networkTools: [...NETWORK_TOOLS_GROUP],
-
-  /** 技能加载（hub 自定义智能体工具组） */
-  skillLoad: [...SKILL_LOAD_GROUP_TOOLS],
 
   /** Python 沙箱计算（hub 自定义智能体工具组；须先在设置中启用 Python 环境） */
   python: [...PYTHON_GROUP_TOOLS],

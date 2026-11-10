@@ -87,10 +87,10 @@
           <button
             type="button"
             class="hub-btn hub-python-btn-danger"
-            :class="{ 'is-armed': armedAction === 'remove-env' }"
-            @click="requestRemoveEnv"
+            :disabled="runningTest || !!busyPackage || preload.active"
+            @click="removeEnvDialog.visible = true"
           >
-            {{ armedAction === 'remove-env' ? t('common.confirm') : t('hub.python.removeBtn') }}
+            {{ t('hub.python.removeBtn') }}
           </button>
         </div>
       </div>
@@ -125,7 +125,49 @@
           </button>
         </div>
       </div>
-      <p class="hub-hint">{{ t('hub.python.pkgHint') }}</p>
+      <p class="hub-hint">
+        {{ catalogState === 'ready'
+          ? t('hub.python.pkgHint', { count: catalog.length })
+          : t('hub.python.pkgHintBase') }}
+      </p>
+
+      <!-- 一键预下载（仅写本地缓存，不注册为已安装） -->
+      <div class="hub-python__preload">
+        <button
+          type="button"
+          class="hub-btn"
+          :disabled="preload.active || !!busyPackage || catalogState !== 'ready' || !featuredEntries.length"
+          @click="startPreload('featured')"
+        >
+          {{ t('hub.python.pkgPreloadFeatured', { count: featuredEntries.length }) }}
+        </button>
+        <button
+          type="button"
+          class="hub-btn"
+          :disabled="preload.active || !!busyPackage || catalogState !== 'ready' || !catalog.length"
+          @click="startPreload('all')"
+        >
+          {{ t('hub.python.pkgPreloadAll', { count: catalog.length }) }}
+        </button>
+      </div>
+      <p class="hub-hint">{{ t('hub.python.pkgPreloadHint') }}</p>
+
+      <!-- 预下载进度 -->
+      <div v-if="preload.active" class="hub-python__progress">
+        <div class="hub-python__progress-head">
+          <span class="hub-python__progress-name">{{ preload.current || '…' }}</span>
+          <span class="hub-python__progress-num">
+            {{ t('hub.python.pkgPreloadProgress', { done: preload.done, total: preload.total, size: formatBytes(preload.bytes) }) }}
+          </span>
+        </div>
+        <div class="hub-python__progress-bar">
+          <div class="hub-python__progress-fill" :style="{ width: preloadPercent + '%' }"></div>
+        </div>
+        <div>
+          <button type="button" class="hub-btn" @click="cancelPreload">{{ t('hub.python.pkgPreloadCancel') }}</button>
+        </div>
+      </div>
+      <p v-if="preloadMessage" class="hub-hint hub-python__message">{{ preloadMessage }}</p>
 
       <!-- 已安装 chips -->
       <h4 class="hub-python__sub-label">{{ t('hub.python.pkgInstalledTitle') }}</h4>
@@ -273,6 +315,87 @@
       <p class="hub-hint">{{ t('hub.python.pkgSourceNote') }}</p>
     </section>
 
+    <section v-if="env.status === 'ready'" class="hub-python__card">
+      <div class="hub-python__card-head">
+        <div class="hub-python__skill-title">
+          <button
+            type="button"
+            class="hub-help-tip"
+            :aria-label="t('hub.python.skillScriptsHelpLabel')"
+            :aria-expanded="skillScriptsHelp"
+            aria-controls="python-skill-scripts-help"
+            @click="skillScriptsHelp = !skillScriptsHelp"
+          >?</button>
+          <h3 id="python-skill-scripts-title" class="hub-python__card-title">{{ t('hub.python.skillScriptsTitle') }}</h3>
+        </div>
+        <HubSwitch
+          :model-value="env.skillScriptsEnabled"
+          :disabled="skillScriptsBusy || removeEnvDialog.busy || verifying"
+          :aria-label="t('hub.python.skillScriptsTitle')"
+          @update:model-value="toggleSkillScripts"
+        />
+      </div>
+      <p class="hub-hint">{{ t(env.skillScriptsEnabled ? 'hub.python.skillScriptsOn' : 'hub.python.skillScriptsOff') }}</p>
+      <p v-show="skillScriptsHelp" id="python-skill-scripts-help" class="hub-python__notice">
+        {{ t('hub.python.skillScriptsHelp') }}
+      </p>
+    </section>
+    <p v-if="skillScriptsError" class="hub-hint" role="alert">{{ skillScriptsError }}</p>
+
+    <!-- ══════════ micropip 复用设置（就绪后显示） ══════════ -->
+    <section v-if="env.status === 'ready'" class="hub-python__card hub-python__micropip">
+      <div class="hub-python__card-head">
+        <h3 class="hub-python__card-title">{{ t('hub.python.micropipTitle') }}</h3>
+        <span class="hub-badge hub-python-badge-neutral">
+          {{ t('hub.python.micropipInstalledTitle') }}：{{ micropip.packages.length }}
+        </span>
+      </div>
+      <p class="hub-hint">{{ t('hub.python.micropipDesc') }}</p>
+
+      <!-- 全局复用开关 -->
+      <div class="hub-python__micropip-scope">
+        <HubSwitch
+          :model-value="micropip.globalReuse"
+          :disabled="micropip.busy"
+          :aria-label="t('hub.python.micropipGlobalLabel')"
+          @update:model-value="toggleGlobalReuse"
+        >{{ t('hub.python.micropipGlobalLabel') }}</HubSwitch>
+        <span class="hub-hint">
+          {{ micropip.globalReuse ? t('hub.python.micropipGlobalOnDesc') : t('hub.python.micropipGlobalOffDesc') }}
+        </span>
+      </div>
+
+      <!-- 已记录的 micropip 包 -->
+      <h4 class="hub-python__sub-label">{{ t('hub.python.micropipInstalledTitle') }}</h4>
+      <div v-if="micropip.packages.length" class="hub-python__chips">
+        <span
+          v-for="pkg in micropip.packages"
+          :key="pkg.name"
+          class="hub-python__chip hub-python__chip--installed"
+        >
+          <span class="hub-python__chip-name">{{ pkg.name }}</span>
+          <span class="hub-python__chip-version">{{ pkg.version }}</span>
+          <button
+            type="button"
+            class="hub-python__chip-remove"
+            :class="{ 'is-armed': armedAction === `micropip:${pkg.name}` }"
+            :title="t('common.delete')"
+            @click="requestRemoveMicropip(pkg.name)"
+          >×</button>
+        </span>
+        <button
+          type="button"
+          class="hub-btn hub-python-btn-danger"
+          :class="{ 'is-armed': armedAction === 'micropip-clear' }"
+          :disabled="micropip.busy"
+          @click="requestClearMicropip"
+        >{{ armedAction === 'micropip-clear' ? t('common.confirm') : t('hub.python.micropipClearAll') }}</button>
+      </div>
+      <p v-else class="hub-hint">{{ t('hub.python.micropipEmpty') }}</p>
+
+      <p v-if="micropip.message" class="hub-hint hub-python__message">{{ micropip.message }}</p>
+    </section>
+
     <!-- ══════════ 测试运行台（就绪后显示） ══════════ -->
     <section v-if="env.status === 'ready'" class="hub-python__card">
       <div class="hub-python__card-head">
@@ -345,6 +468,19 @@
 
     <!-- ══════════ 隐私说明 ══════════ -->
     <p class="hub-hint hub-python__foot">{{ t('hub.python.privacyNote') }}</p>
+
+    <!-- ══════════ 删除环境二次确认（玻璃弹窗，绝不用 window.confirm） ══════════ -->
+    <HubDialog
+      :visible="removeEnvDialog.visible"
+      :title="t('hub.python.removeConfirmTitle')"
+      :message="removeConfirmMessage"
+      tone="error"
+      :confirm-text="removeEnvDialog.busy ? t('hub.python.removeBusy') : t('hub.python.removeBtn')"
+      :cancel-text="t('common.cancel')"
+      :busy="removeEnvDialog.busy"
+      @confirm="confirmRemoveEnv"
+      @cancel="removeEnvDialog.visible = false"
+    />
   </div>
 </template>
 
@@ -368,8 +504,9 @@
  *   - 新增「运行时详情」四宫格（CPython / Pyodide / 核验时间 / 本地缓存）；
  *   - 新增已装包计数、目录规模提示与「移除全部包」；
  *   - 新增代码片段一键载入与运行输出复制；
- *   - 危险操作（删环境 / 删包 / 清空全部包）改为行内二次确认，
- *     不再使用 window.confirm（原生模态在扩展页会冻结整页交互且样式不可控）。
+ *   - 危险操作不再使用 window.confirm（原生模态在扩展页会冻结整页交互且
+ *     样式不可控）：删环境走 HubDialog 玻璃弹窗二次确认（正文列明删除范围
+ *     与数量），删包 / 清空记录仍为行内「3 秒内二次点击」确认。
  *
  * 实时同步：环境状态经 watchPyodideEnv 订阅 storage 变更——工具侧自动装包、
  * 侧边栏侧启停运行时等其它上下文写入后，本页视图立即跟随。
@@ -380,14 +517,18 @@ import { t } from '@/utils/i18n';
 // 依赖（下方 onMounted/按钮处理器）按需动态 import 桶文件加载，静态导入
 // 若经桶文件会与其形成「静态 + 动态混合导入」，Vite 会告警动态导入无法拆 chunk
 import {
+  PYODIDE_CDN_BASE,
   PYODIDE_CORE_FILES,
   PYODIDE_FEATURED_PACKAGES,
 } from '@/utils/pyodide/pyodide-config';
-import { downloadPyodideFile } from '@/utils/pyodide/pyodide-downloader';
+import { downloadPyodideFile, preloadWheels, type PreloadItem } from '@/utils/pyodide/pyodide-downloader';
 import { listFileMeta } from '@/utils/pyodide/pyodide-cache';
 import {
   DEFAULT_PYODIDE_ENV_STATE,
+  getPyodideEnvState,
+  setSkillScriptsEnabled,
   updatePyodideEnvState,
+  watchPyodideEnv,
   type PyodideEnvState,
 } from '@/utils/pyodide/pyodide-env';
 import {
@@ -397,6 +538,17 @@ import {
   verifyPyodideRuntime,
   type PyodideCatalogEntry,
 } from '@/utils/pyodide/pyodide-runtime';
+import {
+  clearMicropipManifest,
+  getMicropipGlobalReuse,
+  readMicropipManifest,
+  removeMicropipPackage,
+  setMicropipGlobalReuse,
+  watchMicropipState,
+  type MicropipPackage,
+} from '@/utils/pyodide/pyodide-micropip';
+import HubSwitch from '../components/HubSwitch.vue';
+import HubDialog from '../components/HubDialog.vue';
 
 const props = defineProps<{
   /** 当前分区是否激活（激活时重新水合状态，保证跨上下文变更立刻可见） */
@@ -406,6 +558,23 @@ const props = defineProps<{
 // ──── 状态 ────
 
 const env = ref<PyodideEnvState>({ ...DEFAULT_PYODIDE_ENV_STATE });
+const skillScriptsHelp = ref(false);
+const skillScriptsBusy = ref(false);
+const skillScriptsError = ref('');
+
+async function toggleSkillScripts(enabled: boolean): Promise<void> {
+  if (skillScriptsBusy.value || env.value.status !== 'ready' || removeEnvDialog.busy || verifying.value) return;
+  skillScriptsBusy.value = true;
+  skillScriptsError.value = '';
+  try {
+    await setSkillScriptsEnabled(enabled);
+  } catch (error) {
+    skillScriptsError.value = t('hub.python.skillScriptsSaveError', { detail: String(error) });
+  } finally {
+    env.value = await getPyodideEnvState();
+    skillScriptsBusy.value = false;
+  }
+}
 const downloading = ref(false);
 const verifying = ref(false);
 const cancelController = ref<AbortController | null>(null);
@@ -423,7 +592,8 @@ const pendingInstall = ref<PyodideCatalogEntry | null>(null);
 /** 搜索结果初始截断数，超出可增量展开 */
 const searchLimit = ref(8);
 
-/** 危险操作的行内二次确认状态（键 = 动作标识；null 表示未待确认） */
+/** 危险操作的行内二次确认状态（键 = 动作标识；null 表示未待确认）。
+ *  删环境不在此列——它走 HubDialog 弹窗二次确认（见 removeEnvDialog）。 */
 const armedAction = ref<string | null>(null);
 let disarmTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -453,6 +623,160 @@ const testOutcome = ref<{
 
 /** 下载进度（key = 文件名） */
 const progress = reactive<Record<string, { received: number; total: number }>>({});
+
+// ──── 一键预下载（仅写缓存，不注册为已安装） ────
+const preload = reactive({
+  active: false,
+  done: 0,
+  total: 0,
+  bytes: 0,
+  /** 当前下载中的包名（idle 为空串） */
+  current: '',
+});
+const preloadMessage = ref('');
+let preloadController: AbortController | null = null;
+
+/** 预下载完成消息（含失败摘要，失败名截断防刷屏） */
+function buildPreloadMessage(result: Awaited<ReturnType<typeof preloadWheels>>): string {
+  if (result.cancelled) {
+    return t('hub.python.pkgPreloadCancelled', { done: preload.done, total: preload.total });
+  }
+  let message = t('hub.python.pkgPreloadDone', {
+    downloaded: result.downloaded,
+    cached: result.cached,
+    size: formatBytes(result.bytes),
+  });
+  if (result.failures.length) {
+    const names = result.failures.slice(0, 5).map(failure => failure.name).join('、');
+    const suffix = result.failures.length > 5 ? `${names}…` : names;
+    message += t('hub.python.pkgPreloadPartial', { count: result.failures.length, names: suffix });
+  }
+  return message;
+}
+
+async function startPreload(kind: 'featured' | 'all'): Promise<void> {
+  if (preload.active || busyPackage.value) return;
+  const entries = kind === 'featured' ? featuredEntries.value : catalog.value;
+  if (!entries.length) {
+    preloadMessage.value = t('hub.python.pkgPreloadEmpty');
+    return;
+  }
+  const items: PreloadItem[] = entries.map(entry => ({
+    name: entry.name,
+    url: `${PYODIDE_CDN_BASE}${entry.fileName}`,
+    sha256: entry.sha256,
+  }));
+
+  preload.active = true;
+  preload.done = 0;
+  preload.total = items.length;
+  preload.bytes = 0;
+  preload.current = '';
+  preloadMessage.value = '';
+  const controller = new AbortController();
+  preloadController = controller;
+  try {
+    const result = await preloadWheels(items, {
+      signal: controller.signal,
+      onProgress: progress => {
+        preload.done = progress.done;
+        preload.total = progress.total;
+        preload.bytes = progress.bytes;
+        preload.current = progress.current;
+      },
+    });
+    preloadMessage.value = buildPreloadMessage(result);
+    // 预下载改变缓存占用，刷新详情（失败不阻塞消息展示）
+    void refreshCacheInfo();
+  } catch (error) {
+    preloadMessage.value = t('hub.python.pkgPreloadFailed', {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    preload.active = false;
+    preload.current = '';
+    preloadController = null;
+  }
+}
+
+function cancelPreload(): void {
+  preloadController?.abort();
+}
+
+// ──── micropip 复用设置 ────
+const micropip = reactive({
+  globalReuse: true,
+  packages: [] as MicropipPackage[],
+  busy: false,
+  message: '',
+});
+let unwatchMicropip: (() => void) | null = null;
+
+async function hydrateMicropip(): Promise<void> {
+  try {
+    const [globalReuse, packages] = await Promise.all([getMicropipGlobalReuse(), readMicropipManifest()]);
+    micropip.globalReuse = globalReuse;
+    micropip.packages = packages;
+  } catch {
+    // 读取层已内部降级，这里兜底防御；保持现值不动
+  }
+}
+
+async function toggleGlobalReuse(value: boolean): Promise<void> {
+  if (micropip.busy) return;
+  micropip.busy = true;
+  try {
+    await setMicropipGlobalReuse(value);
+    // 切换伴随清单迁移，重新水合展示
+    await hydrateMicropip();
+    micropip.message = '';
+  } catch (error) {
+    micropip.message = t('hub.python.micropipActionFailed', {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    await hydrateMicropip();
+  } finally {
+    micropip.busy = false;
+  }
+}
+
+/** 删除单条复用记录（行内二次确认，与已装包芯片同款交互） */
+function requestRemoveMicropip(name: string): void {
+  armAction(`micropip:${name}`, async () => {
+    if (micropip.busy) return;
+    micropip.busy = true;
+    try {
+      await removeMicropipPackage(name);
+      await hydrateMicropip();
+      micropip.message = t('hub.python.micropipRemoved', { name });
+    } catch (error) {
+      micropip.message = t('hub.python.micropipActionFailed', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      micropip.busy = false;
+    }
+  });
+}
+
+/** 清除全部复用记录（行内二次确认） */
+function requestClearMicropip(): void {
+  armAction('micropip-clear', async () => {
+    if (micropip.busy) return;
+    micropip.busy = true;
+    try {
+      await clearMicropipManifest();
+      await hydrateMicropip();
+      micropip.message = t('hub.python.micropipCleared');
+    } catch (error) {
+      micropip.message = t('hub.python.micropipActionFailed', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      micropip.busy = false;
+    }
+  });
+}
 
 let unwatchEnv: (() => void) | null = null;
 
@@ -553,6 +877,11 @@ const searchHits = computed<SearchHit[]>(() => {
 const visibleHits = computed(() => searchHits.value.slice(0, searchLimit.value));
 const hiddenHitCount = computed(() => Math.max(0, searchHits.value.length - visibleHits.value.length));
 
+/** 预下载进度百分比（total=0 时回退 0，防除零） */
+const preloadPercent = computed(() =>
+  preload.total > 0 ? Math.min(100, Math.round((preload.done / preload.total) * 100)) : 0,
+);
+
 /** 确认条展示：即将安装的包 + 尚未安装的依赖（帮助预判下载量） */
 const pendingDeps = computed(() => {
   const entry = pendingInstall.value;
@@ -608,7 +937,6 @@ function disarm(): void {
 // ──── 水合与目录 ────
 
 async function hydrate(): Promise<void> {
-  const { getPyodideEnvState } = await import('@/utils/pyodide');
   env.value = await getPyodideEnvState();
   await refreshCacheInfo();
   if (env.value.status === 'ready' && catalog.value.length === 0) {
@@ -713,27 +1041,50 @@ async function reverify(): Promise<void> {
   }
 }
 
-/** 彻底删除 Python 环境（行内二次确认） */
-function requestRemoveEnv(): void {
-  armAction('remove-env', async () => {
-    const { clearFiles } = await import('@/utils/pyodide');
-    try {
-      await clearFiles();
-    } catch {
-      // 缓存清理失败仍重置状态（残留孤儿条目不影响正确性）
-    }
-    await updatePyodideEnvState({
-      status: 'idle',
-      pythonVersion: '',
-      verifiedAt: 0,
-      packages: [],
-      lastError: '',
-    });
+// ──── 删除环境：弹窗二次确认 ────
+
+/** HubDialog 受控状态（busy 期间按钮禁用，防重复提交删除） */
+const removeEnvDialog = reactive({ visible: false, busy: false });
+
+/** 弹窗正文：把「删什么、删多少」量化铺开（数字全部来自当前实时状态） */
+const removeConfirmMessage = computed(() =>
+  t('hub.python.removeConfirm', {
+    files: cacheInfo.count,
+    size: formatBytes(cacheInfo.bytes),
+    pkgs: installedPackages.value.length,
+    micropip: micropip.packages.length,
+  }),
+);
+
+/**
+ * 确认删除：五步编排全部收敛在 purgePyodideEnvironment（单一入口）——
+ * IndexedDB 缓存（运行时 + 全部 wheel 含 micropip wheel）→ micropip 复用
+ * 清单双区 → 环境状态回落 idle → 本页解释器单例丢弃 → 离屏 Worker 回收。
+ * UI 侧随后复位测试台 / 目录 / 清单视图。
+ */
+async function confirmRemoveEnv(): Promise<void> {
+  if (removeEnvDialog.busy) return;
+  // 与按钮禁用条件对齐：装包 / 预下载的在途写缓存若跨过删除，会把刚清掉的
+  // wheel 重新写回 IndexedDB（"删不干净"的唯一活口），必须挡住
+  if (runningTest.value || busyPackage.value || preload.active) return;
+  removeEnvDialog.busy = true;
+  skillScriptsError.value = '';
+  try {
+    const { purgePyodideEnvironment } = await import('@/utils/pyodide');
+    await purgePyodideEnvironment();
     testOutcome.value = null;
     catalog.value = [];
     catalogState.value = 'loading';
+    disarm();
+    await hydrate();          // 状态 → 未安装、缓存统计归零
+    await hydrateMicropip();  // 复用清单已清空（跨上下文 watch 亦会推送）
+  } catch (error) {
+    skillScriptsError.value = t('hub.python.removeEnvError', { detail: String(error) });
     await hydrate();
-  });
+  } finally {
+    removeEnvDialog.busy = false;
+    removeEnvDialog.visible = false;
+  }
 }
 
 // ──── 包安装 / 卸载 ────
@@ -948,20 +1299,26 @@ async function copyOutput(): Promise<void> {
 // ──── 生命周期 ────
 
 onMounted(async () => {
-  await hydrate();
-  // 运行时侧（工具自动装包）与本页互为写入方：订阅保持视图同步
-  void import('@/utils/pyodide').then(({ watchPyodideEnv }) => {
-    unwatchEnv = watchPyodideEnv(state => {
-      env.value = state;
-    });
+  unwatchEnv = watchPyodideEnv(state => {
+    env.value = state;
   });
+  await hydrate();
+  // micropip 清单订阅：智能体侧（SW/worker）装包入账后本页芯片实时刷新
+  unwatchMicropip = watchMicropipState(state => {
+    micropip.globalReuse = state.globalReuse;
+    micropip.packages = state.packages;
+  });
+  await hydrateMicropip();
 });
 
 // 切到该分区时重新水合：跨上下文的变更（工具侧装包 / 侧边栏侧启停）立刻可见
 watch(
   () => props.active,
   active => {
-    if (active) void hydrate();
+    if (active) {
+      void hydrate();
+      void hydrateMicropip();
+    }
   },
 );
 
@@ -973,6 +1330,9 @@ watch(pkgQuery, () => {
 
 onUnmounted(() => {
   unwatchEnv?.();
+  unwatchMicropip?.();
+  // 离开页面时中止进行中的预下载（缓存已写入部分保留，幂等可续）
+  preloadController?.abort();
   if (disarmTimer !== undefined) clearTimeout(disarmTimer);
   if (copyTimer !== undefined) clearTimeout(copyTimer);
 });

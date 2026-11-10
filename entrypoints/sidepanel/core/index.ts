@@ -32,8 +32,8 @@ export {
   isImageAvatar,
   type AgentAvatar,
 } from '@/utils/agents/agent-avatar';
-export { chatDatabase, mergeMessagePatch } from './context/chat-database';
-export type { SessionListOptions, MessagesPage } from './context/chat-database';
+export { chatDatabase, mergeMessagePatch, buildMatchSnippet } from './context/chat-database';
+export type { SessionListOptions, SessionListScope, MessagesPage } from './context/chat-database';
 export { transcriptEngine } from './context/transcript-engine';
 export type {
   CreateSessionInput,

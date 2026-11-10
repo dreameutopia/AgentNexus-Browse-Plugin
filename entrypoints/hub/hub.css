@@ -455,11 +455,31 @@ body {
   border-color: rgba(41, 40, 36, 0.2);
 }
 
-/* 视觉能力：实心墨色（能力开关类徽章需要一眼可辨） */
+/* 视觉能力：深墨渐变实心 + 眼睛图标（能力开关类徽章需要一眼可辨）。
+   文案随界面语言切换（中文「视觉」/ 英文「Vision」），图标只作语义提示。 */
 .hub-badge-vision {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px 2px 7px;
   color: #ffffff;
-  background: var(--ink-primary, #292824);
-  border-color: transparent;
+  background: var(--primary-gradient, linear-gradient(135deg, #45423b 0%, #2b2925 100%));
+  border-color: rgba(41, 40, 36, 0.5);
+  box-shadow: 0 1px 2px rgba(41, 40, 36, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* 徽章内的眼睛图标：与文字同色，尺寸跟随字号 */
+.hub-badge-vision__icon {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  opacity: 0.92;
+}
+
+.hub-badge-vision__text {
+  line-height: 1.2;
 }
 
 /* 分类与标签徽章 */
@@ -1089,34 +1109,25 @@ body {
   padding-top: 8px;
 }
 
-/* 左卡：短字段并排（名称+描述、分类+标签），提高横向空间利用率 */
-.hub-editor-split--agent .hub-form-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 12px;
-  align-items: start;
-}
-
-/* 视觉操作开关（原「视觉循环」）：标题 + 问号在左、开关在右的玻璃卡行；
-   开启后子行（截图工具 / 重截图开关 / 坐标提示）接续在卡下方 */
+/* 视觉操作开关（原「视觉循环」）：左标题 + 右开关的整行设置项。
+   左端与「名称 / 描述 / 分类 / 标签」的字段标签严格对齐——因此这一行是
+   **无内缩的整行**，而不是带内边距的浮层卡片（后者会把标题整体右移约 12px，
+   与其它字段标题错位）。行上方一条细分隔线把「视觉操作」标记为独立分组，
+   开启后的子行（截图工具 / 重截图开关 / 坐标提示）接续在其下。 */
 .hub-vision-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid rgba(41 40 36, 0.08);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.55);
-  box-shadow: inset 0 1px 2px rgba(41 40 36, 0.04);
-  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+  min-height: 30px;
+  padding: 9px 0 4px;
+  border-top: 1px solid rgba(41, 40, 36, 0.12);
+  transition: border-color 0.18s ease;
 }
 
-/* 开启态：卡面略微提亮加深边界，与轨道染色呼应（不引入彩色，保持中性） */
+/* 开启态：分隔线加深，与轨道染色呼应（不引入彩色，保持中性） */
 .hub-vision-head.is-on {
-  border-color: rgba(41, 40, 36, 0.18);
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: inset 0 1px 2px rgba(41, 40, 36, 0.05), 0 1px 3px rgba(41, 40, 36, 0.06);
+  border-top-color: rgba(41, 40, 36, 0.26);
 }
 
 /* 标题与问号同行紧凑排列（问号紧随标题右侧） */
@@ -1125,21 +1136,6 @@ body {
   align-items: center;
   gap: 6px;
   min-width: 0;
-}
-
-/* 开关右侧子行：截图工具下拉 + 重截图开关 */
-.hub-vision-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-
-/* 窄宽度下双列回落单列（放不下就换行，不压缩） */
-@media (max-width: 1180px) {
-  .hub-editor-split--agent .hub-form-row {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 /* 列内占满剩余高度的字段（编辑器主体），内部输入域随之填满 */

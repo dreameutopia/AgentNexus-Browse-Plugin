@@ -154,13 +154,14 @@ export const PYODIDE_CORE_FILES = [
   { label: 'pyodide.asm.wasm', url: 'https://cdn.jsdelivr.net/pyodide/v0.28.3/full/pyodide.asm.wasm', contentType: 'application/wasm' },
 ];
 export const PYODIDE_FEATURED_PACKAGES = ['numpy', 'pandas', 'scikit-learn', 'matplotlib', 'requests', 'pillow'];
-export const DEFAULT_PYODIDE_ENV_STATE = { status: 'idle', pythonVersion: '', version: PYODIDE_VERSION, verifiedAt: 0, packages: [], lastError: '' };
+export const DEFAULT_PYODIDE_ENV_STATE = { status: 'idle', pythonVersion: '', version: PYODIDE_VERSION, verifiedAt: 0, packages: [], lastError: '', skillScriptsEnabled: false };
 
 let envState = {
   status: 'ready',
   pythonVersion: '3.14.0',
   version: PYODIDE_VERSION,
   verifiedAt: Date.now() - 3600000,
+  skillScriptsEnabled: false,
   packages: [
     { name: 'numpy', version: '2.3.1' },
     { name: 'pandas', version: '2.3.0' },
@@ -179,9 +180,21 @@ export function watchPyodideEnv(listener) {
   envListeners.add(listener);
   return () => envListeners.delete(listener);
 }
+export async function setSkillScriptsEnabled(enabled) {
+  if (enabled && envState.status !== 'ready') throw new Error('Python runtime is not ready');
+  envState = { ...envState, skillScriptsEnabled: enabled };
+  envListeners.forEach(l => l(JSON.parse(JSON.stringify(envState))));
+  return JSON.parse(JSON.stringify(envState));
+}
+export async function isSkillScriptSupportEnabled() { return !!envState.skillScriptsEnabled; }
 export async function ensurePyodideRuntime() { return {}; }
 export async function verifyPyodideRuntime() { return { pythonVersion: '3.14.0', implementation: 'CPython', checksumOk: true }; }
 export async function clearFiles() { envState = { ...DEFAULT_PYODIDE_ENV_STATE }; }
+export async function purgePyodideEnvironment() {
+  await clearFiles();
+  await clearMicropipManifest();
+  await updatePyodideEnvState({ ...DEFAULT_PYODIDE_ENV_STATE, skillScriptsEnabled: false });
+}
 export async function downloadPyodideFile() {}
 export async function listFileMeta() {
   return [
@@ -204,21 +217,49 @@ export async function runPythonCode(code) {
 }
 export async function getPackageCatalog() {
   return [
-    { name: 'numpy', version: '2.3.1', fileName: 'numpy-2.3.1.whl', imports: ['numpy'], depends: [] },
-    { name: 'pandas', version: '2.3.0', fileName: 'pandas-2.3.0.whl', imports: ['pandas'], depends: ['numpy'] },
-    { name: 'scikit-learn', version: '1.6.1', fileName: 'scikit_learn-1.6.1.whl', imports: ['sklearn'], depends: ['numpy', 'scipy'] },
-    { name: 'matplotlib', version: '3.9.2', fileName: 'matplotlib-3.9.2.whl', imports: ['matplotlib', 'plt'], depends: ['numpy'] },
-    { name: 'requests', version: '2.32.3', fileName: 'requests-2.32.3.whl', imports: ['requests'], depends: [] },
-    { name: 'pillow', version: '11.0.0', fileName: 'pillow-11.0.0.whl', imports: ['PIL', 'Image'], depends: [] },
-    { name: 'scipy', version: '1.14.1', fileName: 'scipy-1.14.1.whl', imports: ['scipy'], depends: ['numpy'] },
-    { name: 'beautifulsoup4', version: '4.12.3', fileName: 'beautifulsoup4-4.12.3.whl', imports: ['bs4'], depends: [] },
-    { name: 'lxml', version: '5.3.0', fileName: 'lxml-5.3.0.whl', imports: ['lxml'], depends: [] },
+    { name: 'numpy', version: '2.3.1', fileName: 'numpy-2.3.1.whl', imports: ['numpy'], depends: [], sha256: 'a'.repeat(64) },
+    { name: 'pandas', version: '2.3.0', fileName: 'pandas-2.3.0.whl', imports: ['pandas'], depends: ['numpy'], sha256: 'b'.repeat(64) },
+    { name: 'scikit-learn', version: '1.6.1', fileName: 'scikit_learn-1.6.1.whl', imports: ['sklearn'], depends: ['numpy', 'scipy'], sha256: 'c'.repeat(64) },
+    { name: 'matplotlib', version: '3.9.2', fileName: 'matplotlib-3.9.2.whl', imports: ['matplotlib', 'plt'], depends: ['numpy'], sha256: 'd'.repeat(64) },
+    { name: 'requests', version: '2.32.3', fileName: 'requests-2.32.3.whl', imports: ['requests'], depends: [], sha256: 'e'.repeat(64) },
+    { name: 'pillow', version: '11.0.0', fileName: 'pillow-11.0.0.whl', imports: ['PIL', 'Image'], depends: [], sha256: 'f'.repeat(64) },
+    { name: 'scipy', version: '1.14.1', fileName: 'scipy-1.14.1.whl', imports: ['scipy'], depends: ['numpy'], sha256: '1'.repeat(64) },
+    { name: 'beautifulsoup4', version: '4.12.3', fileName: 'beautifulsoup4-4.12.3.whl', imports: ['bs4'], depends: [], sha256: '2'.repeat(64) },
+    { name: 'lxml', version: '5.3.0', fileName: 'lxml-5.3.0.whl', imports: ['lxml'], depends: [], sha256: '3'.repeat(64) },
   ];
 }
 export async function installPackages(names) {
   return names.map(name => ({ name, version: '1.0.0' }));
 }
 export async function uninstallPackages() {}
+
+// ── 批量预下载（模拟：进度打满 + 200ms 延迟让进度条可见） ──
+export const PYODIDE_CDN_BASE = 'https://cdn.example/pyodide/full/';
+export async function preloadWheels(items, options) {
+  const total = items.length;
+  for (let i = 1; i <= total; i++) {
+    await new Promise(resolve => setTimeout(resolve, 40));
+    options?.onProgress?.({ done: i, total, bytes: i * 1024 * 512, current: items[i - 1]?.name ?? '' });
+  }
+  return { succeeded: total, cached: Math.min(2, total), downloaded: Math.max(0, total - 2), bytes: total * 1024 * 512, failures: [], cancelled: false };
+}
+
+// ── micropip 复用清单 ──
+let micropipState = {
+  globalReuse: true,
+  packages: [
+    { name: 'openpyxl', version: '3.1.5', url: 'https://x/openpyxl.whl', sha256: '4'.repeat(64), installedAt: Date.now() - 86400000 },
+    { name: 'et_xmlfile', version: '2.0.0', url: 'https://x/et_xmlfile.whl', sha256: '5'.repeat(64), installedAt: Date.now() - 86400000 },
+  ],
+};
+const micropipListeners = new Set();
+function emitMicropip() { micropipListeners.forEach(l => l(JSON.parse(JSON.stringify(micropipState)))); }
+export async function readMicropipManifest() { return JSON.parse(JSON.stringify(micropipState.packages)); }
+export async function getMicropipGlobalReuse() { return micropipState.globalReuse; }
+export async function setMicropipGlobalReuse(v) { micropipState = { ...micropipState, globalReuse: v }; emitMicropip(); }
+export async function removeMicropipPackage(name) { micropipState = { ...micropipState, packages: micropipState.packages.filter(p => p.name !== name) }; emitMicropip(); }
+export async function clearMicropipManifest() { micropipState = { ...micropipState, packages: [] }; emitMicropip(); }
+export function watchMicropipState(listener) { micropipListeners.add(listener); return () => micropipListeners.delete(listener); }
 `;
 
 await build({

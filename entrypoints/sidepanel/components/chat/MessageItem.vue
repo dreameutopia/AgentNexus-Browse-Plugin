@@ -20,7 +20,11 @@
            正文超长自动收起（点击展开查看完整内容），气泡右下角常驻复制按钮。
            用户消息没有推理/工具等过程内容，不参与下面的前奏分组 ════ -->
       <template v-if="isUserMessage">
-        <UserMessageBubble :content="userTextContent" :message-id="message.id" />
+        <UserMessageBubble
+          :content="userTextContent"
+          :message-id="message.id"
+          :quote="message.pageQuote"
+        />
       </template>
 
       <!-- ════ 直播态（流式进行中 / 无末段正文的记录）：

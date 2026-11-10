@@ -151,6 +151,26 @@
   flex-wrap: wrap;
 }
 
+/* 一键预下载按钮行（常用包 / 全目录） */
+.hub-python__preload {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
+/* micropip 复用开关行：开关 + 语义说明同排 */
+.hub-python__micropip-scope {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.hub-python__micropip-scope .hub-hint {
+  margin: 0;
+}
+
 /* 危险操作：中性描边 + 语义红字；待确认态转实心红 */
 .hub-python-btn-danger {
   color: var(--error-color, #ef4444);
@@ -645,4 +665,10 @@
   .hub-python__result {
     transition: none;
   }
+}
+
+.hub-python__skill-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }

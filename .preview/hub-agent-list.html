@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Hub 智能体概览预览</title>
+<link rel="stylesheet" href="../entrypoints/sidepanel/components/modals/settings-modal.css">
+<link rel="stylesheet" href="../entrypoints/hub/hub.css">
+<style>
+  /* 预览页仅用于视觉核对 */
+  .hub { height: 100vh; }
+  .preview-note {
+    margin: 0 0 10px;
+    font-size: 12px;
+    color: var(--ink-secondary, #787671);
+  }
+</style>
+</head>
+<body>
+<div class="hub">
+  <div class="hub-layout">
+    <!-- 左：导航卡 -->
+    <aside class="hub-sidebar">
+      <h1 class="hub-sidebar-title">管理中心</h1>
+      <nav class="hub-sidebar-nav">
+        <button type="button" class="hub-nav-item active"><span class="hub-nav-label">智能体</span></button>
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">技能</span></button>
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">插件</span></button>
+        <button type="button" class="hub-nav-item"><span class="hub-nav-label">备份</span></button>
+      </nav>
+      <div class="hub-sidebar-foot">
+        <div class="hub-locale" role="group">
+          <button type="button" class="hub-locale-btn active">中文</button>
+          <button type="button" class="hub-locale-btn">EN</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 右：内容卡 -->
+    <main class="hub-content">
+      <div class="hub-content-body">
+        <section class="api-section">
+          <p class="preview-note">视觉能力徽章：中文「视觉」 / 英文「Vision」（随界面语言切换）</p>
+          <div class="hub-cards">
+            <article class="hub-card">
+              <div class="hub-card-head">
+                <div class="hub-card-title">
+                  <span class="agent-avatar agent-avatar-emoji hub-card-avatar" style="font-size: 26px;">🧭</span>
+                  <span class="hub-card-name">网页调研助手</span>
+                </div>
+                <span class="hub-badge hub-badge-custom">自定义</span>
+              </div>
+              <p class="hub-card-desc">抓取网页并产出带引用的调研报告，支持多来源交叉验证。</p>
+              <div class="hub-card-taxonomy">
+                <span class="hub-badge hub-badge-category">内容创作</span>
+                <span class="hub-badge hub-badge-tag">调研</span>
+                <span class="hub-badge hub-badge-tag">网页</span>
+              </div>
+              <div class="hub-card-meta">
+                <span class="hub-card-tools">12 个工具</span>
+                <span class="hub-card-tools">2 个关联技能</span>
+                <!-- 视觉能力徽章：深墨渐变 + 眼睛图标 -->
+                <span class="hub-badge hub-badge-vision" title="视觉操作">
+                  <svg class="hub-badge-vision__icon" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M1.6 8s2.5-4.2 6.4-4.2S14.4 8 14.4 8s-2.5 4.2-6.4 4.2S1.6 8 1.6 8z" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round" />
+                    <circle cx="8" cy="8" r="1.85" fill="currentColor" />
+                  </svg>
+                  <span class="hub-badge-vision__text">视觉</span>
+                </span>
+                <label class="hub-switch">
+                  <input class="hub-switch__input" type="checkbox" role="switch" checked aria-label="已启用">
+                  <span class="hub-switch__track"></span>
+                </label>
+                <span class="hub-card-ops">
+                  <button type="button" class="hub-op">编辑</button>
+                  <button type="button" class="hub-op hub-op-danger">删除</button>
+                </span>
+              </div>
+            </article>
+
+            <article class="hub-card">
+              <div class="hub-card-head">
+                <div class="hub-card-title">
+                  <span class="agent-avatar agent-avatar-emoji hub-card-avatar" style="font-size: 26px;">📊</span>
+                  <span class="hub-card-name">表格数据抽取</span>
+                </div>
+                <span class="hub-badge hub-badge-preset">预置</span>
+              </div>
+              <p class="hub-card-desc">从网页或文件中抽取结构化表格数据并清洗。</p>
+              <div class="hub-card-taxonomy">
+                <span class="hub-badge hub-badge-category">数据处理</span>
+                <span class="hub-badge hub-badge-tag">表格</span>
+              </div>
+              <div class="hub-card-meta">
+                <span class="hub-card-tools">6 个工具</span>
+                <!-- 英文形态（Vision） -->
+                <span class="hub-badge hub-badge-vision" title="Vision operation">
+                  <svg class="hub-badge-vision__icon" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M1.6 8s2.5-4.2 6.4-4.2S14.4 8 14.4 8s-2.5 4.2-6.4 4.2S1.6 8 1.6 8z" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round" />
+                    <circle cx="8" cy="8" r="1.85" fill="currentColor" />
+                  </svg>
+                  <span class="hub-badge-vision__text">Vision</span>
+                </span>
+                <label class="hub-switch">
+                  <input class="hub-switch__input" type="checkbox" role="switch" checked aria-label="已启用">
+                  <span class="hub-switch__track"></span>
+                </label>
+                <span class="hub-card-ops">
+                  <span class="hub-card-readonly">预置 · 只读</span>
+                </span>
+              </div>
+            </article>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</div>
+</body>
+</html>

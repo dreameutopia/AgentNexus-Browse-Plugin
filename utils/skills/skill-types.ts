@@ -132,14 +132,15 @@ export const SKILL_IMPORT_MAX_FILE_CHARS = 2_000_000;
 /** 单个技能所有文件的总量上限（字符；约 10MB 文本） */
 export const SKILL_IMPORT_MAX_TOTAL_CHARS = 10_000_000;
 
+/** Larger binary assets, such as fonts, templates and wheels, have a separate byte budget. */
+export const SKILL_RESOURCE_MAX_FILE_BYTES = 16 * 1024 * 1024;
+export const SKILL_RESOURCE_MAX_TOTAL_BYTES = 32 * 1024 * 1024;
+
 /** 单次导入允许的技能个数上限 */
 export const SKILL_IMPORT_MAX_SKILLS = 20;
 
 /**
- * 导入预警阈值（UTF-8 字节）：单个技能文本总量超过该值时，导入前必须弹窗
- * 确认（用户明确知晓风险后才写入）。预警而不硬拒的原因：体量本身不违法，
- * 风险属于「环境错配」——浏览器扩展没有终端，scripts/ 无法运行（只能当
- * 文档读），超大文本还会长期占用扩展存储并拖慢每次写入与跨上下文同步。
+ * 导入预警阈值（资源原始字节）：导入前确认扩展存储占用。
  */
 export const SKILL_IMPORT_WARN_BYTES = 5 * 1024 * 1024;
 

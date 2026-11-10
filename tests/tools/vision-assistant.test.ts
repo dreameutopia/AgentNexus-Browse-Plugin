@@ -75,7 +75,7 @@ assert.deepEqual(
 import { skillEngine } from '../../entrypoints/sidepanel/core/registry/skill-engine';
 
 assert.deepEqual(filterVisionAssistantTools(['screenshot','browser_page_exec','browser_scroll','vision_gui','vision_gui','ocr']), ['screenshot','vision_gui']);
-for (const id of ['browser_navigate','browser_interact','browser_inject_script','ocr','browser_page_exec']) assert.equal(isVisionAssistantTool(id), false);
+for (const id of ['browser_navigation','browser_interact','browser_inject_script','ocr','browser_page_exec']) assert.equal(isVisionAssistantTool(id), false);
 // 合并后的观察者能力面：vision_gui 进白名单，开放面收敛为 action 级闸门
 assert.equal(isVisionAssistantTool('vision_gui'), true);
 assert.deepEqual([...VISION_ASSISTANT_GUI_ACTIONS].sort(), ['read','read_scroll','zoom']);
@@ -111,9 +111,9 @@ assert.ok(image);
 assert.equal(JSON.stringify(withoutVisionImage(imageResult)).includes('base64'), false);
 assert.equal(imageResult.data.screenshot.includes('base64'), true, 'Extraction must not mutate UI result');
 // noVisionRecapture 策略回调：marked 与注册表契约清单同源（tools.test.ts 有注册表级断言）
-const marked = (name: string) => ['browser_get_page_text','browser_get_page_info','browser_get_all_tabs','browser_window',
+const marked = (name: string) => ['browser_get_page_text','browser_get_page_info',
   'browser_observe','browser_dom_explore','browser_network_capture',
-  'plan_tool','interact','note_tool','data_ref_tool','load_skill','read_skill_file'].includes(name);
+  'plan_tool','interact','note_tool','data_ref_tool','skill_tool'].includes(name);
 const guiCall = (action: string) => [{function:{name:'vision_gui',arguments:JSON.stringify({action, screenshotId:'s'})}}];
 const none = () => false;
 assert.equal(needsVisionRefresh(['screenshot'], [image], none), false);
@@ -131,9 +131,21 @@ assert.equal(needsVisionRefresh(guiCall('read_scroll'), [], none), true);
 assert.equal(needsVisionRefresh(guiCall('check'), [], none), false);
 assert.equal(needsVisionRefresh(guiCall('click'), [], none), true);
 // 纯读豁免（本轮修复的核心）：整批 noVisionRecapture=true 不触发重拍
-assert.equal(needsVisionRefresh(['browser_get_all_tabs'], [], marked), false);
-assert.equal(needsVisionRefresh(['browser_window'], [], marked), false);
 assert.equal(needsVisionRefresh(['browser_dom_explore','browser_network_capture'], [], marked), false);
+// 合并型工具的 action 级豁免（PURE_READ_ACTIONS）：browser_tabs 的
+// list/windows 与 browser_navigation 的 wait 是纯枚举/纯轮询——即便工具级
+// metadata 不豁免（mixed 语义，保守缺省）也不触发重拍；其余 action 与
+// 参数解析失败一律保守重拍（此处刻意用 none 回调证明判定不依赖工具级标记）
+const toolCall = (name: string, args: unknown) => [{function:{name,arguments:JSON.stringify(args)}}];
+assert.equal(needsVisionRefresh(toolCall('browser_tabs', {action:'list'}), [], none), false, 'tabs list 纯枚举豁免');
+assert.equal(needsVisionRefresh(toolCall('browser_tabs', {action:'windows'}), [], none), false, 'tabs windows 纯枚举豁免');
+assert.equal(needsVisionRefresh(toolCall('browser_tabs', {action:'switch', tabId:1}), [], none), true, 'tabs switch 改活动标签 → 重拍');
+assert.equal(needsVisionRefresh(toolCall('browser_tabs', {action:'close', tabId:1}), [], none), true, 'tabs close 改标签集合 → 重拍');
+assert.equal(needsVisionRefresh(toolCall('browser_navigation', {action:'wait'}), [], none), false, 'navigation wait 纯轮询豁免');
+assert.equal(needsVisionRefresh(toolCall('browser_navigation', {action:'open', url:'https://x'}), [], none), true, 'navigation open 切换可见页 → 重拍');
+assert.equal(needsVisionRefresh(toolCall('browser_navigation', {action:'back'}), [], none), true, 'navigation back 改页面 → 重拍');
+assert.equal(needsVisionRefresh([{function:{name:'browser_tabs',arguments:'{'}}], [], none), true, '合并工具参数解析失败 → 保守重拍');
+assert.equal(needsVisionRefresh(['browser_tabs'], [], none), true, '字符串形式调用没有参数（action 未知）→ 保守重拍');
 // browser_get_page_text 带 url = 前台打开（激活标签页、等加载后提取）→ 用户眼前的
 // 页面已经变了，截图身份失效：即便该工具声明了纯读豁免也必须重拍
 assert.equal(needsVisionRefresh(['browser_get_page_text'], [], marked), false,
@@ -214,7 +226,7 @@ const engine = new ConversationEngine({
   requiresApproval: () => { approvals++; return false; },
   sendStream: async () => { throw new Error('Not used'); }, sendVision: async () => { throw new Error('Not used'); },
 } as any) as any;
-const runtime:any = { chatId:'vision-guide-test',toolPolicy:'vision-assistant',toolIds:['screenshot','vision_gui','load_skill','browser_get_page_text'],vision:null,
+const runtime:any = { chatId:'vision-guide-test',toolPolicy:'vision-assistant',toolIds:['screenshot','vision_gui','skill_tool','browser_get_page_text'],vision:null,
   limits:{maxDurationMs:60000,toolTimeoutMs:1000} };
 const handle:any = {abortController:new AbortController(),dynamicToolIds:new Set(['browser_page_exec']),record:{toolCalls:[],parts:[]},toolCallCount:0};
 const calls = (name:string,args:any={}) => [{id:'c',type:'function',function:{name,arguments:JSON.stringify(args)}}];
@@ -271,7 +283,7 @@ try {
 const dangerous = setCustomSkill({name:'guide-forbidden-skill',files:{'SKILL.md':'---\nname: guide-forbidden-skill\ndescription: Test forbidden execution\n---\nExecute code'},allowedTools:['browser_page_exec']});
 assert.equal(dangerous.ok,true);
 if (dangerous.ok) {
-  const denied = await engine.executeToolCalls(runtime,handle,calls('load_skill',{skill_name:dangerous.skill.id}),{},()=>{},Date.now()+60000);
+  const denied = await engine.executeToolCalls(runtime,handle,calls('skill_tool',{action:'load',skill_name:dangerous.skill.id}),{},()=>{},Date.now()+60000);
   assert.equal(denied.anyFailure,true); assert.equal(executed,0);
   engine.injectSkillTools(runtime,handle,{data:{skill:dangerous.skill.id}});
   handle.dynamicToolIds.clear();
@@ -318,13 +330,13 @@ try {
   try {
     const toggleOnWrite = agentStore.setAgentConfig({
       id: 'vision-toggle-on', name: 'vision-toggle-on', description: '视觉开关注入用例',
-      system: '按当前截图完成任务。', tools: ['browser_navigate'], category: 'general', tags: [],
+      system: '按当前截图完成任务。', tools: ['browser_navigation'], category: 'general', tags: [],
       vision: { screenshotTool: 'screenshot', screenshotArgs: {}, reScreenshotAfterTools: true },
     });
     assert.ok(toggleOnWrite.ok, '开启视觉操作的自定义智能体写入成功');
     const toggleOffWrite = agentStore.setAgentConfig({
       id: 'vision-toggle-off', name: 'vision-toggle-off', description: '视觉开关剔除用例',
-      system: '按当前截图完成任务。', tools: ['browser_navigate', 'vision_gui'], category: 'general', tags: [],
+      system: '按当前截图完成任务。', tools: ['browser_navigation', 'vision_gui'], category: 'general', tags: [],
     });
     assert.ok(toggleOffWrite.ok, '未开启视觉操作但残留 vision_gui 的智能体写入成功');
     // 数据层归一（L0）：写入即剔除 vision_gui，存储的 tools 恒不含该受控工具
@@ -335,17 +347,17 @@ try {
     assert.ok(storedOn && !storedOn.tools.includes('vision_gui'),
       '数据层归一：开关开启的智能体同样只存选择面，vision_gui 由运行时注入');
     // 装配层（L3）纯函数分支：注入 / 幂等去重 / 剔除并上报残留 / 无残留干净通过
-    const injected = applyVisionToggleToolSurface(['browser_navigate'], true);
+    const injected = applyVisionToggleToolSurface(['browser_navigation'], true);
     assert.ok(injected.toolIds.includes('vision_gui') && !injected.strippedResidue,
       '归一函数：开关开启 → 注入 vision_gui');
-    const deduped = applyVisionToggleToolSurface(['vision_gui', 'browser_navigate'], true);
+    const deduped = applyVisionToggleToolSurface(['vision_gui', 'browser_navigation'], true);
     assert.equal(deduped.toolIds.filter(id => id === 'vision_gui').length, 1,
       '归一函数：已存在 vision_gui 时幂等去重');
-    const stripped = applyVisionToggleToolSurface(['browser_navigate', 'vision_gui'], false);
-    assert.deepEqual(stripped.toolIds, ['browser_navigate'], '归一函数：开关关闭 → 剔除残留');
+    const stripped = applyVisionToggleToolSurface(['browser_navigation', 'vision_gui'], false);
+    assert.deepEqual(stripped.toolIds, ['browser_navigation'], '归一函数：开关关闭 → 剔除残留');
     assert.equal(stripped.strippedResidue, true, '归一函数：剔除时上报残留供告警');
-    const clean = applyVisionToggleToolSurface(['browser_navigate'], false);
-    assert.deepEqual(clean.toolIds, ['browser_navigate'], '归一函数：无残留时原样通过');
+    const clean = applyVisionToggleToolSurface(['browser_navigation'], false);
+    assert.deepEqual(clean.toolIds, ['browser_navigation'], '归一函数：无残留时原样通过');
     assert.equal(clean.strippedResidue, false, '归一函数：无残留不上报告警');
     // 端到端链路：开 → 工具面 + 规程；关 → 两者皆无
     const toggleOn = await runtimeBuilder.build({chatId:'vision-toggle-on-run',userInput:'执行',agentName:'vision-toggle-on',skillNames:[],priorRecords:[]});

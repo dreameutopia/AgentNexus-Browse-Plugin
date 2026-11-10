@@ -1882,11 +1882,15 @@
    结构契约见 markdown-renderer.buildChartBlock / chart-renderer.ts：
    .chart-block[data-chart-kind][data-chart-state]
      ├─ .chart-header（.chart-lang-label + .component-save-btn）
-     ├─ .chart-body（占位文本 → 沙箱 iframe 注入）
+     ├─ .chart-body（占位文本 → .chart-stage > iframe 注入）
      └─ .chart-source（隐藏源码 pre；渲染失败时由降级路径展开）
    状态机：pending → queued → rendering → done | error（error 时错误条与源码同时展示）。
    样式与 .diagram-block 同构但类名独立（避免 diagram-renderer 误拾取）。
-   头部只有一个「保存」按钮：把当前渲染产物导出为高清 PNG。 */
+   头部只有一个「保存」按钮：把当前渲染产物导出为高清 PNG。
+
+   尺寸契约（chart-layout.ts）：iframe 按「渲染宽度」排版（= max(可用宽度,
+   自然宽度)），再由父页用 transform 等比缩小到 .chart-stage（= 可用宽度）
+   ——窄侧边栏下图表按舒适宽度排版后缩小，坐标轴与标签一个不落。 */
 
 .chart-block {
   position: relative;
@@ -1903,6 +1907,30 @@
   overflow: hidden;
   color: var(--ink-secondary, #787671);
   font-size: 13px;
+}
+
+/* 显示框：可见区域（可用宽度）；需要时横向滚动查看缩放后的完整图表 */
+.chart-block .chart-stage {
+  position: relative;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  margin: 0;
+}
+
+/* 缩放后占位：transform 不改变布局尺寸，滚动范围按它计算 */
+.chart-block .chart-fit {
+  position: relative;
+  margin: 0;
+}
+
+.chart-block .chart-fit > iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: 0;
+  display: block;
+  background: transparent;
+  transform-origin: left top;
 }
 
 .chart-block[data-chart-state='pending'] .chart-body,
@@ -1926,13 +1954,8 @@
   animation: none;
 }
 
-.chart-block .chart-body iframe {
-  width: 100%;
-  height: 340px;
-  border: 0;
-  display: block;
-  background: transparent;
-}
+/* iframe 的宽高与缩放由 chart-renderer.ts 按布局计算写入内联样式
+   （.chart-stage > iframe 规则已给出定位与 transform-origin） */
 
 .chart-block .chart-error {
   color: #cf222e;

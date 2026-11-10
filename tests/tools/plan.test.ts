@@ -161,7 +161,7 @@ const terminalItems: PlanItem[] = [
 
 const reminderInput = (overrides: Partial<PlanReminderInput>): PlanReminderInput => ({
   items: openItems,
-  roundCalls: [{ function: { name: 'browser_navigate' } }],
+  roundCalls: [{ function: { name: 'browser_navigation' } }],
   iteration: 3,
   lastReminderRound: 0,
   ...overrides,
@@ -179,7 +179,7 @@ assert.equal(needsPlanReminder(reminderInput({ items: [] })), false, '无计划�
 assert.equal(needsPlanReminder(reminderInput({ items: terminalItems })), false, '全终态不提醒');
 // 本轮调用过 plan_tool（含与工作工具混合）→ 模型在维护计划，不打扰
 assert.equal(
-  needsPlanReminder(reminderInput({ roundCalls: ['plan_tool', 'browser_navigate'] })),
+  needsPlanReminder(reminderInput({ roundCalls: ['plan_tool', 'browser_navigation'] })),
   false,
   '本轮维护过计划不提醒',
 );

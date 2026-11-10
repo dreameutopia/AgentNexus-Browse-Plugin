@@ -289,21 +289,34 @@ registerAllTools();
   // 注：只读观察已并入 vision_gui 的 action 面——read/zoom 的豁免走
   // gui-contract 的动作级判定（visionGuiRefresh），不经过本字段；
   // 原 vision_read* 独立工具已删除。
+  // 合并型多语义工具（browser_tabs / browser_navigation）混有纯读与改视图
+  // 两类 action，工具级无法用一个布尔表达——其纯读 action（tabs 的
+  // list/windows、navigation 的 wait）走 needsVisionRefresh 的 action 级豁免
+  //（PURE_READ_ACTIONS），工具 metadata 保持缺省保守。
   const NO_RECAPTURE_TOOLS = [
-    'browser_get_page_text', 'browser_get_page_info', 'browser_get_all_tabs', 'browser_window',
+    'browser_get_page_text', 'browser_get_page_info',
     'browser_observe', 'browser_dom_explore', 'browser_network_capture',
-    'plan_tool', 'interact', 'note_tool', 'data_ref_tool', 'load_skill', 'read_skill_file', 'read_file',
+    'plan_tool', 'interact', 'note_tool', 'data_ref_tool', 'skill_tool', 'read_file',
   ];
   for (const id of NO_RECAPTURE_TOOLS) {
     check(toolRegistry.getTool(id)?.metadata.noVisionRecapture === true, `纯读工具 ${id} 声明 noVisionRecapture=true`);
   }
   // 必须保守重拍的高危反例：改页面 / 等待变化 / 内部自拍替换截图身份 /
   // 名单特例工具（screenshot 按名字、vision_gui 按 action 由 needsVisionRefresh
-  // 单独处理，不依赖字段）；get_page_html 属自定义组合扩展组，未经确认保持缺省保守
-  for (const id of ['web_search', 'generic_wait', 'wait_page_load', 'browser_interact', 'browser_navigate',
-    'browser_switch_tab', 'browser_page_exec', 'screenshot',
+  // 单独处理，不依赖字段）；get_page_html 属自定义组合扩展组，未经确认保持缺省保守。
+  // browser_navigation / browser_tabs 为合并型工具：除 action 级豁免名单外
+  //（list/windows/wait）一律保守，工具 metadata 绝不可标 true。
+  for (const id of ['web_search', 'platform_search', 'generic_wait', 'browser_interact', 'browser_navigation',
+    'browser_tabs', 'browser_page_exec', 'screenshot',
     'vision_gui', 'ocr', 'extract_data', 'ai_locate', 'browser_console', 'file_uploader', 'browser_get_page_html']) {
     check(toolRegistry.getTool(id)?.metadata.noVisionRecapture !== true, `工具 ${id} 保持保守重拍（未豁免）`);
+  }
+  // 合并迁移防回潮：被并入 browser_navigation / browser_tabs 的旧工具名
+  // 绝不得重新出现在注册表（旧名调用会绕过新参数矩阵并产生漂移）
+  for (const id of ['browser_navigate', 'browser_go_back_or_forward', 'wait_page_load',
+    'browser_get_all_tabs', 'browser_switch_tab', 'browser_close_tab', 'browser_close_tabs',
+    'browser_create_tab', 'browser_window']) {
+    check(toolRegistry.getTool(id) === undefined, `旧工具 ${id} 已删除（并入统一工具后不得回潮）`);
   }
   // 未声明字段的存在性防御：字段缺省（undefined）即为 false 语义
   check(toolRegistry.getTool('browser_interact')?.metadata.noVisionRecapture === undefined || toolRegistry.getTool('browser_interact')?.metadata.noVisionRecapture === false,
@@ -315,45 +328,77 @@ registerAllTools();
   check(NOTE_SYSTEM_PROMPT_SECTION.includes('选择口诀'), '笔记分区含无歧义选择口诀');
 }
 
-// ==================== 2b. 统一搜索工具 web_search 契约 ====================
+// ==================== 2b. 搜索工具契约（web_search 引擎 / platform_search 站点平台） ====================
 
 {
-  const { WebSearchTool, SEARCH_PLATFORM_IDS, SEARCH_PLATFORMS } = await import('../../tools/search');
+  const { WebSearchTool, PlatformSearchTool, SEARCH_ENGINE_IDS, SEARCH_PLATFORM_IDS, SEARCH_TARGETS } = await import('../../tools/search');
   const tool = new WebSearchTool();
+  const platformTool = new PlatformSearchTool();
 
-  // —— 注册与平台面 ——
+  // —— 注册与目标面 ——
   check(toolRegistry.getTool('web_search') !== null, 'web_search 已注册');
-  eq(SEARCH_PLATFORM_IDS.length, 9, '平台注册表共 9 个平台');
-  for (const id of SEARCH_PLATFORM_IDS) {
-    const platform = SEARCH_PLATFORMS[id];
+  check(toolRegistry.getTool('platform_search') !== null, 'platform_search 已注册');
+  eq(SEARCH_ENGINE_IDS.length, 2, '搜索引擎注册表共 2 个（bing / baidu）');
+  eq(SEARCH_PLATFORM_IDS.length, 7, '站点平台注册表共 7 个');
+  eq(SEARCH_ENGINE_IDS.length + SEARCH_PLATFORM_IDS.length, 9, '搜索目标合计 9 个（拆分后总量不变）');
+  for (const id of [...SEARCH_ENGINE_IDS, ...SEARCH_PLATFORM_IDS]) {
+    const target = SEARCH_TARGETS[id];
     check(
-      typeof platform.buildSearchUrl('q') === 'string' && platform.buildSearchUrl('q').includes(encodeURIComponent('q')),
-      `平台 ${id}: URL 模板含编码关键词`,
+      typeof target.buildSearchUrl('q') === 'string' && target.buildSearchUrl('q').includes(encodeURIComponent('q')),
+      `目标 ${id}: URL 模板含编码关键词`,
     );
-    if (platform.extractor.kind === 'script') {
-      check(!!platform.extractor.file && !!platform.extractor.action, `平台 ${id}: script 通道配置完整`);
+    if (target.extractor.kind === 'script') {
+      check(!!target.extractor.file && !!target.extractor.action, `目标 ${id}: script 通道配置完整`);
     } else {
-      check(typeof platform.extractor.func === 'function', `平台 ${id}: inline 通道有解析函数`);
+      check(typeof target.extractor.func === 'function', `目标 ${id}: inline 通道有解析函数`);
     }
   }
+  // 两个工具的 schema 枚举各自对应自己的目标类别，互不串味
+  const engineProps = tool.openaiSchema.function.parameters?.properties as Record<string, { enum?: string[] }>;
+  const platformProps = platformTool.openaiSchema.function.parameters?.properties as Record<string, { enum?: string[] }>;
+  eq(engineProps.engine?.enum, [...SEARCH_ENGINE_IDS], 'web_search 的 engine 枚举 = 搜索引擎清单');
+  eq(platformProps.platform?.enum, [...SEARCH_PLATFORM_IDS], 'platform_search 的 platform 枚举 = 站点平台清单');
   check(
-    (tool.openaiSchema.function.parameters?.properties as Record<string, { enum?: string[] }>).website?.enum?.length === 9,
-    'schema 的 website 枚举与平台注册表一致',
+    engineProps.website === undefined && platformProps.engine === undefined,
+    '旧参数名 website 已下线，两个工具各用自己的参数名',
+  );
+  // 参数描述 = 基类枚举清单 + 子类选择指引（paramDescription 曾是死字段，
+  // 选择指引没进 schema——此断言防止再次出现「写了但没接上」）
+  check(
+    (engineProps.engine?.description ?? '').includes('baidu=百度') &&
+      (engineProps.engine?.description ?? '').includes('偏百度'),
+    'engine 参数描述含枚举清单与选择指引（子类指引已接入 schema）',
+    engineProps.engine?.description,
   );
   check(
-    (tool.openaiSchema.function.description ?? '').includes('browser_navigate'),
-    '工具描述明确声明自带导航（引用 browser_navigate）',
+    (platformProps.platform?.description ?? '').includes('zhihu=知乎') &&
+      (platformProps.platform?.description ?? '').includes('按问题性质选站点'),
+    'platform 参数描述含枚举清单与选择指引（子类指引已接入 schema）',
+    platformProps.platform?.description,
+  );
+  check(
+    (tool.openaiSchema.function.description ?? '').includes('browser_navigation'),
+    '工具描述明确声明自带导航（引用 browser_navigation）',
+  );
+  check(
+    (tool.openaiSchema.function.description ?? '').includes('platform_search'),
+    'web_search 描述点明站点检索走 platform_search（分工不靠模型猜）',
   );
   check(tool.metadata.noVisionRecapture !== true, 'web_search 未标记 noVisionRecapture（搜索改变页面，视觉循环须重拍）');
+  check(platformTool.metadata.noVisionRecapture !== true, 'platform_search 未标记 noVisionRecapture（同上）');
 
   // —— 参数防御（不触导航即返回错误） ——
-  const badPlatform = await tool.execute({ website: 'google', query: 'x' });
-  check(badPlatform.success === false && /不支持的搜索平台/.test(badPlatform.error ?? '') && (badPlatform.error ?? '').includes('baidu'), '未知平台：报错并列出支持平台', badPlatform.error);
-  const badQuery = await tool.execute({ website: 'bing', query: '   ' });
+  const badEngine = await tool.execute({ engine: 'google', query: 'x' });
+  check(badEngine.success === false && /不支持的搜索引擎/.test(badEngine.error ?? '') && (badEngine.error ?? '').includes('baidu'), '未知引擎：报错并列出支持引擎', badEngine.error);
+  const crossKind = await tool.execute({ engine: 'zhihu', query: 'x' });
+  check(crossKind.success === false && /不支持的搜索引擎/.test(crossKind.error ?? ''), '引擎工具不接站点平台（跨类枚举被拒）', crossKind.error);
+  const crossKind2 = await platformTool.execute({ platform: 'bing', query: 'x' });
+  check(crossKind2.success === false && /不支持的站点平台/.test(crossKind2.error ?? '') && (crossKind2.error ?? '').includes('zhihu'), '站点工具不接搜索引擎（跨类枚举被拒）', crossKind2.error);
+  const badQuery = await tool.execute({ engine: 'bing', query: '   ' });
   check(badQuery.success === false && /query 必填/.test(badQuery.error ?? ''), '空白 query：报错');
   const badShape = await tool.execute('not-an-object');
   check(badShape.success === false, '非对象参数：报错');
-  const badLength = await tool.execute({ website: 'bing', query: 'x'.repeat(301) });
+  const badLength = await tool.execute({ engine: 'bing', query: 'x'.repeat(301) });
   check(badLength.success === false && /query 过长/.test(badLength.error ?? ''), '超长 query：报错');
 
   // —— 行为用例：可控桩替换（导航 + 解析两条通道） ——
@@ -390,9 +435,10 @@ registerAllTools();
 
     // 1) inline 通道（bing）：导航成功 + 解析成功 + 两部分封装
     inlineResult = [{ title: 'A', link: 'https://a', description: 'd' }];
-    const ok = await tool.execute({ website: 'bing', query: 'test', waitTime: 0 });
+    const ok = await tool.execute({ engine: 'bing', query: 'test', waitTime: 0 });
     check(ok.success === true, 'inline: 整体 success');
-    const okData = ok.data as { navigation: { success: boolean; url: string; tabId: number }; results: { success: boolean; count: number; markdown?: string } };
+    const okData = ok.data as { engine?: string; website?: string; navigation: { success: boolean; url: string; tabId: number }; results: { success: boolean; count: number; markdown?: string } };
+    check(okData.engine === 'bing' && okData.website === undefined, 'inline: data 用 engine 字段（旧 website 已下线）', okData);
     check(okData.navigation.success === true && okData.navigation.url === 'https://www.bing.com/search?q=test' && okData.navigation.tabId === 77, 'inline: navigation 封装含当前网址与 tabId', okData.navigation);
     check(okData.results.success === true && okData.results.count === 1, 'inline: results 含条目计数');
     check(okData.results.markdown === undefined, 'inline: data.results 不含 markdown（单份契约，防引擎序列化双份）');
@@ -413,32 +459,33 @@ registerAllTools();
 
     // 2) 解析失败不拖垮导航封装（inline 抛错）
     scriptingStub.executeScript = (async () => { throw new Error('CSP blocked'); }) as typeof scriptingStub.executeScript;
-    const parseFail = await tool.execute({ website: 'bing', query: 'test', waitTime: 0 });
+    const parseFail = await tool.execute({ engine: 'bing', query: 'test', waitTime: 0 });
     check(parseFail.success === true, '解析失败: 整体仍 success（导航事实不被吞）');
     const parseFailData = parseFail.data as { navigation: { success: boolean }; results: { success: boolean; hint?: string } };
     check(parseFailData.navigation.success === true, '解析失败: navigation 仍成功');
     check(parseFailData.results.success === false && /browser_get_page_text/.test(parseFailData.results.hint ?? ''), '解析失败: 提示自行解析', parseFailData.results.hint);
 
-    // 3) script 通道（zhihu）：注入 + sendMessage 契约
+    // 3) script 通道（zhihu）：注入 + sendMessage 契约（站点平台走 platform_search）
     scriptingStub.executeScript = (async () => undefined) as typeof scriptingStub.executeScript;
     messageResponse = { status: 'success', data: [{ title: 'T', link: 'https://z' }] };
-    const scriptOk = await tool.execute({ website: 'zhihu', query: 'test', waitTime: 0 });
-    const scriptOkData = scriptOk.data as { results: { success: boolean; count: number } };
+    const scriptOk = await platformTool.execute({ platform: 'zhihu', query: 'test', waitTime: 0 });
+    const scriptOkData = scriptOk.data as { platform?: string; results: { success: boolean; count: number } };
     check(scriptOk.success === true && scriptOkData.results.success === true && scriptOkData.results.count === 1, 'script: 通道契约解析成功');
+    check(scriptOkData.platform === 'zhihu', 'script: data 用 platform 字段回传目标', scriptOkData);
     messageResponse = { status: 'error', message: '页面结构变化' };
-    const scriptErr = await tool.execute({ website: 'zhihu', query: 'test', waitTime: 0 });
+    const scriptErr = await platformTool.execute({ platform: 'zhihu', query: 'test', waitTime: 0 });
     const scriptErrData = scriptErr.data as { navigation: { success: boolean }; results: { success: boolean } };
     check(scriptErr.success === true && scriptErrData.navigation.success === true && scriptErrData.results.success === false, 'script: 内容脚本报错时仅 results 失败');
 
     // 4) 空结果：success + 提示
     messageResponse = { status: 'success', data: [] };
-    const empty = await tool.execute({ website: 'csdn', query: 'test', waitTime: 0 });
+    const empty = await platformTool.execute({ platform: 'csdn', query: 'test', waitTime: 0 });
     const emptyData = empty.data as { results: { success: boolean; count: number; hint?: string } };
     check(emptyData.results.success === true && emptyData.results.count === 0 && /browser_get_page_text/.test(emptyData.results.hint ?? ''), '空结果: success=true 且提示自行确认');
 
     // 5) 导航硬失败（新标签页创建后即消失）
     tabsStub.create = (async () => ({ id: 88 })) as typeof tabsStub.create;
-    const navFail = await tool.execute({ website: 'baidu', query: 'test', waitTime: 0 });
+    const navFail = await tool.execute({ engine: 'baidu', query: 'test', waitTime: 0 });
     check(navFail.success === false && /导航失败/.test(navFail.error ?? ''), '导航失败: 整体报错', navFail.error);
     const navFailData = navFail.data as { navigation: { success: boolean } };
     check(navFailData.navigation.success === false, '导航失败: navigation 如实封装');
@@ -447,14 +494,14 @@ registerAllTools();
     tabsStub.create = (async (props: { url?: string }) => { lastCreatedTabId = 77; pageUrl = props.url ?? pageUrl; return { id: 77, url: props.url }; }) as typeof tabsStub.create;
     scriptingStub.executeScript = (async () => [{ result: inlineResult }]) as typeof scriptingStub.executeScript;
     pageUrl = 'https://www.bing.com/search?q=test';
-    const currentTab = await tool.execute({ website: 'bing', query: 'test', newTab: false, waitTime: 0 });
+    const currentTab = await tool.execute({ engine: 'bing', query: 'test', newTab: false, waitTime: 0 });
     const currentTabData = currentTab.data as { navigation: { tabId: number; newTab: boolean } };
     check(currentTabData.navigation.tabId === 1 && currentTabData.navigation.newTab === false, 'newTab=false: 复用当前标签页', currentTabData.navigation);
 
     // 7) 加载超时=软失败：navigation.success 仍为 true、status='timeout' 带 note，解析照常进行
     pageStatus = 'loading';
     inlineResult = [{ title: 'B', link: 'https://b' }];
-    const slowLoad = await tool.execute({ website: 'bing', query: 'test', waitTime: 0 });
+    const slowLoad = await tool.execute({ engine: 'bing', query: 'test', waitTime: 0 });
     const slowData = slowLoad.data as { navigation: { success: boolean; status: string; note?: string }; results: { success: boolean; count: number } };
     check(
       slowLoad.success === true && slowData.navigation.success === true && slowData.navigation.status === 'timeout' && !!slowData.navigation.note,
@@ -470,6 +517,117 @@ registerAllTools();
   }
 }
 
+// ==================== 2b2. 搜索工具执行细节（waitTime 生效 / 中止收敛 / 标签页回报 / 失败通道） ====================
+
+{
+  const { WebSearchTool, SEARCH_TARGETS, SEARCH_TARGET_IDS, SEARCH_ENGINE_IDS, SEARCH_PLATFORM_IDS } = await import('../../tools/search');
+  const tool = new WebSearchTool();
+
+  // —— 注册表与 id 数组的一致性：新增目标若只登记进注册表而漏进数组，
+  //    工具枚举取不到它 = 静默不可达（类型系统查不出，只能靠契约测试守住） ——
+  eq(
+    [...SEARCH_ENGINE_IDS, ...SEARCH_PLATFORM_IDS].sort(),
+    Object.keys(SEARCH_TARGETS).sort(),
+    '两个 id 数组的并集与注册表键完全一致（新增目标不得漏登记）',
+  );
+  eq(
+    [...SEARCH_TARGET_IDS],
+    [...SEARCH_ENGINE_IDS, ...SEARCH_PLATFORM_IDS],
+    'SEARCH_TARGET_IDS 与两个 id 数组的并集一致（派生常量不得漂移）',
+  );
+
+  const chromeStub = (globalThis as Record<string, unknown>).chrome as Record<string, unknown>;
+  const tabsStub = chromeStub.tabs as Record<string, unknown>;
+  const scriptingStub = chromeStub.scripting as Record<string, unknown>;
+  const originalTabs = { ...tabsStub };
+  const originalExecuteScript = scriptingStub.executeScript;
+  const originalSetTimeout = globalThis.setTimeout;
+  try {
+    let createCalls = 0;
+    let tabStatus = 'complete';
+    const createdTabId = 91;
+    tabsStub.create = (async (props: { url?: string }) => {
+      createCalls += 1;
+      return { id: createdTabId, url: props.url };
+    }) as typeof tabsStub.create;
+    tabsStub.update = (async () => ({ id: createdTabId, url: 'https://www.bing.com/search?q=t' })) as typeof tabsStub.update;
+    tabsStub.get = (async () => ({ id: createdTabId, url: 'https://www.bing.com/search?q=t', status: tabStatus })) as typeof tabsStub.get;
+    scriptingStub.executeScript = (async () => [{ result: [{ title: 'A', link: 'https://a' }] }]) as typeof scriptingStub.executeScript;
+
+    // 1) waitTime 真的生效：记录每次 setTimeout 请求的时长
+    const delays: number[] = [];
+    globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+      delays.push(ms ?? 0);
+      return originalSetTimeout(fn, 0);
+    }) as typeof globalThis.setTimeout;
+    const waited = await tool.execute({ engine: 'bing', query: 't', waitTime: 500 });
+    check(waited.success === true, 'waitTime 用例：搜索成功', waited);
+    check(delays.includes(500), 'waitTime=500 真的额外等待了 500ms（参数不是摆设）', delays);
+
+    // 2) 调用前已中断 → 不发起任何导航，返回可读的取消失败
+    const abortBefore = new AbortController();
+    abortBefore.abort();
+    createCalls = 0;
+    const abortedEarly = await tool.execute(
+      { engine: 'bing', query: 't', waitTime: 0 },
+      { signal: abortBefore.signal },
+    );
+    check(
+      abortedEarly.success === false && /搜索已取消/.test(abortedEarly.error ?? ''),
+      '调用前被中断：返回可读的取消失败',
+      abortedEarly.error,
+    );
+    check(createCalls === 0, '调用前被中断：不发起任何导航（不留下无意义的标签页）', createCalls);
+
+    // 3) 加载等待期间被中断 → 立即收敛，不再继续解析
+    const abortDuring = new AbortController();
+    tabStatus = 'loading';
+    globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+      if (!abortDuring.signal.aborted) abortDuring.abort();
+      return originalSetTimeout(fn, 0);
+    }) as typeof globalThis.setTimeout;
+    const abortedDuring = await tool.execute(
+      { engine: 'bing', query: 't', waitTime: 0 },
+      { signal: abortDuring.signal },
+    );
+    check(
+      abortedDuring.success === false && /搜索已取消/.test(abortedDuring.error ?? ''),
+      '加载等待期间被中断：立即收敛并给出可读原因',
+      abortedDuring.error,
+    );
+    tabStatus = 'complete';
+
+    // 4) 标签页回报：宿主据此把页面高亮/引用指向真实标签页
+    globalThis.setTimeout = ((fn: () => void) => originalSetTimeout(fn, 0)) as typeof globalThis.setTimeout;
+    const reported: number[] = [];
+    const reportedResult = await tool.execute(
+      { engine: 'bing', query: 't', waitTime: 0 },
+      { onTabTarget: (id: number) => { reported.push(id); } },
+    );
+    check(
+      reportedResult.success === true && reported.includes(createdTabId),
+      '导航完成后回报目标标签页（onTabTarget）',
+      reported,
+    );
+
+    // 5) 导航失败：失败原因在 content（primary='content'），data 保留导航事实
+    tabsStub.create = (async () => { throw new Error('标签页创建失败（模拟）'); }) as typeof tabsStub.create;
+    const navFail = await tool.execute({ engine: 'bing', query: 't', waitTime: 0 });
+    check(navFail.success === false && navFail.primary === 'content', '导航失败：声明 primary=content（失败原因即正题）', navFail.primary);
+    const failText = (navFail.content as Array<{ text?: string }>)[0]?.text ?? '';
+    check(/导航失败/.test(failText) && /标签页创建失败/.test(failText), '导航失败：可读原因随 content 回传', failText);
+    check(
+      (navFail.data as { navigation?: { success?: boolean } })?.navigation?.success === false,
+      '导航失败：data 保留 navigation 事实',
+      navFail.data,
+    );
+  } finally {
+    Object.assign(tabsStub, originalTabs);
+    scriptingStub.executeScript = originalExecuteScript;
+    globalThis.setTimeout = originalSetTimeout;
+  }
+}
+
 // ==================== 2c. 百度结果解析器（实测 DOM 回归） ====================
 
 {
@@ -478,7 +636,7 @@ registerAllTools();
   // 等价 chrome.scripting 的序列化注入——同时验证自包含约束（闭包引用在
   // 页面上下文会直接丢失，此处即抛 ReferenceError）。
   const { JSDOM } = await import('jsdom');
-  const { SEARCH_PLATFORMS } = await import('../../tools/search/search-platforms');
+  const { SEARCH_TARGETS } = await import('../../tools/search/search-targets');
   type BaiduRow = { title: string; link: string; description: string; source: string; time: string };
 
   const baiduHtml = `<!DOCTYPE html><body><div id="content_left">
@@ -522,7 +680,7 @@ registerAllTools();
   (globalThis as Record<string, unknown>).document = dom.window.document;
   let rows: BaiduRow[] = [];
   try {
-    const extractor = SEARCH_PLATFORMS.baidu.extractor;
+    const extractor = SEARCH_TARGETS.baidu.extractor;
     check(extractor.kind === 'inline' && typeof extractor.func === 'function', '百度解析器为 inline 通道且有解析函数');
     if (extractor.kind === 'inline' && extractor.func) {
       try {
@@ -665,8 +823,8 @@ registerAllTools();
 
 {
   const registered = new Set(toolRegistry.getToolIds());
-  // browser_refresh / browser_set_zoom 没有注册工具，由 tools-manager-listener 内联处理
-  const inlineHandled = new Set(['browser_refresh', 'browser_set_zoom']);
+  // browser_set_zoom 没有注册工具，由 tools-manager-listener 内联处理
+  const inlineHandled = new Set(['browser_set_zoom']);
   for (const [key, value] of Object.entries(TOOL_NAMES.BROWSER)) {
     check(
       registered.has(value) || inlineHandled.has(value),
@@ -1926,6 +2084,7 @@ await import('./wait-navigation.test');
 await import('./vision-gui.test');
 await import('./confirmation.test');
 await import('./vision-assistant.test');
+await import('./skill-runtime-mode.test');
 await import('./prompt-cache.test');
 await import('./agent-i18n.test');
 await import('./agent-image.test');

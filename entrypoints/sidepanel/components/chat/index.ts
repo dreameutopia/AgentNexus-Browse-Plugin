@@ -17,3 +17,4 @@ export { default as ChatHistoryDrawer } from './ChatHistoryDrawer.vue';
 export { default as ContextUsageRing } from './ContextUsageRing.vue';
 export { default as GuardConfirmBar } from './GuardConfirmBar.vue';
 export { default as PlanBoard } from './PlanBoard.vue';
+export { default as PageQuoteBar } from './PageQuoteBar.vue';

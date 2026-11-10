@@ -6,11 +6,10 @@ import { toolRegistry } from '../registry';
 import { PageSourceTool } from './page-source-tool';
 import { TaskSubmitTool } from './task-submit-tool';
 import { TaskResultTool } from './task-result-tool';
-import { 
-  getPageTextTool, 
-  getPageHTMLTool, 
-  getCurrentPageInfoTool, 
-  getAllTabsTool 
+import {
+  getPageTextTool,
+  getPageHTMLTool,
+  getCurrentPageInfoTool,
 } from './page-info-tool';
 
 // 导出基类
@@ -25,7 +24,6 @@ function createBaseTools() {
     getPageTextTool,
     getPageHTMLTool,
     getCurrentPageInfoTool,
-    getAllTabsTool
   ];
 }
 
@@ -44,7 +42,6 @@ export {
   getPageTextTool,
   getPageHTMLTool,
   getCurrentPageInfoTool,
-  getAllTabsTool
 };
 
 // 导出类型定义

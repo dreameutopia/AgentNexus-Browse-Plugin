@@ -11,7 +11,7 @@ import { startPluginClient } from '@/utils/plugins/client';
  *   - 本文件            → 查询 API、配置构建、统计（对外入口不变）
  */
 
-import { toolRegistry } from '@/tools/registry';
+import { toolRegistry, type ToolSchemaOptions } from '@/tools/registry';
 import { registerAllTools } from '@/tools';
 import { requiresConfirmApproval } from '@/tools/confirm-guard';
 import { OpenAITool } from '@/common/openai-types';
@@ -55,13 +55,13 @@ export class OpenAIToolsConverter {
   /**
    * 根据工具 ID 列表获取对应的 OpenAI 工具定义
    */
-  static getToolsByIds(toolIds: string[]): OpenAITool[] {
+  static getToolsByIds(toolIds: string[], options: ToolSchemaOptions = {}): OpenAITool[] {
     const tools: OpenAITool[] = [];
 
     for (const toolId of toolIds) {
       const registered = toolRegistry.getTool(toolId);
       if (registered) {
-        tools.push(registered.openaiSchema);
+        tools.push(registered.getSchema?.(options) ?? registered.openaiSchema);
       } else {
         console.warn(`工具 ${toolId} 未在 toolRegistry 中找到定义`);
       }
@@ -84,9 +84,11 @@ export class OpenAIToolsConverter {
    * args 缺省时只做整工具判定（兼容不带参数的调用方）。
    */
   static requiresApproval(toolName: string, args?: unknown): boolean {
-    const metadata = toolRegistry.getTool(toolName)?.metadata;
-    if (!metadata) return false;
+    const tool = toolRegistry.getTool(toolName);
+    if (!tool) return false;
+    const { metadata } = tool;
     if (metadata.requiresApproval === true) return true;
+    if (tool.requiresApprovalFor?.(args)) return true;
 
     const record =
       args !== null && typeof args === 'object' && !Array.isArray(args)

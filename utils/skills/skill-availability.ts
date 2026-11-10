@@ -41,6 +41,7 @@
 import type { SkillRecord } from './skill-types';
 import { resolveSkill, getEnabledSkills } from './skill-store';
 import { getMappedSkillRefs } from './tool-skill-mapping';
+import { isSkillToolId } from './skill-tool-contract';
 
 /**
  * 解析智能体**显式关联**的技能记录（输入框「/」卡片的可选集合单一事实源）。
@@ -88,7 +89,7 @@ export function computeAvailableSkills(
 
   /** 承载校验：allowedTools 为空视为通过（无工具依赖）；否则须全部在工具集内 */
   const carriesAllTools = (skill: SkillRecord): boolean =>
-    skill.allowedTools.every(toolId => toolIdSet.has(toolId));
+    skill.allowedTools.every(toolId => isSkillToolId(toolId) || toolIdSet.has(toolId));
 
   const pushSkill = (skill: SkillRecord | undefined): void => {
     if (!skill || !skill.enabled || !carriesAllTools(skill)) return;
