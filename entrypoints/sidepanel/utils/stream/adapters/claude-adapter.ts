@@ -17,6 +17,7 @@ import { BaseAdapter, type StreamAccumulator } from './base-adapter';
 import { ApiRequestError, createInBandError } from '../errors';
 import { mergeUsageSafe, normalizeClaudeUsage } from './usage-normalize';
 import { nativeItems, setNativeItems, nativePartIndex } from './native-replay';
+import { splitLeadingCompactionProduct } from './compaction-product';
 import {
   SAFE_TOOL_ID_PATTERN,
   parseReplayArguments,
@@ -126,16 +127,27 @@ export class ClaudeAdapter extends BaseAdapter {
 
     // system：Claude 的 system 是顶级字段。全部 system 消息按出现顺序合并，
     // 保证「压缩摘要记忆」等附加系统消息不会被静默丢弃（跨协议回放的关键约束）
+    //
+    // 首条压缩记忆（assistant 角色的上下文压缩消息）：并入顶级 system——
+    // Anthropic 对首条消息角色有约束（首条须为 user），而压缩记忆本就是
+    // 「系统级上下文」，并入后 wire 形态与压缩前逐字一致；其余消息仍留在
+    // messages 中参与折叠（跨协议回放的关键约束）。
+    const { product, rest } = splitLeadingCompactionProduct(config.messages);
     const systemTexts = config.messages
       .filter(m => m.role === 'system')
       .map(m => this.plainTextOf(m.content))
       .filter(text => text.length > 0);
+    if (product && rest.length > 0) {
+      const productText = this.plainTextOf(product.content);
+      if (productText.length > 0) systemTexts.push(productText);
+    }
     if (systemTexts.length > 0) {
       body.system = [{ type: 'text', text: systemTexts.join('\n\n'), cache_control: { type: 'ephemeral' } }];
     }
 
     // 其余消息折叠为合法轮次（连续同角色合并 + 并行 tool_result 同轮回放）
-    body.messages = this.foldClaudeTurns(config.messages.filter(m => m.role !== 'system'), { ...config });
+    // 退化情形（整段上下文只剩压缩记忆）：保留其在 messages 中，避免空数组请求
+    body.messages = this.foldClaudeTurns(rest.length > 0 ? rest : product ? [product] : [], { ...config });
     // Automatic moving breakpoint for growing agent histories; the explicit
     // system checkpoint remains reusable after compaction or an image change.
     body.cache_control = { type: 'ephemeral' };

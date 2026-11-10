@@ -1,0 +1,172 @@
+/* ==================== Deep Search 未配置警告弹窗样式（DeepSearchWarning 专用） ====================
+ *
+ * 独立成文件的原因：app.css 经 App.vue <style scoped> 引入，作用域属性无法穿透
+ * 到子组件内部——原先放在 app.css 里的 .deep-search-warning-* / .warning-* 规则
+ * 只能命中组件根节点，内部（弹窗体、按钮）全部失样式。本文件由
+ * DeepSearchWarning.vue 直接 import，全局生效；app.css 中的旧定义已删除，
+ * 避免两处维护（与 voice-recording-modal.css / asr-config-prompt.css 同一模式）。
+ * 动画 keyframes 统一加 dsw 前缀：scoped 样式里的 keyframes 会被改名，
+ * 本文件是全局样式，必须自带自己的 keyframes 才能生效。
+ *
+ * 配色与侧边栏整体黑白灰设计语言一致：只用 .app-container 的中性 token
+ * （surface / line / ink 系），主操作按钮用 ink-primary 深墨色实底（与发送按钮、
+ * AsrConfigPrompt 同源），不引入蓝紫 / 琥珀等彩色。token 均带字面量兜底。
+ */
+
+.deep-search-warning-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* 中性暖黑遮罩（非蓝灰） */
+  background: rgba(20, 19, 17, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  backdrop-filter: blur(4px);
+  animation: dswOverlayFadeIn 0.3s ease-out;
+}
+
+.deep-search-warning-modal {
+  background: var(--surface-card, #ffffff);
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 16px;
+  box-shadow:
+    0 20px 40px rgba(0, 0, 0, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  max-width: 400px;
+  width: 90%;
+  overflow: hidden;
+  animation: dswModalSlideIn 0.3s ease-out;
+}
+
+.warning-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 24px 16px;
+  border-bottom: 1px solid var(--line-soft, #e4e2de);
+}
+
+/* 深墨色图标块 + 白色星标（原为琥珀色底 + 琥珀星），与 AsrConfigPrompt 图标块同源 */
+.warning-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  background: var(--ink-primary, #292824);
+  border-radius: 12px;
+  color: #ffffff;
+  box-shadow: 0 6px 16px -10px rgba(41, 40, 36, 0.55);
+}
+
+.warning-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink-primary, #292824);
+  margin: 0;
+}
+
+.warning-content {
+  padding: 16px 24px;
+}
+
+.warning-message {
+  font-size: 14px;
+  color: var(--ink-primary, #292824);
+  line-height: 1.5;
+  margin: 0 0 12px;
+}
+
+.warning-submessage {
+  font-size: 13px;
+  color: var(--ink-secondary, #787671);
+  margin: 0;
+}
+
+.warning-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 24px 24px;
+}
+
+.warning-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.warning-btn:focus-visible {
+  outline: 2px solid var(--focus-ring, #a5a09a);
+  outline-offset: 2px;
+}
+
+/* 主操作：深墨实底（原为蓝色 #3b82f6），与发送按钮 / AsrConfigPrompt 主按钮同色同 hover */
+.warning-btn-primary {
+  background: var(--ink-primary, #292824);
+  color: #ffffff;
+  box-shadow: 0 6px 16px -8px rgba(41, 40, 36, 0.5);
+}
+
+.warning-btn-primary:hover {
+  background: #44413b;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px -8px rgba(41, 40, 36, 0.55);
+}
+
+.warning-btn-secondary {
+  background: var(--surface-soft, #f3f1ed);
+  color: var(--ink-primary, #292824);
+  border: 1px solid var(--line-soft, #e4e2de);
+}
+
+.warning-btn-secondary:hover {
+  background: var(--surface-hover, #eeece7);
+  transform: translateY(-1px);
+}
+
+.warning-btn-cancel {
+  background: transparent;
+  color: var(--ink-secondary, #787671);
+  border: 1px solid var(--line-soft, #e4e2de);
+}
+
+.warning-btn-cancel:hover {
+  background: var(--surface-canvas, #faf9f7);
+  color: var(--ink-primary, #292824);
+}
+
+/* ---- 入场动画（本文件自带，不依赖 app.css 里被 scoped 改名的同名 keyframes） ---- */
+
+@keyframes dswOverlayFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes dswModalSlideIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9) translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}

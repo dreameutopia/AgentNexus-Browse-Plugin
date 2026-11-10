@@ -32,7 +32,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, toRef, watch } from 'vue';
 import { t } from '@/utils/i18n';
 import type { ExtendedChatMessage, MessageFeedback } from '../../types/chat';
 import { installDiagramRenderer, processDiagrams } from '../../utils/chat/diagram-renderer';
@@ -42,6 +42,7 @@ import MessageItem from './MessageItem.vue';
 import './chat-message-list.css';
 
 const props = defineProps<{
+  chatId?: string;
   messages: ExtendedChatMessage[];
   showChatMode: boolean;
   isAiResponding: boolean;
@@ -53,6 +54,7 @@ const props = defineProps<{
    */
   liveMessageId?: string | null;
 }>();
+provide('workspaceChatId', toRef(props, 'chatId'));
 
 const messagesContainer = ref<HTMLElement | null>(null);
 

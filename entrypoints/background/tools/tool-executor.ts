@@ -12,6 +12,7 @@ import {
 import { WebSocketClient } from '../ws/websocket-client';
 import { toolRegistry } from './tool-registry';
 import { handleCallTool } from '.';
+import { projectToolPayload, type ToolResult } from '@/common/tool-handler';
 
 /**
  * 工具执行器类
@@ -65,32 +66,18 @@ export class ToolExecutor {
   }
 
   /**
-   * 格式化工具执行结果
+   * 格式化工具执行结果（外部调用方拿到的最终载荷）
+   *
+   * 投影规则集中在 common/tool-handler.projectToolPayload（与工具面板同一口径）：
+   * 哪条通道是正题由生产者显式声明（ToolResult.primary），消费方只取一份——
+   * 同一份事实不在外部响应里出现两次，也不会有任何一侧丢信息。
    */
   private formatToolResult(result: any): any {
-    // 如果结果包含 content 数组（MCP 格式）
-    if (result.content && Array.isArray(result.content)) {
-      // 提取文本内容
-      const textContent = result.content
-        .filter((item: any) => item.type === 'text')
-        .map((item: any) => item.text)
-        .join('\n');
-
-      // 尝试解析为 JSON
-      try {
-        return JSON.parse(textContent);
-      } catch {
-        return { text: textContent };
-      }
+    const projection = projectToolPayload(result as ToolResult);
+    if (projection.kind === 'error') {
+      throw new Error(projection.error);
     }
-
-    // 如果结果是错误
-    if (result.isError || result.error) {
-      throw new Error(result.error || '工具执行失败');
-    }
-
-    // 直接返回结果
-    return result;
+    return projection.value;
   }
 
   /**

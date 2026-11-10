@@ -38,10 +38,10 @@ Firefox、不允许调试的页面、浏览器地址栏/菜单、操作系统对
 
 ## 工具
 
-GUI 仅注册一个工具 `vision_gui`，完整保留 click/drag/input/hover/keyboard/scroll/mark/inspect/zoom/check 共10个 action。`screenshot`、OCR及只读视觉助手的 `vision_read*` 保持各自能力边界。
+GUI 仅注册一个工具 `vision_gui`，共12个 action：click/drag/input/hover/keyboard/scroll/mark/inspect/zoom/check/read/read_scroll——原只读工具 `vision_read`/`vision_read_scroll` 已并入 read/read_scroll action，`vision_read_zoom` 由 zoom action 覆盖，`vision_read_wait` 已下线；`screenshot` 与 OCR 保持各自能力边界。
 调用使用同一个顶层对象：`vision_gui({action:"click", screenshotId, point:{x:500,y:500}})`，不嵌套 parameters。所有 GUI action 都需最新 screenshotId；每个 action 有独立封闭 schema 分支与运行时校验，未知字段、跨 action 参数、非有限数和互斥滚动模式在访问浏览器前拒绝。
-交互与mark触发新图；inspect/zoom/check保留源图。缩略图通过独立图片通道返回，不能冒充新视口截图。不可逆审批只适用于click/drag/input/keyboard/scroll，保留confirm与意图关键词兜底。
-旧的10个工具不再注册，也没有执行别名；存储的agent工具ID、技能allowedTools和发送给模型的旧工具引导统一迁移为vision_gui，历史工具调用记录保留原样。自定义agent与动态技能同样注入一次独立的<vision-gui-tool> XML引导段。
+手势与mark/read_scroll触发新图；inspect/zoom/check/read保留源图。缩略图通过独立图片通道返回，不能冒充新视口截图。不可逆审批只适用于click/drag/input/keyboard/scroll，read_scroll 属阅读式滚动不进审批清单，保留confirm与意图关键词兜底。
+旧的10个工具与已下线的 vision_read* 均不再注册、没有执行别名；存量数据中的旧工具ID 由运行时「未注册工具告警」剔除（与拼错工具名同路径），不做兼容迁移。自定义agent与动态技能的 <vision-gui-tool> XML引导段由 prompt-hooks 按工具面自动注入一次（学习域自有分区照常防重）。智能体面携带 vision_gui 的唯一入口是管理中心的「视觉操作」开关（AgentConfig.vision）：工具组不提供勾选，装配时按开关注入/剔除 vision_gui（runtime-builder「视觉操作开关注入」），随后钩子检测工具面注入规程——开关注入工具 → 检测工具 → 注入规程三步以同一份归一工具面传递。
 工具设计参考：[减少选择歧义与明确工具契约](https://www.anthropic.com/engineering/writing-tools-for-agents)、[JSON Schema组合](https://json-schema.org/understanding-json-schema/reference/combining)。
 
 | 工具 | 参数与行为 |
@@ -57,6 +57,8 @@ GUI 仅注册一个工具 `vision_gui`，完整保留 click/drag/input/hover/key
 | `vision_gui(action="inspect")` | `id`：检查该截图数字元素的 CSS/XPath、frameId、shadow scope、属性、文字、状态、选项和祖先信息 |
 | `vision_gui(action="zoom")` | `region` 原图范围，`scale:1..4`（默认2），返回父截图绑定的 viewId 与局部图 |
 | `vision_gui(action="check")` | 可选 point/viewId、expect、timeoutMs:0..5000、stableMs:0..500，有界只读检查并可生成 guardId |
+| `vision_gui(action="read")` | 可选 region/point（point 与 region 二选一，point 连同最多4层祖先），有界读取可见 DOM 文字与控件状态与覆盖度元数据；不返回输入值、不执行动作，保留源截图 |
+| `vision_gui(action="read_scroll")` | `direction`（必填）+ `containerPercent:1..100`（默认75，按**目标容器**尺寸；手势 scroll 的 `percent` 才是视口相对，两者不可混用），可选 point 定向组件/同源 iframe；报告 before/after 真实位移与边界，到边界不改滚父容器；不发点击/滚轮事件，源图即刻消耗 |
 
 ## 截图存档与回答引用
 

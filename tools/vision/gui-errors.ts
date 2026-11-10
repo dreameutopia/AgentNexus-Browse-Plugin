@@ -20,7 +20,9 @@ export function guiFailure(error: unknown, context: Record<string, unknown> = {}
   const diagnostic = { code, message, ...context, details: known ? error.details : {},
     recovery: known ? error.recovery : 'Inspect the latest screenshot before continuing.', retryAutomatically: false };
   return { success: false, isError: true, error: `[${code}] ${message}`, data: { diagnostic },
-    content: [{ type: 'text', text: JSON.stringify(diagnostic) }] };
+    content: [{ type: 'text', text: JSON.stringify(diagnostic) }],
+    // 诊断只在 data 里一份（content 是它的 JSON 副本）——正题在 data
+    primary: 'data' };
 }
 
 /** Bound waiting without allowing a timed-out command to be followed by more input. */

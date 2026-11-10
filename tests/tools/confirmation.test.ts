@@ -27,7 +27,7 @@ for (const name of ['browser_interact', 'browser_page_exec', 'vision_gui', 'brow
   assert.ok(schema.description?.includes(CONFIRM_GUIDANCE), `${name} shares tool-level policy`);
   assert.equal((schema.parameters.properties as any).confirm.description, CONFIRM_PARAMETER_DESCRIPTION);
 }
-for (const file of ['utils/agents/element-interaction-sop.ts', 'utils/agents/vision-action-sop.ts',
+for (const file of ['utils/agents/element-interaction-sop.ts', 'utils/agents/vision-gui-prompt.ts',
   'utils/agents/presets/vision-action.ts', 'utils/learn/learn-prompts.ts'])
   assert.doesNotMatch(readFileSync(file, 'utf8'), /confirm\s*[=:]\s*true/, `${file} must not duplicate confirmation policy`);
 

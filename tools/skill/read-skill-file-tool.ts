@@ -1,4 +1,3 @@
-import { migrateVisionToolPrompt } from '@/utils/tools/vision-tool-migration';
 /**
  * read_skill_file 工具（渐进式披露第 3 层：按需资源加载）
  *
@@ -104,8 +103,7 @@ export class ReadSkillFileTool extends BaseTool {
       console.warn(`[read_skill_file] 技能 "${skill.name}" 的文件 "${pathPreview}" 内容非文本，已拒绝读取`);
       return this.createErrorResponse(`技能 "${skill.name}" 中文件 "${pathPreview}" 的内容不是文本（数据损坏），无法读取`);
     }
-    const content =
-      typeof rawSource === 'string' ? (/\.md$/i.test(path) ? migrateVisionToolPrompt(rawSource) : rawSource) : undefined;
+    const content = typeof rawSource === 'string' ? rawSource : undefined;
     if (content === undefined) {
       const pathPreview = path.length > 120 ? `${path.slice(0, 120)}…` : path;
       const available = Object.keys(skill.files ?? {}).join(', ');

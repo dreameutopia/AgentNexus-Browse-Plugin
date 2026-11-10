@@ -4,7 +4,12 @@
  */
 
 import { ToolResult, createErrorResponse, buildSuccessPayload } from '@/common/tool-handler';
-import { ExtendedTool, ToolMetadata, toolRegistry } from './registry';
+import {
+  ExtendedTool,
+  ToolMetadata,
+  ToolExecutionContext,
+  toolRegistry,
+} from './registry';
 import { OpenAITool } from '@/common/openai-types';
 
 /**
@@ -27,8 +32,14 @@ export abstract class BaseTool implements ExtendedTool {
 
   /**
    * 执行工具
+   *
+   * @param args     模型给出的参数（形态不可信，实现方须自行校验）
+   * @param context  执行上下文：携带会话 id 与**中止信号**（用户中断 / 单工具
+   *   超时会置位）。实现方应监听 `context.signal` 并尽快收敛自身工作——
+   *   引擎层只保证「不再等待」，工具能否真正停下取决于它是否响应信号。
+   *   需要硬杀（真正终止底层执行）的工具可另实现 `kill()`。
    */
-  abstract execute(args: any): Promise<ToolResult>;
+  abstract execute(args: any, context?: ToolExecutionContext): Promise<ToolResult>;
 
   /**
    * 验证参数

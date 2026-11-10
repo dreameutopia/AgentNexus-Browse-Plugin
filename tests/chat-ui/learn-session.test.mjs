@@ -125,8 +125,7 @@ const bindings = {
     const uploads = refs.filter(ref => !assistantImageRefs.has(ref));
     return uploads.length > 0 ? uploads : refs;
   },
-  dismissPendingInteracts: () => {}, removePageGlow: () => {},
-  stopBorderEffectManagement: async () => {}, syncSessionContextCache: async () => {},
+  dismissPendingInteracts: () => {}, syncSessionContextCache: async () => {},
   openDialogWithHandle: () => {
     const id = ++nextDialogId;
     return { id, result: new Promise(resolve => dialogs.set(id, resolve)) };
@@ -216,8 +215,15 @@ receipts.observe({ type: 'context-usage', chatId: 'learn', usage: { totalTokens:
 assert.equal(receiptState.contextUsage.value.totalTokens, 18, 'Later snapshots overwrite earlier ones within the same stage');
 let completeRun, rejectBuild = false, runOptions;
 let builtInput;
+let glowActive = false;
+const reportPageOperation = () => () => {};
 const runBindings = {
   deps: { setResponding: adapter.setResponding, requestToolApproval: adapter.requestToolApproval,
+    beginPageGlow: () => {
+      assert.equal(glowActive, false, 'Each stage owns exactly one glow scope');
+      glowActive = true;
+      return { beginPageOperation: reportPageOperation, stop: () => { glowActive = false; } };
+    },
     dismissQuestions: () => adapter.dismissConversationQuestions() },
   config: { value: { targetMode: 'text', learningLimits: { maxIterations: 12, maxDurationMinutes: 7 }, validationLimits: { maxIterations: 8, maxDurationMinutes: 4 } } }, draft: { value: { mode: 'text', allowedTools: ['browser_observe'] } },
   stageRunLimits: guards.stageRunLimits,
@@ -231,14 +237,17 @@ const runBindings = {
   conversationEngine: { run: (_runtime, options) => {
     runOptions = options;
     return new Promise(resolve => { completeRun = resolve; });
-  }, abort: () => completeRun({ status: 'aborted' }) },
+  }, abort: () => {
+    assert.equal(glowActive, false, 'Explicit stop retires the glow before engine cleanup');
+    completeRun({ status: 'aborted' });
+  } },
   sessionDeletionEngine: { deleteSession: async () => {
     assert.equal(dialogs.size, 0, 'Close approval before deleting the session');
   } },
   makeObserver: () => adapter.event,
 };
 const runCode = await transform(`
-  let activeRun = null, aborting = false, terminating = false, learningFeedback = null, limitAction = null;
+  let activeRun = null, activeGlow, aborting = false, terminating = false, learningFeedback = null, limitAction = null;
   const LEARN_LIMITS = {}, LEARN_FORCE_SUBMIT_LIMITS = {}, LEARN_VISION_RUNTIME = {};
   const scenarioFor = () => 'learning', getPresetToolIds = () => [], visionFor = () => false;
   const handleLimitReached = () => false;
@@ -303,11 +312,13 @@ try {
   assert.equal(bindings.isCompacting.value, false, 'Session switch must reset the compaction indicator');
   for (const stage of ['learning', 'validating']) {
     const running = runOnce(stage);
+    assert.equal(glowActive, true, 'Light the target during local runtime assembly');
     assert.equal(bindings.isAiResponding.value, true, 'Responding must include runtime assembly');
     await Promise.resolve();
     assert.deepEqual(builtInput.limitsOverride, stage === 'learning'
       ? { maxIterations: 12, maxDurationMs: 7 * 60000 } : { maxIterations: 8, maxDurationMs: 4 * 60000 }, '阶段独立预算进入真实运行装配');
     assert.equal(runOptions.resetBudgetOnContinue, true);
+    assert.equal(runOptions.beginPageOperation, reportPageOperation);
     const chatId = 'learn-chat', messageId = stage;
     // Learning and validation must call the very same approval UI as chat.
     for (const allowed of [true, false]) {
@@ -337,6 +348,7 @@ try {
     } });
     completeRun({ status: 'completed' });
     await running;
+    assert.equal(glowActive, false);
     assert.equal(bindings.isAiResponding.value, false);
     await flush();
     assert.equal(document.querySelectorAll('[data-streaming="1"]').length, 0);
@@ -355,6 +367,7 @@ try {
     const pendingApproval = runOptions.onToolApproval({ name: 'browser_interact', argumentsPreview: '支付订单' });
     completeRun({ status: terminal === 'aborted' ? 'aborted' : 'error' });
     await running;
+    assert.equal(glowActive, false);
     assert.equal(await pendingApproval, false, 'Run exit must release pending approval');
     assert.equal(dialogs.size, 0);
     await flush();
@@ -374,6 +387,7 @@ try {
   assert.equal(approvalTimers.size, 0);
   rejectBuild = true;
   await assert.rejects(runOnce('learning'), /build failed/);
+  assert.equal(glowActive, false, 'Assembly failure must release the glow scope');
   assert.equal(bindings.isAiResponding.value, false, 'Assembly failure must release responding state');
   bindings.activeChatId.value = 'other-chat';
   bindings.isAiResponding.value = true;

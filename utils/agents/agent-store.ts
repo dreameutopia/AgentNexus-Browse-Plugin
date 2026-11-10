@@ -135,8 +135,21 @@ function notifyChange(): void {
 /** 自定义智能体存储 key（chrome.storage 权威 + localStorage 缓存共用） */
 const CUSTOM_AGENTS_STORAGE_KEY = 'agentNexusCustomAgents';
 
+/**
+ * 预置 / 插件智能体的启停覆盖 key（只记录停用项，减小体积）。
+ * 自定义智能体的启停写在记录自身（随自定义列表持久化）；
+ * 预置与插件记录不可编辑（预置表被冻结），故用独立覆盖表承载。
+ */
+const AGENT_ENABLE_OVERRIDES_STORAGE_KEY = 'agentNexusAgentEnableOverrides';
+
 /** 本上下文写入指纹（onChanged 自事件跳过） */
 const writeFingerprint = new LocalWriteFingerprint();
+
+/** 启停覆盖的写入指纹（与自定义列表各自独立，避免互相误判为自事件） */
+const enableFingerprint = new LocalWriteFingerprint();
+
+/** 停用覆盖集合：agentId 集合（缺省 = 启用） */
+const disabledAgentIds = new Set<string>();
 
 /** 自定义智能体快照（按名称稳定排序，保证不同上下文写出的数组顺序一致） */
 function customAgentSnapshot(): AgentConfig[] {
@@ -231,10 +244,13 @@ applyAgents(PRESET_AGENTS);
   try {
     if (typeof localStorage === 'undefined') return;
     const raw = localStorage.getItem(CUSTOM_AGENTS_STORAGE_KEY);
-    if (!raw) return;
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return;
-    rebuildCustomAgents(parsed);
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) rebuildCustomAgents(parsed);
+    }
+    // 启停覆盖同步恢复（预置 / 插件智能体的停用态）
+    const overridesRaw = localStorage.getItem(AGENT_ENABLE_OVERRIDES_STORAGE_KEY);
+    if (overridesRaw) applyEnableOverrides(JSON.parse(overridesRaw));
   } catch (error) {
     console.warn('[AgentStore] localStorage 恢复失败:', error);
   }
@@ -247,36 +263,135 @@ applyAgents(PRESET_AGENTS);
 export async function restoreCustomAgentsFromStorage(): Promise<void> {
   try {
     if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
-    const result = await chrome.storage.local.get(CUSTOM_AGENTS_STORAGE_KEY);
+    const result = await chrome.storage.local.get([
+      CUSTOM_AGENTS_STORAGE_KEY,
+      AGENT_ENABLE_OVERRIDES_STORAGE_KEY,
+    ]);
     const stored = result?.[CUSTOM_AGENTS_STORAGE_KEY];
-    if (!Array.isArray(stored)) return; // 无权威数据（首次安装/旧版本），保持 localStorage 态
-    if (writeFingerprint.isOwn(stored)) return; // 自事件兜底
-    const count = rebuildCustomAgents(stored);
-    if (count > 0) {
-      console.log(`[AgentStore] 从 chrome.storage 恢复 ${count} 个自定义智能体`);
+    if (Array.isArray(stored)) {
+      if (!writeFingerprint.isOwn(stored)) {
+        const count = rebuildCustomAgents(stored);
+        if (count > 0) {
+          console.log(`[AgentStore] 从 chrome.storage 恢复 ${count} 个自定义智能体`);
+        }
+      }
+    }
+    // 启停覆盖：先整体复位（对端重新启用的智能体在本上下文同步生效），再应用
+    const overrides = result?.[AGENT_ENABLE_OVERRIDES_STORAGE_KEY];
+    if (overrides && typeof overrides === 'object' && !enableFingerprint.isOwn(overrides)) {
+      applyEnableOverrides(overrides);
+      notifyChange();
     }
   } catch (error) {
     console.warn('[AgentStore] chrome.storage 恢复失败:', error);
   }
 }
 
-// 跨上下文同步订阅：其它页面写入 → 重建内存表并广播（本模块自事件已被指纹跳过）
+// 跨上下文同步订阅：其它页面写入 → 重建/应用并广播（本模块自事件已被指纹跳过）
 subscribeStorageKey(CUSTOM_AGENTS_STORAGE_KEY, writeFingerprint, newValue => {
   rebuildCustomAgents(newValue);
 });
+
+// 启停覆盖的跨上下文同步：hub 停用 → 侧边栏 @ 选择器立即不再显示该智能体
+subscribeStorageKey(AGENT_ENABLE_OVERRIDES_STORAGE_KEY, enableFingerprint, newValue => {
+  applyEnableOverrides(newValue);
+  notifyChange();
+});
+
+// ──── 启用 / 停用 ────
+
+/** 启停覆盖快照（仅停用项） */
+function enableOverrideSnapshot(): Record<string, boolean> {
+  const overrides: Record<string, boolean> = {};
+  for (const id of disabledAgentIds) overrides[id] = false;
+  return overrides;
+}
+
+/** 把启停覆盖写入权威源与缓存（先登记指纹再写 chrome.storage） */
+function persistEnableOverrides(): void {
+  const overrides = enableOverrideSnapshot();
+  enableFingerprint.mark(overrides);
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(AGENT_ENABLE_OVERRIDES_STORAGE_KEY, JSON.stringify(overrides));
+    }
+  } catch {
+    /* 缓存失败不阻断 */
+  }
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      void chrome.storage.local
+        .set({ [AGENT_ENABLE_OVERRIDES_STORAGE_KEY]: overrides })
+        .catch(error => console.warn('[AgentStore] 写启停覆盖失败:', error));
+    }
+  } catch {
+    /* chrome 不可用时仅本地 */
+  }
+}
+
+/** 应用启停覆盖（外部数据防御：仅接受 { [id]: false } 形态，其余一律视为启用） */
+function applyEnableOverrides(overrides: unknown): void {
+  disabledAgentIds.clear();
+  if (!overrides || typeof overrides !== 'object') return;
+  for (const [key, value] of Object.entries(overrides as Record<string, unknown>)) {
+    if (value === false) disabledAgentIds.add(key);
+  }
+}
+
+/**
+ * 解析某智能体的启用态（自定义记录自带；预置 / 插件查覆盖表；缺省 = 启用）。
+ */
+export function isAgentEnabled(agentId: string): boolean {
+  const name = agentsById.get(agentId);
+  const record = name === undefined ? undefined : agentsByName.get(name);
+  if (record && !isPresetAgent(record.id) && !record.plugin) return record.enabled !== false;
+  return !disabledAgentIds.has(agentId);
+}
+
+/** 列表出口统一补齐 enabled 字段（预置记录被冻结，停用态以副本呈现，不改写原对象） */
+function withEnabled(agent: AgentConfig): AgentConfig {
+  const enabled = isAgentEnabled(agent.id);
+  if ((agent.enabled !== false) === enabled) return agent;
+  return { ...agent, enabled };
+}
+
+/**
+ * 切换智能体启用态（按 id）。
+ * 自定义智能体：写入记录本身（随自定义列表持久化）；
+ * 预置 / 插件智能体：记录不可编辑，改用启停覆盖表。
+ * 两种路径都广播变更——hub 列表与侧边栏 @ 选择器实时同步。
+ */
+export function setAgentEnabled(agentId: string, enabled: boolean): boolean {
+  const name = agentsById.get(agentId);
+  const record = name === undefined ? undefined : agentsByName.get(name);
+  if (record && !isPresetAgent(record.id) && !record.plugin) {
+    record.enabled = enabled;
+    persistCustomAgents();
+    return true;
+  }
+  if (!record && !getAgentById(agentId)) return false; // 未知 id
+  if (enabled) disabledAgentIds.delete(agentId);
+  else disabledAgentIds.add(agentId);
+  persistEnableOverrides();
+  notifyChange();
+  return true;
+}
 
 // ──── 查询 API ────
 
 /** 按名称获取智能体配置 */
 export function getAgentConfig(agentName: string): AgentConfig | null {
-  return pluginAgent(agentName) ?? agentsByName.get(agentName) ?? null;
+  const record = pluginAgent(agentName) ?? agentsByName.get(agentName) ?? null;
+  return record ? withEnabled(record) : null;
 }
 
 /** 按 ID 获取智能体配置 */
 export function getAgentById(agentId: string): AgentConfig | null {
-  const external = pluginAgent(agentId); if (external) return external;
+  const external = pluginAgent(agentId);
+  if (external) return withEnabled(external);
   const name = agentsById.get(agentId);
-  return name === undefined ? null : (agentsByName.get(name) ?? null);
+  const record = name === undefined ? null : (agentsByName.get(name) ?? null);
+  return record ? withEnabled(record) : null;
 }
 
 /**
@@ -289,7 +404,7 @@ export function getAllAgents(): AgentConfig[] {
   const customs = [...agentsByName.values()]
     .filter(agent => !isPresetAgent(agent.id))
     .sort(compareAgents);
-  return [...presets, ...customs, ...pluginAgents()];
+  return [...presets, ...customs, ...pluginAgents()].map(withEnabled);
 }
 
 /** ID 是否已被占用（exceptId 用于编辑场景排除自身） */

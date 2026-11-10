@@ -169,7 +169,6 @@ export const TOOL_NAMES = {
     BOOKMARK_DELETE: 'browser_bookmark_delete',
     
     // Content tools (extended)
-    WEB_FETCHER: 'browser_web_fetcher',
     SEARCH_TABS_CONTENT: 'browser_vector_search',
     
     // Window tools

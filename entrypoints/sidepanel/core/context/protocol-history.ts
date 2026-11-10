@@ -1,6 +1,7 @@
 import type { ChatMessage } from '../../utils/ai/ai-chat-api';
 import type { ChatMessageRecord } from '../types';
 import { imageStore, isImageRef } from '../images/image-store';
+import { SUMMARY_MESSAGE_MARKER } from './summary-message';
 
 // This URI is storage-only. It must never reach a provider. Images remain in
 // the content-addressed image database, not duplicated in every chat snapshot.
@@ -25,10 +26,16 @@ function validMessages(value: unknown): value is ChatMessage[] {
   });
 }
 
+/**
+ * 协议检查点判定：modelContext 首条为**上下文压缩消息**（新 assistant 角色
+ * 或旧 system 角色 + <conversation-memory> 标记，向后兼容见 summary-message）。
+ * 命中即以 modelContext 整体取代逐条重放（压缩后的模型上下文自包含）。
+ */
 export function hasProtocolCheckpoint(record: ChatMessageRecord): boolean {
   return validMessages(record.modelContext) && record.modelContext.length > 0 &&
-    record.modelContext[0].role === 'system' && typeof record.modelContext[0].content === 'string' &&
-    record.modelContext[0].content.startsWith('<conversation-memory>');
+    (record.modelContext[0].role === 'system' || record.modelContext[0].role === 'assistant') &&
+    typeof record.modelContext[0].content === 'string' &&
+    record.modelContext[0].content.startsWith(SUMMARY_MESSAGE_MARKER);
 }
 
 function sourceOf(record: ChatMessageRecord): ChatMessage[] | undefined {

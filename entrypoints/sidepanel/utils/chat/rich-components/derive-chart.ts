@@ -7,7 +7,7 @@
  *   - 结构派生：类目轴与每个系列的数据点同源于同一张表，
  *     「xAxis 与 series 长度错配」这类静默画错图的问题在结构上不可能发生；
  *   - 外观约束：不设置 color / backgroundColor / animation（界面主题负责），
- *     与 legacy ```echarts 直连路径的提示词约束一致。
+ *     与 legacy ```echarts 直连路径的净化约束一致。
  *
  * 派生产物仍要过 echarts-option-sanitizer（chart-renderer 调用侧负责）：
  * 本层保证形状正确，净化层保底资源上限——防御纵深不变。

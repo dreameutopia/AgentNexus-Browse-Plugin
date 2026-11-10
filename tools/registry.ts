@@ -76,8 +76,8 @@ export interface ToolMetadata {
    * 视觉循环判定（needsVisionRefresh）：整批工具调用全部为 true（或产出
    * 可复用视口图）时不重拍、不合成多模态续拍消息，行为与文本执行循环一致；
    * 任一调用为 false/未声明（含未知与插件工具）即保守重拍。
-   * vision_gui / screenshot / vision_read_wait 的动作级例外在该判定内
-   * 按工具名单独处理，不经过本字段。
+   * vision_gui（按 action：手势/mark/read_scroll 重拍，inspect/zoom/check/read
+   * 豁免）与 screenshot 的名单例外在该判定内按工具名单独处理，不经过本字段。
    */
   noVisionRecapture?: boolean;
 }
@@ -94,6 +94,8 @@ export interface ToolExecutionContext {
   requestId?: string;
   /** 发起本次工具调用的会话 id（数据隔离键） */
   chatId?: string;
+  /** Report the actual tab once the tool has resolved its page target. */
+  onTabTarget?: (tabId: number) => void;
 }
 
 // 扩展工具接口
@@ -102,6 +104,20 @@ export interface ExtendedTool extends ToolExecutor {
   metadata: ToolMetadata;
   openaiSchema: OpenAITool;
   execute(args: any, context?: ToolExecutionContext): Promise<ToolResult>;
+  /**
+   * 强制终止正在进行的执行（用户中断 / 单工具超时后由工具执行引擎调用）。
+   *
+   * 语义：把「底层工作真正杀掉」，而不仅仅是让调用方放弃等待。
+   * 无此能力时，引擎只能中止信号并立即结算——工具的底层工作仍可能继续
+   * （例如页面里注入的脚本、解释器里的死循环），此时工具**必须**在
+   * execute 内部主动监听 context.signal 自助收敛。
+   *
+   * 实现指引：
+   *   - 幂等：可能被重复调用，中止后再次调用必须安全无副作用；
+   *   - 有界：自身卡死不得拖住引擎的结算（引擎侧另有等待上界）；
+   *   - 不得抛错影响引擎结算（引擎会吞掉钩子异常）。
+   */
+  kill?(args: any, context?: ToolExecutionContext): Promise<void> | void;
 }
 
 // 工具注册表

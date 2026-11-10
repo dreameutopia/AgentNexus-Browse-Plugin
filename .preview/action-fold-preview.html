@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>消息操作栏收起 / 展开预览</title>
+    <link rel="stylesheet" href="../entrypoints/sidepanel/styles/global.css" />
+    <link rel="stylesheet" href="../entrypoints/sidepanel/styles/app.css" />
+    <link rel="stylesheet" href="../entrypoints/sidepanel/components/chat/chat-message-list.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        background: #f4f5f7;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 16px;
+      }
+      .note {
+        font-size: 12px;
+        color: #6b7280;
+        max-width: 460px;
+        line-height: 1.6;
+      }
+      .stage {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 16px;
+        width: 460px;
+        font-size: 14px;
+        color: #292824;
+      }
+    </style>
+  </head>
+  <body>
+    <p class="note">
+      操作栏收起 / 展开验证：调试按钮默认收起，开关紧贴踩按钮右侧；点开关后调试按钮
+      带动画插到踩与开关之间（宽度收拢 + 透明度 + 图标缩放），开关被顶到最右、箭头
+      同步旋转；再点一次反向收起，操作栏不留空档。
+    </p>
+    <main id="action-fold-host" class="stage"></main>
+    <script src="../node_modules/.cache/action-fold-preview.js"></script>
+  </body>
+</html>

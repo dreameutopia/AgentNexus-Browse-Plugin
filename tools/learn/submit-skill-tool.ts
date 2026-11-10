@@ -110,6 +110,8 @@ function skillSuccess(text: string, data: Record<string, unknown>): ToolResult {
     isError: false,
     content: [{ type: 'text', text }],
     data,
+    // 回执正文在 content，data 是结构化回执字段——正题在 content
+    primary: 'content',
   };
 }
 
@@ -126,6 +128,8 @@ function skillFailure(kind: string, reason: string, hint: string): ToolResult {
     error: text,
     content: [{ type: 'text', text }],
     data: { errorKind: kind },
+    // 失败说明在 content——正题在 content
+    primary: 'content',
   };
 }
 

@@ -3,7 +3,8 @@
 # 在目录仓库 .github/workflows/catalog.yml 使用。
 # 前置配置（仓库 Settings）：
 # - Variables: AGENTNEXUS_SDK_REPOSITORY（宿主 owner/repo）、AGENTNEXUS_SDK_COMMIT（40 位 SHA）、
-#   CATALOG_URL（已部署目录地址，如 https://<owner>.github.io/agentnexus-browse-plugin-registry/catalog.json）
+#   CATALOG_URL（已部署目录地址，如 https://<owner>.github.io/AgentNexus-Browse-Plugin-Registry/catalog.json；
+#   Pages 项目站点 URL 保留仓库名原始大小写，写成全小写会 404）
 # - 受保护环境 catalog-signing 的 secret：CATALOG_PRIVATE_JWK（Ed25519 私钥 JWK，JSON 字符串；
 #   对应公钥 Base64 内置于扩展 utils/plugins/official-catalog.ts，私钥绝不入库）
 # - Settings → Pages：部署分支 gh-pages（首次 Action 成功后启用）
@@ -12,18 +13,19 @@ on:
   push:
     branches: [main]
     paths: ['plugins/**', 'scripts/**', '.github/workflows/catalog.yml']
-  pull_request:
-    branches: [main]
-    paths: ['plugins/**', 'scripts/**', '.github/workflows/catalog.yml']
   workflow_dispatch:
+# push（合并/直接推送 main）需要写 gh-pages
 permissions:
-  contents: read
+  contents: write
 concurrency:
   group: catalog-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   build:
     runs-on: ubuntu-latest
+    # environment 必须是 job 级键（step 级会报 "Unexpected value 'environment'"）；
+    # 签名私钥经 catalog-signing 环境 secret 注入
+    environment: catalog-signing
     steps:
       - name: Validate SDK pin
         env:
@@ -55,10 +57,9 @@ jobs:
           SDK_DIR: ${{ github.workspace }}/sdk
           CATALOG_URL: ${{ vars.CATALOG_URL }}
         run: node registry/scripts/build-catalog.mjs
-      # PR 只做校验，不签名不部署；push / 手动触发才发布
+      # 只在 push（合并/直接推送 main）或手动触发时签名发布；PR 阶段只做条目校验
       - name: Sign and publish catalog
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        environment: catalog-signing
         env:
           PRIVATE_JWK: ${{ secrets.CATALOG_PRIVATE_JWK }}
           GH_TOKEN: ${{ github.token }}

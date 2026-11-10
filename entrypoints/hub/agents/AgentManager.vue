@@ -32,7 +32,12 @@
 
       <div v-if="!filteredAgents.length" class="hub-empty">{{ t('hub.noAgentMatch') }}</div>
       <div v-else class="hub-cards">
-        <article v-for="agent in filteredAgents" :key="agent.id" class="hub-card" :class="{ 'is-preset': isPreset(agent) }">
+        <article
+          v-for="agent in filteredAgents"
+          :key="agent.id"
+          class="hub-card"
+          :class="{ 'is-preset': isPreset(agent), 'is-disabled': agent.enabled === false }"
+        >
           <div class="hub-card-head">
             <!-- 智能体头像：图片或 emoji，无背景色 -->
             <div class="hub-card-title">
@@ -53,6 +58,12 @@
             <span class="hub-card-tools">{{ t('hub.toolCount', { count: agent.tools.length }) }}</span>
             <span v-if="agent.skills?.length" class="hub-card-tools">{{ t('hub.agentSkillCount', { count: agent.skills.length }) }}</span>
             <span v-if="agent.vision" class="hub-badge hub-badge-vision">Vision</span>
+            <!-- 启用 / 停用：停用后该智能体不再出现在输入框的 @ 选择器中 -->
+            <HubSwitch
+              class="hub-switch-inline"
+              :model-value="agent.enabled !== false"
+              @update:model-value="toggleEnabled(agent, $event)"
+            >{{ agent.enabled === false ? t('hub.disabled') : t('hub.enabled') }}</HubSwitch>
             <span class="hub-card-ops">
               <button v-if="agent.plugin" type="button" class="hub-op" @click="copyPluginAgent(agent)">{{ t('hub.copyPluginAgent') }}</button>
               <template v-if="!isPreset(agent)">
@@ -67,7 +78,7 @@
     </div>
 
     <!-- 编辑视图（左右两张等高卡片：左卡基础信息（整卡内部滚动），右卡清单区（各区占比限高、区内滚动）） -->
-    <form v-else class="hub-editor is-fill" @submit.prevent="save">
+    <form v-else ref="editorFormRef" class="hub-editor is-fill" @submit.prevent="save">
       <div class="hub-editor-head">
         <div class="hub-editor-head-main">
           <h2>{{ editingExisting ? t('hub.editAgent') : t('hub.newAgent') }}</h2>
@@ -149,12 +160,34 @@
             </label>
           </div>
 
-          <!-- 视觉能力声明（含视觉循环开关）：横向紧凑行，紧随名称 -->
-          <fieldset class="hub-field hub-vision-field">
-            <legend class="hub-field-label">{{ t('hub.fieldVision') }}</legend>
-            <div class="hub-vision-row">
-              <HubSwitch v-model="form.visionEnabled">{{ t('hub.visionEnable') }}</HubSwitch>
-              <template v-if="form.visionEnabled">
+          <!-- 视觉操作开关（原「视觉循环」）：标题 + 问号说明 + 开关同一行（左右布局）。
+               问号弹自定义解释框（挂编辑器层，机制与关联技能说明共用）。
+               本开关是 vision_gui 进入智能体工具面的唯一入口：工具组从不提供
+               vision_gui 勾选，运行时按此开关注入工具并触发规程注入 -->
+          <fieldset class="hub-field hub-vision-field" :aria-label="t('hub.fieldVision')">
+            <div class="hub-vision-head" :class="{ 'is-on': form.visionEnabled }">
+              <span class="hub-field-label hub-vision-title">
+                {{ t('hub.fieldVision') }}
+                <button
+                  type="button"
+                  class="hub-help-tip"
+                  :class="{ 'is-open': activeHelpPop === 'vision' }"
+                  :title="t('hub.visionToggleHint')"
+                  :aria-label="t('hub.visionToggleHint')"
+                  :aria-expanded="activeHelpPop === 'vision'"
+                  @click.stop="toggleHelpPop('vision', $event)"
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.3" />
+                    <path d="M6.3 6.2a1.75 1.75 0 1 1 2.5 1.6c-.5.25-.8.7-.8 1.25v.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+                    <circle cx="8" cy="11.6" r="0.85" fill="currentColor" />
+                  </svg>
+                </button>
+              </span>
+              <HubSwitch v-model="form.visionEnabled" :aria-label="t('hub.visionEnable')" />
+            </div>
+            <template v-if="form.visionEnabled">
+              <div class="hub-vision-row">
                 <HubSelect
                   :model-value="form.screenshotTool"
                   :options="[{ value: 'screenshot', label: 'screenshot' }]"
@@ -163,9 +196,9 @@
                   @update:model-value="form.screenshotTool = 'screenshot'"
                 />
                 <HubSwitch v-model="form.reScreenshotAfterTools">{{ t('hub.reScreenshot') }}</HubSwitch>
-              </template>
-            </div>
-            <p v-if="form.visionEnabled" class="hub-hint">{{ t('hub.visionCoordinatesHint') }}</p>
+              </div>
+              <p class="hub-hint">{{ t('hub.visionCoordinatesHint') }}</p>
+            </template>
           </fieldset>
 
           <!-- 分类 + 标签：并排 -->
@@ -217,53 +250,120 @@
               </button>
               <span class="hub-field-label">{{ t('hub.fieldToolGroups') }}<span class="hub-required" aria-hidden="true">*</span></span>
               <span class="hub-groups-count">{{ t('hub.selectedToolCount', { count: selectedToolCount, max: MAX_TOOLS_PER_AGENT }) }}</span>
+              <!-- 视图切换：按工具（默认，每个工具独立一个元素）/ 按组（批量选择） -->
+              <HubSegmented
+                class="hub-section-view"
+                :model-value="toolView"
+                :options="toolViewOptions"
+                :aria-label="t('hub.fieldToolGroups')"
+                @update:model-value="onToolViewChange"
+              />
             </div>
             <div class="hub-section-body">
               <div class="hub-section-body-inner">
-                <!-- 工具组搜索：按显示名 / 描述过滤（清单较长，搜索是主要定位手段） -->
+                <!-- 搜索：按工具视图搜工具名 / 按组视图搜组名与描述 -->
                 <div class="hub-search hub-search--fill">
                   <svg class="hub-search__icon" viewBox="0 0 16 16" aria-hidden="true">
                     <path d="M11.1 10.2a4.6 4.6 0 1 0-.9.9l3 3 .9-.9-3-3zm-4.1.3a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z" fill="currentColor" />
                   </svg>
-                  <input v-model="groupQuery" type="text" class="hub-list-search" :placeholder="t('hub.groupSearchPlaceholder')" />
+                  <input
+                    v-model="groupQuery"
+                    type="text"
+                    class="hub-list-search"
+                    :placeholder="toolView === 'tools' ? t('hub.toolSearchPlaceholder') : t('hub.groupSearchPlaceholder')"
+                  />
                 </div>
-                <div class="hub-groups-scroll" :class="{ 'is-invalid': groupsInvalid }">
+
+                <!-- 按工具视图（默认）：每个工具独立一个可选元素 -->
+                <div v-if="toolView === 'tools'" class="hub-groups-scroll" :class="{ 'is-invalid': groupsInvalid }">
+                  <div v-if="!filteredToolEntries.length" class="hub-hint">{{ t('hub.toolSearchEmpty') }}</div>
+                  <div v-else class="hub-tool-list">
+                    <label
+                      v-for="entry in filteredToolEntries"
+                      :key="entry.toolId"
+                      class="hub-tool-row"
+                      :class="{ 'is-checked': isToolSelected(entry.toolId), 'is-locked': entry.locked }"
+                      :title="entry.toolId"
+                    >
+                      <input
+                        class="hub-check"
+                        type="checkbox"
+                        :checked="isToolSelected(entry.toolId)"
+                        :disabled="entry.locked"
+                        @change="toggleGroupTool(entry.groupId, entry.toolId)"
+                      />
+                      <span class="hub-tool-row-main">
+                        <span class="hub-tool-row-id">{{ entry.toolId }}</span>
+                        <span class="hub-tool-row-group">{{ t(entry.groupNameKey) }}</span>
+                      </span>
+                      <span v-if="entry.locked" class="hub-group-lock">{{ t('hub.pythonNotReady') }}</span>
+                    </label>
+                  </div>
+                </div>
+
+                <!-- 按组视图：组头三态复选框 + 组内逐个工具 -->
+                <div v-else class="hub-groups-scroll" :class="{ 'is-invalid': groupsInvalid }">
                   <div v-if="!filteredToolGroups.length" class="hub-hint">{{ t('hub.groupSearchEmpty') }}</div>
                   <div v-else class="hub-groups">
                     <div
                       v-for="group in filteredToolGroups"
                       :key="group.id"
                       class="hub-group"
-                      :class="{ checked: form.groups.includes(group.id), locked: isGroupLocked(group.id) }"
+                      :class="{
+                        checked: groupSelectionState(group.id) === 'all',
+                        'is-partial': groupSelectionState(group.id) === 'some',
+                        locked: isGroupLocked(group.id),
+                      }"
                     >
-                      <input
-                        class="hub-check"
-                        type="checkbox"
-                        :value="group.id"
-                        :checked="form.groups.includes(group.id)"
-                        :disabled="isGroupLocked(group.id)"
-                        @change="toggleGroup(group.id)"
-                      />
-                      <!-- 标题与描述上下布局：描述限两行，右侧「查看」按钮弹出完整信息 -->
-                      <button
-                        type="button"
-                        class="hub-group-body"
-                        :title="t('hub.groupViewDetail')"
-                        @click="openGroupDetail(group)"
-                      >
-                        <span class="hub-group-name">{{ t(group.nameKey) }}</span>
-                        <span class="hub-group-desc">{{ t(group.descKey) }}</span>
-                      </button>
-                      <span v-if="isGroupLocked(group.id)" class="hub-group-lock">{{ t('hub.pythonNotReady') }}</span>
-                      <button
-                        type="button"
-                        class="hub-group-info"
-                        :title="t('hub.groupViewDetail')"
-                        :aria-label="t('hub.groupViewDetail')"
-                        @click.stop="openGroupDetail(group)"
-                      >
-                        <svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg>
-                      </button>
+                      <!-- 组头：三态复选框（全选 / 部分选 / 未选）+ 组名描述 + 查看 -->
+                      <div class="hub-group-head">
+                        <input
+                          class="hub-check"
+                          type="checkbox"
+                          :checked="groupSelectionState(group.id) === 'all'"
+                          :indeterminate="groupSelectionState(group.id) === 'some'"
+                          :disabled="isGroupLocked(group.id)"
+                          @change="toggleGroup(group.id)"
+                        />
+                        <button
+                          type="button"
+                          class="hub-group-body"
+                          :title="t('hub.groupViewDetail')"
+                          @click="openGroupDetail(group)"
+                        >
+                          <span class="hub-group-name">{{ t(group.nameKey) }}</span>
+                          <span class="hub-group-desc">{{ t(group.descKey) }}</span>
+                        </button>
+                        <span v-if="isGroupLocked(group.id)" class="hub-group-lock">{{ t('hub.pythonNotReady') }}</span>
+                        <button
+                          type="button"
+                          class="hub-group-info"
+                          :title="t('hub.groupViewDetail')"
+                          :aria-label="t('hub.groupViewDetail')"
+                          @click.stop="openGroupDetail(group)"
+                        >
+                          <svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg>
+                        </button>
+                      </div>
+                      <!-- 组内工具：逐个勾选（与组复选框共享同一扁平集合） -->
+                      <div class="hub-group-tools">
+                        <label
+                          v-for="toolId in groupToolSets.get(group.id)"
+                          :key="toolId"
+                          class="hub-group-tool"
+                          :class="{ 'is-checked': isToolSelected(toolId) }"
+                          :title="toolId"
+                        >
+                          <input
+                            class="hub-check"
+                            type="checkbox"
+                            :checked="isToolSelected(toolId)"
+                            :disabled="isGroupLocked(group.id)"
+                            @change="toggleGroupTool(group.id, toolId)"
+                          />
+                          <span class="hub-group-tool-id">{{ toolId }}</span>
+                        </label>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -274,7 +374,7 @@
           </div>
 
           <ExternalToolsPicker
-            v-model="form.extraToolIds"
+            v-model="selectedToolIds"
             :count="selectedToolCount"
             :max="MAX_TOOLS_PER_AGENT"
             :collapsed="collapsedSections.external"
@@ -297,6 +397,23 @@
               </button>
               <span class="hub-field-label">{{ t('hub.fieldAgentSkills') }}</span>
               <span class="hub-groups-count">{{ t('hub.selectedSkillCount', { count: form.skills.length, max: AGENT_SKILLS_MAX_COUNT }) }}</span>
+              <!-- 关联规则说明：问号触发，悬浮卡片展示完整解释（不占用表单竖向空间；
+                   与视觉操作说明共用同一套开合/定位机制，见 toggleHelpPop） -->
+              <button
+                type="button"
+                class="hub-help-tip"
+                :class="{ 'is-open': activeHelpPop === 'skills' }"
+                :title="t('hub.skillsHintTitle')"
+                :aria-label="t('hub.skillsHintTitle')"
+                :aria-expanded="activeHelpPop === 'skills'"
+                @click.stop="toggleHelpPop('skills', $event)"
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.3" />
+                  <path d="M6.3 6.2a1.75 1.75 0 1 1 2.5 1.6c-.5.25-.8.7-.8 1.25v.3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+                  <circle cx="8" cy="11.6" r="0.85" fill="currentColor" />
+                </svg>
+              </button>
             </div>
             <div class="hub-section-body">
               <div class="hub-section-body-inner">
@@ -317,37 +434,39 @@
                       class="hub-group"
                       :class="{ checked: form.skills.includes(skill.id), 'is-disabled-skill': !skill.enabled }"
                     >
-                      <input
-                        class="hub-check"
-                        type="checkbox"
-                        :value="skill.id"
-                        :checked="form.skills.includes(skill.id)"
-                        :disabled="!form.skills.includes(skill.id) && form.skills.length >= AGENT_SKILLS_MAX_COUNT"
-                        @change="toggleSkill(skill.id)"
-                      />
-                      <button
-                        type="button"
-                        class="hub-group-body"
-                        :title="t('hub.skillViewDetail')"
-                        @click="openSkillDetail(skill)"
-                      >
-                        <span class="hub-group-name">{{ skillOptionLabel(skill) }}</span>
-                        <span class="hub-group-desc">{{ skill.enabled ? skill.description : t('hub.skillDisabledMark') }}</span>
-                      </button>
-                      <button
-                        type="button"
-                        class="hub-group-info"
-                        :title="t('hub.skillViewDetail')"
-                        :aria-label="t('hub.skillViewDetail')"
-                        @click.stop="openSkillDetail(skill)"
-                      >
-                        <svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg>
-                      </button>
+                      <!-- 技能卡只有一行主体：包进组头行以复用 .hub-group 纵向卡片结构 -->
+                      <div class="hub-group-head">
+                        <input
+                          class="hub-check"
+                          type="checkbox"
+                          :value="skill.id"
+                          :checked="form.skills.includes(skill.id)"
+                          :disabled="!form.skills.includes(skill.id) && form.skills.length >= AGENT_SKILLS_MAX_COUNT"
+                          @change="toggleSkill(skill.id)"
+                        />
+                        <button
+                          type="button"
+                          class="hub-group-body"
+                          :title="t('hub.skillViewDetail')"
+                          @click="openSkillDetail(skill)"
+                        >
+                          <span class="hub-group-name">{{ skillOptionLabel(skill) }}</span>
+                          <span class="hub-group-desc">{{ skill.enabled ? skill.description : t('hub.skillDisabledMark') }}</span>
+                        </button>
+                        <button
+                          type="button"
+                          class="hub-group-info"
+                          :title="t('hub.skillViewDetail')"
+                          :aria-label="t('hub.skillViewDetail')"
+                          @click.stop="openSkillDetail(skill)"
+                        >
+                          <svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
                 <label v-for="missing in missingSkillRefs" :key="missing" class="hub-hint"><input class="hub-check" type="checkbox" checked @change="toggleSkill(missing)" />{{ missing }} · {{ t('hub.skillDisabledMark') }}</label>
-                <p class="hub-hint">{{ t('hub.fieldAgentSkillsHint') }}</p>
               </div>
             </div>
           </div>
@@ -356,6 +475,21 @@
 
       <div class="hub-editor-footer">
         <span v-if="errorMessage" class="hub-error">{{ errorMessage }}</span>
+      </div>
+
+      <!-- 问号说明悬浮卡片（skills / vision 共用一个实例）：挂在编辑器层，不受分区卡片裁剪 -->
+      <div
+        v-if="activeHelpPop"
+        ref="helpPopEl"
+        class="hub-help-pop"
+        role="note"
+        :style="{ left: `${helpPopLeft}px`, top: `${helpPopTop}px` }"
+      >
+        <template v-if="activeHelpPop === 'skills'">
+          <p class="hub-help-pop__title">{{ t('hub.skillsHintTitle') }}</p>
+          <p class="hub-help-pop__text">{{ t('hub.fieldAgentSkillsHint') }}</p>
+        </template>
+        <p v-else class="hub-help-pop__text">{{ t('hub.visionToggleHint') }}</p>
       </div>
 
       <!-- 工具组 / 技能的完整信息悬浮窗卡片 -->
@@ -380,10 +514,32 @@
               <dd>{{ row.value }}</dd>
             </div>
           </dl>
-          <div v-if="detailCard.items.length" class="hub-detail-card__items">
-            <span class="hub-detail-card__items-label">{{ detailCard.itemsLabel }}</span>
-            <div class="hub-detail-card__chips">
-              <span v-for="item in detailCard.items" :key="item" class="hub-detail-card__chip">{{ item }}</span>
+
+          <!-- 工具明细：完整名称 + 介绍 + 输入参数说明 -->
+          <section v-for="tool in detailCard.tools" :key="tool.name" class="hub-detail-tool">
+            <div class="hub-detail-tool__head">
+              <span class="hub-detail-tool__name">{{ tool.name }}</span>
+              <span v-if="tool.version" class="hub-detail-tool__version">v{{ tool.version }}</span>
+            </div>
+            <p class="hub-detail-tool__desc">{{ tool.description }}</p>
+            <div v-if="tool.parameters.length" class="hub-detail-tool__params">
+              <span class="hub-detail-tool__params-label">{{ t('hub.detailToolParams') }}</span>
+              <div v-for="param in tool.parameters" :key="param.name" class="hub-detail-tool__param">
+                <span class="hub-detail-tool__param-name">
+                  {{ param.name }}
+                  <span class="hub-detail-tool__param-type">{{ param.type }}</span>
+                  <span v-if="param.required" class="hub-detail-tool__required">{{ t('hub.detailRequired') }}</span>
+                </span>
+                <span class="hub-detail-tool__param-desc">{{ param.description }}</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- 技能资源文件 -->
+          <div v-if="detailCard.files && detailCard.files.length" class="hub-detail-files">
+            <span class="hub-detail-files__label">{{ t('hub.detailSkillFiles') }}</span>
+            <div class="hub-detail-files__list">
+              <code v-for="file in detailCard.files" :key="file" class="hub-detail-files__item">{{ file }}</code>
             </div>
           </div>
         </div>
@@ -420,6 +576,7 @@ import { useAgentDisplay } from '@/common/use-agent-display';
 import CategorySelect from '../components/CategorySelect.vue';
 // Hub 共享自定义控件：玻璃选择框与 iOS 形态开关（设计语言统一，见 hub.css）
 import HubSelect from '../components/HubSelect.vue';
+import HubSegmented from '../components/HubSegmented.vue';
 import HubSwitch from '../components/HubSwitch.vue';
 import ExternalToolsPicker from './ExternalToolsPicker.vue';
 import TagInput from '../components/TagInput.vue';
@@ -447,10 +604,17 @@ import {
   onAgentsChange,
   removeAgentConfig,
   setAgentConfig,
+  setAgentEnabled,
   type AgentConfig,
   type AgentWriteResult,
 } from '@/utils/agents/agent-store';
 import { getPresetToolIds, type ToolScenario } from '@/utils/tools/tool-presets';
+// vision_gui 身份常量：工具组不提供勾选，编辑入口对存量勾选残留做剔除归一
+//（运行时装配另有一道同口径归一，见 runtime-builder「视觉操作开关注入」）
+import { VISION_GUI_TOOL_ID } from '@/tools/vision/gui-contract';
+// 工具元数据（完整名称 / 介绍 / 输入参数）：按需加载，管理页主 bundle 不含工具实现
+import { loadToolDefinitions } from '@/utils/tools/tool-metadata';
+import type { ToolDefinition } from '@/entrypoints/sidepanel/components/tool/types';
 import { getAllSkills, onSkillsChange, resolveSkill, type SkillRecord } from '@/utils/skills/skill-store';
 import { findDuplicateSkillNames } from '@/utils/skills/skill-types';
 import {
@@ -472,8 +636,8 @@ const toolGroups: ReadonlyArray<ToolGroupMeta> = [
   { id: 'automation', nameKey: 'hub.groupAutomation', descKey: 'hub.groupAutomationDesc' },
   // note 组已移除：note_tool 与 plan_tool 同为 CORE_SESSION_TOOL_IDS 无条件注入的
   // 核心工具，对所有智能体恒定可用，作为可选工具组展示只会制造「勾选才有」的歧义；
-  // 存量自定义智能体 tools 里的 note_tool 依然有效（deriveGroupsFromTools 未覆盖项
-  // 自动落入 extra，编辑保存不丢失）
+  // 存量自定义智能体 tools 里的 note_tool 依然有效（扁平已选集合原样往返，
+  // 不属于任何组也不会被丢弃）
   { id: 'webSearch', nameKey: 'hub.groupWebSearch', descKey: 'hub.groupWebSearchDesc' },
   { id: 'pageRead', nameKey: 'hub.groupPageRead', descKey: 'hub.groupPageReadDesc' },
   { id: 'domInteract', nameKey: 'hub.groupDomInteract', descKey: 'hub.groupDomInteractDesc' },
@@ -612,6 +776,48 @@ function toggleSkill(skillId: string): void {
 
 // ──── 工具组 / 关联技能搜索（按当前语言的显示名 / 描述过滤；搜索词不参与保存） ────
 
+/** 工具区视图：tools = 每个工具独立元素（默认）/ groups = 按组批量选择 */
+const toolView = ref<'tools' | 'groups'>('tools');
+
+/** 视图切换选项（随界面语言刷新显示名） */
+const toolViewOptions = computed(() => [
+  { value: 'tools', label: t('hub.toolViewTools') },
+  { value: 'groups', label: t('hub.toolViewGroups') },
+]);
+
+/** 分段控件 → 视图状态桥接（HubSegmented 的 value 为 string） */
+function onToolViewChange(value: string): void {
+  toolView.value = value === 'groups' ? 'groups' : 'tools';
+}
+
+/** 扁平工具条目：每个工具带上所属组（用于扁平视图展示归属与锁定态传递）
+ *  同一工具可能出现在多个组（如 browser_observe 同属多个场景预设），
+ *  扁平列表按工具去重（取首个所属组），避免重复 key 与重复行。 */
+interface ToolEntry {
+  toolId: string;
+  groupId: ToolScenario;
+  groupNameKey: MessageKey;
+  locked: boolean;
+}
+
+const allToolEntries = computed<ToolEntry[]>(() => {
+  const entries: ToolEntry[] = [];
+  const seen = new Set<string>();
+  for (const group of toolGroups) {
+    for (const toolId of groupToolSets.get(group.id) ?? []) {
+      if (seen.has(toolId)) continue;
+      seen.add(toolId);
+      entries.push({
+        toolId,
+        groupId: group.id,
+        groupNameKey: group.nameKey,
+        locked: isGroupLocked(group.id),
+      });
+    }
+  }
+  return entries;
+});
+
 const groupQuery = ref('');
 const filteredToolGroups = computed(() => {
   const query = groupQuery.value.trim().toLowerCase();
@@ -620,6 +826,17 @@ const filteredToolGroups = computed(() => {
     group =>
       t(group.nameKey).toLowerCase().includes(query) ||
       t(group.descKey).toLowerCase().includes(query),
+  );
+});
+
+/** 扁平视图的过滤：按工具 id 或所属组名匹配 */
+const filteredToolEntries = computed(() => {
+  const query = groupQuery.value.trim().toLowerCase();
+  if (!query) return allToolEntries.value;
+  return allToolEntries.value.filter(
+    entry =>
+      entry.toolId.toLowerCase().includes(query) ||
+      t(entry.groupNameKey).toLowerCase().includes(query),
   );
 });
 
@@ -641,39 +858,121 @@ const filteredSkills = computed(() => {
   });
 });
 
-// ──── 右卡三区的展开 / 收起（收起后把空间让给其余区） ────
+// ──── 右卡三区的展开 / 收起（收起后把空间让给其余区；外部工具与技能默认收起） ────
 
-const collapsedSections = reactive({ groups: false, external: false, skills: false });
+const collapsedSections = reactive({ groups: false, external: true, skills: true });
+
+/** 问号说明悬浮卡片（skills / vision 共用一套开合、定位与外点关闭机制） */
+type HelpPopKind = 'skills' | 'vision';
+/** 当前展开的说明框（null = 收起）；同一时刻至多一个 */
+const activeHelpPop = ref<HelpPopKind | null>(null);
+const helpPopEl = ref<HTMLElement | null>(null);
+/** 说明框位置：相对编辑器（position: relative 的定位祖先） */
+const helpPopLeft = ref(0);
+const helpPopTop = ref(0);
+const editorFormRef = ref<HTMLElement | null>(null);
+
+/** 问号点击：开合并定位到按钮下方（说明框挂编辑器层，需按按钮位置换算坐标）；
+ *  已展开另一个说明框时直接切换目标（互斥单开） */
+function toggleHelpPop(kind: HelpPopKind, event: MouseEvent): void {
+  if (activeHelpPop.value === kind) {
+    activeHelpPop.value = null;
+    return;
+  }
+  const button = event.currentTarget as HTMLElement | null;
+  const rect = button?.getBoundingClientRect();
+  const host = editorFormRef.value?.getBoundingClientRect();
+  // 说明框宽 360px：右缘对齐按钮右缘，顶端贴在按钮下方 6px
+  const width = 360;
+  helpPopLeft.value = Math.max(8, (rect?.right ?? 0) - (host?.left ?? 0) - width);
+  helpPopTop.value = (rect?.bottom ?? 0) - (host?.top ?? 0) + 6;
+  activeHelpPop.value = kind;
+}
+
+/** 点击组件外部 / Esc 收起说明框 */
+function onHelpPopPointerDown(event: PointerEvent): void {
+  if (!activeHelpPop.value) return;
+  const target = event.target as Node | null;
+  if (target && helpPopEl.value?.contains(target)) return;
+  // 问号按钮自身由 click 切换，这里排除以免"点一次开、立刻又被关"
+  if (target instanceof Element && target.closest('.hub-help-tip')) return;
+  activeHelpPop.value = null;
+}
+function onHelpPopKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') activeHelpPop.value = null;
+}
+onMounted(() => {
+  document.addEventListener('pointerdown', onHelpPopPointerDown, true);
+  document.addEventListener('keydown', onHelpPopKeydown, true);
+});
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', onHelpPopPointerDown, true);
+  document.removeEventListener('keydown', onHelpPopKeydown, true);
+});
 
 // ──── 工具组 / 技能详情悬浮窗卡片 ────
 
-/** 详情卡片的展示模型（标题 + 描述 + 键值行 + 标签列表） */
+/** 单个工具的展示模型：完整名称 + 介绍 + 输入参数（含说明） */
+interface DetailToolInfo {
+  name: string;
+  description: string;
+  version?: string;
+  parameters: { name: string; type: string; required: boolean; description: string }[];
+}
+
+/** 详情卡片的展示模型 */
 interface DetailCard {
   title: string;
   description?: string;
+  /** 概要行（分类 / 标签 / 来源 …） */
   rows: { label: string; value: string }[];
-  itemsLabel: string;
-  items: string[];
+  /** 工具明细（完整名称 + 介绍 + 输入参数） */
+  tools: DetailToolInfo[];
+  /** 技能的资源文件路径 */
+  files?: string[];
 }
 
 const detailCard = ref<DetailCard | null>(null);
+/** 详情卡加载序号：异步取元数据期间用户可能已关闭或切换目标，用序号丢弃过期结果 */
+let detailSeq = 0;
 
-/** 工具组详情：完整说明 + 组内工具清单 */
-function openGroupDetail(group: ToolGroupMeta): void {
-  const toolIds = groupToolSets.get(group.id) ?? [];
-  detailCard.value = {
-    title: t(group.nameKey),
-    description: t(group.descKey),
-    rows: [
-      { label: t('hub.detailToolCount'), value: String(toolIds.length) },
-    ],
-    itemsLabel: t('hub.detailToolList'),
-    items: [...toolIds],
+/** 工具定义 → 展示模型（插件工具等无静态元数据时给出兜底说明） */
+function toToolInfo(definition: ToolDefinition | undefined, id: string): DetailToolInfo {
+  if (!definition) {
+    return { name: id, description: '（该工具由插件提供，没有内置说明）', parameters: [] };
+  }
+  return {
+    name: definition.name,
+    description: definition.description,
+    version: definition.version,
+    parameters: Object.entries(definition.parameters ?? {}).map(([name, parameter]) => ({
+      name,
+      type: parameter.type ?? 'string',
+      required: definition.required.includes(name),
+      description: parameter.description ?? '',
+    })),
   };
 }
 
-/** 技能详情：完整说明 + 分类 / 标签 / 来源 / 预授权工具 / 资源文件 */
-function openSkillDetail(skill: SkillRecord): void {
+/** 工具组详情：逐个工具的完整名称、介绍与输入参数 */
+async function openGroupDetail(group: ToolGroupMeta): Promise<void> {
+  const seq = ++detailSeq;
+  const toolIds = groupToolSets.get(group.id) ?? [];
+  const definitions = await loadToolDefinitions();
+  if (seq !== detailSeq) return;
+  detailCard.value = {
+    title: t(group.nameKey),
+    description: t(group.descKey),
+    rows: [],
+    tools: toolIds.map(id => toToolInfo(definitions[id], id)),
+  };
+}
+
+/** 技能详情：完整介绍 + 概要 + 预授权工具明细 + 资源文件 */
+async function openSkillDetail(skill: SkillRecord): Promise<void> {
+  const seq = ++detailSeq;
+  const definitions = await loadToolDefinitions();
+  if (seq !== detailSeq) return;
   const filePaths = Object.keys(skill.files ?? {});
   detailCard.value = {
     title: skillOptionLabel(skill),
@@ -687,10 +986,9 @@ function openSkillDetail(skill: SkillRecord): void {
           ? `${skill.plugin.displayName} ${skill.plugin.version} · ${skill.plugin.publisher}`
           : t('hub.custom'),
       },
-      { label: t('hub.detailSkillFiles'), value: String(filePaths.length) },
     ],
-    itemsLabel: t('hub.detailSkillTools'),
-    items: skill.allowedTools.length ? [...skill.allowedTools] : filePaths,
+    tools: skill.allowedTools.map(id => toToolInfo(definitions[id], id)),
+    files: filePaths,
   };
 }
 
@@ -715,9 +1013,6 @@ const form = reactive({
   /** 分类选择为「自定义创建」时的新分类名称（保存前经 normalizeCategory 归一化） */
   customCategory: '',
   tags: [] as string[],
-  groups: [] as ToolScenario[],
-  /** 不属于任何所选工具组的既有工具（保存时原样保留） */
-  extraToolIds: [] as string[],
   /** 关联技能 id 列表（可用清单的显式通道；映射兜底通道无需配置） */
   skills: [] as string[],
   /** 头像（图片或 emoji）；未选择时为 undefined，由 UI 回退默认 emoji */
@@ -726,6 +1021,31 @@ const form = reactive({
   screenshotTool: 'screenshot' as const,
   reScreenshotAfterTools: true,
 });
+
+/**
+ * 工具选择的唯一事实源：扁平的已选工具 id 列表。
+ * 直接对应 AgentConfig.tools —— 保存原样落库、编辑原样回填，
+ * 「只选组内一部分工具」的往返不丢失（旧的组派生模型会把部分选降级成散装工具）。
+ * 组复选框是它的批量入口（全选 / 取消全选，三态），组内每个工具各有独立复选框。
+ */
+const selectedToolIds = ref<string[]>([]);
+
+/**
+ * 智能体工具面归一（编辑入口的 vision_gui 剔除层）。
+ *
+ * vision_gui 仅经「视觉操作」开关注入——数据层已剔除自定义记录的残留
+ * （normalizeAgentConfig），装配层另有兜底（runtime-builder 的
+ * applyVisionToggleToolSurface，覆盖插件/预置等未过归一的来源）；
+ * 本函数是编辑边界层：工具组与外部工具选择器都不提供它的勾选入口，
+ * 回填与保存两个方向统一剔除，保证：
+ *   - 回显不出现「不属于任何组的 vision_gui」（否则会落进额外工具提示）；
+ *   - 从预置/插件复制工具面时（来源可能含 vision_gui）草稿即干净；
+ *   - 保存即收敛，旧数据经一次编辑彻底移除该残留。
+ * 只剔除 vision_gui 这一个受控工具，其余工具（插件工具 / 历史散装工具）原样保留。
+ */
+function sanitizeAgentTools(ids: readonly string[]): string[] {
+  return [...new Set(ids)].filter(id => id !== VISION_GUI_TOOL_ID);
+}
 
 /** emoji 选择卡片是否展开（与上传通道并列的第二条头像来源） */
 const showEmojiPicker = ref(false);
@@ -786,17 +1106,26 @@ async function onAvatarFileChange(event: Event): Promise<void> {
   }
 }
 
-const extraTools = computed(() => form.extraToolIds);
+/** 已选但不属于任何工具组的工具（插件工具 / 历史遗留工具），保存时原样保留 */
+const extraTools = computed(() => {
+  const inAnyGroup = new Set<string>();
+  for (const tools of groupToolSets.values()) for (const id of tools) inAnyGroup.add(id);
+  return selectedToolIds.value.filter(id => !inAnyGroup.has(id));
+});
 const missingSkillRefs = computed(() => form.skills.filter(ref => !skills.value.some(skill => skill.id === ref)));
 
-/** 当前已选工具总数（所选组工具并集 + 额外保留工具，去重计数） */
-const selectedToolCount = computed(() => {
-  const union = new Set<string>(form.extraToolIds);
-  for (const groupId of form.groups) {
-    for (const toolId of groupToolSets.get(groupId) ?? []) union.add(toolId);
-  }
-  return union.size;
-});
+/** 当前已选工具总数（扁平集合，直接对应保存的 tools 列表） */
+const selectedToolCount = computed(() => selectedToolIds.value.length);
+
+/** 组勾选状态（三态）：all=组内全部已选、some=部分选、none=全未选 */
+function groupSelectionState(groupId: ToolScenario): 'none' | 'some' | 'all' {
+  const tools = groupToolSets.get(groupId) ?? [];
+  if (!tools.length) return 'none';
+  let count = 0;
+  for (const id of tools) if (selectedToolIds.value.includes(id)) count++;
+  if (count === 0) return 'none';
+  return count === tools.length ? 'all' : 'some';
+}
 
 /** 表单最终生效的分类 id（自定义创建态经归一化；空串 = 未分类） */
 const resolvedCategory = computed(() =>
@@ -808,7 +1137,7 @@ const isValid = computed(
     form.name.trim().length > 0 &&
     form.description.trim().length > 0 &&
     form.system.trim().length > 0 &&
-    form.groups.length > 0 &&
+    selectedToolIds.value.length > 0 &&
     // 自定义分类必须填写名称，否则保存后会出现「选了自定义却落回未分类」的错觉
     (form.category !== CATEGORY_CUSTOM_VALUE || resolvedCategory.value.length > 0),
 );
@@ -823,24 +1152,10 @@ const attempted = ref(false);
 const nameInvalid = computed(() => attempted.value && !form.name.trim());
 const descriptionInvalid = computed(() => attempted.value && !form.description.trim());
 const systemInvalid = computed(() => attempted.value && !form.system.trim());
-const groupsInvalid = computed(() => attempted.value && form.groups.length === 0);
+const groupsInvalid = computed(() => attempted.value && selectedToolIds.value.length === 0);
 const customCategoryInvalid = computed(
   () => attempted.value && form.category === CATEGORY_CUSTOM_VALUE && resolvedCategory.value.length === 0,
 );
-
-/** 由工具列表反推勾选组：组工具全部被包含且确有交集；未覆盖工具进入 extra */
-function deriveGroupsFromTools(tools: readonly string[]): { groups: ToolScenario[]; extra: string[] } {
-  const owned = new Set(tools);
-  const groups: ToolScenario[] = [];
-  for (const [groupId, groupTools] of groupToolSets) {
-    const overlap = groupTools.some(tool => owned.has(tool));
-    const covered = groupTools.every(tool => owned.has(tool));
-    if (overlap && covered) groups.push(groupId as ToolScenario);
-  }
-  const coveredByGroups = new Set(groups.flatMap(g => [...(groupToolSets.get(g) ?? [])]));
-  const extra = tools.filter(tool => !coveredByGroups.has(tool));
-  return { groups, extra };
-}
 
 // ──── 标签编辑（chips 交互与上限反馈见 components/TagInput） ────
 
@@ -851,8 +1166,7 @@ function resetForm(): void {
   form.category = '';
   form.customCategory = '';
   form.tags = [];
-  form.groups = [];
-  form.extraToolIds = [];
+  selectedToolIds.value = [];
   form.skills = [];
   form.avatar = undefined;
   form.visionEnabled = false;
@@ -868,8 +1182,11 @@ function resetForm(): void {
   skillQuery.value = '';
   detailCard.value = null;
   collapsedSections.groups = false;
-  collapsedSections.external = false;
-  collapsedSections.skills = false;
+  // 外部插件工具与关联技能默认收起（多数智能体不涉及，先让出空间给工具组）
+  collapsedSections.external = true;
+  collapsedSections.skills = true;
+  toolView.value = 'tools';
+  activeHelpPop.value = null;
 }
 
 function startCreate(): void {
@@ -884,23 +1201,29 @@ function copyPluginAgent(agent: AgentConfig): void {
   const names = new Set(getAllAgents().map(a => a.name));
   const base = agent.name.slice(0, 20) + ' (copy)'; let name = base;
   for (let n = 2; names.has(name) && n < 1000; n++) name = base + n;
-  const selection = deriveGroupsFromTools(agent.tools);
   form.name = name; form.description = agent.description; form.system = agent.system;
-  form.tags = [...agent.tags]; form.groups = selection.groups; form.extraToolIds = selection.extra;
+  form.tags = [...agent.tags];
+  // 工具经归一化带入（扁平集合去重 + 剔除 vision_gui 残留；组状态由勾选集合派生）
+  selectedToolIds.value = sanitizeAgentTools(agent.tools);
   form.skills = [...(agent.skills ?? [])]; form.category = agent.category; form.avatar = agent.avatar;
+  // 视觉操作声明随复制带入（与 startEdit 同口径）：否则复制视觉智能体会静默
+  // 丢掉开关——新不变量下 vision_gui 由开关驱动，丢开关等于丢能力
+  form.visionEnabled = !!agent.vision;
+  form.screenshotTool = agent.vision?.screenshotTool ?? 'screenshot';
+  form.reScreenshotAfterTools = agent.vision?.reScreenshotAfterTools ?? true;
 }
 
 function startEdit(agent: AgentConfig): void {
   if (isPresetAgent(agent.id) || agent.plugin) return; // 预置不可编辑（防御）
   editingSource.value = agent;
   editingExisting.value = true;
-  const { groups, extra } = deriveGroupsFromTools(agent.tools);
   form.name = agent.name;
   form.description = agent.description;
   form.system = agent.system;
   form.tags = [...agent.tags];
-  form.groups = groups;
-  form.extraToolIds = extra;
+  // 工具经归一化回填：部分选中的组在往返后保持部分选（旧派生规则会降级丢失），
+  // 并剔除 vision_gui 历史残留（该工具仅经「视觉操作」开关注入，见 sanitizeAgentTools）
+  selectedToolIds.value = sanitizeAgentTools(agent.tools);
   // 关联技能引用 → id 归一：v1 数据可能以名称 / 模型标识持久化，编辑时统一经
   // resolveSkill（与运行时可用性解析同口径）转为当前记录 id，保证「勾选可见的」
   // 与「保存后生效的」完全一致，消除不可见关联的歧义；解析不到的悬挂引用
@@ -944,23 +1267,49 @@ function cancelEdit(): void {
 /** 勾选/取消工具组；勾选前校验并集工具数不超过上限（取消不受限）；锁定的组不可操作 */
 function toggleGroup(groupId: ToolScenario): void {
   if (isGroupLocked(groupId)) return;
-  const index = form.groups.indexOf(groupId);
-  if (index === -1) {
-    const union = new Set<string>(form.extraToolIds);
-    for (const id of form.groups) {
-      for (const toolId of groupToolSets.get(id) ?? []) union.add(toolId);
-    }
-    for (const toolId of groupToolSets.get(groupId) ?? []) union.add(toolId);
-    if (union.size > MAX_TOOLS_PER_AGENT) {
-      showLimitHint.value = true;
-      return;
-    }
+  const tools = groupToolSets.get(groupId) ?? [];
+  if (groupSelectionState(groupId) === 'all') {
+    // 已全选 → 取消该组全部工具
+    const removing = new Set(tools);
+    selectedToolIds.value = selectedToolIds.value.filter(id => !removing.has(id));
     showLimitHint.value = false;
-    form.groups.push(groupId);
-  } else {
-    showLimitHint.value = false;
-    form.groups.splice(index, 1);
+    return;
   }
+  // 未全选（含部分选）→ 补齐该组全部工具
+  const next = [...selectedToolIds.value];
+  const owned = new Set(next);
+  for (const toolId of tools) if (!owned.has(toolId)) next.push(toolId);
+  if (next.length > MAX_TOOLS_PER_AGENT) {
+    showLimitHint.value = true;
+    return;
+  }
+  showLimitHint.value = false;
+  selectedToolIds.value = next;
+}
+
+/**
+ * 组内单个工具的勾选 / 取消（逐个勾选）。
+ * 与整组勾选共用同一份扁平已选集合，因此「只选组内一部分」会被原样保留，
+ * 重新打开时仍是部分选状态（旧派生规则会把部分选降级成散装工具而丢失组信息）。
+ */
+function toggleGroupTool(groupId: ToolScenario, toolId: string): void {
+  if (isGroupLocked(groupId)) return;
+  if (selectedToolIds.value.includes(toolId)) {
+    selectedToolIds.value = selectedToolIds.value.filter(id => id !== toolId);
+    showLimitHint.value = false;
+    return;
+  }
+  if (selectedToolIds.value.length + 1 > MAX_TOOLS_PER_AGENT) {
+    showLimitHint.value = true;
+    return;
+  }
+  showLimitHint.value = false;
+  selectedToolIds.value = [...selectedToolIds.value, toolId];
+}
+
+/** 工具是否已选（组内外统一口径） */
+function isToolSelected(toolId: string): boolean {
+  return selectedToolIds.value.includes(toolId);
 }
 
 function removeAgent(agent: AgentConfig): void {
@@ -968,6 +1317,17 @@ function removeAgent(agent: AgentConfig): void {
   if (!window.confirm(t('hub.confirmDeleteAgent', { name: agent.name }))) return;
   const result = removeAgentConfig(agent.name);
   if (!result.ok) errorMessage.value = writeErrorText(result);
+}
+
+/**
+ * 启用 / 停用智能体（预置、插件、自定义均可）。
+ * 停用后该智能体不再出现在侧边栏输入框的 @ 选择器中，但仍在管理中心可见、可重新启用。
+ * 存储层负责广播变更与跨上下文同步（自定义走记录本身，预置/插件走启停覆盖表）。
+ */
+function toggleEnabled(agent: AgentConfig, enabled: boolean): void {
+  if (!setAgentEnabled(agent.id, enabled)) {
+    errorMessage.value = t('hub.errorAgentToggle');
+  }
 }
 
 /** 写入失败原因 → 可读文案（区分原因而非一律「保存失败」，便于用户对症处理） */
@@ -1003,12 +1363,9 @@ function save(): void {
   }
   const name = form.name.trim();
 
-  // 组工具合并（保序去重）+ 额外工具保留
-  const toolIdSet = new Set<string>();
-  for (const groupId of form.groups) {
-    for (const toolId of groupToolSets.get(groupId) ?? []) toolIdSet.add(toolId);
-  }
-  for (const toolId of form.extraToolIds) toolIdSet.add(toolId);
+  // 工具集合归一后落库（扁平事实源，组内部分选中也原样保留；
+  // vision_gui 残留最后防线——正常路径回填时已剔除，此处防御未来新增入口）
+  const tools = sanitizeAgentTools(selectedToolIds.value);
 
   // ID 生命周期：新建时由名称生成唯一 ASCII slug；编辑时恒等保留原 ID。
   // ID 被会话元信息（agentId）等处引用，改名不应让既有引用失配
@@ -1022,7 +1379,7 @@ function save(): void {
     name,
     description: form.description.trim(),
     system: form.system,
-    tools: [...toolIdSet],
+    tools,
     skills: [...form.skills],
     category: resolvedCategory.value,
     tags: [...form.tags],

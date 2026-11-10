@@ -3,6 +3,10 @@
  * 独立成文件的原因：app.css 经 App.vue <style scoped> 引入，作用域属性无法穿透
  * 到子组件，弹窗样式会完全失效。本文件由 AsrConfigPrompt.vue 直接 import，
  * 全局生效、无作用域问题。动画 keyframes 统一加 asrp 前缀，避免与全局样式冲突。
+ *
+ * 配色与侧边栏整体黑白灰设计语言一致：只用 .app-container 的中性 token
+ * （surface / line / ink 系），主操作按钮用 ink-primary 深墨色实底（与发送按钮同源），
+ * 全程不引入蓝紫等彩色。token 均带字面量兜底，脱离 .app-container 作用域也能正常渲染。
  */
 
 .asr-prompt-overlay {
@@ -11,23 +15,24 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: linear-gradient(135deg, rgba(15, 23, 42, 0.45) 0%, rgba(30, 41, 59, 0.6) 100%);
+  /* 中性暖黑遮罩（非蓝灰），保持原渐变层次 */
+  background: linear-gradient(160deg, rgba(20, 19, 17, 0.4) 0%, rgba(20, 19, 17, 0.58) 100%);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 10001;
-  backdrop-filter: blur(10px) saturate(1.15);
+  backdrop-filter: blur(10px) saturate(1.1);
   animation: asrpOverlayFadeIn 0.28s ease-out;
 }
 
 .asr-prompt-modal {
-  background: linear-gradient(160deg, #ffffff 0%, #f8fafc 100%);
+  background: linear-gradient(160deg, #ffffff 0%, var(--surface-canvas, #faf9f7) 100%);
   border-radius: 20px;
   box-shadow:
     0 28px 56px rgba(0, 0, 0, 0.18),
     0 12px 24px rgba(0, 0, 0, 0.1),
     inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  border: 1px solid rgba(148, 163, 184, 0.22);
+  border: 1px solid var(--line-soft, #e4e2de);
   width: 88%;
   max-width: 360px;
   padding: 28px 26px 24px;
@@ -47,15 +52,16 @@
   justify-content: center;
   border-radius: 20px;
   color: #ffffff;
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 55%, #a855f7 100%);
-  box-shadow: 0 10px 26px -8px rgba(124, 58, 237, 0.55);
+  /* 深墨色实底（原为靛蓝/紫渐变），与发送按钮同一套中性主色 */
+  background: var(--ink-primary, #292824);
+  box-shadow: 0 10px 26px -10px rgba(41, 40, 36, 0.55);
 }
 
 .asr-prompt-icon::after {
   content: '';
   position: absolute;
   inset: -7px;
-  border: 2px solid rgba(139, 92, 246, 0.35);
+  border: 2px solid rgba(41, 40, 36, 0.22);
   border-radius: 26px;
   animation: asrpIconPulse 2.2s ease-out infinite;
 }
@@ -78,12 +84,13 @@
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #f59e0b 0%, #f97316 100%);
-  color: #ffffff;
+  /* 白底 + 深墨字：在深色图标块上靠对比度表达警示，不借用彩色 */
+  background: #ffffff;
+  color: var(--ink-primary, #292824);
   font-size: 14px;
   font-weight: 800;
   line-height: 22px;
-  box-shadow: 0 3px 8px rgba(249, 115, 22, 0.45);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.22);
   border: 2px solid #ffffff;
 }
 
@@ -93,7 +100,7 @@
   margin: 0 0 8px;
   font-size: 17px;
   font-weight: 700;
-  color: #111827;
+  color: var(--ink-primary, #292824);
   letter-spacing: 0.2px;
 }
 
@@ -101,7 +108,7 @@
   margin: 0 0 14px;
   font-size: 13px;
   line-height: 1.65;
-  color: #6b7280;
+  color: var(--ink-secondary, #787671);
 }
 
 /* ---- 供应商提示条 ---- */
@@ -112,9 +119,10 @@
   gap: 6px;
   padding: 6px 12px;
   border-radius: 999px;
-  background: #eef2ff;
-  border: 1px solid #e0e7ff;
-  color: #4f46e5;
+  /* 中性浅灰胶囊（原为靛蓝底/靛蓝字） */
+  background: var(--surface-soft, #f3f1ed);
+  border: 1px solid var(--line-soft, #e4e2de);
+  color: var(--ink-secondary, #787671);
   font-size: 11.5px;
   font-weight: 500;
   line-height: 1.4;
@@ -143,14 +151,19 @@
   transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+.asr-prompt-btn:focus-visible {
+  outline: 2px solid var(--focus-ring, #a5a09a);
+  outline-offset: 2px;
+}
+
 .asr-prompt-btn-secondary {
-  background: #f1f5f9;
-  color: #475569;
-  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: var(--surface-soft, #f3f1ed);
+  color: var(--ink-primary, #292824);
+  border: 1px solid var(--line-soft, #e4e2de);
 }
 
 .asr-prompt-btn-secondary:hover {
-  background: #e2e8f0;
+  background: var(--surface-hover, #eeece7);
   transform: translateY(-1px);
 }
 
@@ -159,15 +172,16 @@
 }
 
 .asr-prompt-btn-primary {
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  /* 深墨实底主按钮，与发送按钮（.send-button）同色同 hover */
+  background: var(--ink-primary, #292824);
   color: #ffffff;
-  box-shadow: 0 6px 16px -4px rgba(99, 102, 241, 0.5);
+  box-shadow: 0 6px 16px -6px rgba(41, 40, 36, 0.5);
 }
 
 .asr-prompt-btn-primary:hover {
-  background: linear-gradient(135deg, #5457e5 0%, #7c4ded 100%);
+  background: #44413b;
   transform: translateY(-1px);
-  box-shadow: 0 8px 20px -4px rgba(99, 102, 241, 0.6);
+  box-shadow: 0 8px 20px -6px rgba(41, 40, 36, 0.55);
 }
 
 .asr-prompt-btn-primary:active {

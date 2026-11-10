@@ -12,6 +12,7 @@
 
 import { toolRegistry, type ToolExecutionContext } from '@/tools/registry';
 import { ToolResult, createErrorResponse } from '@/common/tool-handler';
+import { PAGE_TOOL_TARGET_MESSAGE } from '../../../core/conversation/runtime-protocol';
 
 /** 执行上下文类型由 tools/registry 单一定义，此处转发导出保持导入路径兼容 */
 export type { ToolExecutionContext } from '@/tools/registry';
@@ -81,19 +82,32 @@ export async function executeTool(
   try {
     const cancellableGui = toolName === 'browser_interact' || toolName === 'screenshot' || toolName.startsWith('vision_');
     const requestId = cancellableGui && context?.signal ? crypto.randomUUID() : undefined;
+    const targetRequestId = context?.onTabTarget && typeof document !== 'undefined' ? crypto.randomUUID() : undefined;
+    const onTarget = (message: { type?: string; requestId?: string; tabId?: number }, sender: chrome.runtime.MessageSender) => {
+      if (sender.id === chrome.runtime.id && !sender.tab && message?.type === PAGE_TOOL_TARGET_MESSAGE &&
+          message.requestId === targetRequestId && typeof message.tabId === 'number' && !context?.signal?.aborted) {
+        context?.onTabTarget?.(message.tabId);
+      }
+    };
     const onAbort = () => {
+      if (targetRequestId) chrome.runtime.onMessage.removeListener(onTarget);
       if (requestId) void chrome.runtime.sendMessage({ type: 'VISION_CANCEL_REQUEST', requestId }).catch(() => undefined);
     };
     if (context?.signal?.aborted) return createErrorResponse(`Tool ${toolName} cancelled before dispatch`);
-    if (requestId) context?.signal?.addEventListener('abort', onAbort, { once: true });
+    if (targetRequestId) chrome.runtime.onMessage.addListener(onTarget);
+    if (requestId || targetRequestId) context?.signal?.addEventListener('abort', onAbort, { once: true });
     // type 放在展开之后：防止参数自带 type 字段覆盖路由键导致消息被误投递
     let response;
     try {
       response = await chrome.runtime.sendMessage({
         ...(parameters ?? {}), type: toolName,
         ...(requestId ? { __visionRequestId: requestId } : {}),
+        ...(targetRequestId ? { __pageTargetRequestId: targetRequestId } : {}),
       });
-    } finally { if (requestId) context?.signal?.removeEventListener('abort', onAbort); }
+    } finally {
+      if (targetRequestId) chrome.runtime.onMessage.removeListener(onTarget);
+      if (requestId || targetRequestId) context?.signal?.removeEventListener('abort', onAbort);
+    }
     // background 端监听器对工具消息必然以 ToolResult 应答；
     // undefined 意味着无人处理——按「是否注册过」分诊出可分析的原因：
     //   - 已注册（background 上下文转发路径）→ 路由失败 / 后台未就绪；

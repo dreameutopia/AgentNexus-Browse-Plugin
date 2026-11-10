@@ -19,7 +19,7 @@
  */
 
 import { BaseBrowserTool } from '../base/browser-tool';
-import { ToolMetadata } from '../registry';
+import { ToolMetadata, type ToolExecutionContext } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
 import { TOOL_NAMES, isRestrictedUrl } from '@/common/constants';
@@ -212,7 +212,7 @@ export class PageCleanTool extends BaseBrowserTool {
     },
   };
 
-  async execute(args: CleanParams): Promise<ToolResult> {
+  async execute(args: CleanParams, context?: ToolExecutionContext): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     const {
@@ -239,6 +239,8 @@ export class PageCleanTool extends BaseBrowserTool {
           `Current page is a restricted URL (${tab.url || 'no URL'}) where page cleanup is not permitted`,
         );
       }
+
+      if (requestedTabId != null) context?.onTabTarget?.(tabId);
 
       // —— 撤销路径 ——
       if (restore) {

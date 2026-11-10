@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { visionReadPayload } from '../../tools/vision/read-payload';
-import { validateReadArgs, createVisionReadTools } from '../../tools/vision/read-tools';
-import { filterVisionAssistantTools, isVisionAssistantTool } from '../../utils/agents/vision-assistant-policy';
+import { validateReadActionArgs, validateReadScrollArgs } from '../../tools/vision/read-actions';
+import { validateZoomArgs } from '../../tools/vision/observation-actions';
+import { validateVisionGuiArgs } from '../../tools/vision/gui-tool';
+import { filterVisionAssistantTools, isVisionAssistantTool, VISION_ASSISTANT_GUI_ACTIONS } from '../../utils/agents/vision-assistant-policy';
 import { needsVisionRefresh, takeVisionToolImage, withoutVisionImage } from '../../entrypoints/sidepanel/core/conversation/vision-feedback';
 import { userVisibleImageRefs } from '../../entrypoints/sidepanel/core/context/transcript-engine';
 import { ViewportImageDeduplicator } from '../../entrypoints/sidepanel/core/conversation/viewport-image-dedup';
@@ -72,25 +74,36 @@ assert.deepEqual(
 }
 import { skillEngine } from '../../entrypoints/sidepanel/core/registry/skill-engine';
 
-assert.deepEqual(filterVisionAssistantTools(['screenshot','browser_page_exec','browser_scroll','vision_gui','vision_read','vision_read']), ['screenshot','vision_read']);
-for (const id of ['browser_navigate','browser_interact','browser_inject_script','vision_gui','vision_gui']) assert.equal(isVisionAssistantTool(id), false);
-for (const tool of createVisionReadTools()) assert.equal(isVisionAssistantTool(tool.name), true);
-for (const [action, args] of [
-  ['read', null], ['read', []], ['read', { screenshotId:'s',code:'document.body.click()' }],
-  ['constructor', {}], ['__proto__', {}],
-  ['scroll', { screenshotId:'s',direction:'down',clickBox:[0,0,1,1] }],
-  ['scroll', { screenshotId:'s',direction:'down',modifiers:['Control'] }],
-  ['scroll', { screenshotId:'s',direction:'down',percent:NaN }],
-  ['scroll', { screenshotId:'s',direction:'down',percent:101 }],
-  ['scroll', { screenshotId:'s',direction:'diagonal' }],
-  ['zoom', { screenshotId:'s',region:{x:900,y:0,width:200,height:10} }],
-  ['zoom', { screenshotId:'s',region:{x:0,y:0,width:0,height:10} }],
-  ['zoom', { screenshotId:'s',region:{x:0,y:0,width:10,height:10},scale:Infinity }],
-  ['wait', { timeoutMs:5001 }], ['wait', { screenshotId:'s' }],
-  ['read', { screenshotId:'s',point:{x:0,y:0,z:1} }],
-] as const) assert.throws(() => validateReadArgs(action, args), `${action} must reject ${JSON.stringify(args)}`);
-validateReadArgs('zoom', { screenshotId:'s',region:{x:0,y:0,width:1000,height:1000} });
-validateReadArgs('scroll', { screenshotId:'s',direction:'left',percent:1 });
+assert.deepEqual(filterVisionAssistantTools(['screenshot','browser_page_exec','browser_scroll','vision_gui','vision_gui','ocr']), ['screenshot','vision_gui']);
+for (const id of ['browser_navigate','browser_interact','browser_inject_script','ocr','browser_page_exec']) assert.equal(isVisionAssistantTool(id), false);
+// 合并后的观察者能力面：vision_gui 进白名单，开放面收敛为 action 级闸门
+assert.equal(isVisionAssistantTool('vision_gui'), true);
+assert.deepEqual([...VISION_ASSISTANT_GUI_ACTIONS].sort(), ['read','read_scroll','zoom']);
+// 观察 action 参数边界（合并后各验证器独立成立；unknown-action / 跨 action
+// 字段防线由 validateVisionGuiArgs 与 vision-gui.test 承担）
+for (const [label, fn, args] of [
+  ['read null', validateReadActionArgs, null],
+  ['read array', validateReadActionArgs, []],
+  ['read code injection', validateReadActionArgs, { screenshotId:'s',code:'document.body.click()' }],
+  ['read point z-key', validateReadActionArgs, { screenshotId:'s',point:{x:0,y:0,z:1} }],
+  ['read point XOR region', validateReadActionArgs, { screenshotId:'s',point:{x:1,y:1},region:{x:0,y:0,width:10,height:10} }],
+  ['read missing screenshotId', validateReadActionArgs, { point:{x:1,y:1} }],
+  ['scroll clickBox', validateReadScrollArgs, { screenshotId:'s',direction:'down',clickBox:[0,0,1,1] }],
+  ['scroll modifiers', validateReadScrollArgs, { screenshotId:'s',direction:'down',modifiers:['Control'] }],
+  ['scroll containerPercent NaN', validateReadScrollArgs, { screenshotId:'s',direction:'down',containerPercent:NaN }],
+  ['scroll containerPercent 101', validateReadScrollArgs, { screenshotId:'s',direction:'down',containerPercent:101 }],
+  ['scroll gesture percent name', validateReadScrollArgs, { screenshotId:'s',direction:'down',percent:50 }],
+  ['scroll direction diagonal', validateReadScrollArgs, { screenshotId:'s',direction:'diagonal' }],
+  ['scroll missing direction', validateReadScrollArgs, { screenshotId:'s' }],
+  ['zoom region overflow', validateZoomArgs, { screenshotId:'s',region:{x:900,y:0,width:200,height:10} }],
+  ['zoom zero width', validateZoomArgs, { screenshotId:'s',region:{x:0,y:0,width:0,height:10} }],
+  ['zoom infinite scale', validateZoomArgs, { screenshotId:'s',region:{x:0,y:0,width:10,height:10},scale:Infinity }],
+] as const) assert.throws(() => (fn as (a: unknown) => unknown)(args), `${label} must be rejected`);
+for (const bad of [{action:'constructor'}, {action:'__proto__'}])
+  assert.throws(() => validateVisionGuiArgs(bad), `Unknown action ${bad.action} must be rejected`);
+validateReadActionArgs({ screenshotId:'s',region:{x:0,y:0,width:1000,height:1000} });
+validateReadActionArgs({ screenshotId:'s',point:{x:500,y:500} });
+validateReadScrollArgs({ screenshotId:'s',direction:'left',containerPercent:1 });
 
 const imageResult = { success:true, data:{ screenshot:'data:image/png;base64,cG5n',text:'source s',screenshotId:'s' } };
 const image = takeVisionToolImage(imageResult, 0)!;
@@ -99,22 +112,42 @@ assert.equal(JSON.stringify(withoutVisionImage(imageResult)).includes('base64'),
 assert.equal(imageResult.data.screenshot.includes('base64'), true, 'Extraction must not mutate UI result');
 // noVisionRecapture 策略回调：marked 与注册表契约清单同源（tools.test.ts 有注册表级断言）
 const marked = (name: string) => ['browser_get_page_text','browser_get_page_info','browser_get_all_tabs','browser_window',
-  'browser_observe','browser_dom_explore','browser_network_capture','vision_read','vision_read_zoom',
+  'browser_observe','browser_dom_explore','browser_network_capture',
   'plan_tool','interact','note_tool','data_ref_tool','load_skill','read_skill_file'].includes(name);
+const guiCall = (action: string) => [{function:{name:'vision_gui',arguments:JSON.stringify({action, screenshotId:'s'})}}];
 const none = () => false;
 assert.equal(needsVisionRefresh(['screenshot'], [image], none), false);
-assert.equal(needsVisionRefresh(['screenshot','vision_read','plan_tool'], [image], marked), false);
+assert.equal(needsVisionRefresh(['screenshot','browser_observe','plan_tool'], [image], marked), false);
 assert.equal(needsVisionRefresh(['screenshot','vision_gui'], [image], none), true);
 assert.equal(needsVisionRefresh(['vision_gui','screenshot'], [{...image,callIndex:1}], none), false);
 assert.equal(needsVisionRefresh(['screenshot'], [], none), true);
-assert.equal(needsVisionRefresh(['vision_read_wait'], [], none), true);
+assert.equal(needsVisionRefresh([{function:{name:'vision_gui',arguments:'{'}}], [], none), true,
+  'Malformed GUI arguments recover conservatively');
 assert.equal(needsVisionRefresh(['unknown_tool'], [], none), true);
-assert.equal(needsVisionRefresh(['vision_read_zoom'], [{...image,kind:'region'}], marked), false);
-assert.equal(needsVisionRefresh(['vision_read_scroll'], [], none), true);
+// vision_gui 按 action 判定生命周期：read 纯读豁免 / zoom 区域图不重拍 / read_scroll 消耗重拍
+assert.equal(needsVisionRefresh(guiCall('read'), [], none), false);
+assert.equal(needsVisionRefresh(guiCall('zoom'), [{...image,kind:'region'}], marked), false);
+assert.equal(needsVisionRefresh(guiCall('read_scroll'), [], none), true);
+assert.equal(needsVisionRefresh(guiCall('check'), [], none), false);
+assert.equal(needsVisionRefresh(guiCall('click'), [], none), true);
 // 纯读豁免（本轮修复的核心）：整批 noVisionRecapture=true 不触发重拍
 assert.equal(needsVisionRefresh(['browser_get_all_tabs'], [], marked), false);
 assert.equal(needsVisionRefresh(['browser_window'], [], marked), false);
 assert.equal(needsVisionRefresh(['browser_dom_explore','browser_network_capture'], [], marked), false);
+// browser_get_page_text 带 url = 前台打开（激活标签页、等加载后提取）→ 用户眼前的
+// 页面已经变了，截图身份失效：即便该工具声明了纯读豁免也必须重拍
+assert.equal(needsVisionRefresh(['browser_get_page_text'], [], marked), false,
+  '不带 url 的正文读取是纯读，豁免重拍');
+assert.equal(
+  needsVisionRefresh([{function:{name:'browser_get_page_text',arguments:JSON.stringify({url:'https://x.example/'})}}], [], marked),
+  true,
+  '带 url 的前台打开必须重拍（视图已变）',
+);
+assert.equal(
+  needsVisionRefresh([{function:{name:'browser_get_page_text',arguments:JSON.stringify({url:'   '})}}], [], marked),
+  false,
+  '空白 url 不算前台打开',
+);
 // 混批：任一未豁免调用（含未知工具）保守重拍
 assert.equal(needsVisionRefresh(['browser_get_page_text','unknown_tool'], [], marked), true);
 assert.equal(needsVisionRefresh([{function:{name:'browser_get_page_text',arguments:'{}'}},{function:{name:'vision_gui',arguments:'{"action":"click"}'}}], [], marked), true);
@@ -146,18 +179,18 @@ w.document.addEventListener('click',()=>clicks++);
 w.document.addEventListener('focusin',()=>focus++);
 w.document.elementFromPoint = () => inside;
 scroller.scrollTo = ({left,top}:any) => { scroller.scrollLeft=Math.max(0,Math.min(400,left)); scroller.scrollTop=Math.max(0,Math.min(900,top)); };
-const down = await payload('scroll', {point:{x:30,y:30},direction:'down',percent:75});
+const down = await payload('scroll', {point:{x:30,y:30},direction:'down',containerPercent:75});
 assert.equal(down.delta.y,75); assert.equal(down.moved,true);
 assert.equal(down.settled,true); assert.equal(w.scrollY,0);
-const right = await payload('scroll', {point:{x:30,y:30},direction:'right',percent:50});
+const right = await payload('scroll', {point:{x:30,y:30},direction:'right',containerPercent:50});
 assert.equal(right.delta.x,100);
 scroller.scrollTop=900;
-const edge = await payload('scroll', {point:{x:30,y:30},direction:'down',percent:75});
+const edge = await payload('scroll', {point:{x:30,y:30},direction:'down',containerPercent:75});
 assert.equal(edge.moved,false); assert.equal(w.scrollY,0,'Must not fall through to document at component edge');
 assert.equal(clicks,0); assert.equal(focus,0);
 Object.defineProperty(w.document,'scrollingElement',{value:w.document.documentElement});
 w.document.documentElement.style.overflowY='hidden';
-const locked = await payload('scroll', {direction:'down',percent:75});
+const locked = await payload('scroll', {direction:'down',containerPercent:75});
 assert.equal(locked.moved,false); assert.match(locked.reason,/locked/);
 // Large pages must preserve valid bounded JSON and its coverage/truncation flags.
 w.document.documentElement.style.overflowY='';
@@ -170,7 +203,7 @@ dom.window.close();
 // or approval; this must hold even if a provider ignores advertised schemas.
 const { ConversationEngine } = await import('../../entrypoints/sidepanel/core/conversation/conversation-engine');
 const { setCustomSkill } = await import('../../utils/skills/skill-store');
-const { runtimeBuilder } = await import('../../entrypoints/sidepanel/core/runtime/runtime-builder');
+const { runtimeBuilder, applyVisionToggleToolSurface } = await import('../../entrypoints/sidepanel/core/runtime/runtime-builder');
 const { modelRegistry } = await import('../../entrypoints/sidepanel/utils/channels');
 const { imageStore } = await import('../../entrypoints/sidepanel/core/images/image-store');
 let executed = 0, approvals = 0;
@@ -181,12 +214,19 @@ const engine = new ConversationEngine({
   requiresApproval: () => { approvals++; return false; },
   sendStream: async () => { throw new Error('Not used'); }, sendVision: async () => { throw new Error('Not used'); },
 } as any) as any;
-const runtime:any = { chatId:'vision-guide-test',toolPolicy:'vision-assistant',toolIds:['screenshot','vision_read','load_skill','browser_get_page_text'],vision:null,
+const runtime:any = { chatId:'vision-guide-test',toolPolicy:'vision-assistant',toolIds:['screenshot','vision_gui','load_skill','browser_get_page_text'],vision:null,
   limits:{maxDurationMs:60000,toolTimeoutMs:1000} };
 const handle:any = {abortController:new AbortController(),dynamicToolIds:new Set(['browser_page_exec']),record:{toolCalls:[],parts:[]},toolCallCount:0};
 const calls = (name:string,args:any={}) => [{id:'c',type:'function',function:{name,arguments:JSON.stringify(args)}}];
-for (const name of ['browser_page_exec','vision_gui','unadvertised']) {
+// 工具面之外的工具（含技能扩容的 browser_page_exec 与凭空捏造的工具名）先于一切被拒
+for (const name of ['browser_page_exec','unadvertised']) {
   const outcome = await engine.executeToolCalls(runtime,handle,calls(name),{},()=>{},Date.now()+60000);
+  assert.equal(outcome.anyFailure,true); assert.match(outcome.messages[0].content,/TOOL_NOT_ALLOWED/);
+}
+// 观察者 action 闸门（fail-closed）：手势、断言检查与缺失/畸形 action 一律拒绝，
+// 且必须在审批与执行之前——不允许先弹审批再失败
+for (const args of [{action:'click',point:{x:1,y:2}},{action:'check'},{},{action:'constructor'}]) {
+  const outcome = await engine.executeToolCalls(runtime,handle,calls('vision_gui',args),{},()=>{},Date.now()+60000);
   assert.equal(outcome.anyFailure,true); assert.match(outcome.messages[0].content,/TOOL_NOT_ALLOWED/);
 }
 const targeted = await engine.executeToolCalls(runtime,handle,calls('browser_get_page_text',{tabId:999}),{},()=>{},Date.now()+60000);
@@ -221,12 +261,12 @@ try {
   assert.ok(dupFeedback.message.content.some((part:any)=>part.type==='text'&&/pixel-identical/.test(part.text)),'Deduped delivery keeps the description carrying the new screenshotId');
   assert.deepEqual(dupFeedback.imageRefs,['test-image-ref'],'Archiving continues for deduped captures');
   assert.equal(dupHandle.viewportDedup.size,1,'Dedup registers the delivered viewport image');
-  const passive=await visualEngine.buildVisionContinuationMessage(visualRuntime,freshHandle,calls('vision_read'),[{role:'tool',content:'{"success":true}'}],[],new AbortController().signal);
+  const passive=await visualEngine.buildVisionContinuationMessage(visualRuntime,freshHandle,calls('vision_gui',{action:'read',screenshotId:'s'}),[{role:'tool',content:'{"success":true}'}],[],new AbortController().signal);
   assert.equal(passive,null);assert.equal(captures,1);
   const regionImage={...image,kind:'region' as const};
-  const regionFeedback=await visualEngine.buildVisionContinuationMessage({...visualRuntime,vision:{...visualRuntime.vision,reScreenshotAfterTools:false}},freshHandle,calls('vision_read_zoom'),[{role:'tool',content:'{"success":true}'}],[regionImage],new AbortController().signal);
+  const regionFeedback=await visualEngine.buildVisionContinuationMessage({...visualRuntime,vision:{...visualRuntime.vision,reScreenshotAfterTools:false}},freshHandle,calls('vision_gui',{action:'zoom',screenshotId:'s'}),[{role:'tool',content:'{"success":true}'}],[regionImage],new AbortController().signal);
   assert.equal(regionFeedback.message.content.filter((part:any)=>part.type==='image_url').length,1);
-  assert.equal(captures,1,'Read zoom must not recapture or disappear when auto-refresh is disabled');
+  assert.equal(captures,1,'GUI zoom must not recapture or disappear when auto-refresh is disabled');
 } finally { imageStore.putFromDataUrl=imageWrite; }
 const dangerous = setCustomSkill({name:'guide-forbidden-skill',files:{'SKILL.md':'---\nname: guide-forbidden-skill\ndescription: Test forbidden execution\n---\nExecute code'},allowedTools:['browser_page_exec']});
 assert.equal(dangerous.ok,true);
@@ -237,6 +277,14 @@ if (dangerous.ok) {
   handle.dynamicToolIds.clear();
   engine.injectSkillTools(runtime,handle,{data:{skill:dangerous.skill.id}});
   assert.equal(handle.dynamicToolIds.size,0);
+}
+// 观察闸门的放行面：只读 read 通过闸门并真正执行
+//（放在上述「executed === 0」断言之后，验证放行不误伤）
+{
+  const before = executed;
+  const allowed = await engine.executeToolCalls(runtime,handle,calls('vision_gui',{action:'read',screenshotId:'s'}),{},()=>{},Date.now()+60000);
+  assert.notEqual(allowed.anyFailure, true, 'Read-only observation must pass the observer gate');
+  assert.equal(executed, before + 1, 'Allowed observation executes exactly once');
 }
 // Build the real runtime with only endpoint resolution stubbed; no network.
 const savedRequire = modelRegistry.require;
@@ -249,11 +297,70 @@ try {
   assert.equal(built.activationContext.length,0);
   assert.ok(built.systemPrompt.includes('已跳过激活'));
   assert.equal(built.systemPrompt.includes('必须优先调用 browser_get_page_text'),false);
+  assert.ok(built.systemPrompt.includes('<observation-boundary>'),'观察者获得观察变体规程');
   const action = await runtimeBuilder.build({chatId:'action-build',userInput:'执行',agentName:'视觉通用助手',skillNames:[],priorRecords:[]});
   assert.equal(action.toolPolicy,undefined); assert.ok(action.toolIds.includes('vision_gui'));
   assert.equal(action.systemPrompt.split('<vision-gui-tool>').length-1,1,'Built-in action prompt carries one XML GUI guide');
+  assert.ok(action.systemPrompt.includes('<dom-or-vision>'),'运行时提示词携带通道选择准则（由钩子注入）');
+  assert.ok(action.systemPrompt.indexOf('<vision-gui-tool>') < action.systemPrompt.indexOf('<text-interaction-sop>'),
+    '注入锚点保证视觉规程先于文本辅助规程');
   const customAction = await runtimeBuilder.build({chatId:'custom-action',userInput:'执行',agentName:null,skillNames:[],extraToolIds:['vision_gui'],priorRecords:[],agentSystemOverride:'按当前截图完成任务。'});
   assert.equal(customAction.systemPrompt.split('<vision-gui-tool>').length-1,1,'Custom agents receive the same guide');
+  // ── 视觉操作开关注入时序（自定义智能体全链路）──
+  // 第 1 步：开关（AgentConfig.vision）驱动 runtime 向工具面注入 vision_gui；
+  // 第 2 步：装配检测到 vision_gui → 钩子向 systemPrompt 注入 vision_gui 规程。
+  // 反向：开关关闭时工具面恒无 vision_gui，规程随之不注入——
+  // 「vision_gui ∈ 工具面 ⇔ 开关开启 ⇔ 规程注入」三者恒等。
+  // 分层：数据层（normalizeAgentConfig 写入即剔除残留）+ 装配层
+  //（applyVisionToggleToolSurface 兜底插件/预置等未过归一的来源）。
+  // 写入与清理同置 try/finally：任一断言失败也不泄漏测试智能体。
+  const agentStore = await import('../../utils/agents/agent-store');
+  try {
+    const toggleOnWrite = agentStore.setAgentConfig({
+      id: 'vision-toggle-on', name: 'vision-toggle-on', description: '视觉开关注入用例',
+      system: '按当前截图完成任务。', tools: ['browser_navigate'], category: 'general', tags: [],
+      vision: { screenshotTool: 'screenshot', screenshotArgs: {}, reScreenshotAfterTools: true },
+    });
+    assert.ok(toggleOnWrite.ok, '开启视觉操作的自定义智能体写入成功');
+    const toggleOffWrite = agentStore.setAgentConfig({
+      id: 'vision-toggle-off', name: 'vision-toggle-off', description: '视觉开关剔除用例',
+      system: '按当前截图完成任务。', tools: ['browser_navigate', 'vision_gui'], category: 'general', tags: [],
+    });
+    assert.ok(toggleOffWrite.ok, '未开启视觉操作但残留 vision_gui 的智能体写入成功');
+    // 数据层归一（L0）：写入即剔除 vision_gui，存储的 tools 恒不含该受控工具
+    const storedOff = agentStore.getAgentConfig('vision-toggle-off');
+    assert.ok(storedOff && !storedOff.tools.includes('vision_gui'),
+      '数据层归一：写入时剔除 vision_gui 残留（normalizeAgentConfig）');
+    const storedOn = agentStore.getAgentConfig('vision-toggle-on');
+    assert.ok(storedOn && !storedOn.tools.includes('vision_gui'),
+      '数据层归一：开关开启的智能体同样只存选择面，vision_gui 由运行时注入');
+    // 装配层（L3）纯函数分支：注入 / 幂等去重 / 剔除并上报残留 / 无残留干净通过
+    const injected = applyVisionToggleToolSurface(['browser_navigate'], true);
+    assert.ok(injected.toolIds.includes('vision_gui') && !injected.strippedResidue,
+      '归一函数：开关开启 → 注入 vision_gui');
+    const deduped = applyVisionToggleToolSurface(['vision_gui', 'browser_navigate'], true);
+    assert.equal(deduped.toolIds.filter(id => id === 'vision_gui').length, 1,
+      '归一函数：已存在 vision_gui 时幂等去重');
+    const stripped = applyVisionToggleToolSurface(['browser_navigate', 'vision_gui'], false);
+    assert.deepEqual(stripped.toolIds, ['browser_navigate'], '归一函数：开关关闭 → 剔除残留');
+    assert.equal(stripped.strippedResidue, true, '归一函数：剔除时上报残留供告警');
+    const clean = applyVisionToggleToolSurface(['browser_navigate'], false);
+    assert.deepEqual(clean.toolIds, ['browser_navigate'], '归一函数：无残留时原样通过');
+    assert.equal(clean.strippedResidue, false, '归一函数：无残留不上报告警');
+    // 端到端链路：开 → 工具面 + 规程；关 → 两者皆无
+    const toggleOn = await runtimeBuilder.build({chatId:'vision-toggle-on-run',userInput:'执行',agentName:'vision-toggle-on',skillNames:[],priorRecords:[]});
+    assert.ok(toggleOn.toolIds.includes('vision_gui'), '时序第 1 步：开关开启 → 工具面注入 vision_gui');
+    assert.ok(toggleOn.systemPrompt.split('<vision-gui-tool>').length-1 === 1, '时序第 2 步：检测到 vision_gui → 注入规程（恰好一份）');
+    assert.ok(toggleOn.vision, '视觉循环配置随开关生效');
+    assert.ok((toggleOn.advertisedToolIds ?? []).includes('vision_gui'), '注入的 vision_gui 同步进入 advertisedToolIds');
+    const toggleOff = await runtimeBuilder.build({chatId:'vision-toggle-off-run',userInput:'执行',agentName:'vision-toggle-off',skillNames:[],priorRecords:[]});
+    assert.ok(!toggleOff.toolIds.includes('vision_gui'), '开关关闭 → 交付工具面恒无 vision_gui');
+    assert.ok(!toggleOff.systemPrompt.includes('<vision-gui-tool>'), '工具面无 vision_gui → 不注入规程');
+    assert.ok(!toggleOff.vision, '未开启时视觉循环配置不生效');
+  } finally {
+    agentStore.removeAgentConfig('vision-toggle-on');
+    agentStore.removeAgentConfig('vision-toggle-off');
+  }
   // 装配不变量（承载校验后必须恒成立）：工具目录里每一项都可执行——
   // advertisedToolIds ⊆ toolIds。三种会话形态同测（观察型 / 动作型 / 无智能体
   // 默认对话）；此断言曾能拦下 web-research-report 携带工具进入多智能体目录
@@ -268,7 +375,7 @@ try {
   const noAgentSkills = skillEngine.resolveAvailableSkills(null, customAction.toolIds);
   assert.ok(noAgentSkills.every(s => s.allowedTools.every(t => customAction.toolIds.includes(t))),
     '无智能体可用技能同样满足承载校验');
-  const safe=setCustomSkill({name:'guide-safe-skill',files:{'SKILL.md':'---\nname: guide-safe-skill\ndescription: Safe reading\n---\nRead current page'},allowedTools:['vision_read']});
+  const safe=setCustomSkill({name:'guide-safe-skill',files:{'SKILL.md':'---\nname: guide-safe-skill\ndescription: Safe reading\n---\nRead current page'},allowedTools:['vision_gui']});
   assert.equal(safe.ok,true);
   if(safe.ok){
     const safeRuntime=await runtimeBuilder.build({chatId:'safe-guide',userInput:'解释页面',agentName:'视觉助手',skillNames:[safe.skill.id],priorRecords:[]});
@@ -278,7 +385,7 @@ try {
     assert.deepEqual(safeRuntime.advertisedToolIds,unselected.advertisedToolIds,'Skill activation must not change the advertised schemas');
     assert.ok(safeRuntime.advertisedToolIds?.every(isVisionAssistantTool));
     engine.injectSkillTools(runtime,handle,{data:{skill:safe.skill.id}});
-    assert.equal(handle.dynamicToolIds.has('vision_read'),true);
+    assert.equal(handle.dynamicToolIds.has('vision_gui'),true);
   }
 } finally { modelRegistry.require=savedRequire; (globalThis as any).window=previousWindow; }
 console.log('[vision-assistant] Observation payload, no-click nested scrolling, argument defenses, image continuation, runtime/skill capability ceiling passed.');

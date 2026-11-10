@@ -11,6 +11,7 @@ import { CORE_INTERACT_TOOL_IDS } from '@/tools/interact/interact-prompt';
 import { PLAN_TOOL_ID } from '@/tools/plan/plan-prompt';
 import { NOTE_TOOL_ID } from '@/tools/note/note-prompt';
 import { READ_FILE_TOOL_ID } from '@/tools/upload-file/upload-file-prompt';
+import { VISION_GUI_TOOL_ID } from '@/tools/vision/gui-contract';
 
 /** 场景类型 */
 export type ToolScenario =
@@ -149,7 +150,7 @@ const AUTOMATION_TOOLS = [
  * 网站学习区块），两者的配置各自演进、互不影响。
  */
 const VISION_AGENT_TOOLS = [
-  'vision_gui',
+  VISION_GUI_TOOL_ID,
   // 视觉操作保留完整 DOM 感知/交互能力，生成的混合定位技能才能被实际执行。
   ...AUTOMATION_TOOLS,
   'screenshot',
@@ -223,7 +224,7 @@ const SITE_LEARN_VISION_FOR_TEXT_TOOLS = [
 /** 网站学习·视觉目标：文本全套 + 统一 GUI 手势 + 截图 + 窗口管理，按需打标 */
 const SITE_LEARN_VISION_TOOLS = [
   ...SITE_LEARN_TEXT_TOOLS,
-  'vision_gui',
+  VISION_GUI_TOOL_ID,
   'screenshot',
   'browser_window',
 ] as const;
@@ -245,7 +246,7 @@ const SITE_VALIDATE_TEXT_TOOLS = [
 const SITE_VALIDATE_VISION_TOOLS = [
   ...SITE_LEARN_DOM_TOOLS,
   NETWORK_CAPTURE_TOOL,
-  'vision_gui',
+  VISION_GUI_TOOL_ID,
   'screenshot',
   'browser_window',
   'submit_validation',
@@ -304,7 +305,7 @@ const DATA_GROUP_TOOLS = [
   'mermaid_renderer',
 ] as const;
 
-/** 页面深度读取（HTML / 元数据 / 指定区域抓取 / Readability 正文；
+/** 页面深度读取（HTML / 元数据 / 指定区域抓取；
  *  结构化正文读取 browser_get_page_text 已升级为核心能力无条件注入
  *  （结构化 Markdown + url 直读 + 超长分页），不再占用工具组位；
  *  browser_get_element_info 已下线（由 browser_observe 取代） */
@@ -312,7 +313,6 @@ const PAGE_READ_GROUP_TOOLS = [
   'browser_get_page_html',
   'browser_get_page_info',
   'page-source',
-  'browser_web_fetcher',
 ] as const;
 
 /** DOM 元素交互（文本观察、结构探索、节点交互与等待；
@@ -369,14 +369,16 @@ const RESOURCE_CAPTURE_GROUP_TOOLS = [
   'clear_captured_files',
 ] as const;
 
-/** 统一相对坐标 GUI 工具；视觉循环外调用时须主动截图获取 screenshotId。 */
+/**
+ * 视觉辅助工具组（hub 自定义智能体可勾选面）：截图与 OCR。
+ *
+ * **刻意不含 vision_gui**：vision_gui 只经「视觉操作」开关（AgentConfig.vision）
+ * 注入——hub 编辑器不提供勾选入口，runtime 装配时按开关对智能体工具面做
+ * 注入/剔除归一（见 runtime-builder「视觉操作开关注入」），提示词钩子再按
+ * 工具面检测注入规程。三条链路共同保证「vision_gui ∈ 工具面 ⇔ 开关开启」。
+ */
 const VISION_TOOLS_GROUP = [
-  'vision_gui',
   'screenshot',
-  'vision_read',
-  'vision_read_scroll',
-  'vision_read_zoom',
-  'vision_read_wait',
   'ocr',
 ] as const;
 
@@ -409,8 +411,9 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
    *  这里只补页面加载诊断 */
   chat: ['browser_get_page_info'],
 
-  /** 视觉助手：观察、阅读滚动、原图放大及等待重拍；运行时另施加能力上限。 */
-  visionAssist: ['screenshot', 'vision_read', 'vision_read_scroll', 'vision_read_zoom', 'vision_read_wait', 'generic_wait'],
+  /** 视觉助手：观察、阅读滚动、原图放大及等待重拍；运行时另施加能力上限
+   *  （vision_gui 经 VISION_ASSISTANT_GUI_ACTIONS 收敛为只读 read/read_scroll/zoom） */
+  visionAssist: ['screenshot', VISION_GUI_TOOL_ID, 'generic_wait'],
 
   /** 视觉通用助手：完整截图相对坐标操作；按需打标用于检查 */
   visionAgent: [...VISION_AGENT_TOOLS],
@@ -434,9 +437,9 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
 
   /** Deep Search：多站点深度调研（站点 website 枚举值按已开启站点动态注入提示；
    *  检索工具 web_search 由发送装配按已开启站点动态追加，见 deep-search-sites）。
-   *  页面深访工具组（observe / interact / page_exec / dom_explore / web_fetcher）：
-   *  应对 SPA 渲染、登录墙外可见内容、需滚动/翻页的结果页，以及 Readability 级
-   *  正文抽取与结构化提取（相似元素 + JS 脚本）——与数据采集助手同源能力，
+   *  页面深访工具组（observe / interact / page_exec / dom_explore）：
+   *  应对 SPA 渲染、登录墙外可见内容、需滚动/翻页的结果页，以及结构化提取
+   *  （相似元素 + JS 脚本）——与数据采集助手同源能力，
    *  预算与使用纪律由 deep-search 预设提示词约束。
    *  note_tool 由核心层无条件注入（调研留痕是 Deep Search 的核心工作方式），
    *  此处不重复登记 */
@@ -444,7 +447,6 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
     'browser_go_back_or_forward',
     'browser_navigate',
     'browser_get_page_info',
-    'browser_web_fetcher',
     'browser_observe',
     'browser_interact',
     'browser_dom_explore',
@@ -490,7 +492,7 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
   /** 下载拦截与文件捕获（hub 自定义智能体工具组） */
   resourceCapture: [...RESOURCE_CAPTURE_GROUP_TOOLS],
 
-  /** 视觉坐标操作（hub 自定义智能体工具组） */
+  /** 视觉坐标操作（hub 自定义智能体工具组；仅截图/OCR——vision_gui 由「视觉操作」开关注入） */
   visionTools: [...VISION_TOOLS_GROUP],
 
   /** 网络请求与控制台（hub 自定义智能体工具组） */

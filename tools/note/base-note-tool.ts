@@ -39,6 +39,8 @@ export function noteToolSuccess(text: string, data: Record<string, unknown>): To
     isError: false,
     content: [{ type: 'text', text }],
     data,
+    // 笔记正文只在 content 里，data 是结构化元数据——正题在 content
+    primary: 'content',
   };
 }
 
@@ -62,6 +64,8 @@ export function noteToolFailure(
     error: text,
     content: [{ type: 'text', text }],
     data: { errorKind: kind, operation },
+    // 失败说明只在 content 里——正题在 content
+    primary: 'content',
   };
 }
 

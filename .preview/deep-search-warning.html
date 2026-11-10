@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DeepSearchWarning 配色预览</title>
+<!-- 复刻 .app-container 的中性 token，模拟真实挂载环境 -->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: #faf9f7;
+    color: #292824;
+  }
+  .app-container {
+    --surface-canvas: #faf9f7;
+    --surface-card: #ffffff;
+    --surface-soft: #f3f1ed;
+    --surface-hover: #eeece7;
+    --surface-user: #eeece7;
+    --line-soft: #e4e2de;
+    --ink-primary: #292824;
+    --ink-secondary: #787671;
+    --ink-muted: #9b9790;
+    --focus-ring: #a5a09a;
+    min-height: 100vh;
+  }
+  /* 背景里放一点侧边栏元素，观察遮罩压在真实界面上的观感 */
+  .mock-sidepanel { padding: 14px 16px; }
+  .mock-sidepanel .mock-send {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; border-radius: 50%;
+    background: var(--ink-primary); color: #fff; font-size: 14px;
+  }
+</style>
+<link rel="stylesheet" href="/entrypoints/sidepanel/components/modals/deep-search-warning.css" />
+</head>
+<body>
+  <div class="app-container">
+    <div class="mock-sidepanel">
+      <span class="mock-send">➤</span>
+    </div>
+
+    <!-- 与 DeepSearchWarning.vue 模板一致（文案取 zh-CN，标题/消息/按钮均为结构原样） -->
+    <div class="deep-search-warning-overlay" id="dsw-overlay">
+      <div class="deep-search-warning-modal">
+        <div class="warning-header">
+          <div class="warning-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12 2L13.09 8.26L22 9L13.09 9.74L12 16L10.91 9.74L2 9L10.91 8.26L12 2Z" fill="currentColor"/>
+            </svg>
+          </div>
+          <h3 class="warning-title">Deep Search需要网站支持</h3>
+        </div>
+
+        <div class="warning-content">
+          <p class="warning-message">Deep Search智能体需要至少开启一个已登录网站才能工作。</p>
+          <p class="warning-submessage">请选择以下操作之一：</p>
+        </div>
+
+        <div class="warning-actions">
+          <button class="warning-btn warning-btn-primary">前往「已登录网站」开启</button>
+          <button class="warning-btn warning-btn-secondary">选择其他智能体</button>
+          <button class="warning-btn warning-btn-cancel">取消</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

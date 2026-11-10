@@ -4,7 +4,7 @@
       <div class="warning-header">
         <div class="warning-icon">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M12 2L13.09 8.26L22 9L13.09 9.74L12 16L10.91 9.74L2 9L10.91 8.26L12 2Z" fill="#f59e0b"/>
+            <path d="M12 2L13.09 8.26L22 9L13.09 9.74L12 16L10.91 9.74L2 9L10.91 8.26L12 2Z" fill="currentColor"/>
           </svg>
         </div>
         <h3 class="warning-title">{{ t('sidepanel.deepSearch.title') }}</h3>
@@ -44,6 +44,10 @@
 
 <script setup lang="ts">
 import { t } from '@/utils/i18n';
+// 独立样式文件：App.vue 的 app.css 经 <style scoped> 引入，作用域属性无法穿透到子组件内部，
+// 这里直接全局 import 确保弹窗样式生效（与 asr-config-prompt.css 同一模式；
+// app.css 中的旧定义已删除，避免两处维护）。
+import './deep-search-warning.css';
 
 defineProps<{
   visible: boolean;

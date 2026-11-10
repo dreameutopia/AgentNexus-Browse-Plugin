@@ -32,6 +32,7 @@ import { findStableBoundary } from '../../utils/chat/stable-boundary';
 const props = withDefaults(
   defineProps<{
     content: string;
+    workspaceChatId?: string;
     /** 是否处于直播流（增量冻结 + 节流开启）；默认 false = 已结束片段，一次性整渲染 */
     streaming?: boolean;
   }>(),
@@ -59,7 +60,7 @@ let pendingApply: (() => void) | null = null;
 /** 渲染一段源文（复用完整管线：占位符摘出 / fence 分发 / 表格工具栏 / 回填） */
 function renderSegment(text: string): string {
   try {
-    return markdownRenderer.renderMessage(text);
+    return markdownRenderer.renderMessage(text, { workspaceChatId: props.workspaceChatId });
   } catch (error) {
     // 渲染器内部已有全量兜底（renderMessage catch → 转义原文）；此处防御
     // 极端环境异常，保证直播 UI 不因单个片段崩溃
@@ -221,6 +222,15 @@ watch(
 
 onBeforeUnmount(() => {
   if (timer !== undefined) window.clearTimeout(timer);
+});
+
+watch(() => props.workspaceChatId, () => {
+  if (!rootEl.value) return;
+  frozenSource = '';
+  lastTailSource = null;
+  everLive = false;
+  rootEl.value.replaceChildren();
+  applyNow();
 });
 
 // 挂载前的 watch immediate 不需要：onMounted 必然执行一次 applyNow；

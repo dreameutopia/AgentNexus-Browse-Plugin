@@ -27,15 +27,33 @@
  *   - 摘要以系统级消息注入并被窗口守卫优先保护（永不因超限被裁掉）。
  */
 
-import { aiChatApi, type ChatMessage } from '../../utils/ai/ai-chat-api';
+import { aiChatApi, type ChatMessage, type VisionContent } from '../../utils/ai/ai-chat-api';
 import { ApiRequestError } from '../../utils/stream/errors';
-import { estimateTextTokens, sliceTextToTokenBudget, IMAGE_CONTEXT_TOKENS } from '../../utils/ai/token-estimate';
+import {
+  estimateTextTokens,
+  sliceTextToTokenBudget,
+  sliceTextTailToTokenBudget,
+  IMAGE_CONTEXT_TOKENS,
+} from '../../utils/ai/token-estimate';
 import { CONTEXT_THRESHOLD_DEFAULT } from '../../utils/channels/channel-types';
 import type { ResolvedModelConfig } from '../types';
-import { ensureSummaryWrapped } from './summary-message';
+import { ensureSummaryWrapped, isCompactionSummaryMessage, summaryBodyOnly } from './summary-message';
+import {
+  COMPACTION_PROMPT_PRE_RUN,
+  COMPACTION_PROMPT_RUNTIME,
+  compactionPromptFor,
+  type CompactionStrategy,
+} from './compaction-prompts';
 
 // 摘要记忆消息契约的再导出：调用方（引擎/边界规划/后台运行时/测试）沿用压缩器入口
 export { ensureSummaryWrapped, isCompactionSummaryMessage, SUMMARY_MESSAGE_MARKER } from './summary-message';
+// 压缩策略的再导出：引擎/后台按时机传入 strategy；双提示词配置单一事实源在 compaction-prompts
+export {
+  COMPACTION_PROMPT_PRE_RUN,
+  COMPACTION_PROMPT_RUNTIME,
+  compactionPromptFor,
+  type CompactionStrategy,
+} from './compaction-prompts';
 
 // ==================== 依赖注入（可测试性） ====================
 
@@ -58,6 +76,20 @@ export class CompactionError extends Error {
   }
 }
 
+/**
+ * 内部信号：分段摘要触顶（深度或请求次数上限），需转入**一次性截断兜底**。
+ *
+ * 只在顶层（compact）捕获并处理：兜底把**整个原始载荷**按「从后往前保留」
+ * 裁剪到预算内后发起**一次**压缩请求。若在递归内部处理，同一载荷会被多个
+ * 分段各自截断（信息多处丢失、请求次数失控），且兜底结果无法再归并。
+ */
+class TrimFallbackRequired extends Error {
+  constructor() {
+    super('compaction trim fallback required');
+    this.name = 'TrimFallbackRequired';
+  }
+}
+
 /** 压缩请求负载的安全上界（占上下文阈值比例）；其余留给输出与传输开销 */
 const PAYLOAD_RATIO_LIMIT = 0.9;
 
@@ -66,6 +98,15 @@ const PAYLOAD_RATIO_LIMIT = 0.9;
  * 收益变薄，但内容仍是有效记忆；真正的「压缩未产生缓解」由引擎侧冷却兜底。
  */
 const SUMMARY_SIZE_WARN_RATIO = 0.2;
+
+/**
+ * 分段摘要的请求次数上限（防线一的请求预算）。
+ *
+ * 触顶后的收敛：不再直接失败，而是转入**截断兜底**（最后一次请求，按
+ * 「从后往前保留」裁剪负载）——分段优先、截断兜底（Q2 决策）。兜底自身
+ * 再无可用额度时才报可读错误。总额度 = 本上限 + 1 次兜底请求。
+ */
+const MAX_SEGMENT_REQUESTS = 16;
 
 /**
  * 压缩阈值的防御性归一：非法值（NaN / ±∞ / ≤0）回落共享默认。
@@ -81,44 +122,18 @@ function resolveCompactionThreshold(threshold: number): number {
   return Number.isFinite(threshold) && threshold > 0 ? threshold : CONTEXT_THRESHOLD_DEFAULT;
 }
 
-/** 压缩系统提示词（分区结构 / 差分压缩 / 防丢失 / 篇幅约束 / plan_tool 口径） */
-export const COMPACTION_SYSTEM_PROMPT = `你是「对话记忆压缩器」。你的唯一任务：把一段浏览器助手 AgentNexus 的对话历史（含工具调用与结果）压缩为结构化摘要，供同一对话的后续轮次作为记忆使用。摘要质量决定助手能否继续完成任务，因此信息完整性优先于简短。
-
-输出要求（严格遵守）：
-1. 只输出一个 <summary> XML 元素，XML 之外不得有任何解释文字。
-2. 摘要体内依次包含以下固定分区（分区内容为空时写"无"，不得省略分区、不得改用其他标签名）：
-
-<summary>
-  <task>当前核心目标：用户的核心任务与目标。逐条保留用户的原始诉求（关键表述保留原话）；多轮演进的意图变化写清先后关系与最新目标。</task>
-  <constraints>用户明确的约束、偏好与规则（语言、格式、范围、禁止事项等）。</constraints>
-  <key-facts>已确立的关键事实、数据、结论与决策。URL、文件名、笔记标题、页面标题、数字与单位等标识符必须原样保留。</key-facts>
-  <progress>当前进度：已完成的工作与关键工具调用及其结果要点（做了什么、得到了什么、涉及哪些页面/站点），按推进顺序组织。</progress>
-  <errors>错误经验：遇到的错误、失败原因与已尝试的处理；尚未解决的写明现状。失败尝试同样重要，必须记录以避免重复执行。</errors>
-  <pending>待办与下一步：尚未完成的事项、用户等待中的结果与约定的下一步行动。任务计划（plan_tool）的执行状态存储在会话计划库中、不在本记录内，此处不得臆造计划状态。</pending>
-</summary>
-
-3. 差分压缩（不同内容不同力度）：
-   - 必须详尽保留：用户原话诉求、约束与偏好、关键事实与决策、错误及其原因、待办事项；
-   - 大幅压缩：冗长的工具输出（页面全文抽取、DOM/观察结果、重复的探查与调试输出、长列表与重复样本）→ 归纳为结论与关键数据，标识符原样保留；
-   - 可以丢弃：与任务无关的寒暄、重复表述、已被后续结果推翻的中间过程。
-
-4. 防丢失硬性要求：
-   - 用户消息的诉求一条都不能丢，关键表述保留原话；
-   - 标识符（URL / 标题 / 笔记 ID / 工具名 / 数字与单位）原样保留，禁止改写或省略；
-   - 只依据对话记录内容归纳，禁止臆造不存在的信息；
-   - 在不丢失信息的前提下尽量精炼；信息与篇幅冲突时，保信息。
-
-5. 篇幅约束：整个摘要一般控制在 4000 token 以内；信息确实庞大时可适当超出，但不得为凑短而丢弃任何用户诉求、关键事实、错误经验或待办。`;
-
-// ==================== 实现 ====================
-
 export interface CompactionInput {
-  /** 待压缩的模型面历史（不含本轮 system 提示词；可含旧摘要系统消息） */
+  /** 待压缩的模型面历史（不含本轮 system 提示词；可含旧摘要消息） */
   messages: ChatMessage[];
   model: ResolvedModelConfig;
   /** 上下文 token 阈值（用于限制压缩请求负载） */
   threshold: number;
   signal?: AbortSignal;
+  /**
+   * 压缩时机策略（决定使用哪份提示词，见 compaction-prompts）。
+   * 缺省 = pre-run（向后兼容：不传即会话归档口径）。
+   */
+  strategy?: CompactionStrategy;
 }
 
 export interface CompactionResult {
@@ -143,7 +158,14 @@ function serializeMessage(message: ChatMessage, index: number): string {
   const label = `[${index}] ${message.toolFeedbackFor?.length ? 'TOOL_FEEDBACK' : message.role.toUpperCase()}`;
   const parts: string[] = [];
   if (typeof message.content === 'string') {
-    if (message.content) parts.push(message.content);
+    // 压缩消息（摘要的摘要）只取内容本体：外层信封的样板与内容无关，
+    // 喂回压缩模型会诱导其复制样板、并白白占用压缩预算
+    if (isCompactionSummaryMessage(message)) {
+      const body = summaryBodyOnly(message);
+      if (body) parts.push(body);
+    } else if (message.content) {
+      parts.push(message.content);
+    }
   } else if (Array.isArray(message.content)) {
     for (const part of message.content) {
       if (part.type === 'text' && part.text) parts.push(part.text);
@@ -167,9 +189,21 @@ export class ContextCompactor {
   /**
    * 执行一次压缩。任何失败以 CompactionError 抛出（含原始原因），由调用方降级。
    * 中止信号触发时同样抛错（abort 场景由上层按运行中止语义处理）。
+   *
+   * 两道防线（Q2 决策「分段优先 + 截断兜底」）：
+   *   1. 无损分段摘要：超预算内容切段压缩再归并，内容不丢；
+   *   2. 截断兜底：分段触顶（深度 ≥3 或请求次数用尽）时，把整个载荷按
+   *      「从后往前保留」裁剪到预算内，发起**一次**压缩请求（最旧内容被
+   *      丢弃但留痕告警）；再失败才以可读错误收敛。
    */
   async compact(input: CompactionInput): Promise<CompactionResult> {
-    const result = await this.compactInternal(input, 0, { calls: 0 });
+    let result: CompactionResult;
+    try {
+      result = await this.compactInternal(input, 0, { calls: 0 });
+    } catch (error) {
+      if (!(error instanceof TrimFallbackRequired)) throw error;
+      result = await this.compactTrimmedPayload(input);
+    }
     const threshold = resolveCompactionThreshold(input.threshold);
     if (result.summaryTokens > threshold * SUMMARY_SIZE_WARN_RATIO) {
       console.warn(
@@ -190,14 +224,20 @@ export class ContextCompactor {
     // Actual images are attached separately, never encoded as prompt text.
     // 阈值先经防御性归一：NaN/≤0 会让预算比较恒 false，静默绕过分段保护。
     const safeThreshold = resolveCompactionThreshold(input.threshold);
-    const payloadBudget = Math.max(1, Math.floor(safeThreshold * PAYLOAD_RATIO_LIMIT) - estimateTextTokens(COMPACTION_SYSTEM_PROMPT) - 512);
+    const systemPrompt = compactionPromptFor(input.strategy);
+    const payloadBudget = Math.max(1, Math.floor(safeThreshold * PAYLOAD_RATIO_LIMIT) - estimateTextTokens(systemPrompt) - 512);
     const lines = input.messages.map((message, index) => serializeMessage(message, index));
     const images = input.messages.map(message => Array.isArray(message.content) ? message.content.filter(part => part.type === 'image_url' && part.image_url) : []);
     const costs = lines.map((line, index) => estimateTextTokens(line) + 1 + images[index].length * IMAGE_CONTEXT_TOKENS);
     const totalTokens =
       costs.reduce((total, cost) => total + cost, 0);
     if (totalTokens > payloadBudget) {
-      if (depth >= 3 || payloadBudget < 1024) throw new CompactionError('无法在当前窗口内完整压缩历史，原始记录已保留，请使用更大的上下文窗口');
+      // 防线一（无损）：分段摘要——超预算内容切段压缩再归并，内容不丢；
+      // 防线二（有损兜底）：分段三层仍无法收敛时转顶层一次性截断（见 compact）。
+      if (depth >= 3) throw new TrimFallbackRequired();
+      if (payloadBudget < 1024) {
+        throw new CompactionError('无法在当前窗口内完整压缩历史，原始记录已保留，请使用更大的上下文窗口');
+      }
       const groups: ChatMessage[][] = [];
       let group: ChatMessage[] = [], used = 0;
       const add = (message: ChatMessage, cost: number) => {
@@ -244,11 +284,37 @@ export class ContextCompactor {
     }
 
     // ── 流式请求（长负载必须流式，避免非流式请求的超时断链） ──
-    if (++budget.calls > 16) throw new CompactionError('完整压缩所需分段过多，已停止额外请求并保留原始记录，请使用更大的上下文窗口');
+    // 请求次数上限是「分段触顶」的一种形态：触顶时不再直接失败，而是转入
+    // 顶层一次性截断兜底（分段优先、截断兜底，Q2 决策）。
+    if (budget.calls >= MAX_SEGMENT_REQUESTS) {
+      throw new TrimFallbackRequired();
+    }
+    budget.calls += 1;
+    const rawSummary = await this.requestSummary(input, systemPrompt, userPayload, payloadContent);
+    const summary = ensureSummaryWrapped(rawSummary);
+    return {
+      summary,
+      originalTokens: totalTokens,
+      summaryTokens: estimateTextTokens(summary),
+    };
+  }
+
+  /**
+   * 发起一次压缩请求并清洗结果（两条路径共用：正常分段与截断兜底）。
+   *
+   * 清洗契约：适配器契约防御 → 去 think 段 → 兜底流式累积 → 空校验；
+   * 空结果以可读错误收敛（调用方按失败降级冷却）。
+   */
+  private async requestSummary(
+    input: CompactionInput,
+    systemPrompt: string,
+    userPayload: string,
+    payloadContent: Exclude<ChatMessage['content'], string>,
+  ): Promise<string> {
     let streamed = '';
     const response = await this.deps.sendStream(
       [
-        { role: 'system', content: COMPACTION_SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: payloadContent.length > 1 ? payloadContent : userPayload },
       ],
       {
@@ -287,7 +353,7 @@ export class ContextCompactor {
       throw compactionError;
     });
 
-    // ── 结果清洗：适配器契约防御 → 去 think 段 → 兜底流式累积 → 空校验 → XML 自愈包裹 ──
+    // ── 结果清洗：适配器契约防御 → 去 think 段 → 兜底流式累积 → 空校验 ──
     // finalMessage 缺失/形态异常（协议脏数据或适配器缺陷）不得以解构 TypeError
     // 崩溃——回落流式累积；两者皆空由下方空结果错误以可读文案收敛。
     const finalContent =
@@ -298,7 +364,81 @@ export class ContextCompactor {
     if (!rawSummary) {
       throw new CompactionError('压缩结果为空');
     }
+    return rawSummary;
+  }
 
+  /**
+   * 分段摘要触顶后的**一次性有损兜底**：按「从后往前保留」把整个载荷截到
+   * 预算内，再发起一次压缩请求。
+   *
+   * 触发条件（防线一触顶）：递归深度 ≥ 3，或分段请求次数用尽。
+   * 语义要点：
+   *   - 从最新记录向最旧连续累加，放不下即停——与窗口守卫的「从新到旧保留」
+   *     同一语义（不跳过中间记录凑数，时序连续）；
+   *   - 单条记录超预算时保留其**尾部**文本（超长工具结果的结论通常在末尾）；
+   *   - 截掉的最旧记录只在分段无法收敛时发生，console.warn 留痕；原始记录
+   *     在转录侧完整保留，本方法只影响压缩输入；
+   *   - 单图超预算不走截断（一张图放不下说明阈值已低于图片固定成本的退化
+   *     情形），沿用既有的可读错误。
+   */
+  private async compactTrimmedPayload(input: CompactionInput): Promise<CompactionResult> {
+    if (input.signal?.aborted) throw new DOMException('Compaction aborted', 'AbortError');
+    const safeThreshold = resolveCompactionThreshold(input.threshold);
+    const systemPrompt = compactionPromptFor(input.strategy);
+    const payloadBudget = Math.max(1, Math.floor(safeThreshold * PAYLOAD_RATIO_LIMIT) - estimateTextTokens(systemPrompt) - 512);
+    if (payloadBudget < 1024) {
+      throw new CompactionError('无法在当前窗口内完整压缩历史，原始记录已保留，请使用更大的上下文窗口');
+    }
+
+    const lines = input.messages.map((message, index) => serializeMessage(message, index));
+    const images = input.messages.map(message =>
+      Array.isArray(message.content)
+        ? message.content.filter(part => part.type === 'image_url' && part.image_url)
+        : [],
+    );
+    const costs = lines.map((line, index) => estimateTextTokens(line) + 1 + images[index].length * IMAGE_CONTEXT_TOKENS);
+    const totalTokens = costs.reduce((total, cost) => total + cost, 0);
+
+    const keptIndices: number[] = [];
+    let used = 0;
+    for (let index = lines.length - 1; index >= 0; index--) {
+      const cost = costs[index];
+      if (used + cost > payloadBudget) break;
+      used += cost;
+      keptIndices.unshift(index);
+    }
+    let keptLines: string[];
+    let keptImages: (readonly VisionContent[])[];
+    if (keptIndices.length === 0) {
+      // 最新一条也放不下：超长单条保留其尾部文本（从后往前保留的行内对偶）
+      const last = lines[lines.length - 1] ?? '';
+      const keptText = sliceTextTailToTokenBudget(last, Math.max(1, payloadBudget - 256));
+      if (!keptText) {
+        throw new CompactionError('压缩预算不足，无法保留任何记录，原始记录已保留');
+      }
+      keptLines = [`${keptText}\n[原记录过长，仅保留其末尾片段]`];
+      keptImages = [[]];
+    } else {
+      keptLines = keptIndices.map(index => lines[index]);
+      keptImages = keptIndices.map(index => images[index]);
+    }
+    const dropped = input.messages.length - keptIndices.length;
+    if (dropped > 0) {
+      console.warn(
+        `[ContextCompactor] 分段摘要已触顶（深度或请求次数上限），按「从后往前保留」截掉最旧 ${dropped} 条记录后压缩；` +
+          '原始记录在转录中完整保留，仅压缩输入被裁剪',
+      );
+    }
+
+    const userPayload =
+      `[待压缩对话记录（按时间顺序，含工具调用与结果；最旧记录可能已被截断）]\n${keptLines.join('\n')}\n\n` +
+      `请依据以上记录输出 <summary> 压缩摘要。`;
+    const payloadContent: Exclude<ChatMessage['content'], string> = [{ type: 'text', text: userPayload }];
+    for (let index = 0; index < keptImages.length; index++) for (const image of keptImages[index]) {
+      payloadContent.push({ type: 'text', text: `以下图片属于记录 [${index}]；总结可确认的视觉证据，无法确认的内容必须明确标注。` }, image);
+    }
+
+    const rawSummary = await this.requestSummary(input, systemPrompt, userPayload, payloadContent);
     const summary = ensureSummaryWrapped(rawSummary);
     return {
       summary,
@@ -308,12 +448,15 @@ export class ContextCompactor {
   }
 
   /**
-   * 摘要 → 注入用的系统消息（守卫将其作为 system 优先保护，永不因超限被裁）。
+   * 摘要 → 注入用的**上下文压缩消息**（assistant 角色；见 summary-message 的
+   * 角色契约：systemPrompt 不归上下文引擎管理，摘要绝不以 system 注入）。
+   * 守卫将其按系统级优先保护，永不因超限被裁（context-window-guard）。
    *
    * 文案三重职责：
    *   1. 权威记忆声明 + 冲突规则（摘要 vs 摘要之后的消息，以后者为准）；
    *   2. plan_tool 回读引导——计划执行状态不在摘要内，需要进度先 read，
-   *      以读取结果为权威（与 plan-prompt 的「以读到的为准」同一口径）；
+   *      以读取结果为权威（与 plan-prompt 的「以读到的为准」同一口径），
+   *      随摘要自动拼接、无需调用方另行注入；
    *   3. 防御性补包：历史存储的旧版摘要可能没有 <summary> 包裹，注入前自愈。
    */
   buildSummaryMessage(summary: string, compactedAt: number, compactedMessages?: number): ChatMessage {
@@ -327,7 +470,7 @@ export class ContextCompactor {
     // 注入前统一剥掉（只剥标签本身，内容原样保留）。
     const body = summary.replaceAll(/<\/?conversation-memory>/g, '').trim();
     return {
-      role: 'system',
+      role: 'assistant',
       content:
         `<conversation-memory>\n` +
         `以下是对本会话先前对话的压缩摘要（压缩于 ${timestamp}${scope}）。` +

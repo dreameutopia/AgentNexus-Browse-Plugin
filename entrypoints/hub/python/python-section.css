@@ -1,0 +1,648 @@
+/**
+ * 管理中心「Python 环境」分区样式
+ *
+ * 设计语言：沿用 hub.css 的液态玻璃体系（中性黑白灰，无任何蓝紫）。
+ *   - 卡片 = 半透明白面 + 内侧高光 + 柔影（--glass-* token）；
+ *   - 强调色一律走中性墨色；语义色（成功 / 警告 / 失败）仅用于状态表达；
+ *   - 代码与输出区用实色面板（VS Code 式明暗对比），与技能编辑器一致。
+ *
+ * 类名一律带 `hub-python__` 前缀；需要覆盖 hub.css 既有类时用复合选择器
+ * （.hub-badge.hub-python-badge-ok）提升特异性，不依赖样式表先后顺序。
+ */
+
+.hub-python {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+
+/* ══════════ 头部 ══════════ */
+
+.hub-python__head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 18px;
+  border-radius: var(--radius-glass, 16px);
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.78));
+  background: var(--glass-tint, rgba(255, 255, 255, 0.55));
+  backdrop-filter: var(--glass-blur, blur(18px) saturate(165%));
+  -webkit-backdrop-filter: var(--glass-blur, blur(18px) saturate(165%));
+  box-shadow: var(--glass-inset, inset 0 1px 0 rgba(255, 255, 255, 0.92)),
+    var(--glass-shadow, 0 2px 6px rgb(41 40 36 / 4%), 0 12px 32px rgb(41 40 36 / 9%));
+}
+
+.hub-python__title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.hub-python__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--ink-primary, #292824);
+}
+
+/* Beta 提示：中性描边（不使用彩色） */
+.hub-badge.hub-python-badge-beta {
+  color: var(--ink-secondary, #787671);
+  background: rgba(41 40 36 / 0.05);
+  border-color: rgba(41 40 36 / 0.18);
+  letter-spacing: 0.06em;
+}
+
+.hub-badge.hub-python-badge-ok {
+  color: #047857;
+  background: rgba(16 185 129 / 0.1);
+  border-color: rgba(16 185 129 / 0.28);
+}
+
+.hub-badge.hub-python-badge-warn {
+  color: #b45309;
+  background: rgba(245 158 11 / 0.12);
+  border-color: rgba(245 158 11 / 0.3);
+}
+
+.hub-badge.hub-python-badge-bad {
+  color: #b91c1c;
+  background: rgba(239 68 68 / 0.1);
+  border-color: rgba(239 68 68 / 0.26);
+}
+
+.hub-badge.hub-python-badge-neutral {
+  color: var(--ink-secondary, #787671);
+  background: rgba(41 40 36 / 0.06);
+  border-color: rgba(41 40 36 / 0.14);
+}
+
+.hub-python__notice {
+  margin: 4px 0 0;
+  padding: 8px 12px;
+  border-left: 3px solid rgba(41 40 36 / 0.28);
+  background: rgba(41 40 36 / 0.04);
+  border-radius: 0 8px 8px 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-secondary, #787671);
+}
+
+/* ══════════ 卡片 ══════════ */
+
+.hub-python__card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+  border-radius: var(--radius-glass, 16px);
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.78));
+  background: var(--glass-tint, rgba(255, 255, 255, 0.55));
+  backdrop-filter: var(--glass-blur, blur(18px) saturate(165%));
+  -webkit-backdrop-filter: var(--glass-blur, blur(18px) saturate(165%));
+  box-shadow: var(--glass-inset, inset 0 1px 0 rgba(255, 255, 255, 0.92)),
+    var(--glass-shadow, 0 2px 6px rgb(41 40 36 / 4%), 0 12px 32px rgb(41 40 36 / 9%));
+}
+
+.hub-python__card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.hub-python__card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hub-python__card-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-secondary, #787671);
+}
+
+.hub-python__stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hub-python__sub-label {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ink-secondary, #787671);
+}
+
+.hub-python__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 危险操作：中性描边 + 语义红字；待确认态转实心红 */
+.hub-python-btn-danger {
+  color: var(--error-color, #ef4444);
+  border-color: rgba(239 68 68 / 28%);
+}
+
+.hub-python-btn-danger:hover:not(:disabled) {
+  color: #ffffff;
+  background: var(--error-color, #ef4444);
+  border-color: transparent;
+}
+
+.hub-python-btn-danger.is-armed {
+  color: #ffffff;
+  background: var(--error-color, #ef4444);
+  border-color: transparent;
+  font-weight: 600;
+}
+
+.hub-python__ready-info {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-primary, #292824);
+}
+
+.hub-python__error {
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(239 68 68 / 0.22);
+  background: rgba(239 68 68 / 0.06);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #b91c1c;
+  word-break: break-word;
+}
+
+/* ══════════ 运行时详情四宫格 ══════════ */
+
+.hub-python__facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.hub-python__fact {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(41 40 36 / 0.09);
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.hub-python__fact dt {
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted, #9b9790);
+}
+
+.hub-python__fact dd {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-primary, #292824);
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+
+/* ══════════ 下载进度 ══════════ */
+
+.hub-python__progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hub-python__progress-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11.5px;
+  color: var(--ink-secondary, #787671);
+}
+
+.hub-python__progress-name {
+  font-family: 'Consolas', 'Monaco', monospace;
+}
+
+.hub-python__progress-num {
+  font-variant-numeric: tabular-nums;
+}
+
+.hub-python__progress-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(41 40 36 / 0.08);
+  overflow: hidden;
+}
+
+.hub-python__progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(41 40 36 / 0.85), rgba(41 40 36 / 0.5));
+  transition: width 0.25s ease;
+}
+
+/* ══════════ 忙碌指示 ══════════ */
+
+.hub-python__busy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hub-python__spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(41 40 36 / 0.16);
+  border-top-color: var(--ink-primary, #292824);
+  animation: hub-python-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+.hub-python__spinner--sm {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+}
+
+@keyframes hub-python-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ══════════ 包芯片 ══════════ */
+
+.hub-python__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hub-python__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(41 40 36 / 0.14);
+  background: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--ink-primary, #292824);
+}
+
+.hub-python__chip--button {
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.2s var(--ease-spring, ease);
+}
+
+.hub-python__chip--button:hover:not(:disabled) {
+  border-color: rgba(41 40 36 / 0.34);
+  background: rgba(255, 255, 255, 0.86);
+  transform: translateY(-1px);
+}
+
+.hub-python__chip--button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.hub-python__chip--installed {
+  border-color: rgba(16 185 129 / 0.3);
+  background: rgba(16 185 129 / 0.09);
+}
+
+.hub-python__chip--busy {
+  border-color: rgba(41 40 36 / 0.3);
+  background: rgba(41 40 36 / 0.08);
+}
+
+.hub-python__chip-name {
+  font-weight: 600;
+}
+
+.hub-python__chip-version {
+  font-size: 11px;
+  color: var(--ink-muted, #9b9790);
+}
+
+.hub-python__chip-remove {
+  border: none;
+  background: none;
+  color: var(--ink-muted, #9b9790);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  border-radius: 4px;
+}
+
+.hub-python__chip-remove:hover {
+  color: var(--error-color, #ef4444);
+}
+
+.hub-python__chip-remove.is-armed {
+  color: #ffffff;
+  background: var(--error-color, #ef4444);
+}
+
+/* ══════════ 目录搜索 ══════════ */
+
+.hub-python__search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.hub-python__search .hub-search {
+  flex: 1 1 260px;
+  min-width: 200px;
+}
+
+.hub-python__results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.hub-python__result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 9px;
+  border: 1px solid rgba(41 40 36 / 0.1);
+  background: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+  color: var(--ink-primary, #292824);
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.hub-python__result:hover:not(:disabled) {
+  border-color: rgba(41 40 36 / 0.3);
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.hub-python__result:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.hub-python__result--installed {
+  border-color: rgba(16 185 129 / 0.28);
+  background: rgba(16 185 129 / 0.08);
+}
+
+.hub-python__result--pending {
+  border-color: rgba(41 40 36 / 0.34);
+  background: rgba(41 40 36 / 0.08);
+}
+
+.hub-python__result--busy {
+  border-color: rgba(41 40 36 / 0.24);
+  background: rgba(41 40 36 / 0.06);
+}
+
+.hub-python__alias {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(41 40 36 / 0.07);
+  border: 1px solid rgba(41 40 36 / 0.12);
+  font-size: 10.5px;
+  color: var(--ink-secondary, #787671);
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+}
+
+.hub-python__installed {
+  margin-left: auto;
+  color: #047857;
+  font-weight: 700;
+}
+
+.hub-python__busy-mark {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+.hub-python__result-action {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-secondary, #787671);
+}
+
+.hub-python__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 2px;
+}
+
+.hub-python__tip {
+  font-size: 11.5px;
+  color: var(--ink-muted, #9b9790);
+}
+
+.hub-python__results-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 2px 0;
+}
+
+.hub-python__more {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 11.5px;
+  font-family: inherit;
+  color: var(--ink-secondary, #787671);
+  cursor: pointer;
+}
+
+.hub-python__more:hover {
+  color: var(--ink-primary, #292824);
+  text-decoration: underline;
+}
+
+/* ══════════ 安装确认条 ══════════ */
+
+.hub-python__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(41 40 36 / 0.2);
+  background: rgba(41 40 36 / 0.05);
+}
+
+.hub-python__confirm-info {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.hub-python__confirm-hint {
+  color: var(--ink-secondary, #787671);
+  font-size: 11.5px;
+}
+
+.hub-python__confirm-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.hub-python__message {
+  margin-top: 4px;
+}
+
+.hub-python__message--busy {
+  color: var(--ink-primary, #292824);
+}
+
+/* ══════════ 测试运行台 ══════════ */
+
+.hub-python__snippets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.hub-python__code {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 4px;
+  padding: 12px 14px;
+  border: 1px solid rgba(41 40 36 / 0.12);
+  border-radius: 12px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  resize: vertical;
+  min-height: 150px;
+  background: var(--surface-card, #ffffff);
+  color: var(--ink-primary, #292824);
+  outline: none;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.hub-python__code:focus {
+  border-color: rgba(41 40 36 / 0.3);
+  box-shadow: var(--ring-primary, 0 0 0 3.5px rgba(41, 40, 36, 0.12));
+}
+
+.hub-python__console-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.hub-python__output {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.hub-python__output-block {
+  position: relative;
+  border: 1px solid rgba(41 40 36 / 0.1);
+  border-radius: 10px;
+  background: var(--surface-soft, #f3f1ed);
+  padding: 22px 12px 10px;
+}
+
+.hub-python__output-block--stderr {
+  border-color: rgba(245 158 11 / 0.28);
+  background: rgba(245 158 11 / 0.07);
+}
+
+.hub-python__output-block--error {
+  border-color: rgba(239 68 68 / 0.26);
+  background: rgba(239 68 68 / 0.06);
+}
+
+.hub-python__output-label {
+  position: absolute;
+  top: 5px;
+  left: 12px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted, #9b9790);
+}
+
+.hub-python__output-block pre {
+  margin: 0;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 280px;
+  overflow-y: auto;
+  color: var(--ink-primary, #292824);
+}
+
+.hub-python__copy-btn {
+  padding: 5px 12px;
+  font-size: 12px;
+}
+
+.hub-python__foot {
+  margin: 0;
+  padding-bottom: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hub-python__spinner {
+    animation: none;
+  }
+
+  .hub-python__progress-fill,
+  .hub-python__chip,
+  .hub-python__result {
+    transition: none;
+  }
+}

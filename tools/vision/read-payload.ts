@@ -1,10 +1,12 @@
 /** Self-contained isolated-world payload. Never evaluates supplied code, clicks,
  * focuses, types, hovers, changes styles, or writes values. Only scroll mutates.
- */
-export async function visionReadPayload(action: 'read' | 'scroll' | 'probe', options: {
+ * （原 vision_read_wait 的 probe 分支随工具下线一并删除。） */
+export async function visionReadPayload(action: 'read' | 'scroll', options: {
   point?: { x: number; y: number };
   region?: { x: number; y: number; width: number; height: number };
-  direction?: 'up' | 'down' | 'left' | 'right'; percent?: number;
+  direction?: 'up' | 'down' | 'left' | 'right';
+  /** 目标容器滚动百分比（容器相对；手势 scroll 的视口相对百分比是另一个参数） */
+  containerPercent?: number;
 }) {
   const clean = (value: string | null | undefined, max = 300) => (value || '').replace(/\s+/g, ' ').trim().slice(0, max);
   const bounds = { left: options.region?.x ?? 0, top: options.region?.y ?? 0,
@@ -36,9 +38,6 @@ export async function visionReadPayload(action: 'read' | 'scroll' | 'probe', opt
     }
     return el;
   };
-  if (action === 'probe') return { readyState: document.readyState, url: location.href,
-    width: innerWidth, height: innerHeight, x: scrollX, y: scrollY,
-    heightTotal: document.scrollingElement?.scrollHeight ?? 0 };
   if (action === 'scroll') {
     const horizontal = options.direction === 'left' || options.direction === 'right';
     let doc = document, x = options.point?.x ?? innerWidth / 2, y = options.point?.y ?? innerHeight / 2;
@@ -78,7 +77,7 @@ export async function visionReadPayload(action: 'read' | 'scroll' | 'probe', opt
       }
     }
     const el = selected, before = { x: el.scrollLeft, y: el.scrollTop };
-    const amount = (horizontal ? el.clientWidth : el.clientHeight) * (options.percent ?? 75) / 100 *
+    const amount = (horizontal ? el.clientWidth : el.clientHeight) * (options.containerPercent ?? 75) / 100 *
       (options.direction === 'up' || options.direction === 'left' ? -1 : 1);
     el.scrollTo({ left: before.x + (horizontal ? amount : 0), top: before.y + (horizontal ? 0 : amount), behavior: 'instant' as ScrollBehavior });
     let stable = 0, previous = { x: el.scrollLeft, y: el.scrollTop };

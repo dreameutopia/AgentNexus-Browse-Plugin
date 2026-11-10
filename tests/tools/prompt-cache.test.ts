@@ -119,6 +119,34 @@ try {
   assert.deepEqual(sent[2].slice(0, sent[1].length), sent[1], 'next user send must retain the entire previous request prefix');
   assert.notEqual(records[1].modelMessages?.[0].tool_calls?.[0].id, records[3].modelMessages?.[0].tool_calls?.[0].id, 'synthetic skill call IDs must be unique across persisted runs');
 
+  // 首条角色归一：模型面历史以 assistant 开头时，引擎必须在模型面补一条
+  // 合成 user 轮——否则 Gemini（contents 首条须 user）与 Anthropic 的首条
+  // 约束会整单 400。此处用「空输入续跑」：用户不发新消息，历史 = 上一轮的
+  // assistant 回复 + 合成激活轮，首条即 assistant。
+  const requestStart = sent.length;
+  await engine.run(
+    {
+      ...runtime,
+      chatId: 'bridge-test',
+      userInput: '',
+      attachmentPrompt: '',
+      initialContext: [{ role: 'assistant', content: '上一轮的回答' }],
+      activationContext: [
+        { role: 'assistant', content: '', tool_calls: [{ id: 'bridge_act', type: 'function', function: { name: 'load_skill', arguments: '{}' } }] },
+        { role: 'tool', tool_call_id: 'bridge_act', name: 'load_skill', content: '{"success":true}' },
+      ],
+    },
+    {},
+  );
+  const bridgeRequest = sent[requestStart];
+  const firstContent = bridgeRequest.find(m => m.role !== 'system');
+  assert.ok(firstContent, '请求含内容消息');
+  assert.equal(firstContent.role, 'user', '模型面首条必须是 user 轮（协议首条约束的通用护栏）');
+  assert.ok(
+    typeof firstContent.content === 'string' && firstContent.content.includes('继续当前任务'),
+    '合成 user 轮同时承担「续跑」指令',
+  );
+
   const large = record('assistant');
   large.modelMessages = await storeProtocolMessages(Array.from({ length: 150 }, (_, i) => ({ role: 'user', content: [
     { type: 'text', text: String(i) }, { type: 'image_url', image_url: { url: `data:image/png;base64,${btoa(String(i))}`, detail: 'high' } },

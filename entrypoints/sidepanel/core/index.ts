@@ -1,11 +1,13 @@
 /**
  * 核心引擎层统一出口
  *
- * 四引擎分工（详见各模块头注释）：
+ * 五引擎分工（详见各模块头注释）：
  *   registry/     智能体引擎、技能引擎（管理 + 解析，相互独立）
  *   context/      转录引擎（用户面，IndexedDB 无长度限制）、AI 上下文引擎（窗口化派生）
  *   runtime/      运行时装配（systemPrompt XML 分区 + 工具去重 + 模型配置 + 初始上下文 + 合成激活轮）
  *   conversation/ 会话引擎（驱动循环，事件输出，写转录；对 agent/skill 零感知）
+ *   tools/        工具执行引擎（工具执行的唯一通道：强制串行 / 强制中断 /
+ *                 有界超时 / 轮次闸门——会话引擎只做编排与上下文写入）
  *
  * 使用流程：
  *   transcriptEngine.createSession() → runtimeBuilder.build() → conversationEngine.run(runtime, { observer })
@@ -68,6 +70,23 @@ export type {
   GuardKind,
   ToolApprovalRequest,
 } from './conversation/conversation-engine';
+// 工具执行引擎（工具执行的**唯一通道**：强制串行 / 强制中断 / 有界超时 /
+// 轮次闸门。会话引擎只做编排与上下文写入，执行与结算一律经由它。）
+export {
+  toolExecutionEngine,
+  ToolExecutionEngine,
+  TOOL_INTERRUPTED_BY_USER,
+  describeToolFailure,
+} from './tools/tool-execution-engine';
+export type {
+  ToolBatchOptions,
+  ToolBatchResult,
+  ToolCallContext,
+  ToolCallOutcome,
+  ToolCallPlan,
+  ToolInterruptReport,
+  ToolOutcomeReason,
+} from './tools/tool-execution-engine';
 
 export type {
   ChatSessionMeta,

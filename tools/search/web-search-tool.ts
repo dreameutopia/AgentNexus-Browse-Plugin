@@ -9,10 +9,15 @@
  *
  * 结果契约（两部分独立封装，解析失败绝不吞掉导航事实）：
  *   data.navigation —— 是否成功导航 + 当前实际网址（重定向后的最终 URL）+ 标签页；
- *   data.results    —— 解析产物（success/count/items/hint）；失败时 success=false
- *                      并给出提示（页面已就位，模型可用 browser_get_page_text
- *                      自行读取解析），不影响 navigation 的封装与整体 success。
+ *   data.results    —— 解析产物（success/count/hint）；条目本体只经 content 的
+ *                      Markdown 表承载一份（data 里不再重复，避免模型上下文双份
+ *                      回传）；失败时 success=false 并给出提示（页面已就位，模型
+ *                      可用 browser_get_page_text 自行读取解析），不影响 navigation
+ *                      的封装与整体 success。
  *   content[0].text —— 解析成功时为 Markdown 结果表（唯一一份），否则为状态消息。
+ *                      条目本体只在这里承载（data.results 不重复条目），
+ *                      因此 primary='content'：正题在 content，data 是事实元数据。
+ *   可信度不做机器分级：模型按来源域名自行判断一手源与二手转述（见工具描述）。
  *
  * 执行上下文：sidepanel 与 background（service worker）均可运行——导航直接走
  * chrome.tabs（create/update），不经 browser_navigate，规避其上下文限制与
@@ -24,7 +29,6 @@ import { ToolMetadata } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
 import { resultsToMarkdownTable } from '../common/markdown-table';
-import { credibilityBadge } from '@/utils/search/domain-credibility';
 import {
   SEARCH_PLATFORMS,
   SEARCH_PLATFORM_IDS,
@@ -47,22 +51,7 @@ const WAIT_TIME_MAX_MS = 10_000;
 const WAIT_TIME_DEFAULT_MS = 3_000;
 
 /**
- * 给单条搜索结果追加 credibility 字段（按链接域名评级）。
- * 条目无链接 / 字段非字符串时原样返回，不破坏既有字段；标注只增不改。
- */
-function annotateCredibility(item: unknown): unknown {
-  if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
-  const record = item as Record<string, unknown>;
-  const link = typeof record.link === 'string' ? record.link : typeof record.url === 'string' ? record.url : '';
-  if (!link || record.credibility !== undefined) return item;
-  try {
-    return { ...record, credibility: credibilityBadge(link) };
-  } catch {
-    return item;
-  }
-}
-
-/** 导航结果（恒定封装，解析成败不影响其字段） */interface NavigationOutcome {
+ * 导航结果（恒定封装，解析成败不影响其字段） */interface NavigationOutcome {
   success: boolean;
   /**
    * complete：status 到达 complete；timeout：等待超时但标签页存活（页面可能仍可用）；
@@ -116,9 +105,11 @@ export class WebSearchTool extends BaseTool {
         '。传入不支持的 website 会直接返回错误并列出全部支持平台。\n' +
         '⚠ 本工具自带页面导航（效果等同调用 browser_navigate 打开搜索结果页，无需先手动导航）：会真实打开或跳转标签页并改变当前活动页面。' +
         '因此【禁止在同一轮里并发调用本工具】——多个导航会互相争抢活动标签页、解析到错误页面；需要搜索多个平台或换关键词时，逐个串行调用，每次依据上次返回决定下一步。\n' +
-        '返回两部分：navigation（是否成功导航 + 当前实际网址）与 results（解析出的条目与 Markdown 表）。' +
-        '结果表含 credibility 列（域名可信度：A·权威=政府/学术；B·可靠=主流媒体/官方文档；C·参考=社区/百科，作唯一定论不可靠；D·谨慎=自媒体/论坛；?·未评级=未知域名）——' +
-        '可信度是「出错的先验概率」不是事实正确性：C/D/未评级来源的关键结论必须再找独立来源交叉，A/B 也建议对反常结论二次确认。' +
+        '返回两部分：navigation（是否成功导航 + 当前实际网址）与 results（解析出的条目数与 Markdown 结果表）。' +
+        '结果表逐条给出标题、链接与摘要——**可信度由你自己按来源域名判断**：官方/一手站点（机构官网、交易所与监管披露、上市公司公告、通讯社与主流媒体、官方文档）可信度高；' +
+        '百科与社区问答、聚合站、自媒体与论坛只是线索入口、不能作为唯一定论。' +
+        '凡进入结论的关键事实，必须换到至少一个独立域名（不同注册域）再读一遍原文核对；' +
+        '两处说法冲突时如实呈现分歧，不要单选其一。' +
         'results 解析失败时 navigation 仍有效——页面已就位，用 browser_get_page_text 读取当前页自行解析即可。',
       parameters: {
         type: 'object',
@@ -202,9 +193,10 @@ export class WebSearchTool extends BaseTool {
       : `已在${platform.label}完成搜索「${query}」：导航成功（${navigation.url}），但结果解析失败（${parse.hint ?? '未知原因'}）——页面已就位，可用 browser_get_page_text 读取当前页自行解析`;
 
     this.log(message);
-    // Markdown 只经 content 承载一份（引擎会把整个结果连同 content 序列化回传
-    // 模型——data 里再放一份即双份冗余）；data.results 保留结构化 items
-    const { markdown: _markdown, ...results } = parse;
+    // Markdown 表（条目本体）与结构化条目只保留一份：表经 content 承载，
+    // data.results 只留计数与提示——引擎会把整个结果连同 content 序列化回传
+    // 模型，两处各放一份条目即双份冗余。
+    const { markdown: _markdown, items: _items, ...results } = parse;
     return {
       success: true,
       message,
@@ -216,6 +208,9 @@ export class WebSearchTool extends BaseTool {
         results,
       },
       content: [{ type: 'text', text: _markdown ?? message }],
+      // 结果条目只经 content 的 Markdown 表承载（data 里不重复）——正题在 content，
+      // data 只是事实元数据。外部调用方据此拿到「元数据 + 条目表」，不丢条目。
+      primary: 'content',
     };
   }
 
@@ -318,10 +313,10 @@ export class WebSearchTool extends BaseTool {
           hint: `未解析到${platform.itemNoun}：可能无匹配结果、遇到登录墙/验证码或页面结构变化；页面已就位，可用 browser_get_page_text 读取当前页确认`,
         };
       }
-      // 可信度标注：按条目链接域名评级，追加 credibility 列（评级语义见
-      // domain-credibility.ts 与工具描述——是「出错的先验概率」，不是事实正确性）
-      const annotated = items.map(item => annotateCredibility(item));
-      return { success: true, count: items.length, items: annotated, markdown: resultsToMarkdownTable(annotated) };
+      // 结果条目只经 Markdown 表承载一份：content 给模型直接可读的表，
+      // data.results 不再重复条目本体（引擎会把整个结果序列化回传模型，
+      // 两处各放一份即双份冗余）——条目字段与顺序由表头完整表达。
+      return { success: true, count: items.length, items, markdown: resultsToMarkdownTable(items) };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       return {

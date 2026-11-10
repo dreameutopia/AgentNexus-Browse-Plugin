@@ -13,10 +13,7 @@
  *
  * 安全与防御：
  *   - zip-slip 防御：拒绝绝对路径与含 `..` 段的条目；
- *   - 二进制防御：本环境技能文件恒为文本（存储层为 Record<string, string>），
- *     UTF-8 严格解码失败的条目跳过并记录（不阻断同包其它文件）；
- *   - 体积防御：文件数 / 单文件字符数 / 总字符数 / 技能数四重上限（见 skill-types）；
- *   - 目录噪音过滤：`__MACOSX/`、`.DS_Store`、隐藏文件与目录条目直接忽略。
+ *   - 解压前限制包大小、展开体积与条目数，二进制资源按原始字节保留。
  */
 
 import { unzipSync, zipSync, strToU8, strFromU8 } from 'fflate';
@@ -25,11 +22,13 @@ import {
   SKILL_IMPORT_MAX_FILE_CHARS,
   SKILL_IMPORT_MAX_TOTAL_CHARS,
   SKILL_IMPORT_MAX_SKILLS,
+  SKILL_IMPORT_MAX_PACKAGE_BYTES,
   SKILL_NAME_MAX_CHARS,
   type SkillRecord,
 } from './skill-types';
 import { parseFrontmatter, normalizeSkillName } from './frontmatter-parser';
 import { setCustomSkill } from './skill-store';
+import { decodeSkillBytes, encodeSkillBytes, isSkillResourcePath } from './skill-resources';
 
 // ──── 解析 ────
 
@@ -39,6 +38,7 @@ export interface SkillImportCandidate {
   name: string;
   /** 相对路径 → 文本（键含 'SKILL.md'） */
   files: Record<string, string>;
+  resourceBytes?: Record<string, string>;
   /** 全部文件的 UTF-8 字节总量（解析器产出；手工构造的候选缺省视为 0，不做预警） */
   bytes?: number;
 }
@@ -93,7 +93,7 @@ export interface SkillImportReport {
 }
 
 /** 严格 UTF-8 解码：非法字节序列抛错（二进制检测） */
-const strictDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8', { fatal: true }) : null;
+const strictDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }) : null;
 
 function decodeTextOrUndefined(bytes: Uint8Array): string | undefined {
   // 快速路径：含 NUL 字节几乎必为二进制（文本文件极少出现）
@@ -121,7 +121,7 @@ function sanitizeEntryPath(path: string): string | null {
     segments.push(segment);
   }
   cleaned = segments.join('/');
-  return cleaned || null;
+  return isSkillResourcePath(cleaned) ? cleaned : null;
 }
 
 /** 噪音条目判定：目录条目 / macOS 元数据 / 隐藏文件 / 嵌套 zip */
@@ -129,8 +129,7 @@ function isNoiseEntry(path: string): boolean {
   if (path.endsWith('/')) return true;
   const segments = path.split('/');
   if (segments.some(segment => segment === '__MACOSX' || segment.startsWith('.DS_Store'))) return true;
-  if (segments.some(segment => segment.startsWith('.') && segment !== '.')) return true;
-  if (path.toLowerCase().endsWith('.zip')) return true;
+  if (segments.includes('.git')) return true;
   return false;
 }
 
@@ -154,7 +153,9 @@ function isSkillMdPath(path: string): boolean {
  * 注意：二进制/超限文件的丢弃发生在解码阶段（parseSkillZipBytes），
  * 本函数只处理已成功解码的文本条目，不持有 droppedFiles。
  */
-function groupCandidates(entries: Array<{ path: string; content: string }>, fallbackTopName: string): {
+type ZipResource = { path: string; bytes: Uint8Array; content?: string };
+
+function groupCandidates(entries: ZipResource[], fallbackTopName: string): {
   candidates: SkillImportCandidate[];
   skipped: SkillImportSkip[];
 } {
@@ -183,7 +184,7 @@ function groupCandidates(entries: Array<{ path: string; content: string }>, fall
 
   // 第二遍：全部条目归入技能根（rootDirs 按长度降序尝试，最长前缀优先）
   const orderedRoots = [...rootDirs].sort((a, b) => b.length - a.length);
-  const roots = new Map<string, Map<string, string>>(orderedRoots.map(dir => [dir, new Map()]));
+  const roots = new Map<string, Map<string, ZipResource>>(orderedRoots.map(dir => [dir, new Map()]));
   for (const entry of entries) {
     let owner: string | null = null;
     // 非空技能根按最长前缀优先认领（子树文件全部归属该根）
@@ -204,16 +205,21 @@ function groupCandidates(entries: Array<{ path: string; content: string }>, fall
     // 本根入口 SKILL.md（任意大小写变体、无目录层级）→ 统一规范键名，首个生效；
     // 被吸收的嵌套 skill.md（含目录层级）按普通文件保留原始相对路径
     if (isSkillMdPath(entry.path) && !relative.includes('/')) {
-      if (!files.has('SKILL.md')) files.set('SKILL.md', entry.content);
+      if (files.has('SKILL.md')) throw new Error('Duplicate SKILL.md in one skill directory');
+      files.set('SKILL.md', entry);
       continue;
     }
-    if (!files.has(relative)) files.set(relative, entry.content);
+    files.set(relative, entry);
   }
 
   // 每个技能根 → 候选（frontmatter 名称优先，回落目录名 / 传入名）
   const candidates: SkillImportCandidate[] = [];
   for (const [dir, files] of roots) {
-    if (!files.has('SKILL.md')) continue; // 防御：吸收后无入口的空根
+    const skillMd = files.get('SKILL.md')?.content;
+    if (skillMd === undefined) {
+      skipped.push({ source: dir || fallbackTopName, reason: 'no-skill-md' });
+      continue;
+    }
     if (candidates.length >= SKILL_IMPORT_MAX_SKILLS) {
       skipped.push({ source: dir || fallbackTopName, reason: 'skill-limit' });
       continue;
@@ -222,8 +228,7 @@ function groupCandidates(entries: Array<{ path: string; content: string }>, fall
       skipped.push({ source: dir || fallbackTopName, reason: 'too-many-files' });
       continue;
     }
-    const skillMd = files.get('SKILL.md') ?? '';
-    const { data, body } = parseFrontmatter(skillMd);
+    const { data, body } = parseFrontmatter(skillMd.replace(/^\uFEFF/, ''));
     const folderName = dir.split('/').pop() ?? '';
     const rawName = (data['name'] || folderName || fallbackTopName).trim();
     const name = normalizeSkillName(rawName);
@@ -243,21 +248,26 @@ function groupCandidates(entries: Array<{ path: string; content: string }>, fall
     }
     // 总量校验（超限时整技能跳过，不做截断——半套资源比没有更糟）
     let total = 0;
-    let overflow = false;
-    for (const content of files.values()) {
-      if (content.length > SKILL_IMPORT_MAX_FILE_CHARS) overflow = true;
-      total += content.length;
-    }
-    if (overflow) {
-      skipped.push({ source: name, reason: 'file-too-large' });
-      continue;
+    for (const [path, resource] of files) {
+      total += resource.bytes.length;
+      for (let slash = path.lastIndexOf('/'); slash >= 0; slash = path.lastIndexOf('/', slash - 1)) {
+        if (files.has(path.slice(0, slash))) throw new Error('Conflicting file and directory in skill ZIP: ' + path);
+      }
     }
     if (total > SKILL_IMPORT_MAX_TOTAL_CHARS) {
       skipped.push({ source: name, reason: 'total-too-large' });
       continue;
     }
-    const fileRecord = Object.fromEntries(files);
-    candidates.push({ name, files: fileRecord, bytes: sumSkillFilesBytes(fileRecord) });
+    const textEntries: Array<[string, string]> = [];
+    const binaryEntries: Array<[string, string]> = [];
+    for (const [path, resource] of files) {
+      if (resource.content === undefined) binaryEntries.push([path, encodeSkillBytes(resource.bytes)]);
+      else textEntries.push([path, resource.content]);
+    }
+    candidates.push({
+      name, files: Object.fromEntries(textEntries), bytes: total,
+      ...(binaryEntries.length ? { resourceBytes: Object.fromEntries(binaryEntries) } : {}),
+    });
   }
 
   return { candidates, skipped };
@@ -272,23 +282,33 @@ export function parseSkillZipBytes(bytes: Uint8Array, fallbackTopName = 'importe
   skipped: SkillImportSkip[];
   droppedFiles: Array<{ path: string; reason: 'binary' | 'file-too-large' }>;
 } {
-  const unzipped = unzipSync(bytes);
-  const entries: Array<{ path: string; content: string }> = [];
+  if (bytes.length > SKILL_IMPORT_MAX_PACKAGE_BYTES) throw new Error('Skill ZIP exceeds the package size limit');
+  const entries: ZipResource[] = [];
   const droppedFiles: Array<{ path: string; reason: 'binary' | 'file-too-large' }> = [];
-
+  const accepted = new Map<string, number>();
+  let count = 0;
+  let expandedBytes = 0;
+  const unzipped = unzipSync(bytes, {
+    filter(entry) {
+      if (++count > SKILL_IMPORT_MAX_SKILLS * SKILL_IMPORT_MAX_FILES * 2) throw new Error('Too many ZIP entries');
+      if (/[\\/]$/.test(entry.name)) return false;
+      const path = sanitizeEntryPath(entry.name);
+      if (!path || isNoiseEntry(path)) return false;
+      if (accepted.has(path)) throw new Error('Duplicate ZIP resource: ' + path);
+      accepted.set(path, entry.originalSize);
+      if (entry.originalSize > SKILL_IMPORT_MAX_FILE_CHARS) {
+        droppedFiles.push({ path, reason: 'file-too-large' });
+        return false;
+      }
+      expandedBytes += entry.originalSize;
+      if (expandedBytes > SKILL_IMPORT_MAX_PACKAGE_BYTES) throw new Error('Skill ZIP exceeds the expanded size limit');
+      return true;
+    },
+  });
   for (const [rawPath, data] of Object.entries(unzipped)) {
     const path = sanitizeEntryPath(rawPath);
-    if (!path || isNoiseEntry(path)) continue;
-    const text = decodeTextOrUndefined(data);
-    if (text === undefined) {
-      droppedFiles.push({ path, reason: 'binary' });
-      continue;
-    }
-    if (text.length > SKILL_IMPORT_MAX_FILE_CHARS) {
-      droppedFiles.push({ path, reason: 'file-too-large' });
-      continue;
-    }
-    entries.push({ path, content: text });
+    if (!path || accepted.get(path) !== data.length) throw new Error('ZIP resource size does not match its manifest');
+    entries.push({ path, bytes: data, content: decodeTextOrUndefined(data) });
   }
 
   const grouped = groupCandidates(entries, fallbackTopName);
@@ -341,7 +361,7 @@ export function parseSkillMdText(text: string, fallbackName: string): {
 export function commitImportCandidates(candidates: readonly SkillImportCandidate[]): SkillImportReport {
   const report: SkillImportReport = { imported: [], skipped: [], droppedFiles: [] };
   for (const candidate of candidates) {
-    const result = setCustomSkill({ name: candidate.name, files: candidate.files });
+    const result = setCustomSkill({ name: candidate.name, files: candidate.files, resourceBytes: candidate.resourceBytes });
     if (!result.ok) {
       report.skipped.push({ source: candidate.name, reason: 'store-reject' });
       continue;
@@ -389,6 +409,10 @@ export function exportSkillToZip(skill: SkillRecord): SkillExportPayload {
     const safePath = sanitizeEntryPath(`${skill.name}/${path}`);
     if (!safePath) continue;
     zipEntries[safePath] = strToU8(content);
+  }
+  for (const [path, content] of Object.entries(skill.resourceBytes ?? {})) {
+    if (!isSkillResourcePath(path) || Object.hasOwn(skill.files, path)) throw new Error('Invalid binary resource: ' + path);
+    zipEntries[skill.name + '/' + path] = decodeSkillBytes(content);
   }
   // 存储数据异常（无 SKILL.md）时兜底写入口文件，保证导出物永远可再导入
   if (!zipEntries[`${skill.name}/SKILL.md`]) {

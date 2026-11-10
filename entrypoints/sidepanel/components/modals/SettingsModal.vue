@@ -77,12 +77,6 @@
           <section v-show="activeSection === 'asr'" class="api-section">
             <AsrSection />
           </section>
-          <section v-show="activeSection === 'usage'" class="api-section">
-            <UsageSection />
-          </section>
-          <section v-show="activeSection === 'python'" class="api-section">
-            <PythonSection />
-          </section>
           <section v-show="activeSection === 'websites'" class="api-section">
             <WebsiteSection />
           </section>
@@ -142,7 +136,7 @@
  *   - 各分区为独立组件（sections/），渠道与模型、高级参数共享同一份表单草稿
  *     （composables/use-settings-form，由壳创建并 provide，底部保存统一持久化）
  *   - 分区经 v-show 常驻挂载，切换不丢状态；壳在每次打开时水合并广播 openEpoch
- *   - 备份恢复已迁至「更多设置」独立页（entrypoints/hub）；
+ *   - 备份恢复、使用监控、Python 环境已迁至「更多设置」独立页（entrypoints/hub）；
  *     files / system 为迁入的历史功能分区，导航隐藏（hidden: true）
  */
 import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue';
@@ -161,10 +155,8 @@ import {
   ChannelsSection,
   AdvancedSection,
   AsrSection,
-  UsageSection,
   FilesSection,
   SystemSection,
-  PythonSection,
   WebsiteSection,
 } from './sections';
 
@@ -197,8 +189,6 @@ const sections: ReadonlyArray<SectionMeta> = [
   { id: 'channels', nameKey: 'sidepanel.channels.nav' },
   { id: 'advanced', nameKey: 'sidepanel.apiConfig.advancedSettings' },
   { id: 'asr', nameKey: 'sidepanel.asr.navLabel' },
-  { id: 'usage', nameKey: 'sidepanel.metrics.navLabel' },
-  { id: 'python', nameKey: 'sidepanel.python.navLabel' },
   { id: 'websites', nameKey: 'sidepanel.app.loggedInSites' },
   { id: 'files', nameKey: 'sidepanel.settings.tabFiles', hidden: true },
   { id: 'system', nameKey: 'sidepanel.settings.tabSystem', hidden: true },

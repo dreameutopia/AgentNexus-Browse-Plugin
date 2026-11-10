@@ -39,6 +39,8 @@
 
     <!-- 聊天模式 -->
     <ChatMessageList
+      :key="activeChatId"
+      :chat-id="activeChatId"
       :messages="messages"
       :show-chat-mode="showChatMode"
       :is-ai-responding="isAiResponding"
@@ -515,7 +517,7 @@
             <div class="right-actions">
               <!-- 上下文用量圆环（附件按钮左侧；悬浮展示全量成分明细） -->
               <ContextUsageRing :usage="contextUsage" :compacting="isCompacting" />
-              <button class="input-action-btn" :disabled="!isChatInputEnabled" v-tip="t('sidepanel.app.attachment')" @click="handleFileUpload">
+              <button class="input-action-btn" :disabled="!isChatInputEnabled" v-tip="t('sidepanel.app.attachmentWorkspaceHint')" @click="handleFileUpload">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M16.5,6V17.5A4,4 0 0,1 12.5,21.5A4,4 0 0,1 8.5,17.5V5A2.5,2.5 0 0,1 11,2.5A2.5,2.5 0 0,1 13.5,5V15.5A1,1 0 0,1 12.5,16.5A1,1 0 0,1 11.5,15.5V6H10V15.5A2.5,2.5 0 0,0 12.5,18A2.5,2.5 0 0,0 15,15.5V5A4,4 0 0,0 11,1A4,4 0 0,0 7,5V17.5A5.5,5.5 0 0,0 12.5,23A5.5,5.5 0 0,0 18,17.5V6H16.5Z" fill="currentColor"/>
                 </svg>
@@ -815,6 +817,7 @@ import {
   agentEngine,
   skillEngine,
   measureContextUsage,
+  toolExecutionEngine,
   type ConversationEvent,
   type ConversationRuntime,
   type ChatMessageRecord,
@@ -837,6 +840,8 @@ import { asSkillDraft } from '@/utils/learn/learn-validate';
 import { learnDraftHash, type SkillDraft } from '@/utils/learn/learn-types';
 // 注册表权威源对账入口（@ / 面板开启时主动与 chrome.storage 同步，兜底跨上下文 onChanged 事件漏投）
 import { restoreCustomAgentsFromStorage } from '@/utils/agents/agent-store';
+// 已停用的智能体不可被 @ 选中（过滤规则与存储层同源）
+import { filterEnabledAgents } from '@/utils/agents/agent-types';
 import { restoreCustomSkillsFromStorage } from '@/utils/skills/skill-store';
 import { findDuplicateSkillNames } from '@/utils/skills/skill-types';
 import { resolveAgentLinkedSkills } from '@/utils/skills/skill-availability';
@@ -844,7 +849,7 @@ import { resolveAgentLinkedSkills } from '@/utils/skills/skill-availability';
 import { setActivePlanChat, dropPlan, restorePlansFromStorage } from '@/utils/plan/plan-store';
 import { convertAudioToText } from '../utils/ai/voice-to-text';
 // 附件栏：文件分类/解析在纯逻辑层，守卫流程与状态在 composable
-import { ATTACHMENT_ACCEPT } from '../utils/chat/attachment-parser';
+import { importWorkspaceFiles } from '@/utils/python-workspace/store';
 import {
   createAttachmentManager,
   formatBytes,
@@ -898,7 +903,6 @@ import { startWebsiteValidationWatcher } from '../utils/ws/website-validator';
 // 统一类型定义
 import type { ExtendedChatMessage, MessageFeedback, MessagePart } from '../types/chat';
 // 页面视觉效果
-import { usePageEffects } from '../composables/usePageEffects';
 // WebSocket连接管理
 import { useWebSocket } from '../composables/useWebSocket';
 // 语音录制管理
@@ -1743,6 +1747,34 @@ const username = ref('');
 const messageTextarea = ref<HTMLTextAreaElement | null>(null);
 const isAiResponding = ref(false);
 
+/**
+ * 停止进行中（同步中止）。
+ *
+ * 用户点停止后，必须等**运行真正结算、正在执行的工具被强制中断、其中断结果
+ * 写入模型上下文并落库**之后，才允许发送下一条消息——否则新消息会与上一轮
+ * 迟到的工具结果交错，破坏上下文结构。期间该标记置位，发送入口据此排队
+ * （用户输入保留，不丢弃）。
+ */
+const isStopping = ref(false);
+
+/** 当前停止流程的收尾 Promise（并发停止复用同一实例；null = 未在停止） */
+let stoppingPromise: Promise<void> | null = null;
+
+/**
+ * 等待「停止流程」真正结束。
+ *
+ * 循环而非单次 await：连点停止会让第二次停止排到第一次之后，单次 await 会在
+ * 第一次结束时放行——那正是我们要避免的交错窗口。防御分支（无 Promise）避免
+ * 理论上不成立的状态造成死等。
+ */
+const waitForStopSettled = async (): Promise<void> => {
+  while (isStopping.value) {
+    const pending = stoppingPromise;
+    if (!pending) break;
+    await pending.catch(() => undefined);
+  }
+};
+
 // ──── 网站学习（配置 → 学习 → 验证 → 交付管理中心） ────
 /**
  * 打开管理中心并定位到技能分区（草稿深链）。
@@ -1783,6 +1815,7 @@ const openHubWithHash = async (hash: string): Promise<boolean> => {
 };
 
 const learn = useLearnSession({
+  beginPageGlow: () => conversationEngine.beginLocalPageGlow(),
   observer: handleConversationEvent,
   notify: pushSystemNotice,
   showChat: () => {
@@ -1845,19 +1878,6 @@ const MODE_LABEL_KEYS: Record<ChatMode, MessageKey> = {
 const showModeSelector = ref(false);
 const currentMode = ref<ChatMode>('fast');
 const currentModeLabel = computed(() => t(MODE_LABEL_KEYS[currentMode.value]));
-
-// 页面视觉效果 composable
-const {
-  addPageGlow,
-  removePageGlow,
-  addPageBorderEffect,
-  removePageBorderEffect,
-  startBorderEffectManagement,
-  stopBorderEffectManagement,
-  getCurrentTabId,
-  injectBorderControllerScript,
-  sendBorderMessage,
-} = usePageEffects();
 
 // WebSocket连接管理
 const {
@@ -2027,6 +2047,16 @@ const attachmentManager = createAttachmentManager({
   currentModelLabel: () => activeOption.value?.label ?? '',
 });
 const pendingAttachments = attachmentManager.attachments;
+const deferredSendDrafts = new Map<string, { text: string; attachments: ChatAttachment[] }>();
+
+function restoreSendDraft(chatId: string, text: string, attachments: ChatAttachment[]): void {
+  if (activeChatId.value !== chatId) {
+    deferredSendDrafts.set(chatId, { text, attachments });
+    return;
+  }
+  if (!userInput.value.trim()) userInput.value = text;
+  if (pendingAttachments.value.length === 0) pendingAttachments.value = attachments;
+}
 
 // ── 输入区拖拽上传（dragenter/dragleave 计数器：子元素间移动不闪烁） ──
 // 仅响应「文件」拖拽（dataTransfer.types 含 Files）；文本选区拖动等
@@ -2335,12 +2365,15 @@ const categoryLabel = (categoryId: string): string =>
 /**
  * 智能体面板列表（面板内搜索框按名称/描述/标签/分类名过滤；输入框不再按字过滤）。
  * 匹配用当前语言的展示文案——用户看到什么就搜得到什么。
+ *
+ * 已停用的智能体（管理中心关闭）不出现在选择列表中：停用即「不可被选中」。
  */
 const matchedAgents = computed(() => {
-  if (!showAgentSelector.value) return agents.value;
+  const enabled = filterEnabledAgents(agents.value);
+  if (!showAgentSelector.value) return enabled;
   const q = agentSelectorQuery.value.trim().toLowerCase();
-  if (!q) return agents.value;
-  return agents.value.filter(a => {
+  if (!q) return enabled;
+  return enabled.filter(a => {
     const { name, description, tags } = displayOf(a);
     return (
       name.toLowerCase().includes(q) ||
@@ -3145,9 +3178,9 @@ const showHistoryDrawer = ref(false);
  * 智能体 / 技能 / 模型 / 系统提示词设置，并按回显结果立即重算上下文预算。
  */
 const loadHistorySessionData = async (chatId: string) => {
-  // 正在回答时先中止当前运行
-  if (isAiResponding.value) {
-    stopAiResponse();
+  // 正在回答时先中止当前运行（同步：等工具中断与上下文写入完成再切换）
+  if (isAiResponding.value || isStopping.value) {
+    await stopAiResponse();
   }
   try {
     const meta = await transcriptEngine.getSession(chatId);
@@ -3190,6 +3223,11 @@ const loadHistorySessionData = async (chatId: string) => {
     showHistoryDrawer.value = false;
     // 切换到的会话与输入区附件草稿无关：清空避免「附件跟着切换」的错位
     attachmentManager.clearAttachments();
+    const deferredDraft = deferredSendDrafts.get(chatId);
+    if (deferredDraft) {
+      deferredSendDrafts.delete(chatId);
+      restoreSendDraft(chatId, deferredDraft.text, deferredDraft.attachments);
+    }
 
     // ── 回显该会话最近使用的设置（已不存在/已停用的自动忽略，绝不阻断会话加载）──
     // 智能体回显：优先按稳定 ID 解析（智能体改名后仍能正确回显），
@@ -3289,8 +3327,6 @@ conversationEngine.onSettled = (chatId, summary, error) => {
   dismissConversationQuestions();
   if (error && !sendInFlight.value) pushSystemNotice(error);
   if (summary?.contextUsage) contextUsage.value = summary.contextUsage;
-  removePageGlow();
-  void stopBorderEffectManagement().catch(console.warn);
   void syncSessionContextCache(chatId);
 };
 
@@ -3370,11 +3406,13 @@ const startNewChatFromDrawer = async () => {
 
 /** 删除会话时清理其缓存；删除的正是当前活跃会话时重置界面与 activeChatId，防止后续发送产生无会话元信息的孤儿记录 */
 const handleSessionDeleted = (chatId: string) => {
+  deferredSendDrafts.delete(chatId);
   // 会话已删除：立即中止其仍在进行的运行。否则引擎会跑到自然结束，
   // 期间每 2s 的快照落库全部命中「会话已不存在」丢弃分支并重复告警，
   // 模型也会基于一个用户已放弃的会话继续消耗请求
   if (conversationEngine.isRunning(chatId)) {
-    conversationEngine.abort(chatId);
+    void conversationEngine.abortAndWait(chatId)
+      .catch(error => console.warn('中止被删会话的运行失败:', error));
     // 该会话若挂起守卫确认（删除发生在确认期间），同步收敛防止悬停
     settleGuard(false);
   }
@@ -3431,7 +3469,9 @@ const handleContainerClick = () => {
 /** 附件 chip 悬浮提示：文件名 + 提取形态 + 体积/页数（图片含压缩前后体积） */
 const attachmentChipTitle = (att: ChatAttachment): string => {
   const kindText =
-    att.source === 'office'
+    att.source === 'workspace'
+      ? t('sidepanel.attachments.sourceWorkspace')
+      : att.source === 'office'
       ? t('sidepanel.attachments.sourceOffice')
       : att.source === 'image'
         ? t('sidepanel.attachments.sourceImage')
@@ -3452,17 +3492,17 @@ const attachmentChipMeta = (att: ChatAttachment): string =>
     ? `${att.totalPages ?? '?'} ${t('sidepanel.attachments.pagesUnit')}`
     : formatBytes(att.displayBytes ?? att.sizeBytes);
 
-const handleFileUpload = () => {
+const handleFileUpload = (event: MouseEvent) => {
   if (attachmentManager.isAdding.value) return;
+  const chatId = activeChatId.value;
+  const workspaceOnly = event.shiftKey;
   const input = document.createElement('input');
   input.type = 'file';
-  // accept 仅为选择器便利过滤；最终准入由分类守卫决定（「所有文件」选择同样会被明确拦截）
-  input.accept = ATTACHMENT_ACCEPT;
   input.multiple = true;
   input.onchange = () => {
     const files = Array.from(input.files ?? []);
-    if (files.length > 0) {
-      void attachmentManager.addFiles(files);
+    if (files.length > 0 && activeChatId.value === chatId) {
+      void attachmentManager.addFiles(files, workspaceOnly);
     }
   };
   input.click();
@@ -3575,10 +3615,44 @@ const confirmStopResponse = async (): Promise<void> => {
   await stopAiResponse();
 };
 
-// 中止AI回答函数
+// 中止AI回答函数（对外入口）
+//
+// 同步语义：停止不是「发个信号就返回」，而是**等真正停下来**才返回——
+// 运行级中止 + 强制中断该会话所有正在执行的工具 + 中断结果写入模型上下文并落库。
+// isStopping 期间发送入口排队，因此用户的下一条消息绝不会与上一轮交错。
+//
+// 职责分离：本函数只管**闸门**（并发去重 + 放行），具体的停止动作在
+// performStop 里——两者混在一起会让 try/finally 的缩进失真，也难以单测。
 const stopAiResponse = async () => {
+    // 0. 停止期间锁住发送入口（并发调用复用同一 Promise，只真正走一遍收尾）
+    if (isStopping.value) {
+      await waitForStopSettled();
+      return;
+    }
+    isStopping.value = true;
+    let release!: () => void;
+    stoppingPromise = new Promise<void>(resolve => { release = resolve; });
+
+    try {
+      await performStop();
+    } finally {
+      // 放开发送闸门：停止流程已真正完成（运行结算、工具中断、上下文写入、
+      // 落库），此后的下一条消息不会再与上一轮交错
+      isStopping.value = false;
+      stoppingPromise = null;
+      release();
+    }
+};
+
+/**
+ * 停止的具体动作（由 stopAiResponse 的闸门调用）。
+ *
+ * 顺序刻意如此：先让界面立刻回到「可输入」态（1），再收敛各类挂起物
+ * （守卫 / 提问 / 审批），再中止预运行与引擎运行，最后做界面清理。
+ */
+const performStop = async (): Promise<void> => {
     console.log('开始中止AI回答...');
-    
+
     // 1. 立即设置状态，防止新的请求
     isAiResponding.value = false;
 
@@ -3602,11 +3676,13 @@ const stopAiResponse = async () => {
       }
     }
     
-    // 2. 中止会话引擎当前运行（网络请求与工具循环一并终止）
+    // 2. 同步中止：强制中断该会话所有正在执行的工具，并等待其结算、
+    //    结果写入模型上下文并落库。resolve 之前 isStopping 保持 true，
+    //    发送入口排队——这是「必须真正停了才允许发新消息」的时序闸门。
     if (activeChatId.value) {
       try {
-        conversationEngine.abort(activeChatId.value);
-        console.log('已中止会话引擎运行');
+        await conversationEngine.abortAndWait(activeChatId.value);
+        console.log('会话已停止，工具已强制中断并结算完毕');
       } catch (error) {
         console.warn('中止会话引擎失败:', error);
       }
@@ -3614,21 +3690,12 @@ const stopAiResponse = async () => {
 
     // 3. 移除页面效果
     try {
-        removePageGlow();
         console.log('已移除页面发光效果');
     } catch (error) {
         console.warn('移除页面发光效果失败:', error);
     }
-    
-    // 4. 停止边框效果管理（移除所有标签页的边框效果并停止监听）
-    try {
-        await stopBorderEffectManagement();
-        console.log('已停止边框效果管理');
-    } catch (error) {
-        console.warn('停止边框效果管理失败:', error);
-    }
-    
-    // 5. 移除思考中的消息（仅当它尚无任何可见内容——正文/推理/工具卡片都算
+
+    // 4. 移除思考中的消息（仅当它尚无任何可见内容——正文/推理/工具卡片都算
     //    可见：工具执行期间停止时保留消息，用户才能看到哪些调用已执行、
     //    哪些以「用户主动中断」收尾；引擎的 aborted 事件随后会把该消息
     //    的 isThinking 置 false 并按可见内容决定去留）
@@ -3648,8 +3715,8 @@ const stopAiResponse = async () => {
     } catch (error) {
         console.warn('移除思考中消息失败:', error);
     }
-    
-    // 6. 清理可能的定时器和监听器
+
+    // 5. 清理可能的定时器和监听器
     try {
         // 发送消息到content script清理定时器
         const tabs = await new Promise<chrome.tabs.Tab[]>((resolve) => {
@@ -3729,8 +3796,16 @@ const cleanupAssistantMessages = (messageList: ExtendedChatMessage[]): ExtendedC
 // AI对话相关函数（薄壳：前置交互 + runtime 装配 + 引擎驱动，循环细节见 core/conversation）
 // 本轮 LLM 用户消息的构造与计量统一使用 core 导出的 composeLlmUserMessage（与引擎逐字同源）
 // 实际流程体；对外入口 sendMessage 另加在途锁包装（见下方定义）
-const sendMessageInner = async () => {
+const sendMessageInner = async (beginGlow: () => void) => {
     console.log(`[SendMessage] 入口触发, isAiResponding=${isAiResponding.value}, input="${userInput.value.trim().substring(0, 50)}", msgCount=${messages.value.length}`);
+
+    // 停止进行中（同步中止）：必须等上一轮真正停下（工具已强制中断、中断结果
+    // 已写入模型上下文并落库）才允许发起新一轮，否则新消息会与上一轮迟到的
+    // 工具结果交错。排队等待而不是拒绝：用户输入不丢弃，闸门一开即继续发送。
+    if (isStopping.value) {
+      console.info('[SendMessage] 上一轮正在停止，排队等待其真正结束');
+      await waitForStopSettled();
+    }
 
     // 前置检查：是否已有可用模型（渠道 + 模型齐全）
     if (!modelRegistry.configured) {
@@ -3789,6 +3864,7 @@ const sendMessageInner = async () => {
       return;
     }
 
+    beginGlow();
     messages.value = cleanupAssistantMessages(messages.value as ExtendedChatMessage[]);
 
     // --- 1. 默认智能体兜底：新会话首条消息且用户未选智能体时自动选中默认智能体 ---
@@ -3837,17 +3913,36 @@ const sendMessageInner = async () => {
       // 知道可用平台，属传递断链；此处补齐（笔记正文保留清单供用户查看）
       try {
         console.log('Deep Search智能体：自动触发 note_tool 创建工作笔记');
-        const createNoteResult = await openaiToolsConverter.executeTool('note_tool', {
-          action: 'create',
-          title: `Deep Search - ${new Date().toLocaleString()}`,
-          content: `用户查询: ${userInput.value}\n\n搜索时间: ${new Date().toLocaleString()}\n\n已开启的搜索平台: ${enabledWebsites.value.map(site => site.name).join('、')}\n\n---\n\n`
+        // 经工具执行引擎执行：笔记存储是跨会话共享的写入目标，与后台会话里
+        // 正在跑的工具并发写入会交错。这里是「发送前装配」发起的调用，不进
+        // 模型上下文（不是模型给出的 tool_call），故以临时轮次排队执行。
+        // 会话 id：此刻尚未创建会话时退化为空串（note_tool 不感知会话）。
+        const noteChatId = activeChatId.value || '';
+        const noteOutcome = await toolExecutionEngine.runSolo({
+          chatId: noteChatId,
+          call: {
+            callId: `deep_search_note_${Date.now().toString(36)}`,
+            toolName: 'note_tool',
+            rawArgs: {
+              action: 'create',
+              title: `Deep Search - ${new Date().toLocaleString()}`,
+              content: `用户查询: ${userInput.value}\n\n搜索时间: ${new Date().toLocaleString()}\n\n已开启的搜索平台: ${enabledWebsites.value.map(site => site.name).join('、')}\n\n---\n\n`,
+            },
+          },
+          timeoutMs: 30_000,
+          execute: (call, ctx) =>
+            openaiToolsConverter.executeTool(call.toolName, call.rawArgs, {
+              chatId: noteChatId,
+              signal: ctx.signal,
+            }),
         });
-        if (createNoteResult && !createNoteResult.isError) {
+        const createNoteResult = noteOutcome.result;
+        if (noteOutcome.status === 'success' && createNoteResult && !createNoteResult.isError) {
           const noteInfo = firstTextContent(createNoteResult.content) || '';
           const enabledSiteLine = `已开启的搜索平台（web_search 的 website 只能从中选择）：${enabledWebsites.value.map(site => site.id).join('、')}`;
           systemPromptSuffix = noteInfo ? `${noteInfo}\n${enabledSiteLine}` : enabledSiteLine;
         } else {
-          console.error('note_tool 创建笔记失败:', createNoteResult);
+          console.error('note_tool 创建笔记失败:', noteOutcome.error ?? createNoteResult);
         }
       } catch (error) {
         console.error('自动触发 note_tool 失败:', error);
@@ -3862,8 +3957,11 @@ const sendMessageInner = async () => {
     // DB 故障兜底：IndexedDB 不可用（隐私模式/配额/损坏）时以可读错误落入对话流，
     // 而不是让未处理的 Promise 拒绝静默丢失本次发送
     let effective: EffectiveContext;
+    const preparingChatId = activeChatId.value;
+    const preparingDraft = { text: userInput.value, attachments: [...pendingAttachments.value] };
+    let runChatId = preparingChatId;
     try {
-      if (!activeChatId.value) {
+      if (!preparingChatId) {
         const session = await transcriptEngine.createSession({
           // agentId 是稳定引用（改名不变），恢复会话时优先按它解析；agentName 作为可读别名
           agentId: agentConfig?.id ?? '',
@@ -3872,12 +3970,18 @@ const sendMessageInner = async () => {
           modelRef: activeModelRef.value,
           systemPromptSuffix,
         });
-        activeChatId.value = session.chatId;
+        runChatId = session.chatId;
+        if (activeChatId.value !== preparingChatId) {
+          restoreSendDraft(runChatId, preparingDraft.text, preparingDraft.attachments);
+          pushSystemNotice(t('sidepanel.chat.sessionSwitchedDraftSaved'));
+          return;
+        }
+        activeChatId.value = runChatId;
       } else {
         // 学习会话的补充段承载草稿回放数据（非 LLM 输入，见 setSystemPromptSuffix），
         // 绝不能被普通发送生成的 systemPromptSuffix 覆盖——那会抹掉成果兜底；
         // 其余字段（智能体/技能/模型）照常回显，与普通会话无异
-        await transcriptEngine.updateSessionUsage(activeChatId.value, {
+        await transcriptEngine.updateSessionUsage(runChatId, {
           agentId: agentConfig?.id ?? '',
           agentName: selectedAgent.value,
           skillNames: selectedSkills.value,
@@ -3886,7 +3990,12 @@ const sendMessageInner = async () => {
         });
       }
       // 有效上下文 = 压缩摘要 + 压缩点之后的记录（用户面转录仍为全量）+ systemPrompt 补充段
-      effective = await transcriptEngine.getEffectiveContext(activeChatId.value);
+      effective = await transcriptEngine.getEffectiveContext(runChatId);
+      if (activeChatId.value !== runChatId) {
+        restoreSendDraft(runChatId, preparingDraft.text, preparingDraft.attachments);
+        pushSystemNotice(t('sidepanel.chat.sessionSwitchedDraftSaved'));
+        return;
+      }
       // 回填 UI 侧补充段：以库里实际落盘的为准（元信息写入静默失败时退回本轮生成值），
       // 保证后续选择变化触发的预算重算与本次请求用的是同一份 systemPrompt。
       // 学习会话除外：库里的补充段是草稿回放数据（非 LLM 输入），带进装配
@@ -3896,9 +4005,14 @@ const sendMessageInner = async () => {
       } else {
         activeSystemPromptSuffix.value = effective.systemPromptSuffix || systemPromptSuffix;
       }
-      storeEffectiveContext(activeChatId.value, effective);
+      storeEffectiveContext(runChatId, effective);
     } catch (sessionError) {
       console.error('[SendMessage] 会话存取失败:', sessionError);
+      if (runChatId && activeChatId.value !== runChatId) {
+        restoreSendDraft(runChatId, preparingDraft.text, preparingDraft.attachments);
+        pushSystemNotice(t('sidepanel.chat.sessionSwitchedDraftSaved'));
+        return;
+      }
       // 结构化错误卡片（分类徽章 + 完整原始信息 + 一键复制报告）：
       // 与运行期错误的呈现协议完全一致，用户自查与提交 issue 的体验统一
       const errorBlock = toApiErrorBlock(sessionError);
@@ -3917,8 +4031,6 @@ const sendMessageInner = async () => {
     // 本轮运行归属的会话：后续所有异步间隙（压缩 / 装配 / 请求）一律使用该值，
     // 而不是届时的 activeChatId——用户在这些间隙里切换会话时，
     // 用 activeChatId 会把本轮回复写进错误的会话
-    const runChatId = activeChatId.value;
-
     // --- 4. 初始准备（用户消息入档与 UI 展示由引擎 user-message 事件完成） ---
     showAgentSelector.value = false;
     showSkillSelector.value = false;
@@ -3927,6 +4039,10 @@ const sendMessageInner = async () => {
     // 快照本轮输入与附件后即刻清空输入区（发送失败时按原样恢复，见装配 catch）
     const currentInput = userInput.value;
     const currentAttachments: ChatAttachment[] = [...pendingAttachments.value];
+    const selectedModel = activeModelRef.value;
+    const selectedThreshold = activeOption.value?.contextThreshold ?? CONTEXT_THRESHOLD_DEFAULT;
+    const selectedAgentName = selectedAgent.value || null;
+    const selectedSkillNames = [...selectedSkills.value];
     userInput.value = '';
     attachmentManager.clearAttachments();
 
@@ -3937,15 +4053,6 @@ const sendMessageInner = async () => {
     //     upload-file-envelope），全文由 read_file 按页续读；信封只进 LLM
     //     请求，转录侧不落信封本体
     //   - 图片附件：data URL 列表走多模态 image_url（模型可见、转录不落库）
-    const attachmentSummaryLines = currentAttachments.map(att =>
-      att.kind === 'image'
-        ? `[图片附件] ${att.name}`
-        : `[附件] ${att.name}（共 ${att.totalPages ?? '?'} 页，AI 可按页读取全文）`,
-    );
-    const attachmentSummary = attachmentSummaryLines.length
-      ? `\n\n${attachmentSummaryLines.join('\n')}`
-      : '';
-    const transcriptInput = `${currentInput}${attachmentSummary}`;
     const textAttachmentBlocks = currentAttachments.filter(att => att.kind === 'text');
     const currentUserImages = currentAttachments
       .filter(att => att.kind === 'image' && typeof att.dataUrl === 'string')
@@ -3965,11 +4072,27 @@ const sendMessageInner = async () => {
     // 输入再上抛，由外层 sendMessage 兜底 catch 呈现错误，用户不必为一次
     // 可修复的失败重新敲一遍全文
     const registerFilesAndBuildRuntime = async (): Promise<ConversationRuntime> => {
+      const workspacePaths = await importWorkspaceFiles(
+        runChatId,
+        currentAttachments.flatMap(att => att.rawFile ? [{ id: att.id, file: att.rawFile }] : []),
+      );
+      const attachmentSummary = currentAttachments.map(att => {
+        const label = att.kind === 'image'
+          ? `[图片附件] ${att.name}`
+          : att.kind === 'text'
+            ? `[附件] ${att.name}（共 ${att.totalPages ?? '?'} 页，AI 可按页读取全文）`
+            : t('sidepanel.attachments.workspaceAttachment', { name: att.name });
+        const path = workspacePaths.get(att.id);
+        return path ? `${label}\n${t('sidepanel.attachments.workspacePath', { path: JSON.stringify(path) })}` : label;
+      });
       let envelopePrompt = '';
       if (textAttachmentBlocks.length > 0) {
         const envelopeEntries: UploadFileEnvelopeEntry[] = [];
         for (const att of textAttachmentBlocks) {
-          const record = await conversationFileStore.register(
+          const cached = att.previewFile?.chatId === runChatId
+            ? await conversationFileStore.get(att.previewFile.id)
+            : null;
+          const record = cached?.chatId === runChatId ? cached : await conversationFileStore.register(
             runChatId,
             {
               name: att.name,
@@ -3980,6 +4103,7 @@ const sendMessageInner = async () => {
             },
             att.text ?? '',
           );
+          att.previewFile = { chatId: runChatId, id: record.id };
           envelopeEntries.push({
             id: record.id,
             name: record.name,
@@ -3994,17 +4118,17 @@ const sendMessageInner = async () => {
         // 模型级阈值；硬兜底仍是发送前的消息体积守卫）
         envelopePrompt = buildUploadFileEnvelope(
           envelopeEntries,
-          activeOption.value?.contextThreshold ?? CONTEXT_THRESHOLD_DEFAULT,
+          selectedThreshold,
         );
       }
       return runtimeBuilder.build({
         chatId: runChatId,
-        userInput: transcriptInput,
+        userInput: attachmentSummary.length ? `${currentInput}\n\n${attachmentSummary.join('\n')}` : currentInput,
         userImages: currentUserImages,
         attachmentPrompt: envelopePrompt,
-        agentName: selectedAgent.value || null,
-        skillNames: selectedSkills.value,
-        modelRef: activeModelRef.value,
+        agentName: selectedAgentName,
+        skillNames: selectedSkillNames,
+        modelRef: selectedModel,
         extraToolIds,
         systemPromptSuffix,
         priorRecords: effective.records,
@@ -4016,10 +4140,18 @@ const sendMessageInner = async () => {
     try {
       runtime = await registerFilesAndBuildRuntime();
     } catch (error) {
-      if (!userInput.value.trim()) userInput.value = currentInput;
-      // 附件一并还原：注册/装配失败时消息尚未进入引擎，用户不必重新选择文件
-      if (pendingAttachments.value.length === 0) pendingAttachments.value = currentAttachments;
+      restoreSendDraft(runChatId, currentInput, currentAttachments);
+      if (activeChatId.value !== runChatId) {
+        console.warn('[SendMessage] 上一个会话装配失败:', error);
+        pushSystemNotice(t('sidepanel.chat.sessionSwitchedDraftSaved'));
+        return;
+      }
       throw error;
+    }
+    if (activeChatId.value !== runChatId) {
+      restoreSendDraft(runChatId, currentInput, currentAttachments);
+      pushSystemNotice(t('sidepanel.chat.sessionSwitchedDraftSaved'));
+      return;
     }
 
     // --- 6. 上下文用量测量（全量口径）；发送前压缩由后台统一执行 ---
@@ -4059,8 +4191,7 @@ const sendMessageInner = async () => {
         console.warn(
           `[SendMessage] 本轮消息体积 ${messageTokens} token 超过可用预算 ${availableBudget} token（阈值−systemPrompt），阻断发送`,
         );
-        if (!userInput.value.trim()) userInput.value = currentInput;
-        if (pendingAttachments.value.length === 0) pendingAttachments.value = currentAttachments;
+        restoreSendDraft(runChatId, currentInput, currentAttachments);
         await showAlert(
           t('sidepanel.attachments.messageExceedsContext', {
             size: formatTokensK(messageTokens),
@@ -4081,18 +4212,11 @@ const sendMessageInner = async () => {
     // 记录本轮运行时的选择签名：运行结束后用于判定「用户是否在运行期间换了智能体/技能/模型」
     const runSelectionKey = selectionSignature();
     isAiResponding.value = true;
-    addPageGlow();
-
-    // 启动边框效果管理（包含当前标签页边框效果和标签页变化监听），异步不阻塞对话
-    startBorderEffectManagement().catch((error) => {
-      console.warn('启动边框效果管理失败:', error);
-    });
 
     /** 预运行阶段（用户消息尚未入档）被停止的善后：恢复输入附件并给出可读提示 */
     const settlePreRunStop = (): void => {
       // 输入框为空才回填原输入：用户在间隙里已敲了新内容时，以他们正在编辑的内容为准
-      if (!userInput.value.trim()) userInput.value = currentInput;
-      if (pendingAttachments.value.length === 0) pendingAttachments.value = currentAttachments;
+      restoreSendDraft(runChatId, currentInput, currentAttachments);
       // 会话已切换时通知不落入新会话视图（被停止的是旧会话的发送流程，
       // 与引擎事件流的 chatId 守卫同语义）
       if (activeChatId.value === runChatId) {
@@ -4104,28 +4228,7 @@ const sendMessageInner = async () => {
       // 发送前压缩由后台执行；关闭侧边栏不会中断这次模型请求。
       console.log(`[SendMessage] runtime 装配完成, 可用工具: [${runtime.toolIds.join(', ')}], agent: ${agentConfig?.id || 'default'}, 模型: ${runtime.model.model}, 历史消息: ${runtime.initialContext.length} 条`);
 
-      // --- 7. 引擎驱动（「思考中」占位由 assistant-start 事件创建；响应态与
-      //     运行期效果已在 6.8 提前建立，本段只负责驱动与针对性异常分诊） ---
-      // 防御：前置阶段（压缩 / 装配）期间用户切换或新建了会话。本轮输入属于 runChatId，
-      // 继续执行会让回复落到用户已离开的会话且当前界面收不到任何事件；
-      // 此时中止并尽量还原输入，由用户在目标会话里重新发送
-      if (activeChatId.value !== runChatId) {
-        console.warn(
-          `[SendMessage] 发送前置阶段内会话已切换（${runChatId} → ${activeChatId.value}），本轮中止`,
-        );
-        // 输入框为空才回填原输入：用户在间隙里已敲了新内容时，以他们正在编辑的内容为准
-        const restored = !userInput.value.trim();
-        if (restored) userInput.value = currentInput;
-        // 附件同样只在用户未新增附件时还原，避免覆盖新的选择
-        if (restored && pendingAttachments.value.length === 0) {
-          pendingAttachments.value = currentAttachments;
-        }
-        pushSystemNotice(
-          t(restored ? 'sidepanel.chat.sessionSwitchedRestored' : 'sidepanel.chat.sessionSwitchedAbort'),
-        );
-        return;
-      }
-
+      // --- 7. 引擎驱动（「思考中」占位由 assistant-start 事件创建） ---
       try {
         const summary = await conversationEngine.run(runtime, {
           observer: handleConversationEvent,
@@ -4199,10 +4302,6 @@ const sendMessageInner = async () => {
       // 压缩感知兜底回落：正常路径由 done/failed 事件复位；此处兜住「事件
       // 丢失」的异常时序（如通道在压缩进行中断裂），绝不让呼吸动画悬停
       isCompacting.value = false;
-      removePageGlow();
-      stopBorderEffectManagement().catch(error => {
-        console.warn('停止边框效果管理失败:', error);
-      });
       // 本轮新增记录已落库（引擎 finalize 内 await flush），同步进缓存：
       // 之后切换智能体/技能/模型重算预算时，读到的是含本轮结果的真实历史
       await syncSessionContextCache(runChatId);
@@ -4228,8 +4327,9 @@ const sendMessage = async () => {
     return;
   }
   sendInFlight.value = true;
+  let endPreparingGlow: (() => void) | undefined;
   try {
-    await sendMessageInner();
+    await sendMessageInner(() => { endPreparingGlow = conversationEngine.beginPreparingGlow(); });
   } catch (error) {
     // 兜底呈现：主流程内的分段异常（会话存取 / 压缩 / 引擎驱动）各有针对性
     // catch，到达此处的是装配、测量等未分段异常（如智能体被并发删除、
@@ -4247,6 +4347,7 @@ const sendMessage = async () => {
     });
     showChatMode.value = true;
   } finally {
+    endPreparingGlow?.();
     sendInFlight.value = false;
   }
 };

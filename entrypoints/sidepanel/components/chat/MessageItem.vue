@@ -235,7 +235,8 @@
         </div>
       </div>
 
-      <!-- ════ 模型消息操作栏：复制 / 赞 / 踩（结束后显示；耗时在无前奏收起条时兜底展示于此右侧） ════ -->
+      <!-- ════ 模型消息操作栏：复制 / 调试轨迹 / 赞 / 踩（结束后显示；
+           耗时在无前奏收起条时兜底展示于此右侧） ════ -->
       <div v-if="showMessageActions" class="message-actions">
         <button
           type="button"
@@ -279,6 +280,47 @@
             <path d="M15 3H6c-.83 0-1.54.5-1.84 1.22l-3.02 7.05c-.09.23-.14.47-.14.73v2c0 1.1.9 2 2 2h6.31l-.95 4.57-.03.32c0 .41.17.79.44 1.06L9.83 23l6.59-6.59c.36-.36.58-.86.58-1.41V5c0-1.1-.9-2-2-2zm4 0v12h4V3h-4z" fill="currentColor"/>
           </svg>
         </button>
+        <!-- 调试轨迹：复制本轮完整执行过程（思考 / 工具调用 / 工具响应 /
+             正文，按时间顺序；截图只留标记），用于 Agent 执行流程分析。
+             与「复制」按钮分工：复制只取末段正文，本按钮取全过程。
+             默认收起——由踩按钮右侧的开关放出；展开时调试按钮插到踩与开关
+             之间，开关被顶到最右（宽度过渡带动位移，收起 / 展开各带动画） -->
+        <Transition name="message-action-fold">
+          <button
+            v-if="debugExpanded"
+            type="button"
+            class="message-action-btn is-debug"
+            :class="{ copied: traceCopied }"
+            :title="traceCopied ? t('sidepanel.chat.debugTraceCopiedLabel') : t('sidepanel.chat.debugTraceLabel')"
+            :aria-label="traceCopied ? t('sidepanel.chat.debugTraceCopiedLabel') : t('sidepanel.chat.debugTraceLabel')"
+            :disabled="!traceText"
+            @click="copyTrace"
+          >
+            <svg v-if="!traceCopied" width="15" height="15" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M20,8h-2.81c-0.45,-0.78 -1.07,-1.45 -1.82,-1.96L17,4.41 15.59,3l-2.17,2.17C12.96,5.06 12.49,5 12,5c-0.49,0 -0.96,0.06 -1.41,0.17L8.41,3 7,4.41l1.62,1.63C7.88,6.55 7.26,7.22 6.81,8H4v2h2.09C6,10.34 6,10.67 6,11v1H4v2h2v1c0,0.33 0,0.66 0.09,1H4v2h2.81c1.04,1.79 2.97,3 5.19,3s4.15,-1.21 5.19,-3H20v-2h-2.09c0.09,-0.34 0.09,-0.67 0.09,-1v-1h2v-2h-2v-1c0,-0.33 0,-0.66 -0.09,-1H20V8zM14,16h-4v-2h4V16zM14,12h-4v-2h4V12z" fill="currentColor"/>
+            </svg>
+            <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="currentColor"/>
+            </svg>
+          </button>
+        </Transition>
+        <!-- 收起 / 展开开关：紧贴踩按钮右侧；展开后调试按钮插到二者之间，
+             开关被顶到最右（收起 / 展开各有一段动画） -->
+        <button
+          v-if="traceText"
+          type="button"
+          class="message-action-btn is-fold-toggle"
+          :class="{ expanded: debugExpanded }"
+          :title="debugExpanded ? t('sidepanel.chat.debugToggleCollapseLabel') : t('sidepanel.chat.debugToggleExpandLabel')"
+          :aria-label="debugExpanded ? t('sidepanel.chat.debugToggleCollapseLabel') : t('sidepanel.chat.debugToggleExpandLabel')"
+          :aria-expanded="debugExpanded"
+          @click="toggleDebugFold"
+        >
+          <svg class="fold-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M9,6L8,7L14,12L8,17L9,18L16,12L9,6Z" fill="currentColor"/>
+          </svg>
+        </button>
+        <!-- 兜底耗时（推至操作栏最右） -->
         <span v-if="footerDurationText" class="message-duration">{{ footerDurationText }}</span>
       </div>
     </div>
@@ -298,12 +340,13 @@
  */
 import { computed, ref } from 'vue';
 import { t } from '@/utils/i18n';
-import type { ExtendedChatMessage, IndexedMessagePart, MessageFeedback } from '../../types/chat';
+import type { ExtendedChatMessage, IndexedMessagePart, MessageFeedback, MessagePart } from '../../types/chat';
 import { markdownRenderer } from '../../utils/chat/markdown-renderer';
 import { groupAnswerParts, type AnswerGrouping } from '../../utils/chat/part-grouping';
 import { formatDuration } from '../../utils/chat/duration';
 import { openNoteDetail } from '../../utils/chat/note-nav';
 import { useCopyToClipboard } from '../../utils/chat/use-copy-to-clipboard';
+import { buildExecutionTraceText } from '../../utils/chat/message-copy-payload';
 import ToolCallItem from './ToolCallItem.vue';
 import MessageParts from './MessageParts.vue';
 import MessageImages from './MessageImages.vue';
@@ -367,16 +410,26 @@ const userTextContent = computed<string>(() => {
 });
 
 /**
- * 带原始索引的可见片段列表。
- * 过滤（<think> 剥离、空片段剔除）会使数组下标与 message.parts 脱钩，
+ * 可见片段筛选（展示口径与轨迹口径共用同一套剔除规则）。
+ *
+ * 剔除项：空片段、缺载荷的片段（无 toolCall / 无 imageRef / 无 compaction 状态）。
+ *   - stripThink=true（展示口径）：正文里的 <think> 段被剥离——思考不混进正文；
+ *   - stripThink=false（轨迹口径）：原文保留，思考段在轨迹里单独以 <think>
+ *     标签还原，保证「整条执行路径的所有输出」原样可读。
+ *
+ * 过滤（think 剥离、空片段剔除）会使数组下标与 message.parts 脱钩，
  * 折叠/展开等回传事件必须携带原始索引才能在 App.vue 中正确定位片段。
  */
-const indexedVisibleParts = computed<IndexedMessagePart[]>(() => {
-  const parts = props.message.parts || [];
+function collectParts(parts: MessagePart[], stripThink: boolean): IndexedMessagePart[] {
   const result: IndexedMessagePart[] = [];
   parts.forEach((part, index) => {
     if (part.type === 'text') {
       if (!part.content) return;
+      if (!stripThink) {
+        if (!part.content.trim()) return;
+        result.push({ index, part });
+        return;
+      }
       const strippedContent = part.content
         .replace(/<think>[\s\S]*?<\/think>/g, '')
         .replace(/<think>[\s\S]*$/g, '')
@@ -393,7 +446,17 @@ const indexedVisibleParts = computed<IndexedMessagePart[]>(() => {
     result.push({ index, part });
   });
   return result;
-});
+}
+
+/** 带原始索引的可见片段列表（展示口径：思考已剥离） */
+const indexedVisibleParts = computed<IndexedMessagePart[]>(() =>
+  collectParts(props.message.parts || [], true),
+);
+
+/** 带原始索引的可见片段列表（轨迹口径：原文保留，思考段单独还原成 <think>） */
+const indexedTraceParts = computed<IndexedMessagePart[]>(() =>
+  collectParts(props.message.parts || [], false),
+);
 
 /** 兼容旧记录：仅有 reasoning_content、无 reasoning 类型 parts（先于 groups 定义，供其读取） */
 const legacyReasoningVisible = computed(
@@ -475,26 +538,75 @@ const showMessageActions = computed(
     !props.message.isSystemNotice,
 );
 
-/**
- * 待复制正文（computed 缓存：正文变化才重建，点击与 disabled 判定零重复计算）。
- * 字符串直接用；多模态数组仅取文本块（图片不参与复制）。
- */
-const copyableText = computed<string>(() => {
+/** 旧记录兜底正文：字符串直取；多模态数组仅取文本块（图片不参与复制） */
+const legacyContentText = computed<string>(() => {
   const content = props.message.content;
-  if (typeof content === 'string') return content;
+  if (typeof content === 'string') return content.trim();
   if (Array.isArray(content)) {
     return content
-      .filter(item => item.type === 'text')
+      .filter(item => item?.type === 'text')
       .map(item => item.text || '')
-      .join('\n');
+      .join('\n')
+      .trim();
   }
   return '';
 });
+
+/**
+ * 待复制正文（computed 缓存：正文变化才重建，点击与 disabled 判定零重复计算）。
+ *
+ * 口径 = **末段正文**（最后一个文本片段），与结束态分组的锚点同一口径
+ * （groupAnswerParts 的 final）：思考过程、工具调用、以及正文之前残留的
+ * 中间文本段都不进复制内容——复制按钮给的是「正式输出」这一份。
+ *
+ * 旧记录兜底：没有文本片段（无 parts 的早期记录，或纯工具轮收尾）时，
+ * 回退整段 content，避免按钮复制到空文本。
+ */
+const copyableText = computed<string>(() => {
+  const final = groups.value.final;
+  if (final && final.part.type === 'text' && final.part.content?.trim()) {
+    return final.part.content.trim();
+  }
+  return legacyContentText.value;
+});
+
+/**
+ * 调试轨迹载荷：本轮完整执行过程（思考 / 工具调用 / 工具响应 / 正文 /
+ * 终态注记，按时间顺序；截图只留标记不复制图片本体），供执行流程分析。
+ *
+ * 载荷形态（结构化标签序列、无页眉前缀）与旧记录兜底规则见
+ * utils/chat/message-copy-payload。
+ */
+const traceText = computed<string>(() =>
+  buildExecutionTraceText({
+    parts: indexedTraceParts.value,
+    legacyReasoning: legacyReasoningVisible.value ? props.message.reasoning_content : undefined,
+    legacyToolCalls: indexedTraceParts.value.some(part => part.part.type === 'tool')
+      ? []
+      : (props.message.toolCalls ?? []),
+  }),
+);
+
+/**
+ * 调试按钮的收起 / 展开状态：默认收起——操作栏右侧只留一个展开开关，
+ * 调试按钮本体默认不占位。用户点开关后放出调试按钮（收起 / 展开各有一段
+ * CSS 过渡动画，见 chat-message-list.css 的 message-action-fold）。
+ */
+const debugExpanded = ref(false);
+const toggleDebugFold = (): void => {
+  debugExpanded.value = !debugExpanded.value;
+};
 
 /** 复制成功反馈态与复制动作（与用户消息气泡共用 utils/chat/use-copy-to-clipboard） */
 const { copied, copy: copyMessage } = useCopyToClipboard(
   () => copyableText.value,
   () => `消息（messageId=${props.message.id ?? '无'}）`,
+);
+
+/** 调试轨迹复制：独立的成功反馈态，与正文复制互不干扰 */
+const { copied: traceCopied, copy: copyTrace } = useCopyToClipboard(
+  () => traceText.value,
+  () => `调试轨迹（messageId=${props.message.id ?? '无'}）`,
 );
 
 /** 赞/踩切换：再次点击同一按钮 = 清除；两态互斥由单字段天然保证 */

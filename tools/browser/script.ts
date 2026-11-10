@@ -1,5 +1,5 @@
 import { BaseBrowserTool } from '../base/browser-tool';
-import { ToolMetadata } from '../registry';
+import { ToolMetadata, type ToolExecutionContext } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult, createErrorResponse } from '@/common/tool-handler';
 import { TOOL_NAMES } from '@/common/constants';
@@ -47,7 +47,7 @@ export class SendCommandToInjectScriptTool extends BaseBrowserTool {
     tabId?: number;
     eventName: string;
     payload?: string;
-  }): Promise<ToolResult> {
+  }, context?: ToolExecutionContext): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     const { tabId, eventName, payload } = args;
@@ -75,6 +75,7 @@ export class SendCommandToInjectScriptTool extends BaseBrowserTool {
 
       const targetTabId = tabId ?? (await this.getActiveTab()).id!;
 
+      if (tabId !== undefined) context?.onTabTarget?.(targetTabId);
       const result = await this.sendMessageToTab(targetTabId, {
         action: eventName,
         payload: parsedPayload,

@@ -486,6 +486,29 @@ async function main() {
       'openai: Bearer 头'
     );
     eq(openai.getRequestHeaders(''), { 'Content-Type': 'application/json' }, 'openai: 无 key 不带认证头');
+
+    // 新契约：上下文压缩消息为 assistant 角色 —— OpenAI 系协议原生透传
+    // （assistant 可位于任意位置；顺带规避「历史中段 system 消息」在严格
+    //  网关被拒的隐患）
+    const productBody = openai.buildRequestBody({
+      model: 'gpt-4o',
+      messages: [
+        { role: 'system', content: 'You are helpful' },
+        { role: 'assistant', content: '<conversation-memory>压缩摘要</conversation-memory>' },
+        { role: 'user', content: '继续' },
+      ],
+    });
+    eq(
+      productBody.messages[1].role,
+      'assistant',
+      'openai: 压缩消息以 assistant 角色原生透传（不归入 system）'
+    );
+    eq(
+      productBody.messages[1].content,
+      '<conversation-memory>压缩摘要</conversation-memory>',
+      'openai: 压缩记忆原文保留'
+    );
+    eq(productBody.messages.length, 3, 'openai: 消息条数不变（无归一丢失）');
   }
 
   // ---------- Ollama ----------
@@ -584,6 +607,37 @@ async function main() {
       'You are helpful\n\n<conversation-memory>压缩摘要</conversation-memory>',
       'gemini: 多 system 消息合并（压缩记忆不丢失）'
     );
+
+    // 新契约：首条 assistant 压缩消息 → 并入 systemInstruction（Gemini 首条
+    // 必须是 user），其余 contents 原样；退化形态（只剩压缩消息）降为 user 轮
+    const geminiProduct = gemini.buildRequestBody({
+      model: 'g',
+      messages: [
+        { role: 'system', content: 'You are helpful' },
+        { role: 'assistant', content: '<conversation-memory>压缩摘要</conversation-memory>' },
+        { role: 'user', content: '继续' },
+      ],
+    });
+    eq(
+      geminiProduct.systemInstruction.parts[0].text,
+      'You are helpful\n\n<conversation-memory>压缩摘要</conversation-memory>',
+      'gemini: 首条 assistant 压缩消息并入系统指令'
+    );
+    eq(geminiProduct.contents.length, 1, 'gemini: 压缩消息不进 contents');
+    eq(geminiProduct.contents[0].role, 'user', 'gemini: contents 首条仍为 user');
+    const geminiProductOnly = gemini.buildRequestBody({
+      model: 'g',
+      messages: [
+        { role: 'assistant', content: '<conversation-memory>压缩摘要</conversation-memory>' },
+      ],
+    });
+    eq(geminiProductOnly.contents.length, 1, 'gemini: 退化形态不得产生空 contents');
+    eq(geminiProductOnly.contents[0].role, 'user', 'gemini: 退化形态降为 user 轮（首条约束）');
+    eq(
+      geminiProductOnly.contents[0].parts[0].text,
+      '<conversation-memory>压缩摘要</conversation-memory>',
+      'gemini: 退化形态压缩记忆文本原样保留'
+    );
     eq(geminiReplay.contents.length, 3, 'gemini: 并行工具结果折叠为单条 user content');
     eq(
       geminiReplay.contents.map((c: any) => c.role),
@@ -663,6 +717,45 @@ async function main() {
       'You are helpful\n\n<conversation-memory>压缩摘要</conversation-memory>',
       'claude: 多 system 消息合并（压缩记忆不丢失）'
     );
+
+    // 1b. 新契约：上下文压缩消息为 **assistant** 角色（领域层恒为 assistant）。
+    // Claude 首条消息角色有约束 → wire 层把首条压缩记忆并入顶级 system，
+    // 其余消息保持原样（等价于压缩前的 wire 形态）。
+    const assistantProduct = claude.buildRequestBody({
+      model: 'c',
+      messages: [
+        { role: 'system', content: 'You are helpful' },
+        { role: 'assistant', content: '<conversation-memory>压缩摘要</conversation-memory>' },
+        { role: 'user', content: '继续' },
+      ],
+    });
+    eq(
+      assistantProduct.system[0].text,
+      'You are helpful\n\n<conversation-memory>压缩摘要</conversation-memory>',
+      'claude: 首条 assistant 压缩消息并入顶级 system'
+    );
+    eq(
+      assistantProduct.messages.length,
+      1,
+      'claude: 压缩消息不进 messages（首条角色约束的 wire 归一）'
+    );
+    eq(
+      assistantProduct.messages[0].role,
+      'user',
+      'claude: 其余消息保持原序（压缩消息不参与折叠）'
+    );
+
+    // 1c. 退化形态（整段上下文只剩压缩消息）：不得发出空 messages 请求，
+    //     压缩记忆保留在 messages 中（assistant 角色，Anthropic 允许末条 assistant）
+    const productOnly = claude.buildRequestBody({
+      model: 'c',
+      messages: [
+        { role: 'system', content: 'You are helpful' },
+        { role: 'assistant', content: '<conversation-memory>压缩摘要</conversation-memory>' },
+      ],
+    });
+    eq(productOnly.messages.length, 1, 'claude: 退化形态不得产生空 messages');
+    eq(productOnly.messages[0].role, 'assistant', 'claude: 退化形态保留压缩消息原角色');
 
     // 2. 并行工具调用的全部结果合入同一 user 轮（Anthropic 官方要求）
     const parallel = claude.buildRequestBody({

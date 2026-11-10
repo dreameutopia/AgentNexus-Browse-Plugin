@@ -4,6 +4,7 @@
 import { ref, reactive } from 'vue';
 import type { ToolDefinition, ExecutionResult } from './types';
 import { resolveActionDefinition } from './types';
+import { extractContentText, primaryChannelOf } from '@/common/tool-handler';
 
 export function useToolExecution() {
   const selectedTool = ref<ToolDefinition | null>(null);
@@ -101,19 +102,44 @@ export function useToolExecution() {
   const formatResult = (result: ExecutionResult | null): string => {
     if (!result) return '';
 
-    if (result.content) {
+    /** content 文本块拼成的正文（图片等非文本块单独标注） */
+    const contentText = (): string => {
+      const text = extractContentText(result.content);
+      if (text) return text;
+      if (!result.content) return '';
       if (Array.isArray(result.content)) {
         return result.content.map(item => {
-          if (item.type === 'text') {
-            return item.text;
-          } else if (item.type === 'image') {
-            return `[图片: ${item.source?.type || 'unknown'}]`;
-          }
+          if (item.type === 'image') return `[图片: ${item.source?.type || 'unknown'}]`;
           return JSON.stringify(item, null, 2);
         }).join('\n\n');
       }
       return JSON.stringify(result.content, null, 2);
+    };
+    /** 结构化载荷的 pretty JSON（循环引用等异常形态降级为字符串快照） */
+    const dataText = (): string => {
+      if (!result.data || typeof result.data !== 'object') return '';
+      try {
+        return JSON.stringify(result.data, null, 2);
+      } catch {
+        return String(result.data);
+      }
+    };
+
+    // 正文在 content（结果表 / 清单正文 / 页文本）：先给正文，再附事实元数据
+    if (primaryChannelOf(result) === 'content') {
+      const body = contentText();
+      const meta = dataText();
+      if (!meta) return body;
+      return `${body}\n\n--- 结构化载荷 ---\n${meta}`;
     }
+
+    // 正题在 data：展示完整结构化载荷
+    const structured = dataText();
+    if (structured) return structured;
+
+    // 退化路径：只有 content
+    const body = contentText();
+    if (body) return body;
 
     return JSON.stringify(result, null, 2);
   };

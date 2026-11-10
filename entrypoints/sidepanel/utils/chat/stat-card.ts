@@ -13,6 +13,7 @@
 
 import { z } from 'zod';
 import { escapeHtml } from './html-escape';
+import { t } from '@/utils/i18n/core';
 
 /** 围栏源码最大字符数（超出直接判失败，防异常巨型输出拖慢渲染） */
 const MAX_SOURCE_CHARS = 8_000;
@@ -34,7 +35,13 @@ const StatCardItemSchema = z.object({
   note: z.string().max(80).optional(),
 });
 
-/** 卡片组：2~6 张（1 张时模型应直接用文字表达；>6 张应改用表格） */
+/**
+ * 卡片组：2~6 张。
+ *
+ * 本文件是 legacy ```stat-card 直连围栏（历史消息兼容）的校验契约；
+ * 现行模型输出口径是统一信封的 stat 类型（rich-components/registry.ts +
+ * rich-output-prompt.ts 承担「怎么教」），两者的行数上限同为 6。
+ */
 export const StatCardSchema = z.object({
   title: z.string().max(60).optional(),
   items: z.array(StatCardItemSchema).min(1).max(6),
@@ -91,7 +98,16 @@ export function buildStatCardBlock(code: string): string | null {
   if (!result.success) return null;
   const data: StatCardData = result.data;
 
+  const saveIdle = escapeHtml(t('sidepanel.chat.saveImageLabel'));
+  const saveDone = escapeHtml(t('sidepanel.chat.saveImageDoneLabel'));
   const parts: string[] = ['<div class="stat-card-block">'];
+  // 头部动作与信封 stat 一致：单个「保存」按钮（component-image-save 委托）
+  parts.push(
+    `<div class="component-block-actions">` +
+      `<button type="button" class="code-copy-btn component-save-btn"` +
+      ` data-save-idle-label="${saveIdle}" data-save-done-label="${saveDone}">${saveIdle}</button>` +
+      `</div>`,
+  );
   if (data.title) {
     parts.push(`<div class="stat-card-block-title">${escapeHtml(data.title)}</div>`);
   }

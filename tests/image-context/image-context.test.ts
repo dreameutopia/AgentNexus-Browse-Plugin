@@ -19,6 +19,7 @@ import {
   estimateMessageTokens,
   estimateMessageTokensDetailed,
   sliceTextToTokenBudget,
+  sliceTextTailToTokenBudget,
 } from '../../entrypoints/sidepanel/utils/ai/token-estimate';
 import {
   isImageRef,
@@ -190,6 +191,48 @@ eq(estimateTextTokens('\uD800'), 1, '孤立代理项不抛错且至少 1 token')
   );
 }
 
+// ==================== 3b. 尾部切片（压缩截断兜底的对偶实现） ====================
+
+{
+  const text = 'hello world';
+  eq(sliceTextTailToTokenBudget(text, 100), text, '预算充足返回原文');
+  eq(sliceTextTailToTokenBudget(text, 0), '', '零预算返回空串');
+  eq(sliceTextTailToTokenBudget('', 10), '', '空文本返回空串');
+
+  const long = '汉'.repeat(5000);
+  const tailed = sliceTextTailToTokenBudget(long, 1000);
+  check(long.endsWith(tailed), '尾部切片结果是原文后缀');
+  check(
+    estimateTextTokens(tailed) <= 1000,
+    '尾部切片不超过预算（硬不变量）',
+    estimateTextTokens(tailed),
+  );
+  check(tailed.length > 0, '预算内保留非空后缀');
+
+  // 代理对安全：起点不得落在低位代理上（否则切出孤立代理转义 → 网关 400）
+  const emojiText = `${'😀'.repeat(100)}tail`;
+  const emojiTailed = sliceTextTailToTokenBudget(emojiText, 20);
+  const loneHigh = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/;
+  const loneLow = /(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  check(emojiText.endsWith(emojiTailed), 'emoji 文本尾部切片仍是后缀');
+  check(!loneHigh.test(emojiTailed) && !loneLow.test(emojiTailed), '尾部切片不产生孤立代理项');
+  check(
+    estimateTextTokens(emojiTailed) <= 20,
+    'emoji 文本尾部切片不超过预算',
+    estimateTextTokens(emojiTailed),
+  );
+
+  // 拉丁文本：token/字符比与 CJK 不同，仍须满足预算硬约束
+  const latin = 'lorem ipsum dolor sit amet '.repeat(500);
+  const latinTailed = sliceTextTailToTokenBudget(latin, 100);
+  check(latin.endsWith(latinTailed), '拉丁文本尾部切片仍是后缀');
+  check(
+    estimateTextTokens(latinTailed) <= 100,
+    '拉丁文本尾部切片不超过预算',
+    estimateTextTokens(latinTailed),
+  );
+}
+
 // ==================== 4. 前缀单调性 ====================
 
 {
@@ -307,6 +350,48 @@ check(!isImageRef(undefined), 'undefined 不是引用');
   check(
     system !== undefined && typeof system.content === 'string' && system.content.length < 9000,
     'system 正文被缩短',
+  );
+}
+
+{
+  // 上下文压缩消息（assistant 角色的 <conversation-memory>）按系统级保护：
+  //   1. 超限时不被「从新到旧保留」当作最旧内容整条裁掉（模型不能失忆）；
+  //   2. 受保护区超阈值被截断时，输出顺序保持原序（压缩记忆紧随主提示词，
+  //      位置不漂移——wire 上「权威记忆」跑到请求末尾会与提示词声明相悖）。
+  const product = '<conversation-memory>\n以下是对本会话先前对话的压缩摘要。\n<summary>\n<task>目标</task>\n</summary>\n</conversation-memory>';
+  const r = ContextWindowGuard.protect(
+    [
+      { role: 'system', content: '主提示词' },
+      { role: 'assistant', content: product },
+      { role: 'user', content: '继续' },
+    ] as ChatMessage[],
+    CONTEXT_THRESHOLD_MIN,
+  );
+  check(
+    r.messages.some(m => m.role === 'assistant' && typeof m.content === 'string' && m.content.includes('<conversation-memory>')),
+    '压缩消息按受保护区保留（不被当作最旧内容裁掉）',
+  );
+  check(
+    r.messages.indexOf(r.messages.find(m => m.role === 'assistant')!) === 1,
+    '压缩消息紧随主 system 提示词（顺序不漂移）',
+  );
+
+  // 受保护区整体超阈值 → 截断路径：顺序仍为原序，且压缩记忆拿到剩余预算
+  const trimmed = ContextWindowGuard.protect(
+    [
+      { role: 'system', content: '汉'.repeat(9000) },
+      { role: 'assistant', content: product },
+    ] as ChatMessage[],
+    CONTEXT_THRESHOLD_MIN,
+  );
+  check(trimmed.finalTokens <= CONTEXT_THRESHOLD_MIN, '截断后不超阈值', trimmed.finalTokens);
+  check(trimmed.truncated, '发生截断');
+  eq(trimmed.messages.length, 2, '截断路径保留两条受保护消息');
+  eq(trimmed.messages[0].role, 'system', '输出顺序：主提示词在前');
+  eq(trimmed.messages[1].role, 'assistant', '输出顺序：压缩记忆在后（原序不漂移）');
+  check(
+    typeof trimmed.messages[1].content === 'string' && trimmed.messages[1].content.includes('<task>'),
+    '压缩记忆内容未被连带丢弃',
   );
 }
 

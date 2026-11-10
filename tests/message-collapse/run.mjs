@@ -29,7 +29,7 @@ const workDir = path.join(root, 'node_modules', '.cache', 'agentnexus-message-co
 mkdirSync(workDir, { recursive: true });
 
 // ── 1. 纯函数测试 ──
-for (const suite of ['collapse.test.ts', 'live-parts.test.ts', 'compaction-part.test.ts']) {
+for (const suite of ['collapse.test.ts', 'live-parts.test.ts', 'compaction-part.test.ts', 'copy-payload.test.ts']) {
   const pureOut = path.join(workDir, suite.replace(/\.ts$/, '.mjs'));
   try {
     buildSync({
@@ -129,6 +129,11 @@ const dom = new JSDOM('<div id="app"></div>', { url: 'https://example.test/' });
 for (const key of ['window', 'document', 'Element', 'HTMLElement', 'SVGElement', 'Node', 'MutationObserver']) {
   globalThis[key] = dom.window[key];
 }
+// Vue 的 <Transition> 离场钩子靠 requestAnimationFrame 推进（连续两帧后才移除
+// 元素）：JSDOM 未开启 pretendToBeVisual 没有 rAF，必须补一个定时器版替身，
+// 否则「收起后按钮离场」在测试里永远走不完。
+globalThis.requestAnimationFrame = cb => setTimeout(() => cb(Date.now()), 0);
+globalThis.cancelAnimationFrame = id => clearTimeout(id);
 const { createApp, h, nextTick, reactive } = await import('vue');
 
 /** 挂载组件：包一层响应式父组件渲染被测组件，返回的 state 就地更新即驱动重渲染
@@ -478,5 +483,165 @@ const MessageItem = (await compileComponent(
   }
 }
 
+// ── L. 消息操作栏：复制只取末段正文；调试按钮复制完整执行轨迹 ──
+// 覆盖：两个按钮的口径分工（复制 = 正式输出；调试 = 全过程）、结束态
+// （正常 / 异常 / 中止 alike）操作栏一律出现、无内容时按钮禁用。
+{
+  const clipboardWrites = [];
+  Object.defineProperty(globalThis.navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: async text => { clipboardWrites.push(text); } },
+  });
+  const settle = async () => { await new Promise(resolve => setTimeout(resolve, 0)); await nextTick(); };
+
+  const traceToolCall = {
+    id: 't1',
+    name: 'navigate',
+    status: 'success',
+    arguments: '{"url":"https://example.com"}',
+    result: { title: 'Example' },
+  };
+  const traceMessage = {
+    id: 'm-trace',
+    role: 'assistant',
+    content: '中间文本最终答案',
+    parts: [
+      reasoningPart('先分析页面结构'),
+      { type: 'tool', toolCall: traceToolCall },
+      textPart('中间文本'),
+      textPart('最终答案'),
+      noticePart('回复已截断'),
+    ],
+    toolCalls: [traceToolCall],
+    timestamp: 1_700_000_000_000,
+  };
+
+  const { container, errors, unmount } = await mount(MessageItem, { message: traceMessage, isLive: false });
+  assert.deepEqual(errors, [], '操作栏渲染不得抛错');
+  // 默认收起：调试按钮不出现在操作栏里，踩按钮右侧只留一个展开开关
+  assert.equal(container.querySelectorAll('.message-actions .is-debug').length, 0, '调试按钮默认收起');
+  const toggle = container.querySelector('.message-actions .is-fold-toggle');
+  assert.ok(toggle, '踩按钮右侧有收起 / 展开开关');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false', '收起态的 aria-expanded');
+  const downBtn = container.querySelector('.message-actions [aria-label="sidepanel.chat.feedbackDown"]');
+  assert.ok(downBtn, '操作栏含踩按钮');
+  assert.equal(downBtn.nextElementSibling, toggle, '开关紧贴踩按钮右侧');
+  const actions = container.querySelectorAll('.message-actions .message-action-btn');
+  assert.equal(actions.length, 4, '收起态四个按钮（复制 / 赞 / 踩 / 展开开关）');
+  const copyBtn = actions[0];
+
+  // 复制按钮：只复制末段正文（最后一段文本），不含思考 / 工具 / 中间文本
+  click(copyBtn);
+  await settle();
+  assert.equal(clipboardWrites.length, 1, '复制按钮写入一次剪贴板');
+  assert.equal(clipboardWrites[0], '最终答案', '复制内容 = 末段正文，不含思考与工具');
+  assert.ok(!clipboardWrites[0].includes('中间文本'), '正文之前的中间文本段不进复制内容');
+  assert.ok(!clipboardWrites[0].includes('先分析页面结构'), '思考过程不进复制内容');
+  // 复制成功的反馈态：图标切成对勾；调试按钮此时尚未放出（收起态）
+  assert.ok(copyBtn.classList.contains('copied'), '正文复制按钮进入已复制态');
+  assert.equal(container.querySelectorAll('.is-debug').length, 0, '调试按钮收起时不占位，也不受正文复制影响');
+
+  // 调试按钮默认收起：点开关才放出（插到踩与开关之间，把开关顶到最右）
+  click(toggle);
+  await nextTick();
+  const debugBtn = container.querySelector('.message-actions .is-debug');
+  assert.ok(debugBtn, '点开关后调试按钮放出');
+  assert.ok(debugBtn.querySelector('svg path'), '调试按钮内联 SVG 图标存在');
+  assert.equal(debugBtn.getAttribute('aria-pressed'), null, '调试按钮不是开关态（无 aria-pressed）');
+  assert.equal(downBtn.nextElementSibling, debugBtn, '调试按钮出现在踩的右侧');
+  assert.equal(debugBtn.nextElementSibling, container.querySelector('.is-fold-toggle'), '开关被顶到调试按钮右侧');
+  assert.equal(container.querySelector('.is-fold-toggle').getAttribute('aria-expanded'), 'true', '展开态的 aria-expanded');
+
+  // 调试按钮：完整执行轨迹（思考 / 工具调用 / 工具响应 / 正文），按时间顺序
+  click(debugBtn);
+  await settle();
+  assert.equal(clipboardWrites.length, 2, '调试按钮写入一次剪贴板');
+  const trace = clipboardWrites[1];
+  assert.ok(trace.includes('<think>\n先分析页面结构\n</think>'), '轨迹含 think 标签包裹的思考过程');
+  assert.ok(trace.includes('<tool_name>navigate</tool_name>'), '轨迹含工具调用标签');
+  assert.ok(trace.includes('<tool_result>'), '轨迹含工具响应标签');
+  assert.ok(trace.includes('"title": "Example"'), '轨迹含工具响应');
+  assert.ok(trace.includes('最终答案'), '轨迹含正文');
+  assert.ok(!trace.includes('Agent 执行轨迹'), '轨迹不含页眉前缀');
+  assert.ok(!trace.includes('[1]'), '轨迹不再用「[1] 思考」式序号拼接');
+  assert.ok(trace.indexOf('先分析页面结构') < trace.indexOf('<tool_name>'), '轨迹按时间顺序排列');
+  assert.ok(trace.indexOf('<tool_name>') < trace.indexOf('最终答案'), '轨迹按时间顺序排列');
+  // 复制成功的反馈态：图标切成对勾（与正文复制同一反馈语言）
+  assert.ok(debugBtn.classList.contains('copied'), '调试按钮进入已复制态');
+
+  // 再点开关：调试按钮收起（默认收起状态的往复）
+  click(container.querySelector('.is-fold-toggle'));
+  await settle();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  await nextTick();
+  assert.equal(container.querySelectorAll('.message-actions .is-debug').length, 0, '再点开关后调试按钮收起');
+  assert.equal(container.querySelector('.is-fold-toggle').getAttribute('aria-expanded'), 'false', '收起态的 aria-expanded 回摆');
+  unmount();
+
+  // 结束态一律出现操作栏：异常收尾（正文后追加错误文本）与中止收尾同样可复制
+  for (const [label, message] of [
+    ['异常收尾', {
+      id: 'm-error',
+      role: 'assistant',
+      content: '部分回答\n\n调用失败',
+      parts: [textPart('部分回答'), textPart('\n\n调用失败')],
+      toolCalls: [],
+    }],
+    ['中止收尾', {
+      id: 'm-aborted',
+      role: 'assistant',
+      content: '说到一半',
+      parts: [textPart('说到一半')],
+      toolCalls: [],
+    }],
+  ]) {
+    const mounted = await mount(MessageItem, { message, isLive: false });
+    assert.deepEqual(mounted.errors, [], `${label}渲染不得抛错`);
+    const bar = mounted.container.querySelector('.message-actions');
+    assert.ok(bar, `${label}同样出现操作栏`);
+    const buttons = mounted.container.querySelectorAll('.message-actions .message-action-btn');
+    assert.equal(buttons.length, 4, `${label}操作栏按钮齐全（复制 / 赞 / 踩 / 展开开关）`);
+    assert.ok(!buttons[0].disabled, `${label}复制按钮可用`);
+    mounted.unmount();
+  }
+
+  // 异常收尾的复制口径：末段正文 = 最后一段文本（此处是追加的错误文本）
+  {
+    const mounted = await mount(MessageItem, {
+      message: {
+        id: 'm-error-copy',
+        role: 'assistant',
+        content: '部分回答\n\n调用失败',
+        parts: [textPart('部分回答'), textPart('\n\n调用失败')],
+        toolCalls: [],
+      },
+      isLive: false,
+    });
+    const buttons = mounted.container.querySelectorAll('.message-actions .message-action-btn');
+    click(buttons[0]);
+    await settle();
+    assert.equal(
+      clipboardWrites[clipboardWrites.length - 1],
+      '调用失败',
+      '异常收尾同样复制末段正文（最后一段文本）',
+    );
+    mounted.unmount();
+  }
+
+  // 无可复制内容：两个按钮都禁用（不做「点了没反应」的假交互）
+  {
+    const mounted = await mount(MessageItem, {
+      message: { id: 'm-empty', role: 'assistant', content: '', parts: [], toolCalls: [] },
+      isLive: false,
+    });
+    assert.deepEqual(mounted.errors, []);
+    const buttons = mounted.container.querySelectorAll('.message-actions .message-action-btn');
+    assert.equal(buttons.length, 3, '空消息只留复制 / 赞 / 踩（无轨迹可展开，开关不出现）');
+    assert.ok(buttons[0].disabled, '空消息的复制按钮禁用');
+    assert.equal(mounted.container.querySelectorAll('.is-debug').length, 0, '空消息没有可调试的轨迹，调试按钮不出现');
+    mounted.unmount();
+  }
+}
+
 dom.window.close();
-console.log('[message-collapse] SFC 挂载渲染（终态折叠条 / 直播小折叠 / 展开交互 / 截屏按序内联 / 压缩片段 / 旧记录与畸形输入防御）全部通过。');
+console.log('[message-collapse] SFC 挂载渲染（终态折叠条 / 直播小折叠 / 展开交互 / 截屏按序内联 / 压缩片段 / 复制与调试轨迹按钮 / 旧记录与畸形输入防御）全部通过。');

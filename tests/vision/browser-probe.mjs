@@ -252,7 +252,12 @@ try {
   {
   const beforeGuideDebuggerCalls=extensionDebuggerCalls;
   await send('Emulation.setDeviceMetricsOverride', { width:1000,height:700,deviceScaleFactor:1,mobile:false });
-  const guide = Object.fromEntries(driver.createVisionReadTools().map(tool=>[tool.name,tool]));
+  // 只读观察已并入 vision_gui（action=read/read_scroll）：经统一工具面执行
+  const guiTool=new driver.VisionGuiTool();
+  const guide={
+    read:{execute:(args,ctx)=>guiTool.execute({action:'read',...args},ctx)},
+    read_scroll:{execute:(args,ctx)=>guiTool.execute({action:'read_scroll',...args},ctx)},
+  };
   const fixture = await evaluate(`(() => {
     document.body.innerHTML='<button id="danger" disabled>Delete account</button><input id="pw" type="password" value="never-return-this"><div id="readPane" style="position:fixed;left:250px;top:100px;width:200px;height:180px;overflow:auto"><div style="width:900px;height:1600px">READABLE TEXT</div></div><iframe id="readFrame" style="position:fixed;left:500px;top:100px;width:250px;height:200px"></iframe>';
     document.documentElement.style.overflow='';scrollTo(0,0);
@@ -262,49 +267,49 @@ try {
     return {pane:point(document.querySelector('#readPane')),frame:point(document.querySelector('#readFrame'))};
   })()`);
   let guideShot=await driver.captureGuiScreenshot(undefined,'observe');
-  const observed=await guide.vision_read.execute({screenshotId:guideShot.screenshotId});
+  const observed=await guide.read.execute({screenshotId:guideShot.screenshotId});
   assert.equal(observed.success,true,observed.error);
   assert.ok(observed.data.text.includes('READABLE TEXT'));
   assert.equal(JSON.stringify(observed).includes('never-return-this'),false);
   assert.equal(observed.data.controls.find(el=>el.name==='Delete account').disabled,true);
-  const moved=await guide.vision_read_scroll.execute({screenshotId:guideShot.screenshotId,point:fixture.pane,direction:'down',percent:50});
+  const moved=await guide.read_scroll.execute({screenshotId:guideShot.screenshotId,point:fixture.pane,direction:'down',containerPercent:50});
   assert.equal(moved.success,true,moved.error);assert.ok(Math.abs(moved.data.delta.y-moved.data.container.height*0.5)<=0.5);
   assert.equal(await evaluate('scrollY'),0);
-  assert.equal((await guide.vision_read.execute({screenshotId:guideShot.screenshotId})).success,false,'Scroll consumes source');
+  assert.equal((await guide.read.execute({screenshotId:guideShot.screenshotId})).success,false,'Scroll consumes source');
   guideShot=await driver.captureGuiScreenshot(undefined,'observe');
-  const horizontal=await guide.vision_read_scroll.execute({screenshotId:guideShot.screenshotId,point:fixture.pane,direction:'right',percent:50});
+  const horizontal=await guide.read_scroll.execute({screenshotId:guideShot.screenshotId,point:fixture.pane,direction:'right',containerPercent:50});
   assert.equal(horizontal.success,true,horizontal.error);assert.ok(Math.abs(horizontal.data.delta.x-horizontal.data.container.width*0.5)<=0.5);
   await evaluate('document.querySelector("#readPane").scrollTop=9999');
   guideShot=await driver.captureGuiScreenshot(undefined,'observe');
-  const boundary=await guide.vision_read_scroll.execute({screenshotId:guideShot.screenshotId,point:fixture.pane,direction:'down'});
+  const boundary=await guide.read_scroll.execute({screenshotId:guideShot.screenshotId,point:fixture.pane,direction:'down'});
   assert.equal(boundary.success,true,boundary.error);assert.equal(boundary.data.moved,false);assert.equal(await evaluate('scrollY'),0);
   await evaluate(`new Promise(resolve=>{const f=document.querySelector('#readFrame');f.onload=()=>resolve();f.srcdoc='<div style="height:1800px">Frame content</div>';})`);
   guideShot=await driver.captureGuiScreenshot(undefined,'observe');
-  const framed=await guide.vision_read_scroll.execute({screenshotId:guideShot.screenshotId,point:fixture.frame,direction:'down',percent:50});
+  const framed=await guide.read_scroll.execute({screenshotId:guideShot.screenshotId,point:fixture.frame,direction:'down',containerPercent:50});
   assert.equal(framed.success,true,framed.error);assert.ok(framed.data.delta.y>50);assert.equal(framed.data.container.frameDepth,1);
   assert.equal(await evaluate('scrollY'),0);
-  const ready=await guide.vision_read_wait.execute({timeoutMs:800});
-  assert.equal(ready.success,true,ready.error);assert.equal(ready.data.imageKind,'viewport');assert.ok(ready.data.screenshotId);
-  assert.equal(ready.data.geometryStable,true);
-  const cropPlan=driver.planCrop(ready.data.imageSize,{x:0,y:0,width:100,height:100},2);
-  const crop=await evaluate(`(${driver.renderPngCrop.toString()})(${JSON.stringify(ready.data.screenshot.split(',')[1])},${JSON.stringify(cropPlan)})`);
+  const ready=await driver.captureGuiScreenshot(undefined,'observe');
+  assert.ok(ready.screenshotId);assert.ok(ready.screenshot.startsWith('data:image/png;base64,'));
+  const cropPlan=driver.planCrop(ready.imageSize,{x:0,y:0,width:100,height:100},2);
+  const crop=await evaluate(`(${driver.renderPngCrop.toString()})(${JSON.stringify(ready.screenshot.split(',')[1])},${JSON.stringify(cropPlan)})`);
   const cropBytes=Buffer.from(crop.screenshot.split(',')[1],'base64');
   assert.equal(cropBytes.readUInt32BE(16),200);assert.equal(cropBytes.readUInt32BE(20),140);
   assert.deepEqual(await evaluate('({clicks:guideClicks,focus:guideFocus,wheels:guideWheels})'),{clicks:0,focus:0,wheels:0});
   assert.equal(await evaluate('document.querySelector("#pw").value'),'never-return-this');
-  assert.equal((await guide.vision_read_scroll.execute({screenshotId:ready.data.screenshotId,direction:'down',clickBox:[0,0,10,10]})).success,false);
+  assert.equal((await guide.read_scroll.execute({screenshotId:ready.screenshotId,direction:'down',clickBox:[0,0,10,10]})).success,false);
   await evaluate('document.querySelector("#readFrame").style.transform="rotate(180deg)"');
   const transformedShot=await driver.captureGuiScreenshot(undefined,'observe');
-  const transformed=await guide.vision_read_scroll.execute({screenshotId:transformedShot.screenshotId,point:fixture.frame,direction:'down'});
+  const transformed=await guide.read_scroll.execute({screenshotId:transformedShot.screenshotId,point:fixture.frame,direction:'down'});
   assert.equal(transformed.success,false);assert.match(transformed.error,/Transformed/);
   await evaluate('document.querySelector("#readFrame").style.transform="";document.documentElement.style.overflowY="hidden"');
   const lockedShot=await driver.captureGuiScreenshot(undefined,'observe');
-  const locked=await guide.vision_read_scroll.execute({screenshotId:lockedShot.screenshotId,direction:'down'});
+  const locked=await guide.read_scroll.execute({screenshotId:lockedShot.screenshotId,direction:'down'});
   assert.equal(locked.success,true,locked.error);assert.equal(locked.data.moved,false);assert.match(locked.data.reason,/locked/);
+  const cancelShot=await driver.captureGuiScreenshot(undefined,'observe');
   const cancelled=new AbortController();cancelled.abort();
-  assert.equal((await guide.vision_read_wait.execute({timeoutMs:800},{signal:cancelled.signal})).success,false);
-  assert.equal(extensionDebuggerCalls,beforeGuideDebuggerCalls,'Guide capture/read/scroll/wait must never issue chrome.debugger calls');
-  console.log('[vision-browser] Guide: bounded visible reads/password exclusion, nested and horizontal scroll without click/focus/wheel, edge stop, same-origin iframe, readiness refresh, original-image crop and cancellation passed.');
+  assert.equal((await guide.read_scroll.execute({screenshotId:cancelShot.screenshotId,direction:'down'},{signal:cancelled.signal})).success,false);
+  assert.equal(extensionDebuggerCalls,beforeGuideDebuggerCalls,'Guide capture/read/scroll must never issue chrome.debugger calls');
+  console.log('[vision-browser] Guide: bounded visible reads/password exclusion, nested and horizontal scroll without click/focus/wheel, edge stop, same-origin iframe, original-image crop and cancellation passed.');
   }
   console.log('[vision-browser] Production driver: exact 1 CSS-pixel target hits at DPR 1/1.25/2, fractional physical dimensions, with/without gutters, document scrolling, Unicode clear/type and Shift+A passed.');
   console.log('[vision-browser] Nested wheel routing, exact drag endpoint, iframe click and cross-frame numbered DOM inspection passed.');

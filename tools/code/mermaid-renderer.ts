@@ -18,14 +18,13 @@
  *     → 确保离屏页存在（chrome.offscreen，BLOBS reason）
  *     → chrome.runtime.sendMessage 发送源码
  *     → 离屏页用内置打包的 mermaid（非 CDN）渲染 SVG → PNG dataURL
- *     → chrome.downloads 保存，用后即关离屏页（全局仅允许一个离屏页，
- *       及时释放避免与 screen-share-offscreen 冲突）
+ *     → chrome.downloads 保存。离屏宿主也服务 Python 执行与屏幕共享。
  *
  * ==================== 错误处理契约 ====================
  *
  * 所有失败路径返回「阶段错误码 + 可读中文说明 (+ 技术细节)」，错误码可
  * grep/上报定位：MERMAID_EMPTY_CODE / MERMAID_CODE_TOO_LONG /
- * OFFSCREEN_CONFLICT / OFFSCREEN_CREATE_FAILED / MERMAID_RENDER_TIMEOUT /
+ * MERMAID_RENDER_TIMEOUT /
  * MERMAID_PARSE_ERROR / MERMAID_EMPTY_SVG / MERMAID_SIZE_LIMIT /
  * MERMAID_CONVERT_ERROR / MERMAID_INTERNAL_ERROR / MERMAID_DOWNLOAD_FAILED。
  */
@@ -34,6 +33,7 @@ import { BaseTool } from '../base-tool';
 import { ToolMetadata } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
+import { ensureOffscreenHost } from '@/utils/offscreen-host';
 import {
   MermaidOffscreenMsgType,
   MERMAID_MAX_CODE_LENGTH,
@@ -42,19 +42,8 @@ import {
   type MermaidRenderResponse,
 } from './mermaid-protocol';
 
-/** WXT 构建后 HTML 入口名（entrypoints/mermaid-offscreen/index.html → mermaid-offscreen.html） */
-const OFFSCREEN_HTML = 'mermaid-offscreen.html';
-
 /** 下载文件名最大长度（含 .png 扩展名前的部分） */
 const MAX_FILENAME_LENGTH = 80;
-
-/**
- * chrome.runtime.getContexts 返回项的最小结构（旧版 @types/chrome 未收录
- * 该 API 的返回类型，按 MV3 Chrome ≥116 的运行时形状声明；只声明消费到的字段）
- */
-interface OffscreenContextInfo {
-  documentUrl?: string;
-}
 
 /**
  * 清洗下载文件名：剔除路径分隔符/控制字符/Windows 保留字符，
@@ -116,9 +105,7 @@ export class MermaidRendererTool extends BaseTool {
   };
 
   /**
-   * 并发串行化：LLM 可能并行发起多次工具调用，而 Chrome 全局仅允许一个
-   * offscreen document；用 Promise 链把「ensure → 渲染 → 关闭」整体排队，
-   * 避免并发调用互相关闭对方正在使用的离屏页。
+   * 串行化本工具的渲染请求，避免 Mermaid 的测量 DOM 相互干扰。
    */
   private renderQueue: Promise<unknown> = Promise.resolve();
 
@@ -161,16 +148,8 @@ export class MermaidRendererTool extends BaseTool {
         typeof params.filename === 'string' && params.filename.trim() ? params.filename : 'mermaid-diagram';
       const filename = sanitizeFilename(rawFilename);
 
-      // ── 2. 确保离屏页存在（返回是否由本次调用创建）──
-      const created = await this.ensureOffscreen();
-
-      // ── 3. 请求渲染（超时守卫；用后即关，释放全局唯一离屏槽位）──
-      let response: MermaidRenderResponse | null = null;
-      try {
-        response = await this.requestRender(code);
-      } finally {
-        if (created) await this.closeOffscreenQuietly();
-      }
+      await ensureOffscreenHost();
+      const response = await this.requestRender(code);
 
       if (!response) {
         return this.buildError(
@@ -223,65 +202,6 @@ export class MermaidRendererTool extends BaseTool {
       const message = error instanceof Error ? error.message : String(error);
       this.log(`渲染失败: ${message}`, 'error');
       return this.buildError('MERMAID_INTERNAL_ERROR', `工具执行发生未预期异常：${message}`);
-    }
-  }
-
-  /**
-   * 确保离屏页存在。
-   * @returns 是否由本次调用创建（true = 调用方负责用后关闭）
-   * @throws 带错误码的 Error：OFFSCREEN_CONFLICT / OFFSCREEN_CREATE_FAILED
-   */
-  private async ensureOffscreen(): Promise<boolean> {
-    // 查询现存离屏页：Chrome 同一时刻全局仅允许一个。
-    // 旧版 @types/chrome 未收录 getContexts 的返回类型（标为 void），按运行时
-    // 形状声明最小结构类型并显式断言（MV3 Chrome ≥116 该形状稳定）
-    let contexts: OffscreenContextInfo[] = [];
-    try {
-      contexts = (await chrome.runtime.getContexts({
-        contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
-      })) as unknown as OffscreenContextInfo[];
-    } catch {
-      // Chrome <116 无 getContexts：走 createDocument 的冲突错误兜底
-    }
-
-    const mine = contexts.find(context => context.documentUrl?.endsWith(OFFSCREEN_HTML));
-    if (mine) {
-      // 上一次调用异常中断遗留的本工具离屏页：直接复用（调用方不关闭，
-      // 交由下一轮异常恢复；正常路径总会走到关闭分支）
-      return false;
-    }
-    if (contexts.length > 0) {
-      throw new Error(
-        '[OFFSCREEN_CONFLICT] 离屏渲染通道正被其他功能占用（如屏幕共享），请在其结束后重试',
-      );
-    }
-
-    try {
-      await chrome.offscreen.createDocument({
-        url: chrome.runtime.getURL(OFFSCREEN_HTML),
-        reasons: [chrome.offscreen.Reason.BLOBS],
-        justification: '在扩展页环境中将 Mermaid 图表渲染为 PNG（Service Worker 无 DOM/Canvas）',
-      });
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('single offscreen')) {
-        // 查询与创建之间的竞态窗口内被其他功能抢先创建
-        throw new Error(
-          '[OFFSCREEN_CONFLICT] 离屏渲染通道刚被其他功能占用，请稍后重试',
-        );
-      }
-      throw new Error(`[OFFSCREEN_CREATE_FAILED] 创建离屏渲染页失败: ${message}`);
-    }
-  }
-
-  /** 关闭本工具创建的离屏页（容错：已关闭/关闭失败均静默，不阻塞主流程） */
-  private async closeOffscreenQuietly(): Promise<void> {
-    try {
-      await chrome.offscreen.closeDocument();
-      this.log('离屏渲染页已关闭（释放全局离屏槽位）');
-    } catch {
-      // 已被系统回收或并发场景下被关闭：无需处理
     }
   }
 

@@ -49,7 +49,7 @@ registerAllTools()                      (tools/index.ts)
      转发 `chrome.runtime.sendMessage({ type: 工具名, ...参数 })`；
   3. background `tools-manager-listener.ts` 按 **「白名单 ∪ 注册表」** 路由回
      `handleCallTool()`：白名单覆盖 `browser_refresh` / `browser_set_zoom` 这类
-     无注册工具的内联处理器与参数别名；凡已注册工具名（含 `browser_web_fetcher`、
+     无注册工具的内联处理器与参数别名；凡已注册工具名（含 `browser_vector_search`、
      `browser_bookmark_create` 等未登记进白名单的 browser_* 工具）一律由注册表命中，
      新增工具无需同步维护白名单。
 
@@ -67,14 +67,14 @@ registerAllTools()                      (tools/index.ts)
   与磁盘目录不必一一对应（如 `browser_interact` 属 `browser`、`python_run` 属 `code`）；
   文档表格按运行期分类记录，由测试强制对齐。
 
-## 三、分类清单（截至本次核对，共 79 个）
+## 三、分类清单（截至本次核对，共 74 个）
 
 | 分类 | 数量 | 工具名 |
 | --- | --- | --- |
 | automation | 9 | `ai_action`、`ai_locate`、`check_restricted_url`、`extract_data`、`file_upload_getter`、`file_uploader`、`formFiller`、`get_downloads_status`、`xiaozhi_config` |
 | base | 3 | `page-source`、`task-result`、`task-submit` |
 | bilibili | 2 | `bilibili_jump_tool`、`bilibili_subtitle_tool` |
-| browser | 29 | `browser_bookmark_create`、`browser_bookmark_delete`、`browser_clean_page`、`browser_close_tab`、`browser_close_tabs`、`browser_console`、`browser_create_tab`、`browser_dom_explore`、`browser_extract_data`、`browser_get_all_tabs`、`browser_get_page_html`、`browser_get_page_info`、`browser_get_page_text`、`browser_go_back_or_forward`、`browser_interact`、`browser_navigate`、`browser_network_capture`、`browser_network_request`、`browser_observe`、`browser_page_exec`、`browser_scroll`、`browser_search_bookmarks`、`browser_search_history`、`browser_send_command_to_inject_script`、`browser_switch_tab`、`browser_vector_search`、`browser_wait_for_element`、`browser_web_fetcher`、`browser_window` |
+| browser | 28 | `browser_bookmark_create`、`browser_bookmark_delete`、`browser_clean_page`、`browser_close_tab`、`browser_close_tabs`、`browser_console`、`browser_create_tab`、`browser_dom_explore`、`browser_extract_data`、`browser_get_all_tabs`、`browser_get_page_html`、`browser_get_page_info`、`browser_get_page_text`、`browser_go_back_or_forward`、`browser_interact`、`browser_navigate`、`browser_network_capture`、`browser_network_request`、`browser_observe`、`browser_page_exec`、`browser_scroll`、`browser_search_bookmarks`、`browser_search_history`、`browser_send_command_to_inject_script`、`browser_switch_tab`、`browser_vector_search`、`browser_wait_for_element`、`browser_window` |
 | code | 2 | `mermaid_renderer`、`python_run` |
 | common | 2 | `generic_wait`、`wait_page_load` |
 | data | 1 | `data_ref_tool` |
@@ -90,7 +90,7 @@ registerAllTools()                      (tools/index.ts)
 | skill | 2 | `load_skill`、`read_skill_file` |
 | text-processing | 1 | `semantic_compressor` |
 | upload-file | 1 | `read_file` |
-| vision | 7 | `ocr`、`screenshot`、`vision_gui`、`vision_read`、`vision_read_scroll`、`vision_read_wait`、`vision_read_zoom` |
+| vision | 3 | `ocr`、`screenshot`、`vision_gui` |
 
 ## 四、消费方
 

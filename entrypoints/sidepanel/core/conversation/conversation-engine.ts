@@ -32,12 +32,26 @@ import { aiChatApi, type ChatMessage } from '../../utils/ai/ai-chat-api';
 import { strictToolArguments } from '../../utils/stream/adapters/unified-normalize';
 import { trimDanglingSurrogate } from '../../utils/ai/token-estimate';
 import { openaiToolsConverter } from '../../utils/tools/openai-tools-converter';
+/**
+ * 工具执行引擎（单一事实源）：所有工具的执行都经由它——
+ * 强制串行、强制中断、有界执行、轮次完整性（结果写入上下文前校验轮次仍有效）。
+ */
+import {
+  toolExecutionEngine,
+  TOOL_INTERRUPTED_BY_USER,
+  type ToolCallContext,
+  type ToolCallOutcome,
+  type ToolCallPlan,
+} from '../tools/tool-execution-engine';
+import { appSettingsStore } from '../../utils/channels/app-settings';
 import { appendSystemTimestamp } from '../../utils/system-time';
 import { t } from '@/utils/i18n/core';
 import type { ToolExecutionContext } from '@/tools/registry';
+import type { BeginPageOperation } from './runtime-protocol';
 import { transcriptEngine } from '../context/transcript-engine';
 import { contextEngine, toModelFacingContent } from '../context/context-engine';
 import { storeProtocolMessages } from '../context/protocol-history';
+import { isCompactionSummaryMessage } from '../context/summary-message';
 import { contextCompactor } from '../context/compactor';
 import { measureContextUsage, COMPACTION_RETRY_ROUND_GAP, COMPACTION_RUNTIME_RATIO } from '../context/context-meter';
 import { imageStore } from '../images/image-store';
@@ -48,7 +62,7 @@ import { buildPlanReminder, needsPlanReminder } from './plan-reminder';
 import { planRuntimeCompaction } from './compaction-boundary';
 import { toolRegistry } from '@/tools/registry';
 import { skillEngine } from '../registry/skill-engine';
-import { filterVisionAssistantTools, isVisionAssistantTool } from '@/utils/agents/vision-assistant-policy';
+import { filterVisionAssistantTools, isVisionAssistantTool, VISION_ASSISTANT_GUI_ACTIONS } from '@/utils/agents/vision-assistant-policy';
 import { needsVisionRefresh, takeVisionToolImage, withoutVisionImage, VISION_TOOL_SETTLE_DELAY_MS, type VisionToolImage } from './vision-feedback';
 import { ViewportImageDeduplicator } from './viewport-image-dedup';
 import {
@@ -58,6 +72,11 @@ import {
   createCompactionPart,
 } from '../../utils/chat/compaction-part';
 import { GENERIC_WAIT_TOOL_ID, waitExecutionTimeout } from '@/tools/common/wait-contract';
+import {
+  PAGE_EXEC_ENGINE_TIMEOUT_MS,
+  pageExecEngineTimeout,
+} from '@/tools/common/page-exec-timeout';
+import { TOOL_NAMES } from '@/common/constants';
 import type {
   ChatMessageRecord,
   ContextUsage,
@@ -66,7 +85,7 @@ import type {
   RunSummary,
 } from '../types';
 import type { ToolCallUI } from '../../types/chat';
-import type { ToolResult } from '@/common/tool-handler';
+import { createErrorResponse, type ToolResult } from '@/common/tool-handler';
 
 // ==================== 依赖注入（可测试性） ====================
 
@@ -126,6 +145,8 @@ export interface ToolApprovalRequest {
 }
 
 export interface RunOptions {
+  /** A tool-scoped reporter expires when a newer foreground selection takes over. */
+  beginPageOperation?: BeginPageOperation;
   /** 事件观察者（异常会被吞掉并告警，不影响运行） */
   observer?: (event: ConversationEvent) => void;
   /**
@@ -222,10 +243,33 @@ interface RunHandle {
 }
 
 /**
+ * 一轮工具执行的聚合产出（会话层视角）。
+ *
+ * `committed` 是本轮结果是否已写入模型上下文的判定——轮次闸门不放行时为
+ * false，此时占位响应保留在上下文里（协议配对完整），过期结果一律丢弃。
+ */
+interface ToolBatchOutcome {
+  /** 协议 tool 消息（与 assistant.tool_calls 一一对应、顺序一致） */
+  messages: ChatMessage[];
+  /** 本批产出的视口图（vision 续拍用） */
+  images: VisionToolImage[];
+  /** 等待类工具的耗时（不计入活跃工作时长预算） */
+  waitedMs: number;
+  anySuccess: boolean;
+  anyFailure: boolean;
+  /** 结果是否已写入模型上下文 */
+  committed: boolean;
+}
+
+/**
  * 视觉重拍豁免判定的注册表回调（needsVisionRefresh 策略单一事实源）：
  * ToolMetadata.noVisionRecapture 显式为 true 才豁免；未声明（含未知工具与
  * 插件工具）一律保守重拍。提取为模块级常量供三处调用点共用，杜绝口径漂移。
  */
+const PAGE_TOOL_CATEGORIES = new Set([
+  'browser', 'vision', 'automation', 'navigation', 'search', 'bilibili', 'excalidraw', 'resource',
+]);
+
 const visionNoRecapture = (name: string): boolean | undefined =>
   toolRegistry.getTool(name)?.metadata.noVisionRecapture === true;
 
@@ -234,13 +278,6 @@ const SNAPSHOT_INTERVAL_MS = 2000;
 
 /** 工具执行等待（页面加载缓冲）时长 */
 const TOOL_SETTLE_DELAY_MS = 1000;
-
-/**
- * 用户主动中止会话时回传模型的工具错误文案（执行中被中止 / 因中止未开始执行，
- * 两种情形统一口径）。错误即数据：模型据此知道「不是工具坏了，是用户停了」，
- * 不会把它当作可重试的环境故障反复重试。
- */
-const TOOL_INTERRUPTED_BY_USER = '用户主动中断会话导致工具中断运行';
 
 /**
  * 审批等待的兜底时限（毫秒）。
@@ -333,11 +370,25 @@ export class ConversationEngine {
     return record ? structuredClone(record) : null;
   }
 
-  /** 中止指定会话的运行（准备阶段与运行中均可中止；无运行时返回 false） */
+  /**
+   * 中止指定会话的运行（准备阶段与运行中均可中止；无运行时返回 false）。
+   *
+   * 中止是**同步语义**的两段：
+   *   1. 立即置位运行级中止信号 —— 模型请求取消、工具轮次中止、后续轮次不再发起；
+   *   2. 强制中断该会话正在执行的工具（工具执行引擎的轮次级中止）——
+   *      执行中的调用立即结算为「中断」，批次内尚未开始的调用立即跳过。
+   * 调用方（后台运行时）随后等待本轮运行真正结算完毕，才回复「已停止」——
+   * 届时工具响应已写入模型上下文、轮次 id 已销毁，用户的下一条消息才不会
+   * 与上一轮的迟到结果交错。
+   */
   abort(chatId: string): boolean {
     const handle = this.runs.get(chatId);
     if (handle) {
       handle.abortController.abort();
+      // 强制中断该会话正在执行的工具（轮次级批量中断）
+      void toolExecutionEngine.interrupt(chatId).catch(error => {
+        console.warn('[ConversationEngine] 工具执行中断失败:', error);
+      });
       return true;
     }
     const pending = this.pendingAborts.get(chatId);
@@ -412,7 +463,7 @@ export class ConversationEngine {
          */
         let initialImageDuplicated = false;
         if (runtime.vision) {
-          visionImage = await this.captureScreenshot(runtime, abortController.signal);
+          visionImage = await this.captureScreenshot(runtime, abortController.signal, options.beginPageOperation);
           if (visionImage) {
             initialScreenshotRef = await imageStore.putFromDataUrl(visionImage.image);
             // 入库后才有 hash（内容寻址）；入库失败时 ref 为 null → 不判重
@@ -654,6 +705,10 @@ export class ConversationEngine {
 
         // Assemble a lossless request. Compaction is the only automatic history
         // rewrite; never send a silently truncated fallback after it fails.
+        // 首条归一先于装配：模型面历史若以 assistant 开头（压缩后的末轮工具
+        // 调用 / 空输入续跑的激活轮），补一条合成 user 轮——否则 Gemini
+        // （首条须 user）与 Anthropic 的首条约束会直接 400。
+        await this.ensureLeadingUserTurn(handle);
         const guarded = contextEngine.protect(
           [
             { role: 'system', content: runtime.systemPrompt },
@@ -686,11 +741,13 @@ export class ConversationEngine {
           onReasoning: delta => this.appendReasoning(handle, delta),
           onToolCall: call => {
             if (handle.record.toolCalls.some(existing => existing.id === call.id)) return;
+            // 形态防御：脏协议可能缺失 function 分段——此处抛错会中断整个
+            // 流式响应（一条脏 tool_call 拖垮整轮对话），必须就地归一
             const uiCall: ToolCallUI = {
               id: call.id,
-              name: call.function.name,
+              name: call?.function?.name ?? '',
               status: 'pending',
-              arguments: call.function.arguments,
+              arguments: call?.function?.arguments ?? '',
             };
             handle.record.toolCalls.push(uiCall);
             handle.record.modelPartial = {
@@ -768,14 +825,21 @@ export class ConversationEngine {
           break;
         }
 
-        // ── 工具执行（按调用顺序串行 + 各自超时 + 可中止 + 审批门） ──
+        // ── 工具执行（全部经由工具执行引擎：强制串行 / 可强制中断 / 有界执行） ──
         handle.history.push(finalMessage);
         const modelRoundStart = handle.record.modelMessages?.length ?? 0;
         const contextRoundStart = handle.record.modelContext?.length;
-        await this.appendModelMessages(handle, [finalMessage, ...toolCalls.map(call => ({
-          role: 'tool' as const, tool_call_id: call.id, name: call.function.name,
+        // 占位响应：任何异常/竞态（进程崩溃、中断、轮次失效）下 assistant.tool_calls
+        // 都保有配对的 tool 消息——协议完整性不依赖后续写入成功
+        const placeholderMessages: ChatMessage[] = toolCalls.map(call => ({
+          role: 'tool' as const,
+          tool_call_id: call.id,
+          // 形态防御：脏协议可能缺失 function 分段——此处抛错会让整轮运行
+          // 因一条脏数据崩掉（而脏数据本身已经由上游的解析容错覆盖）
+          name: call?.function?.name ?? '',
           content: JSON.stringify({ success: false, error: 'Tool execution has not completed; do not assume it succeeded.' }),
-        }))]);
+        }));
+        await this.appendModelMessages(handle, [finalMessage, ...placeholderMessages]);
         handle.roundText = '';
         // 本轮工具执行的时长截止点：串行模式下 N 个挂死调用最坏累加 N×单工具
         // 超时，必须以运行时长上限截断，否则一轮即可超出 maxDurationMs 数倍
@@ -791,10 +855,15 @@ export class ConversationEngine {
         // Explicit user/model waits do not consume the active-work duration
         // budget. Wall-clock duration/usage still includes the entire wait.
         guardStartMs += toolOutcome.waitedMs;
-        handle.history.push(...toolOutcome.messages);
-        handle.record.modelMessages = (handle.record.modelMessages ?? []).slice(0, modelRoundStart);
-        if (contextRoundStart !== undefined) handle.record.modelContext = handle.record.modelContext?.slice(0, contextRoundStart);
-        await this.appendModelMessages(handle, [finalMessage, ...toolOutcome.messages]);
+        if (toolOutcome.committed) {
+          handle.history.push(...toolOutcome.messages);
+          handle.record.modelMessages = (handle.record.modelMessages ?? []).slice(0, modelRoundStart);
+          if (contextRoundStart !== undefined) handle.record.modelContext = handle.record.modelContext?.slice(0, contextRoundStart);
+          await this.appendModelMessages(handle, [finalMessage, ...toolOutcome.messages]);
+        } else {
+          // 轮次已失效：保留占位响应（协议仍配对），过期结果一律不写入上下文
+          handle.history.push(...placeholderMessages);
+        }
         handle.roundText = '';
 
         // 中止优先：工具阶段结束后若已中止，跳过守卫/等待/重截图直接退出——
@@ -897,6 +966,7 @@ export class ConversationEngine {
             toolOutcome.messages,
             toolOutcome.images,
             abortController.signal,
+            options.beginPageOperation,
           );
           if (continuation) {
             if (continuation.imageRefs.length) handle.captureGapPending = false;
@@ -981,18 +1051,59 @@ export class ConversationEngine {
   }
 
   /**
-   * 运行时压缩（90% 触发）：把压缩边界之前的头部历史（含旧摘要消息）交给
-   * 压缩器摘要，替换为一条摘要系统消息；边界之后的内容原样保留。
+   * 首条消息角色归一（协议硬约束的通用护栏）。
    *
-   * 边界由 compaction-boundary 纯模块规划，两种模式（详见该模块说明）：
-   *   - user-boundary：最后一条用户消息之前（多轮对话 / 视觉续拍，与历史
-   *     版本语义一致；头部须具备实质可压体量，非摘要消息 ≥
-   *     USER_BOUNDARY_MIN_HEAD_TOKENS）；
-   *   - group-boundary：原子组边界回退——头部实质不足（如二次压缩时头部
-   *     只剩旧摘要，继续压零收益）或单用户消息的长自治运行（网站学习、
-   *     盲试验证、单次长工具循环）。按原子组从新到旧保留一个预算内连续
-   *     窗口（RUNTIME_COMPACTION_TAIL_RATIO），其余进入摘要，配对约束由
-   *     组边界保证。
+   * 模型面历史可能以 assistant 消息开头（压缩消息之后紧跟 assistant），典型
+   * 两种成因：
+   *   1. 运行时压缩后的尾部 = 最后一轮工具调用（assistant.tool_calls 开头）；
+   *      适配器把压缩消息并入顶级 system 后，wire 首条即这条 assistant；
+   *   2. 空输入续跑（用户只发空消息继续）：历史 = 合成激活轮
+   *      （assistant.load_skill + 其结果）同样以 assistant 开头。
+   *
+   * Gemini 明确要求 contents 首条为 user（否则 400），Anthropic 对首条角色
+   * 亦有同类约束——两者都会让整个请求被拒。护栏在**模型面**补一条合成
+   * user 轮（与视觉续拍 / 计划提醒同一形态：模型上下文内的系统合成消息，
+   * 不入用户可见转录），语义上同时承担「压缩后请续跑」的指令。
+   *
+   * 插入位置：**紧跟压缩消息之后**（压缩消息是 assistant，但它承载的是记忆
+   * 声明而非模型发言，且适配器会把它并入 system）——这样 wire 形态保持
+   * 「System → AssistantMessage(压缩结果) → UserMessage」的既定序，首条
+   * 内容消息才是 user，且 OpenAI 系仍保留压缩消息在首位。
+   *
+   * 幂等：补过一次后首个非压缩消息即 user，后续轮次直接跳过（每轮开销 =
+   * 一次扫描）。
+   */
+  private async ensureLeadingUserTurn(handle: RunHandle): Promise<void> {
+    const history = handle.history;
+    if (history.length === 0) return;
+    let insertAt = 0;
+    while (insertAt < history.length && isCompactionSummaryMessage(history[insertAt])) insertAt += 1;
+    const target = history[insertAt];
+    if (!target || target.role !== 'assistant') return;
+    const bridge: ChatMessage = {
+      role: 'user',
+      content:
+        '（请基于以上上下文继续当前任务：上方 assistant 消息是压缩摘要，' +
+        '其后为压缩前的最近一轮工具调用与结果——请勿重复已完成的步骤，直接从中断处继续；' +
+        '需要精确的计划进度时调用 plan_tool read 读取。）',
+    };
+    handle.history = [...history.slice(0, insertAt), bridge, ...history.slice(insertAt)];
+    await this.appendModelMessages(handle, [bridge]);
+    // 模型上下文按真实顺序重建（appendModelMessages 追加在末尾，与插入位不同）
+    handle.record.modelContext = await storeProtocolMessages(handle.history);
+  }
+
+  /**
+   * 运行时压缩（90% 触发）：把切分规划出的头部历史（含旧摘要消息）交给
+   * 压缩器摘要（strategy='runtime'，提示词强化用户意图与阶段识别），
+   * 替换为一条上下文压缩消息（assistant 角色）；切分之后的内容原样保留。
+   *
+   * 边界由 compaction-boundary 纯模块规划（详见该模块头注释）：
+   *   - tool-round：保留最后一轮工具调用（≤ 阈值×15%）及其后续续拍消息，
+   *     其余进入摘要；末轮超线则并入压缩（巨型轮次原样保留只会永久占位）；
+   *   - user-turn：无工具轮的纯对话历史，以最后一条用户消息为界。
+   * 首发保护：本轮用户消息尚未发送时（previousRequest 为空）以 protectFromIndex
+   * 把它钉在尾部，绝不让从未上屏的用户诉求只以摘要形态存在。
    *
    * 三重防线协同：边界实质判定（本方法上游的 planRuntimeCompaction）杜绝
    * 结构性零收益切分；压缩失败冷却（下方 catch）杜绝失败风暴；主循环的
@@ -1003,22 +1114,31 @@ export class ConversationEngine {
    * 本轮交由窗口守卫兜底。压缩期间的中止信号原样上抛，由主循环按运行中止语义收尾。
    *
    * 持久化分层（刻意为之）：
-   *   - 边界恰好落在本轮用户消息（被压缩头部 = 初始上下文全体）且会话存在
+   *   - 切分恰落在本轮用户消息之前（被压缩头部 = 初始上下文全体）且会话存在
    *     压缩前记录（priorMaxSeq > 0）时，压缩点可用 seq 精确表达，落库会话
    *     级摘要元信息，下次发送直接以摘要续跑；
-   *   - 其余边界（group-boundary、运行内合成的用户消息之前、priorRecords
-   *     为空的学习/盲测段）无法用 seq 表达分叉的模型上下文——学习会话的
-   *     转录是连续的，但各段的模型上下文互相独立（盲测隔离），单一会话级
-   *     压缩点反而会错误地把学习段摘要混入验证段。这些场景一律只写本条
-   *     助手记录的 modelContext 协议检查点，回放时以检查点为准（见
-   *     protocol-history 的 hasProtocolCheckpoint 重放语义）。
+   *   - 其余切分（工具轮次边界、运行内合成消息、priorRecords 为空的学习/盲测段）
+   *     无法用 seq 表达分叉的模型上下文——学习会话的转录是连续的，但各段的
+   *     模型上下文互相独立（盲测隔离），单一会话级压缩点反而会错误地把学习段
+   *     摘要混入验证段。这些场景一律只写本条助手记录的 modelContext 协议
+   *     检查点，回放时以检查点为准（见 protocol-history 的 hasProtocolCheckpoint
+   *     重放语义）。
    */
   private async tryCompactHistory(
     runtime: ConversationRuntime,
     handle: RunHandle,
     iteration: number,
   ): Promise<boolean> {
-    const plan = planRuntimeCompaction(handle.history, runtime.model.contextThreshold);
+    // 首发保护：本轮用户消息尚未发送（尚无任何请求）时，它不得进入被压缩
+    // 头部——否则用户诉求只以摘要形态存在一次，合成激活轮也会被立即摘要化。
+    // previousRequest 是「本轮已发出过请求」的可靠信号（压缩发生在请求之前）。
+    const protectFromIndex =
+      handle.previousRequest === undefined && handle.runUserMessage
+        ? handle.history.indexOf(handle.runUserMessage)
+        : undefined;
+    const plan = planRuntimeCompaction(handle.history, runtime.model.contextThreshold, {
+      protectFromIndex: protectFromIndex !== undefined && protectFromIndex >= 0 ? protectFromIndex : undefined,
+    });
     if (!plan) return false;
     const { head, tail } = plan;
 
@@ -1055,11 +1175,16 @@ export class ConversationEngine {
         model: runtime.model,
         threshold: runtime.model.contextThreshold,
         signal: handle.abortController.signal,
+        strategy: 'runtime',
       });
       handle.history = [
         contextCompactor.buildSummaryMessage(result.summary, Date.now(), head.length),
         ...tail,
       ];
+      // 尾部为空（末轮超 15% 且其后无合成消息）时，历史只剩压缩消息——模型
+      // 无从「继续」，且各协议要求请求以 user 轮收尾。首条归一由装配前的
+      // ensureLeadingUserTurn 统一处理（模型面补合成 user 轮），此处不再
+      // 单写一份补丁逻辑。
       handle.record.modelContext = await storeProtocolMessages(handle.history);
       const durationMs = Date.now() - startedAt;
       settleCompactionPart(handle.record.parts, {
@@ -1085,13 +1210,12 @@ export class ConversationEngine {
       console.info(
         `[ConversationEngine] 运行时压缩完成（${plan.mode}）: ${result.originalTokens} → ${result.summaryTokens} token`,
       );
-      // 边界对齐持久化：仅 user-boundary 且边界消息恰为本轮用户消息时，
-      // 压缩头恰好等于初始上下文，压缩点可用 runtime.priorMaxSeq 精确表达；
+      // 边界对齐持久化：切分恰落在本轮用户消息之前（被压缩头 = 初始上下文
+      // 全体）时，压缩点可用 runtime.priorMaxSeq 精确表达；
       // priorMaxSeq 为 0（priorRecords 为空的学习/盲测段）时无压缩前记录可指，
       // 检查点已完整承载压缩结果，不落会话级元信息。
       // 持久化失败已由转录引擎经持久化降级通道通知用户，此处不重试不阻断。
       const boundaryAligned =
-        plan.mode === 'user-boundary' &&
         handle.runUserMessage !== null &&
         tail[0] === handle.runUserMessage;
       if (boundaryAligned && runtime.priorMaxSeq > 0) {
@@ -1204,18 +1328,21 @@ export class ConversationEngine {
   /**
    * 一轮工具执行的聚合产出：协议消息 + 成败统计（连续失败守卫数据源）。
    *
-   * 执行模型：**按调用顺序串行**——同一轮的多个调用依次执行，前一个完全
-   * 结算（成功/失败/超时/中止）后才启动下一个。串行的理由：浏览器类工具
-   * 改写同一页面、数据类工具改写同一份存储，并发交错会让「模型看到的结果
-   * 顺序」与「真实操作顺序」脱钩；串行下两者因果恒成立，同轮审批弹窗也不会
-   * 并发叠出。
+   * 执行模型：**全部工具执行经由工具执行引擎**（core/tools/tool-execution-engine）——
+   * 引擎是工具执行的唯一通道，强制串行（全局 FIFO 队列，任一时刻只有一个工具
+   * 在执行）、强制中断（每个调用独立 AbortController，合流轮次中止与单工具
+   * 超时）、有界执行（单工具超时判失败并封装为标准 tool 结果）、轮次完整性
+   * （结果写入模型上下文前必须校验轮次仍有效）。
    *
-   * 不可逃逸保证：每个调用的全部路径都以 return 收尾（含 catch 与两种跳过），
-   * 任何错误都封装为 {success:false} 的 tool 消息回传模型——工具层错误在
-   * 结构上无法中断主循环。
+   * 本方法只做两件事：**编排**（开轮次 → 交给引擎 → 应用结果 → 销毁轮次）
+   * 与**领域裁决**（工具范围校验、审批门、视觉续拍节拍）。执行细节与异常
+   * 捕获全在引擎内完成——单个工具的失败或错误绝不以任何形式中断会话流程。
    *
-   * 配对完整性：因中止/时长上限未开始执行的调用同样返回配对的 tool 结果——
-   * assistant.tool_calls 与 tool 结果必须一一对应，否则下一次请求违反
+   * 不可逃逸保证：引擎把工具抛出的任何不可控错误捕获并封装为
+   * {success:false} 的 tool 消息回传模型——工具层错误在结构上无法中断主循环。
+   *
+   * 配对完整性：每个调用（含因中止/超时/上限未开始执行的调用）都产出且仅产出
+   * 一个结果，与 assistant.tool_calls 严格一一对应，否则下一次请求违反
    * OpenAI 协议、被网关 400 拒绝。
    *
    * @param deadlineMs 本轮工具执行的时长截止点（毫秒时间戳）：到达后不再启动
@@ -1228,334 +1355,417 @@ export class ConversationEngine {
     options: RunOptions,
     emit: (event: ConversationEvent) => void,
     deadlineMs: number,
-  ): Promise<{ messages: ChatMessage[]; images: VisionToolImage[]; waitedMs: number; anySuccess: boolean; anyFailure: boolean }> {
-    let anySuccess = false;
-    let anyFailure = false;
-    const signal = handle.abortController.signal;
-    const results: ChatMessage[] = [];
+  ): Promise<ToolBatchOutcome> {
+    // 轮次 id：本批工具调用的身份标识，按 chatId 缓存于引擎。
+    // 结果写入模型上下文前必须校验它仍是该会话的当前轮次。
+    const roundId = toolExecutionEngine.beginRound(runtime.chatId);
+    try {
+      const plans: ToolCallPlan[] = toolCalls.map((toolCall, index) => ({
+        callId: typeof toolCall?.id === 'string' ? toolCall.id : `call_${index}`,
+        // 形态防御：脏协议可能缺失 function 分段，先归一为字符串——
+        // 保证消息构造（含协议消息拼装）永不因属性缺失二次抛错
+        toolName: typeof toolCall?.function?.name === 'string' ? toolCall.function.name : '',
+        rawArgs: toolCall?.function?.arguments,
+      }));
+
+      const batch = await toolExecutionEngine.runBatch({
+        chatId: runtime.chatId,
+        roundId,
+        calls: plans,
+        timeoutMs: runtime.limits.toolTimeoutMs,
+        timeoutFor: plan => this.resolveToolTimeout(runtime, plan),
+        signal: handle.abortController.signal,
+        deadlineMs,
+        maxDurationMs: runtime.limits.maxDurationMs,
+        execute: (plan, ctx) => this.executeSingleToolCall(runtime, handle, plan, options, ctx),
+        kill: (plan, ctx) => this.killToolCall(runtime, plan, ctx),
+      });
+
+      // ── 轮次闸门 ──
+      // 结果写入模型上下文前必须确认「本轮仍是该会话的当前轮次」——
+      // 否则上一轮因超时/中断而迟到的结果会插进新一轮上下文，破坏
+      // assistant.tool_calls 与 tool 消息的配对（协议不合法 → 网关 400）。
+      const committed = toolExecutionEngine.isRoundActive(runtime.chatId, roundId);
+      if (!committed) {
+        console.warn(
+          `[ConversationEngine] 工具轮次 ${roundId} 已失效，其结果不写入模型上下文（保留占位响应以维持协议配对）`,
+        );
+      }
+      // 结果**始终**应用（转录 + 事件流 + 工具卡片结算）：工具卡片停在
+      // pending 会让用户以为还在跑——即便轮次已失效、结果不进上下文，
+      // 卡片也必须结算为失败（UI 状态与真实情况一致）。
+      const applied = await this.applyToolOutcomes(
+        runtime,
+        handle,
+        toolCalls,
+        plans,
+        batch.outcomes,
+        emit,
+      );
+      handle.toolCallCount += toolCalls.length;
+      return {
+        // 只有轮次仍有效时，协议消息才进入模型上下文；失效时由占位响应
+        // 维持 assistant.tool_calls ↔ tool 的配对（协议完整性不受影响）
+        messages: committed ? applied.messages : [],
+        images: committed ? applied.images : [],
+        waitedMs: applied.waitedMs,
+        anySuccess: batch.anySuccess,
+        anyFailure: batch.anyFailure,
+        committed,
+      };
+    } finally {
+      // 轮次销毁：批次完毕（无论成功失败）或异常退出后，本轮次 id 即刻失效，
+      // 此后任何迟到的结果都不得写入模型上下文。
+      toolExecutionEngine.closeRound(runtime.chatId, roundId);
+    }
+  }
+
+  /**
+   * 单工具超时上界的按调用解析。
+   *
+   * 统一上界 = runtime.limits.toolTimeoutMs（应用设置「单工具最长执行时间」，
+   * 默认 30 分钟）。三类调用按语义放宽，放宽都只是**放宽**、不放宽到无界：
+   *   - 显式等待工具：等待秒数本身可以超过统一上界（等待是有意的行为），
+   *     上界 = max(统一上界, 等待秒数 + 5s)；
+   *   - 交互类工具：等待真实用户答复，窗口由「交互超时」设置决定，
+   *     上界 = max(统一上界, 交互超时)；
+   *   - browser_page_exec：工具契约的 timeout 上限 300s 必须真实可达——
+   *     用户把统一上界调到 1 分钟时，引擎若仍按统一上界掐断，工具说明里的
+   *     300s 就是谎言；上界 = max(统一上界, 本次 timeout + 缓冲)，
+   *     且地板恒为 300s + 缓冲（契约见 tools/common/page-exec-timeout.ts）。
+   * 解析失败一律回落到统一上界——超时解析异常绝不让调用失去上界。
+   */
+  private resolveToolTimeout(runtime: ConversationRuntime, plan: ToolCallPlan): number {
+    const base = runtime.limits.toolTimeoutMs;
+    if (plan.toolName === GENERIC_WAIT_TOOL_ID) {
+      try {
+        return waitExecutionTimeout(parseToolArguments(plan.rawArgs), base);
+      } catch {
+        return base;
+      }
+    }
+    if (INTERACTIVE_TOOL_NAMES.has(plan.toolName)) {
+      // 交互类工具等待的是**真实用户**的答复，窗口由「交互超时」设置决定。
+      // 取两者较大者：人类答复窗口更长时以它为准（用户显式设置优先），
+      // 不得被统一上界静默截断——否则「交互超时 60 分钟」会被「单工具 30 分钟」
+      // 悄悄砍半。统一上界仍然兜底（交互超时更短时以它为准）。
+      return Math.max(base, appSettingsStore.getInteractTimeoutMinutes() * 60_000);
+    }
+    if (plan.toolName === TOOL_NAMES.BROWSER.PAGE_EXEC) {
+      try {
+        return pageExecEngineTimeout(parseToolArguments(plan.rawArgs), base);
+      } catch {
+        return Math.max(base, PAGE_EXEC_ENGINE_TIMEOUT_MS);
+      }
+    }
+    return base;
+  }
+
+  /**
+   * 单个工具调用的执行（引擎调用的执行器）。
+   *
+   * 只做「校验 → 审批 → 执行」，**不碰转录与事件流**——结果的应用统一在
+   * 批次结算之后进行（受轮次闸门保护）。这样「执行」与「写上下文」彻底分离：
+   * 迟到的执行结果无法绕过闸门污染模型上下文。
+   *
+   * 抛出的不可控错误（插件能力撤销等）由引擎捕获并封装为失败结果。
+   */
+  private async executeSingleToolCall(
+    runtime: ConversationRuntime,
+    handle: RunHandle,
+    plan: ToolCallPlan,
+    options: RunOptions,
+    ctx: ToolCallContext,
+  ): Promise<ToolResult> {
+    const toolName = plan.toolName;
+
+    // 插件能力撤销（运行中被禁用/解绑）→ 不可控错误，由引擎封装为失败结果
+    const plugins = getPluginSnapshot();
+    for (const key of [...(runtime.pluginOwners ?? []), ...(handle.pluginOwners ?? [])]) {
+      const installed = plugins.packages.find(p => p.key === key), binding = runtime.pluginBindings?.[key];
+      invariant(installed?.enabled && !installed.blocked && binding && installed.epoch === binding.epoch && installed.digest === binding.digest, 'CAPABILITY_REVOKED');
+    }
+    // Never trust a provider to call only advertised tools. Capability limits
+    // apply before parsing, approval, skill loading, or any side effect.
+    if ((!runtime.toolIds.includes(toolName) && !handle.dynamicToolIds.has(toolName)) ||
+        (runtime.toolPolicy === 'vision-assistant' && !isVisionAssistantTool(toolName)) ||
+        (runtime.pluginToolCeiling && !runtime.pluginToolCeiling.includes(toolName))) {
+      return createErrorResponse(
+        `TOOL_NOT_ALLOWED: ${toolName} 不在本轮工具范围内。${runtime.toolPolicy === 'vision-assistant' ? '视觉助手只观察并指导；代操作请切换视觉通用助手 / 文本通用助手。' : '请使用本轮已提供的工具。'}`,
+      );
+    }
+    // 参数解析先于审批：无效参数直接以可控失败回传模型自纠，
+    // 不浪费用户的审批注意力；审批预览也得以展示解析后的 JSON
+    let args: unknown;
+    try {
+      args = parseToolArguments(plan.rawArgs);
+    } catch (error) {
+      return createErrorResponse(error instanceof Error ? error.message : String(error));
+    }
+
+    // ── 审批门：声明 requiresApproval 的工具先经用户放行（缺省拒绝，安全侧）──
+    // 拒绝（或无审批通道）不走执行，直接以「可控失败」回传模型——
+    // 模型可向用户说明意图并换路径，与工具错误的两级模型完全一致
+    if (runtime.pluginToolCeiling && toolName === 'load_skill') {
+      const ref = (args as { skill_name?: string })?.skill_name;
+      const skill = typeof ref === 'string' ? skillEngine.get(ref) : undefined;
+      invariant(skill?.enabled && skill.allowedTools.every(id => runtime.pluginToolCeiling!.includes(id)), 'SKILL_NOT_ALLOWED');
+    }
+    if (runtime.toolPolicy === 'vision-assistant' && toolName === 'load_skill') {
+      const ref = (args as { skill_name?: unknown })?.skill_name;
+      const skill = typeof ref === 'string' ? skillEngine.get(ref) : undefined;
+      if (!skill || !skill.enabled || !skill.allowedTools.every(isVisionAssistantTool))
+        throw new Error('SKILL_NOT_ALLOWED: 该技能不存在、未启用或需要代操作工具；请切换合适的执行智能体。');
+    }
+    if (runtime.toolPolicy === 'vision-assistant' && toolName === 'browser_get_page_text' &&
+        (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length > 0))
+      throw new Error('TOOL_NOT_ALLOWED: 视觉助手的全文读取仅接受空参数（读取当前活动页），不能指定标签页、URL 或分页引用。');
+    // 观察者边界：视觉助手经白名单持有 vision_gui，但只开放只读观察 action——
+    // 手势类 action 在参数解析后、审批与执行前一律拒绝（fail-closed：action
+    // 缺失或畸形同样拒绝，因为它们本就不可能是允许的观察 action）
+    if (runtime.toolPolicy === 'vision-assistant' && toolName === 'vision_gui') {
+      const action = args && typeof args === 'object' && !Array.isArray(args)
+        ? (args as { action?: unknown }).action : undefined;
+      if (typeof action !== 'string' || !VISION_ASSISTANT_GUI_ACTIONS.has(action))
+        throw new Error(`TOOL_NOT_ALLOWED: 视觉助手仅开放只读观察 action（${[...VISION_ASSISTANT_GUI_ACTIONS].join(' / ')}），action="${typeof action === 'string' ? action : String(action)}" 不在观察者能力内；代操作请切换视觉通用助手 / 文本通用助手。`);
+    }
+    if (this.deps.requiresApproval(toolName, args)) {
+      const approved = options.onToolApproval
+        ? await this.awaitToolApproval(options.onToolApproval, {
+            id: plan.callId,
+            name: toolName,
+            argumentsPreview: this.previewArguments(args),
+          }, ctx.signal)
+        : false;
+      if (!approved) {
+        return createErrorResponse(
+          options.onToolApproval
+            ? `APPROVAL_NOT_GRANTED：工具 ${toolName} 未获批准（用户拒绝或等待超时），未执行。停止该操作并说明原因，不得换工具、按键或脚本绕过；可继续不依赖该授权的工作。`
+            : `APPROVAL_UNAVAILABLE：工具 ${toolName} 需要审批，但当前运行未接入用户审批回调，未执行。这不是用户拒绝；请报告审批通道问题，不得绕过。`,
+        );
+      }
+    }
+
+    // 视觉节拍：同一批次内的截图工具不能绕过最小间隔（防止截图身份错乱）；
+    // 间隔等待可被中止信号立即打断
+    if (runtime.vision && toolName === 'screenshot' && handle.captureGapPending)
+      await this.interruptibleDelay(VISION_TOOL_SETTLE_DELAY_MS, ctx.signal);
+    if (runtime.vision && needsVisionRefresh([{ function: { name: toolName, arguments: plan.rawArgs as string } }], [], visionNoRecapture))
+      handle.captureGapPending = true;
+
+    // 会话上下文随执行注入：plan_tool 等会话感知工具据此隔离数据
+    // （不同会话的并发运行各自的 chatId 互不串扰）
+    const explicitTab = (args as { tabId?: unknown } | null)?.tabId;
+    const category = toolRegistry.getTool(toolName)?.metadata.category;
+    const followsForeground = !Number.isInteger(explicitTab) &&
+      (toolName.startsWith('browser_') || toolName === 'page-source' ||
+        (category !== undefined && PAGE_TOOL_CATEGORIES.has(category)));
+    const reportTarget = options.beginPageOperation?.(followsForeground);
+    let executing = true;
+    try {
+      return await this.deps.executeTool(toolName,
+        runtime.toolPolicy === 'vision-assistant' && toolName === 'screenshot' ? { mode: 'observe' } : args,
+        {
+          chatId: runtime.chatId,
+          signal: ctx.signal,
+          pluginBindings: runtime.pluginBindings,
+          pluginApproved: true,
+          onTabTarget: reportTarget && (tabId => {
+            if (executing && !ctx.signal.aborted) reportTarget(tabId);
+          }),
+        });
+    } finally {
+      executing = false;
+    }
+  }
+
+  /**
+   * 强制终止钩子：按工具注册表委派到工具自带的 kill 能力。
+   *
+   * 没有 kill 能力的工具只能靠 execute 内部监听 signal 自助收敛
+   * （引擎层仍会立即结算，不会被拖住）。
+   */
+  private async killToolCall(
+    runtime: ConversationRuntime,
+    plan: ToolCallPlan,
+    ctx: ToolCallContext,
+  ): Promise<void> {
+    const tool = toolRegistry.getTool(plan.toolName);
+    if (!tool?.kill) return;
+    await tool.kill(plan.rawArgs, { chatId: runtime.chatId, signal: ctx.signal });
+  }
+
+  /**
+   * 批次结算结果的统一应用（转录 + 事件流 + 协议消息）。
+   *
+   * 只在轮次闸门放行后调用——「应用」即写入模型上下文，必须受闸门保护。
+   * 协议消息与调用顺序严格一致（assistant.tool_calls ↔ tool 消息一一配对）。
+   */
+  private async applyToolOutcomes(
+    runtime: ConversationRuntime,
+    handle: RunHandle,
+    toolCalls: NonNullable<ChatMessage['tool_calls']>,
+    plans: ToolCallPlan[],
+    outcomes: ToolCallOutcome[],
+    emit: (event: ConversationEvent) => void,
+  ): Promise<{ messages: ChatMessage[]; images: VisionToolImage[]; waitedMs: number }> {
+    const messages: ChatMessage[] = [];
     const images: VisionToolImage[] = [];
     let waitedMs = 0;
 
-    for (const toolCall of toolCalls) {
-      const startedAt = Date.now();
-      // 形态防御：脏协议可能缺失 function 分段，先归一为字符串——
-      // 保证消息构造（含 catch 分支）永不因属性缺失二次抛错逃逸本循环
-      const toolName = typeof toolCall?.function?.name === 'string' ? toolCall.function.name : '';
+    for (let index = 0; index < toolCalls.length; index++) {
+      const toolCall = toolCalls[index];
+      const plan = plans[index];
+      const toolName = plan?.toolName ?? '';
+      const outcome = outcomes[index];
 
-      // 中止检查（启动前）：停止后不再启动任何调用；已排队的调用以统一的
-      // 中断文案收尾（记录 + 事件 + 协议消息三件套，见 settleSkippedToolCall）
-      if (signal.aborted) {
-        anyFailure = true;
-        results.push(
-          this.settleSkippedToolCall(
-            runtime, handle, emit, toolCall, toolName, TOOL_INTERRUPTED_BY_USER, 0,
-          ),
-        );
-        continue;
-      }
-      // 时长截止（启动前）：串行累加不许超出本轮预算；超限调用以可读错误收尾，
-      // 交循环顶部的时长守卫向用户确认（确认继续则下一轮重新发起）
-      if (Date.now() > deadlineMs + waitedMs) {
-        anyFailure = true;
-        const minutes = Math.max(1, Math.round(runtime.limits.maxDurationMs / 60000));
-        results.push(
-          this.settleSkippedToolCall(
-            runtime, handle, emit, toolCall, toolName,
-            `已达本次运行时长上限（${minutes} 分钟），工具 ${toolName || '(未知工具)'} 未执行`,
-            Date.now() - startedAt,
-          ),
-        );
+      // 结算结果与调用严格配对：引擎保证一一对应，此处仍是防御——
+      // 缺失时以可读错误占位，绝不留悬空 tool_calls（协议不合法 → 网关 400）
+      if (!outcome) {
+        messages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          name: toolName,
+          content: JSON.stringify({ success: false, error: TOOL_INTERRUPTED_BY_USER }),
+        });
         continue;
       }
 
-      try {
-        const plugins = getPluginSnapshot();
-        for (const key of [...(runtime.pluginOwners ?? []), ...(handle.pluginOwners ?? [])]) {
-          const installed = plugins.packages.find(p => p.key === key), binding = runtime.pluginBindings?.[key];
-          invariant(installed?.enabled && !installed.blocked && binding && installed.epoch === binding.epoch && installed.digest === binding.digest, 'CAPABILITY_REVOKED');
-        }
-        // Never trust a provider to call only advertised tools. Capability limits
-        // apply before parsing, approval, skill loading, or any side effect.
-        if ((!runtime.toolIds.includes(toolName) && !handle.dynamicToolIds.has(toolName)) ||
-            (runtime.toolPolicy === 'vision-assistant' && !isVisionAssistantTool(toolName)) ||
-            (runtime.pluginToolCeiling && !runtime.pluginToolCeiling.includes(toolName))) {
-          throw new Error(`TOOL_NOT_ALLOWED: ${toolName} 不在本轮工具范围内。${runtime.toolPolicy === 'vision-assistant' ? '视觉助手只观察并指导；代操作请切换视觉通用助手 / 文本通用助手。' : '请使用本轮已提供的工具。'}`);
-        }
-        // 参数解析先于审批：无效参数直接以可控失败回传模型自纠，
-        // 不浪费用户的审批注意力；审批预览也得以展示解析后的 JSON
-        const args = parseToolArguments(toolCall.function?.arguments);
+      const success = outcome.status === 'success';
+      const failureReason = success ? undefined : outcome.error;
+      const executionTimeMs = outcome.executionTimeMs;
 
-        // ── 审批门：声明 requiresApproval 的工具先经用户放行（缺省拒绝，安全侧）──
-        // 拒绝（或无审批通道）不走执行，直接以「可控失败」回传模型——
-        // 模型可向用户说明意图并换路径，与工具错误的两级模型完全一致
-        if (runtime.pluginToolCeiling && toolName === 'load_skill') {
-          const ref = (args as { skill_name?: string })?.skill_name;
-          const skill = typeof ref === 'string' ? skillEngine.get(ref) : undefined;
-          invariant(skill?.enabled && skill.allowedTools.every(id => runtime.pluginToolCeiling!.includes(id)), 'SKILL_NOT_ALLOWED');
-        }
-        if (runtime.toolPolicy === 'vision-assistant' && toolName === 'load_skill') {
-          const ref = (args as { skill_name?: unknown })?.skill_name;
-          const skill = typeof ref === 'string' ? skillEngine.get(ref) : undefined;
-          if (!skill || !skill.enabled || !skill.allowedTools.every(isVisionAssistantTool))
-            throw new Error('SKILL_NOT_ALLOWED: 该技能不存在、未启用或需要代操作工具；请切换合适的执行智能体。');
-        }
-        if (runtime.toolPolicy === 'vision-assistant' && toolName === 'browser_get_page_text' &&
-            (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length > 0))
-          throw new Error('TOOL_NOT_ALLOWED: 视觉助手的全文读取仅接受空参数（读取当前活动页），不能指定标签页、URL 或分页引用。');
-        if (this.deps.requiresApproval(toolName, args)) {
-          const approved = options.onToolApproval
-            ? await this.awaitToolApproval(options.onToolApproval, {
-                id: toolCall.id,
-                name: toolName,
-                argumentsPreview: this.previewArguments(args),
-              })
-            : false;
-          // 审批等待期间用户中止：以中断文案收尾（而非「未获批准」——
-          // 拒绝的语义是「看了并否决」，中止的语义是「直接停了任务」）
-          if (signal.aborted) {
-            anyFailure = true;
-            results.push(
-              this.settleSkippedToolCall(
-                runtime, handle, emit, toolCall, toolName, TOOL_INTERRUPTED_BY_USER,
-                Date.now() - startedAt,
-              ),
-            );
-            continue;
-          }
-          if (!approved) {
-            anyFailure = true;
-            results.push(
-              this.settleSkippedToolCall(
-                runtime, handle, emit, toolCall, toolName,
-                options.onToolApproval
-                  ? `APPROVAL_NOT_GRANTED：工具 ${toolName} 未获批准（用户拒绝或等待超时），未执行。停止该操作并说明原因，不得换工具、按键或脚本绕过；可继续不依赖该授权的工作。`
-                  : `APPROVAL_UNAVAILABLE：工具 ${toolName} 需要审批，但当前运行未接入用户审批回调，未执行。这不是用户拒绝；请报告审批通道问题，不得绕过。`,
-                Date.now() - startedAt,
-              ),
-            );
-            continue;
-          }
-        }
-
-        // 超时与用户中止的竞争等待：任一先到即结束等待（定时器与监听器在
-        // 成功/失败/超时/中止四条路径均清理，避免长循环下累积悬空句柄）。
-        // 交互类工具（INTERACTIVE_TOOL_NAMES）不设执行超时：等待真实用户
-        // 答复可能远超 toolTimeoutMs，超时时长由 UI 层自行控制，此处只保留
-        // 中止通道。
-        // 中止时底层执行可能仍在后台完成（扩展消息通道无法取消），其结果
-        // 被丢弃并以「用户主动中断会话导致工具中断运行」回传——停止操作的
-        // 反馈即刻生效，不再被最长 120s 的工具超时卡住
-        if (runtime.vision && ['screenshot','vision_read_wait'].includes(toolName) && handle.captureGapPending)
-          await this.interruptibleDelay(VISION_TOOL_SETTLE_DELAY_MS, signal);
-        if (runtime.vision && needsVisionRefresh([toolCall], [], visionNoRecapture))
-          handle.captureGapPending = true;
-        const result = await new Promise<ToolResult>((resolve, reject) => {
-          const callController = new AbortController();
-          const isInteractiveTool = INTERACTIVE_TOOL_NAMES.has(toolName);
-          const timeoutMs = toolName === GENERIC_WAIT_TOOL_ID ? waitExecutionTimeout(args, runtime.limits.toolTimeoutMs) : runtime.limits.toolTimeoutMs;
-          let timer: ReturnType<typeof globalThis.setTimeout> | null = null;
-          const cleanup = () => {
-            if (timer !== null) globalThis.clearTimeout(timer);
-            signal.removeEventListener('abort', onAbort);
-          };
-          if (!isInteractiveTool) {
-            timer = globalThis.setTimeout(() => {
-              callController.abort();
-              cleanup();
-              reject(
-                new Error(
-                  `工具 ${toolName} 执行超时（超过 ${timeoutMs / 1000} 秒）`,
-                ),
-              );
-            }, timeoutMs);
-          }
-          const onAbort = () => {
-            callController.abort();
-            cleanup();
-            reject(new Error(TOOL_INTERRUPTED_BY_USER));
-          };
-          if (signal.aborted) {
-            onAbort();
-            return;
-          }
-          signal.addEventListener('abort', onAbort, { once: true });
-          // 会话上下文随执行注入：plan_tool 等会话感知工具据此隔离数据
-          //（不同会话的并发运行各自的 chatId 互不串扰）
-          this.deps.executeTool(toolName,
-            runtime.toolPolicy === 'vision-assistant' && toolName === 'screenshot' ? { mode: 'observe' } : args,
-            { chatId: runtime.chatId, signal: callController.signal, pluginBindings: runtime.pluginBindings, pluginApproved: true }).then(
-            value => {
-              cleanup();
-              resolve(value);
-            },
-            error => {
-              cleanup();
-              reject(error);
-            },
-          );
-        });
-        const executionTimeMs = Date.now() - startedAt;
-        // 形态防御：类型契约声明返回 ToolResult，但运行时的缺陷实现可能返回
-        // undefined / null / 字符串 / 数组——直接访问 .isError 会抛错，按成功
-        // 判定则产生「空结果假成功」。统一以可读错误回传，让缺陷在模型面暴露
-        if (!result || typeof result !== 'object' || Array.isArray(result)) {
-          const shape = !result ? String(result) : Array.isArray(result) ? 'array' : typeof result;
-          anyFailure = true;
-          results.push(
-            this.settleSkippedToolCall(
-              runtime, handle, emit, toolCall, toolName,
-              `工具 ${toolName} 返回了非 ToolResult 形态的响应（类型: ${shape}），该工具存在实现缺陷，请反馈`,
-              executionTimeMs,
-            ),
-          );
-          continue;
-        }
-        // 成败判定三要素齐全：显式 success=false、error 字段、isError 标记任一
-        // 命中即为失败——漏掉 success:false 会让「仅带 message 的失败结果」在
-        // UI 标记成功、而回传模型的 JSON 又是失败，两侧状态分裂
-        const success = !result.isError && !result.error && result.success !== false;
-        if (success) anySuccess = true;
-        else anyFailure = true;
-        // 失败结果就地提取精准原因（error/message/首段文本），供 UI 与事件消费——
-        // 否则「以结果形态返回的失败」在展开区无任何可读信息
-        const failureReason = success ? undefined : describeToolFailure(result);
-        this.applyToolResult(handle, toolCall.id, success ? 'success' : 'error', {
-          result,
-          executionTimeMs,
-          ...(failureReason !== undefined ? { error: failureReason } : {}),
-        });
-        emit({
-          type: 'tool-result',
-          chatId: runtime.chatId,
-          messageId: handle.record.id,
-          callId: toolCall.id,
-          status: success ? 'success' : 'error',
-          result,
-          error: failureReason,
-          executionTimeMs,
-        });
-        // load_skill 成功后：把该技能的预授权工具并入本会话后续请求，
-        // 使 L1 发现（未预先选择技能）的调用路径同样具备技能配套工具
-        if (success && toolName === 'load_skill') {
-          this.injectSkillTools(runtime, handle, result);
-        }
-        // 终止型工具（submit_skill / submit_validation 等）成功 → 标记本轮收尾。
-        // 只在成功时标记：提交参数不合法要回传模型自纠，不能因一次失败就终止运行；
-        // 结果照常回传与落库，模型与 UI 都能看到「提交了什么」
-        if (success && toolRegistry.getTool(toolName)?.metadata.terminal === true) {
-          handle.stopAfterRound = true;
-        }
-        if (success) {
-          const image = takeVisionToolImage(result, results.length,toolName,args);
-          if (image) {
-            images.push(image);
-            if (image.kind === 'viewport') handle.captureGapPending = false;
-            // 视口截图归档：与 vision loop 的自动重截图存进同一处图片库，
-            // 并分配 8 位短 id —— 模型据此在最终回答里用
-            // <agent-image id="xxxxxxxx" /> 把这张截图展示给用户
-            // 视觉助手（观察+指导）不参与：它不代替用户操作，也不引用截图
-            if (image.kind === 'viewport' && runtime.toolPolicy !== 'vision-assistant') {
-              const archived = await this.archiveViewportImage(image);
-              if (archived) {
-                image.imageRef = archived.ref;
-                image.shortId = archived.shortId;
-                // 短 id 注入工具结果：回传模型的 JSON 里必须带上它，
-                // 否则模型无从得知该用哪个 id 引用这张图
-                if (result.data && typeof result.data === 'object') {
-                  const data = result.data as Record<string, unknown>;
-                  data.imageId = archived.shortId;
-                  // 引用语法紧挨着 id：模型照抄邻近指令的成功率远高于远端协议
-                  if (typeof data.text === 'string') {
-                    data.text =
-                      `${data.text} Archived for citation: imageId=${archived.shortId} — ` +
-                      `show it to the user in your final answer with <agent-image id="${archived.shortId}" />.`;
-                  }
+      this.applyToolResult(handle, toolCall.id, success ? 'success' : 'error', {
+        result: outcome.result,
+        error: failureReason,
+        executionTimeMs,
+      });
+      emit({
+        type: 'tool-result',
+        chatId: runtime.chatId,
+        messageId: handle.record.id,
+        callId: toolCall.id,
+        status: success ? 'success' : 'error',
+        result: outcome.result,
+        error: failureReason,
+        executionTimeMs,
+      });
+      // load_skill 成功后：把该技能的预授权工具并入本会话后续请求，
+      // 使 L1 发现（未预先选择技能）的调用路径同样具备技能配套工具
+      if (success && toolName === 'load_skill' && outcome.result) {
+        this.injectSkillTools(runtime, handle, outcome.result);
+      }
+      // 终止型工具（submit_skill / submit_validation 等）成功 → 标记本轮收尾。
+      // 只在成功时标记：提交参数不合法要回传模型自纠，不能因一次失败就终止运行；
+      // 结果照常回传与落库，模型与 UI 都能看到「提交了什么」
+      if (success && toolRegistry.getTool(toolName)?.metadata.terminal === true) {
+        handle.stopAfterRound = true;
+      }
+      if (success && outcome.result) {
+        // vision 工具的参数判定需要**已解析**的参数对象（visionGuiAction 读 .action）；
+        // 解析失败退化为 undefined（判定为非 zoom），不影响其余逻辑——
+        // 参数非法属于执行阶段已报过的问题，不该在这里让整条结果应用流程失败
+        const parsedArgs = safeParseToolArguments(plan?.rawArgs);
+        const image = takeVisionToolImage(outcome.result, index, toolName, parsedArgs);
+        if (image) {
+          images.push(image);
+          if (image.kind === 'viewport') handle.captureGapPending = false;
+          // 视口截图归档：与 vision loop 的自动重截图存进同一处图片库，
+          // 并分配 8 位短 id —— 模型据此在最终回答里用
+          // <agent-image id="xxxxxxxx" /> 把这张截图展示给用户
+          // 视觉助手（观察+指导）不参与：它不代替用户操作，也不引用截图
+          if (image.kind === 'viewport' && runtime.toolPolicy !== 'vision-assistant') {
+            const archived = await this.archiveViewportImage(image);
+            if (archived) {
+              image.imageRef = archived.ref;
+              image.shortId = archived.shortId;
+              // 短 id 注入工具结果：回传模型的 JSON 里必须带上它，
+              // 否则模型无从得知该用哪个 id 引用这张图
+              const data = outcome.result.data as Record<string, unknown> | undefined;
+              if (data && typeof data === 'object') {
+                data.imageId = archived.shortId;
+                // 引用语法紧挨着 id：模型照抄邻近指令的成功率远高于远端协议
+                if (typeof data.text === 'string') {
+                  data.text =
+                    `${data.text} Archived for citation: imageId=${archived.shortId} — ` +
+                    `show it to the user in your final answer with <agent-image id="${archived.shortId}" />.`;
                 }
               }
             }
           }
         }
-        results.push({
-          role: 'tool',
-          tool_call_id: toolCall.id,
-          name: toolName,
-          content: JSON.stringify(Object.assign({ success }, (runtime.vision || images.some(image => image.callIndex === results.length)) ? withoutVisionImage(result) : result)),
-        });
-      } catch (error) {
-        // 中止归一化：中止瞬间并发到达的其它错误（底层通道被关闭等）统一按
-        // 中断文案呈现，保证用户停止后的回传信息一致、可分析、不误导模型
-        const executionTimeMs = Date.now() - startedAt;
-        const message = signal.aborted
-          ? TOOL_INTERRUPTED_BY_USER
-          : error instanceof Error
-            ? error.message
-            : String(error);
-        anyFailure = true;
-        results.push(
-          this.settleSkippedToolCall(runtime, handle, emit, toolCall, toolName, message, executionTimeMs),
-        );
-      } finally {
-        if (toolName === GENERIC_WAIT_TOOL_ID || INTERACTIVE_TOOL_NAMES.has(toolName)) waitedMs += Date.now() - startedAt;
+      }
+      // 协议消息体：**失败必须带可读原因**。
+      // 中止 / 超时 / 跳过这三类结算没有工具返回值（result 为空），若只回传
+      // {"success":false}，模型既不知道为什么失败、也不知道下一步该做什么
+      // ——错误即数据，这里必须把原因一并交给模型。
+      const payload: Record<string, unknown> = { success };
+      if (outcome.result) {
+        const projected =
+          (runtime.vision || images.some(image => image.callIndex === index))
+            ? withoutVisionImage(outcome.result)
+            : outcome.result;
+        // primary 是**消费方之间的路由约定**（哪条通道是正题），对模型无意义——
+        // 剥掉，别让模型上下文里多一个它猜不透的字段。
+        const { primary: _primary, ...rest } = projected;
+        Object.assign(payload, rest);
+      }
+      if (!success && !payload.error) {
+        payload.error = failureReason ?? '工具未返回可读结果';
+      }
+      messages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        name: toolName,
+        content: JSON.stringify(payload),
+      });
+      // 等待类工具（显式等待 / 交互询问）的耗时不计入活跃工作时长预算，
+      // 但计入墙钟时长与用量统计
+      if (toolName === GENERIC_WAIT_TOOL_ID || INTERACTIVE_TOOL_NAMES.has(toolName)) {
+        waitedMs += executionTimeMs;
       }
     }
 
-    handle.toolCallCount += toolCalls.length;
-    return { messages: results, images, waitedMs, anySuccess, anyFailure };
-  }
-
-  /**
-   * 为一个「未以正常结果收尾」的工具调用落定三件套：转录记录（UI 工具卡片）
-   * + tool-result 事件（实时渲染）+ 协议 tool 消息（回传模型）。
-   * 中止、时长上限、审批拒绝、执行异常四种收尾统一走此出口——三个消费面
-   * 永远同源，不出现「UI 还挂着 pending、模型侧却已收到结果」的分裂。
-   */
-  private settleSkippedToolCall(
-    runtime: ConversationRuntime,
-    handle: RunHandle,
-    emit: (event: ConversationEvent) => void,
-    toolCall: NonNullable<ChatMessage['tool_calls']>[number],
-    toolName: string,
-    message: string,
-    executionTimeMs: number,
-  ): ChatMessage {
-    this.applyToolResult(handle, toolCall.id, 'error', { error: message, executionTimeMs });
-    emit({
-      type: 'tool-result',
-      chatId: runtime.chatId,
-      messageId: handle.record.id,
-      callId: toolCall.id,
-      status: 'error',
-      error: message,
-      executionTimeMs,
-    });
-    return {
-      role: 'tool',
-      tool_call_id: toolCall.id,
-      name: toolName,
-      content: JSON.stringify({ success: false, error: message }),
-    };
+    return { messages, images, waitedMs };
   }
 
   /**
    * 有界等待审批结果：UI 审批弹窗自带 60s 超时自动拒绝，本层在其之上再加
    * TOOL_APPROVAL_MAX_WAIT_MS 兜底——审批通道因 UI 异常失联（Promise 永不
-   * 结算）时按「未获批准」收敛，运行绝不永久悬停。审批 Promise 的异常向上传播，
-   * 由 per-call catch 封装为可控失败。
+   * 结算）时按「未获批准」收敛，运行绝不永久悬停。
+   *
+   * 中止通道：用户中断会话时，审批等待立即收敛（不等弹窗超时），
+   * 停止反馈即刻生效。审批 Promise 的异常向上传播，由引擎的 per-call
+   * catch 封装为可控失败。
    */
   private async awaitToolApproval(
     approval: NonNullable<RunOptions['onToolApproval']>,
     request: ToolApprovalRequest,
+    signal?: AbortSignal,
   ): Promise<boolean> {
     let timer: ReturnType<typeof globalThis.setTimeout> | null = null;
+    let abortHandler: (() => void) | null = null;
     try {
-      return await Promise.race([
+      const races: Promise<boolean>[] = [
         approval(request),
         new Promise<false>(resolve => {
           timer = globalThis.setTimeout(() => resolve(false), TOOL_APPROVAL_MAX_WAIT_MS);
         }),
-      ]);
+      ];
+      if (signal) {
+        races.push(new Promise<false>(resolve => {
+          abortHandler = () => resolve(false);
+          if (signal.aborted) {
+            resolve(false);
+            return;
+          }
+          signal.addEventListener('abort', abortHandler, { once: true });
+        }));
+      }
+      return await Promise.race(races);
     } finally {
       if (timer !== null) globalThis.clearTimeout(timer);
+      if (abortHandler && signal) signal.removeEventListener('abort', abortHandler);
     }
   }
 
@@ -1692,49 +1902,51 @@ export class ConversationEngine {
   private async captureScreenshot(
     runtime: ConversationRuntime,
     signal?: AbortSignal,
+    beginPageOperation?: BeginPageOperation,
   ): Promise<{ image: string; description: string } | null> {
     if (!runtime.vision) return null;
     if (signal?.aborted) return null;
-    const captureController = new AbortController();
     try {
-      const execution = this.deps.executeTool(
-        runtime.vision.screenshotTool,
-        runtime.toolPolicy === 'vision-assistant' ? { mode: 'observe' } : runtime.vision.screenshotArgs,
-        { chatId: runtime.chatId, signal: captureController.signal },
-      );
-      const result = await new Promise<ToolResult | null>(resolve => {
-        let settled = false;
-        let timer: ReturnType<typeof globalThis.setTimeout> | null = null;
-        const onAbort = () => { captureController.abort(); finish(null); };
-        const finish = (value: ToolResult | null) => {
-          if (settled) return;
-          settled = true;
-          if (timer !== null) globalThis.clearTimeout(timer);
-          signal?.removeEventListener('abort', onAbort);
-          resolve(value);
-        };
-        if (signal?.aborted) {
-          onAbort();
-          return;
-        }
-        signal?.addEventListener('abort', onAbort, { once: true });
-        timer = globalThis.setTimeout(() => {
-          captureController.abort();
-          console.warn('[ConversationEngine] 截图超时，降级为纯文本');
-          finish(null);
-        }, SCREENSHOT_TIMEOUT_MS);
-        // 迟到的完成/拒绝在 settled 后被幂等吞掉，但处理器必须先挂上——
-        // 否则超时/中止之后底层的拒绝会变成未处理的 Promise rejection
-        execution.then(
-          value => finish(value),
-          error => {
-            if (!settled) {
-              console.warn('[ConversationEngine] 截图失败，降级为纯文本:', error);
-            }
-            finish(null);
-          },
-        );
+      // 截图同样是一次**工具执行**：经工具执行引擎排队（与其它工具强制串行，
+      // 避免截图与其它会话的工具并发操作同一页面），并享受同一套超时/中断
+      // 语义。它不是模型发起的 tool_call，因此不进模型上下文、不占工具调用
+      // 轮次（引擎以临时轮次执行，用完即销毁）。
+      // 截图有自己的更紧上界（30s）：截图是「看一眼现状」，不是长任务；
+      // 同时不得越过单工具统一上界（设置更小时以设置为准）。
+      // 上界必须是有限的正数——NaN 会被 setTimeout 当成 0ms（瞬间判超时）。
+      const configured = runtime.limits?.toolTimeoutMs;
+      const timeoutMs =
+        typeof configured === 'number' && Number.isFinite(configured) && configured > 0
+          ? Math.min(SCREENSHOT_TIMEOUT_MS, configured)
+          : SCREENSHOT_TIMEOUT_MS;
+      const outcome = await toolExecutionEngine.runSolo({
+        chatId: runtime.chatId,
+        call: {
+          callId: `capture_${runtime.chatId}_${Date.now().toString(36)}`,
+          toolName: runtime.vision.screenshotTool,
+          rawArgs:
+            runtime.toolPolicy === 'vision-assistant'
+              ? { mode: 'observe' }
+              : runtime.vision.screenshotArgs,
+        },
+        timeoutMs,
+        ...(signal ? { signal } : {}),
+        execute: (call, ctx) => {
+          beginPageOperation?.(true);
+          return this.deps.executeTool(
+            call.toolName,
+            call.rawArgs,
+            { chatId: runtime.chatId, signal: ctx.signal },
+          );
+        },
       });
+      if (outcome.status !== 'success') {
+        if (outcome.reason === 'timeout') {
+          console.warn('[ConversationEngine] 截图超时，降级为纯文本');
+        }
+        return null;
+      }
+      const result = outcome.result;
       if (!result || result.success !== true || signal?.aborted) return null;
       const description = (result.data as { text?: string } | undefined)?.text;
       const screenshot = (result?.data as { screenshot?: string } | undefined)?.screenshot;
@@ -1770,6 +1982,7 @@ export class ConversationEngine {
     toolMessages: ChatMessage[],
     images: VisionToolImage[],
     signal: AbortSignal,
+    beginPageOperation?: BeginPageOperation,
   ): Promise<{ message: ChatMessage; imageRefs: string[] } | null> {
     const refresh = !!runtime.vision?.reScreenshotAfterTools && needsVisionRefresh(toolCalls, images, visionNoRecapture);
     // Tool results already contain the evidence; reads/plans need no synthetic
@@ -1781,9 +1994,12 @@ export class ConversationEngine {
       if (!toolMessage || toolMessage.role !== 'tool') continue;
       try {
         const parsed = JSON.parse(toolMessage.content as string) as { success?: boolean };
+        // 形态防御：脏协议可能缺失 function 分段——用可选链取名，
+        // 避免一条脏 tool_call 把本轮的续拍摘要整条吞掉（静默丢信息）
+        const callName = toolCalls[index]?.function?.name ?? '(未知工具)';
         if (parsed.success !== true) {
           const failure = parsed as { error?: unknown };
-          successSummaries.push(`${toolCalls[index].function.name} failed: ${typeof failure.error === 'string' ? trimDanglingSurrogate(failure.error, VISION_SUMMARY_MAX_CHARS) : 'Inspect the latest screenshot before deciding how to recover.'}`);
+          successSummaries.push(`${callName} failed: ${typeof failure.error === 'string' ? trimDanglingSurrogate(failure.error, VISION_SUMMARY_MAX_CHARS) : 'Inspect the latest screenshot before deciding how to recover.'}`);
           continue;
         }
         // answer：interact 等交互类工具的用户答复（无 text 的工具结果也能摘出关键信息）
@@ -1803,7 +2019,7 @@ export class ConversationEngine {
           : hasScreenshot
             ? '（页面截图，见随附图片）'
             : '执行成功';
-        successSummaries.push(`${toolCalls[index].function.name} 调用成功，执行结果：${outcome}`);
+        successSummaries.push(`${callName} 调用成功，执行结果：${outcome}`);
       } catch {
         /* 解析失败忽略该条 */
       }
@@ -1820,7 +2036,7 @@ export class ConversationEngine {
     // reused screenshots and read-only results do not create another capture.
     if (refresh) await this.interruptibleDelay(VISION_TOOL_SETTLE_DELAY_MS, signal);
     if (signal.aborted) return null;
-    const fresh = refresh ? await this.captureScreenshot(runtime, signal) : null;
+    const fresh = refresh ? await this.captureScreenshot(runtime, signal, beginPageOperation) : null;
     const delivered = images.map(image => ({
       image: image.image,
       description: image.description,
@@ -1983,6 +2199,20 @@ function parseToolArguments(raw: unknown): unknown {
   }
 }
 
+/**
+ * 宽容解析工具参数：解析失败返回 undefined（绝不抛错）。
+ *
+ * 用于「参数只作辅助判定」的场景（如 vision 截图的 zoom 判定）——参数非法
+ * 属于执行阶段已经报过并回传模型的问题，不该在这里让整条结果应用流程失败。
+ */
+function safeParseToolArguments(raw: unknown): unknown {
+  try {
+    return parseToolArguments(raw);
+  } catch {
+    return undefined;
+  }
+}
+
 /** 记录内工具结果的体积上限（字符）；超出以摘要代替，事件流仍携带完整结果供实时渲染 */
 const MAX_RECORDED_RESULT_CHARS = 64 * 1024;
 
@@ -2012,29 +2242,6 @@ function stripInlineDataImages(value: unknown, depth = 0): unknown {
     return result;
   }
   return value;
-}
-
-/** 工具失败原因提取上限（字符）：错误摘要用于 UI 内联展示，过长截断 */
-const TOOL_FAILURE_REASON_MAX_CHARS = 600;
-
-/** 从「结果形态」的失败 ToolResult 中提取可读原因（error / message / data.error / 首段文本） */
-function describeToolFailure(result: ToolResult): string | undefined {
-  const truncate = (text: string): string =>
-    text.length <= TOOL_FAILURE_REASON_MAX_CHARS
-      ? text
-      : `${text.slice(0, TOOL_FAILURE_REASON_MAX_CHARS)}…`;
-  if (typeof result.error === 'string' && result.error) return truncate(result.error);
-  if (typeof result.message === 'string' && result.message) return truncate(result.message);
-  // 部分工具把错误详情放在 data.error（data.message）里
-  const dataError = (result.data as { error?: unknown; message?: unknown } | undefined)?.error;
-  if (typeof dataError === 'string' && dataError) return truncate(dataError);
-  const dataMessage = (result.data as { message?: unknown } | undefined)?.message;
-  if (typeof dataMessage === 'string' && dataMessage) return truncate(dataMessage);
-  const first = result.content?.[0];
-  if (first && first.type === 'text' && typeof first.text === 'string' && first.text) {
-    return truncate(first.text);
-  }
-  return undefined;
 }
 
 /** 序列化工具结果并施加体积上限（先剔除内联图片 data URL）；不可序列化或超限时返回可分析的摘要对象 */

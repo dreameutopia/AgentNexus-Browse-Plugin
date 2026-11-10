@@ -7,6 +7,7 @@ import { createErrorResponse } from '@/common/tool-handler';
 import { ERROR_MESSAGES } from '@/common/constants';
 import { toolRegistry as highLevelToolRegistry } from '@/tools/registry';
 import { cancelGuiRequest } from '@/tools/vision/gui-cancellation';
+import { PAGE_TOOL_TARGET_MESSAGE } from '@/entrypoints/sidepanel/core/conversation/runtime-protocol';
 
 /**
  * 工具调用消息类型
@@ -108,7 +109,7 @@ async function handleSetZoom(params: any) {
  * 初始化工具管理器监听器
  */
 export const initToolsManagerListener = () => {
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (typeof message?.type !== 'string') return;
 
     // 白名单消息：browser_* 工具的既有快速路径（含 browser_refresh / browser_set_zoom
@@ -118,7 +119,7 @@ export const initToolsManagerListener = () => {
     // 注册表兜底：type 恰为已注册工具名的消息同样按工具调用路由。
     // 两条路径缺一不可：
     //   - 白名单覆盖「未注册但有内联处理器/别名」的消息（browser_refresh 等）；
-    //   - 注册表覆盖「全部已注册工具」——包括 sidepanel 转发过来的 browser_web_fetcher、
+    //   - 注册表覆盖「全部已注册工具」——包括 sidepanel 转发过来的 browser_vector_search、
     //     browser_bookmark_create 等尚未登记进白名单的 browser_* 工具。此前对 browser_*
     //     前缀的排除让这类转发消息无人应答，调用方只能拿到 undefined 并误报
     //     「后台无响应」；按注册表判定则天然覆盖未来新增工具，无需再人工维护白名单。
@@ -138,7 +139,15 @@ export const initToolsManagerListener = () => {
     const params = message;
 
     // 移除type字段，避免传递给工具
-    const { type, __visionRequestId, ...toolParams } = params;
+    const { type, __visionRequestId, __pageTargetRequestId, ...toolParams } = params;
+    const onTabTarget = typeof __pageTargetRequestId === 'string' && __pageTargetRequestId.length === 36 &&
+      sender.id === chrome.runtime.id && sender.url === chrome.runtime.getURL('sidepanel.html')
+      ? (tabId: number) => {
+          void chrome.runtime.sendMessage({
+            type: PAGE_TOOL_TARGET_MESSAGE, requestId: __pageTargetRequestId, tabId,
+          }).catch(() => undefined);
+        }
+      : undefined;
 
     // 处理工具调用
     (async () => {
@@ -159,7 +168,10 @@ export const initToolsManagerListener = () => {
           result = await handleCallTool({
             name: toolName,
             args: finalParams,
-            context: typeof __visionRequestId === 'string' && __visionRequestId.length <= 128 ? { requestId: __visionRequestId } : undefined,
+            context: {
+              ...(typeof __visionRequestId === 'string' && __visionRequestId.length <= 128 ? { requestId: __visionRequestId } : {}),
+              ...(onTabTarget ? { onTabTarget } : {}),
+            },
           });
         }
 

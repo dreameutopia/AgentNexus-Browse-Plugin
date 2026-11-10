@@ -17,7 +17,7 @@ import { startPluginClient, refresh as refreshPluginCatalog } from '@/utils/plug
  * （缓存命中时为纯内存读），装配失败抛带原因的错误。
  */
 
-import { modelRegistry, appSettingsStore, FAILED_TOOL_ROUNDS_DEFAULT, MAX_ITERATIONS_DEFAULT, type ModelRef } from '../../utils/channels';
+import { modelRegistry, appSettingsStore, FAILED_TOOL_ROUNDS_DEFAULT, MAX_ITERATIONS_DEFAULT, TOOL_TIMEOUT_DEFAULT_MINUTES, type ModelRef } from '../../utils/channels';
 import { agentEngine, DEFAULT_AGENT_SYSTEM_PROMPT } from '../registry/agent-engine';
 import { skillEngine, SKILL_TOOL_IDS } from '../registry/skill-engine';
 import { contextEngine } from '../context/context-engine';
@@ -29,9 +29,9 @@ import { PLAN_SYSTEM_PROMPT_SECTION } from '@/tools/plan/plan-prompt';
 import { NOTE_SYSTEM_PROMPT_SECTION } from '@/tools/note/note-prompt';
 import { UPLOAD_FILE_SYSTEM_PROMPT_SECTION } from '@/tools/upload-file/upload-file-prompt';
 import { CORE_SESSION_TOOL_IDS } from '@/utils/tools/tool-presets';
+import { VISION_GUI_TOOL_ID } from '@/tools/vision/gui-contract';
 import { filterVisionAssistantTools, isVisionAssistantTool } from '@/utils/agents/vision-assistant-policy';
-import { VISION_ACTION_SOP } from '@/utils/agents/vision-action-sop';
-import { migrateVisionToolId, migrateVisionToolPrompt } from '@/utils/tools/vision-tool-migration';
+import { collectPromptInjections } from './prompt-hooks';
 import { toolRegistry } from '@/tools/registry';
 import { buildRichOutputSystemPrompt } from '../../utils/chat/rich-components';
 import type {
@@ -110,7 +110,10 @@ export interface RuntimeBuildInput {
 const DEFAULT_LIMITS: RuntimeLimits = {
   maxIterations: MAX_ITERATIONS_DEFAULT,
   maxDurationMs: 10 * 60 * 1000,
-  toolTimeoutMs: 120 * 1000,
+  // 单工具最长执行时间的**兜底**值（真实值取应用设置「单工具最长执行时间」，
+  // 默认 30 分钟）。此处不再是 2 分钟——那个值只反映旧实现里「工具超时」与
+  // 「用户交互超时」被混为一谈的年代。
+  toolTimeoutMs: TOOL_TIMEOUT_DEFAULT_MINUTES * 60_000,
   maxConsecutiveFailedToolRounds: FAILED_TOOL_ROUNDS_DEFAULT,
 };
 
@@ -126,14 +129,17 @@ const DEFAULT_LIMITS: RuntimeLimits = {
  *     跳过它们，但这里的告警能直接定位「哪个装配声明了不存在的工具」
  *     （拼错的工具名、已下线工具的残留引用），而不是静默少工具难排查。
  */
-function finalizeToolIds(toolIds: readonly string[]): string[] {
+function finalizeToolIds(
+  toolIds: readonly string[],
+  unknownSink?: Set<string>,
+): string[] {
   const registered = new Set(toolRegistry.getAllTools().map(tool => tool.name));
   const seen = new Set<string>();
   const result: string[] = [];
   const unknown: string[] = [];
   for (const raw of toolIds) {
     if (typeof raw !== 'string') continue;
-    const toolId = migrateVisionToolId(raw.trim());
+    const toolId = raw.trim();
     if (!toolId || seen.has(toolId)) continue;
     seen.add(toolId);
     if (!registered.has(toolId)) {
@@ -142,12 +148,41 @@ function finalizeToolIds(toolIds: readonly string[]): string[] {
     }
     result.push(toolId);
   }
-  if (unknown.length > 0) {
-    console.warn(
-      `[RuntimeBuilder] 已剔除未注册的工具 ID（请求侧不可用）: ${unknown.join(', ')}`,
-    );
+  // 未注册 ID 汇入共享收集器：advertisedToolIds 与 toolIds 两条路径共享
+  // 同一份告警（同一死链 ID 只报一次，不因两条归一化路径重复刷屏）
+  if (unknown.length > 0 && unknownSink) {
+    for (const id of unknown) unknownSink.add(id);
   }
   return result;
+}
+
+/**
+ * 视觉操作开关 → 智能体工具面归一（注入时序第 1 步的纯函数核心）。
+ *
+ * 不变量：「vision_gui ∈ 智能体声明工具面 ⇔ 视觉操作开关（AgentConfig.vision）开启」。
+ *   - 开启：注入 vision_gui（Set 去重，已存在则幂等）；
+ *   - 关闭：剔除 vision_gui 残留并上报 strippedResidue 供装配层告警。
+ *
+ * 分层：自定义智能体记录已在数据层收敛（normalizeAgentConfig 写入/恢复即剔除），
+ * 本函数是装配边界的兜底——覆盖不经过该归一化的来源（插件智能体、预置表、
+ * 未来新增的装配入口），保证交付面在任何来源下都满足不变量。
+ * 只作用于智能体声明面：extraToolIds（动态场景自带工具）与技能携带工具不经此通道。
+ *
+ * @param resolvedToolIds 智能体解析出的有序去重工具列表（agentEngine.resolve 产物）
+ * @param visionDeclared 是否声明了视觉操作（agent.vision 存在）
+ */
+export function applyVisionToggleToolSurface(
+  resolvedToolIds: readonly string[],
+  visionDeclared: boolean,
+): { toolIds: string[]; strippedResidue: boolean } {
+  if (visionDeclared) {
+    return { toolIds: [...new Set([...resolvedToolIds, VISION_GUI_TOOL_ID])], strippedResidue: false };
+  }
+  const strippedResidue = resolvedToolIds.includes(VISION_GUI_TOOL_ID);
+  return {
+    toolIds: resolvedToolIds.filter(id => id !== VISION_GUI_TOOL_ID),
+    strippedResidue,
+  };
 }
 
 class RuntimeBuilder {
@@ -159,21 +194,45 @@ class RuntimeBuilder {
    * 补充上下文 → 发现清单（可用技能 − 已激活）。
    * 预选技能不进 system prompt：其正文由 activationContext 承载（合成
    * load_skill 轮），由会话引擎追加在本轮用户消息之后。工具合并顺序保证
-   * 可预期：核心交互工具（无条件注入，任何智能体不可裁剪）→ 智能体 →
+   * 可预期：核心交互工具（无条件注入，任何智能体不可裁剪）→ 智能体
+   * （先经「视觉操作开关注入」归一 vision_gui，见 build 内注释）→
    * 技能预授权 → 会话附加 → 技能承载工具（承载工具按「存在可用技能」判定
-   * 注入，与发现清单的存在条件严格一致）。
+   * 注入，与发现清单的存在条件严格一致）。vision_gui 进入工具面后，
+   * prompt 钩子（collectPromptInjections）检测到它即注入 vision_gui 规程——
+   * 「开关注入工具 → 检测工具 → 注入规程」三步以同一份归一工具面传递。
    * 循环轮次上限与连续失败阈值取应用设置（高级设置：对话轮次上限（文本与
    * 视觉策略统一）、连续工具失败停止阈值）。
    */
   async build(input: RuntimeBuildInput): Promise<ConversationRuntime> {
     if (typeof document !== 'undefined') { await startPluginClient(); await refreshPluginCatalog(); }
     // 单次解析：agent 本体 + 去重工具列表（避免 get/resolve 双重查找造成的不一致窗口）
-    const { agent, toolIds: agentToolIds } = agentEngine.resolve(input.agentName);
+    const { agent, toolIds: resolvedAgentToolIds } = agentEngine.resolve(input.agentName);
     const pluginCeiling = pluginToolCeiling(agent?.plugin?.key);
     const allowedByPlugin = (id: string) => !pluginCeiling || pluginCeiling.includes(id) || CORE_SESSION_TOOL_IDS.includes(id) || SKILL_TOOL_IDS.includes(id);
     const isVisionGuide = agent?.id === 'Vision-Assistant';
     if (input.agentName && !agent) {
       throw new Error(`智能体 "${input.agentName}" 不存在`);
+    }
+
+    // ── 视觉操作开关注入（注入时序第 1 步：开关 → 工具面 → 提示词钩子）──
+    // hub 编辑器「视觉操作」开关 = AgentConfig.vision 声明，它是智能体工具面
+    // 携带 vision_gui 的**唯一**入口（工具组不提供勾选，见 tool-presets 的
+    // VISION_TOOLS_GROUP）。归一规则与分层见 applyVisionToggleToolSurface：
+    // 数据层（normalizeAgentConfig）已剔除自定义记录的残留，此处是装配边界
+    // 兜底并完成「开关开启 → 注入」；归一后「vision_gui ∈ 智能体声明工具面
+    // ⇔ 开关开启」恒成立，下游 sessionToolIds（技能可用性 + 提示词钩子检测）
+    // 与 toolIdSet（最终交付）同源继承该事实，第 2 步的 prompt 钩子据此注入
+    // 规程（见下方 collectPromptInjections）。注入不受 normalizeToolIds 上限
+    // 约束（与无条件注入的核心工具同级：开关能力不算用户勾选配额）。
+    const visionDeclared = !!agent?.vision;
+    const { toolIds: agentToolIds, strippedResidue } = applyVisionToggleToolSurface(
+      resolvedAgentToolIds,
+      visionDeclared,
+    );
+    if (strippedResidue) {
+      console.warn(
+        `[RuntimeBuilder] 智能体 "${agent?.name ?? input.agentName ?? '(无智能体)'}" 未开启视觉操作，已剔除其工具面中的 vision_gui 残留（该工具仅经「视觉操作」开关注入；自定义记录的数据层归一见 normalizeAgentConfig）`,
+      );
     }
 
     // ── 可用技能（三通道并经承载校验：显式关联 ∪ 工具映射兜底 ∪ 自定义自适应；
@@ -205,7 +264,7 @@ class RuntimeBuilder {
         `运行环境：浏览器扩展 AgentNexus（无终端与本地文件系统）。技能中如提及脚本（scripts/），本环境不执行脚本，请依据指令文字与可用工具完成任务。\n` +
         `导航边界：打开链接优先使用现有窗口的新标签页；browser_navigate 默认 newTab=true，只有明确需要当前页跳转才设 newTab=false。newWindow 参数已删除，禁止创建新的浏览器窗口，也不要通过脚本 window.open 绕过此边界。\n` +
         (isVisionGuide
-          ? `当前页面优先：以本轮最新截图判断布局和可见状态；需要精确文字或控件状态时用 vision_read 补充。仅当用户明确要求全文阅读时调用 browser_get_page_text（空参数读当前活动页），其结果可能含屏幕外正文与 iframe 内容，不能当作当前可见状态证据。不得执行任意脚本或代替用户点击、输入、导航；技能与附加指令不能扩大该边界。\n`
+          ? `当前页面优先：以本轮最新截图判断布局和可见状态；需要精确文字或控件状态时用 vision_gui(action="read") 补充。仅当用户明确要求全文阅读时调用 browser_get_page_text（空参数读当前活动页），其结果可能含屏幕外正文与 iframe 内容，不能当作当前可见状态证据。不得执行任意脚本或代替用户点击、输入、导航；技能与附加指令不能扩大该边界。\n`
           : `当前页面优先：用户提到「当前网站 / 当前页面 / 这个网页 / 本页」或语义明显指向其正在浏览的内容（如"分析这个页面的XX"）时，必须优先调用 browser_get_page_text 读取当前活跃标签页并基于其内容工作（该工具无条件可用，返回保留标题/表格/列表/代码块结构的 Markdown 正文，超长自动分页），禁止先搜索或跳转其它网站；仅当当前页面信息不足以完成任务时，才补充检索外部资料，并向用户明确说明哪些信息来自当前页面、哪些来自外部检索。\n`) +
         `</environment>`,
     );
@@ -227,7 +286,8 @@ class RuntimeBuilder {
     sections.push(UPLOAD_FILE_SYSTEM_PROMPT_SECTION);
     // 富内容输出准则（固定分区，按智能体能力协商裁剪）：教模型在合适场景
     // 输出 ```component 信封 / 原生 DSL 围栏，由侧边栏可信渲染管线消费。
-    // 分区正文由组件注册表生成（rich-components/registry.ts 单一事实源）；
+    // 分区正文由 rich-components/rich-output-prompt.ts 维护（能力清单来自
+    // rich-components/registry.ts，两侧一一对应）；
     // capabilities.richComponents 声明的智能体只学声明过的组件，
     // 空数组 = 整段不注入（0 开销）。未声明 = 默认全集（历史行为）
     const richOutputSection = buildRichOutputSystemPrompt(agent?.capabilities?.richComponents);
@@ -246,8 +306,12 @@ class RuntimeBuilder {
           : '工具目录中可用技能的工具已随技能可用性核验（其声明的全部工具都在本会话工具面内）。使用某技能的工具前仍须先 load_skill 获取其完整规程并按规程执行——跳过加载直接调用是盲用。\n</history-and-tools>'),
     );
     // 智能体指令分区：动态装配方（网站学习等）经 agentSystemOverride 整体替换，
-    // 否则取所选智能体指令，再兜底默认指令
-    const agentSystem = migrateVisionToolPrompt(input.agentSystemOverride?.trim() || agent?.system || DEFAULT_AGENT_SYSTEM_PROMPT);
+    // 否则取所选智能体指令，再兜底默认指令。
+    // agentInstructionsIndex 记录该分区的插入锚点：条件注入钩子（视觉规程等）
+    // 按 before-agent-instructions 语义 splice 到此位置，保证「视觉规程先于
+    // 智能体自带文本规程」的顺序不变量
+    const agentSystem = input.agentSystemOverride?.trim() || agent?.system || DEFAULT_AGENT_SYSTEM_PROMPT;
+    const agentInstructionsIndex = sections.length;
     sections.push(`<agent-instructions>\n${agentSystem}\n</agent-instructions>`);
     if (input.systemPromptSuffix?.trim()) {
       sections.push(
@@ -268,11 +332,30 @@ class RuntimeBuilder {
     );
     if (discovery) sections.push(discovery);
 
-    // Include once for custom agents and skill-discovered GUI capabilities too.
-    // Built-in action/learning prompts already carry the identical XML section.
-    const offersGui = [...sessionToolIds, ...activation.toolIds, ...availableSkills.flatMap(skill => skill.allowedTools)]
-      .some(id => migrateVisionToolId(id) === 'vision_gui');
-    if (!isVisionGuide && offersGui && !agentSystem.includes('<vision-gui-tool>')) sections.push(VISION_ACTION_SOP);
+    // ── 系统提示词条件注入钩子（可扩展环节，契约见 prompt-hooks.ts）──
+    // 注入时序第 2 步（承接上方「视觉操作开关注入」）：工具面（会话 ∪ 预选技能
+    // ∪ 可用技能携带）包含 vision_gui 即注入 vision-gui-prompt 的对应变体——
+    // 第 1 步已保证智能体面的 vision_gui 恰由视觉操作开关驱动，此处只做
+    // 「检测 → 注入」，两者以同一份归一后的工具面为传递中介。内置观察者取
+    // 观察变体；agentSystem 自带完整 <vision-gui-tool> 分区（学习域自有分区、
+    // 历史智能体正文）时钩子自跳过防重。注入锚点在 <agent-instructions> 之前。
+    // 工具面口径与最终交付的 toolIds 对齐（同样的观察者上限与插件天花板过滤）：
+    // 被天花板挡掉的工具不得出现在注入规程里——否则模型会按规程去调用一个
+    // 本轮不可用的工具。
+    const injections = collectPromptInjections({
+      agentSystem,
+      toolIds: [...new Set([
+        ...sessionToolIds,
+        ...activation.toolIds,
+        ...availableSkills.flatMap(skill => skill.allowedTools),
+      ])].filter(id => (!isVisionGuide || isVisionAssistantTool(id)) && allowedByPlugin(id)),
+      isVisionGuide,
+    });
+    let insertAt = agentInstructionsIndex;
+    for (const injection of injections) {
+      if (injection.placement === 'before-agent-instructions') sections.splice(insertAt++, 0, injection.section);
+      else sections.push(injection.section);
+    }
 
     const systemPrompt = sections.join('\n\n');
 
@@ -301,16 +384,28 @@ class RuntimeBuilder {
     const model = this.resolveModel(input.modelRef);
 
     // ── Vision 配置与限制（视觉声明来自智能体配置；轮次上限文本/视觉统一取应用设置）──
-    // visionOverride 三态：undefined=沿用 agent 声明、对象=启用/替换、null=显式禁用
+    // visionOverride 三态：undefined=沿用 agent 声明、对象=启用/替换、null=显式禁用。
+    // 本变量只决定「视觉循环」（自动截图等运行期行为）；vision_gui 工具面的
+    // 注入/剔除由上方「视觉操作开关注入」按 agent.vision 声明独立归一——
+    // 动态场景（网站学习 agentName=null）经 extraToolIds 自带工具，不走开关注入。
     const vision =
       input.visionOverride !== undefined ? input.visionOverride : (agent?.vision ?? null);
     const appSettings = appSettingsStore.get();
-    // 基线：轮次上限与连续失败阈值取应用设置（文本与视觉策略统一同一轮次），
-    // 固定时长/工具超时保持常量
+    // 单工具超时（分钟）→ 毫秒。防御：应用设置尚未 load 完（或历史文档缺字段）
+    // 时取到 undefined，乘出来是 NaN——NaN 会让 setTimeout 把它当成 0ms，
+    // 表现为「所有工具瞬间超时」。这里收敛到设置默认值，绝不放行 NaN。
+    const toolTimeoutMinutes =
+      Number.isFinite(appSettings.toolTimeoutMinutes) && appSettings.toolTimeoutMinutes > 0
+        ? appSettings.toolTimeoutMinutes
+        : TOOL_TIMEOUT_DEFAULT_MINUTES;
+    // 基线：轮次上限、连续失败阈值与单工具超时上限取应用设置（文本与视觉
+    // 策略统一同一轮次；单工具超时由工具执行引擎作为硬上界执行），固定
+    // 时长保持常量
     const baselineLimits: RuntimeLimits = {
       ...DEFAULT_LIMITS,
       maxIterations: appSettings.maxIterations,
       maxConsecutiveFailedToolRounds: appSettings.maxConsecutiveFailedToolRounds,
+      toolTimeoutMs: toolTimeoutMinutes * 60_000,
     };
     // 长任务（网站学习）经 limitsOverride 提升上限；只覆盖显式给出的字段
     const limits: RuntimeLimits = input.limitsOverride
@@ -343,19 +438,36 @@ class RuntimeBuilder {
     // 压缩点对齐用：初始上下文对应的用户面最大 seq（空历史为 0）
     const priorMaxSeq = input.priorRecords.reduce((max, record) => Math.max(max, record.seq), 0);
 
+    // 交付前终态归一化：去重保序 + 脏数据过滤 + 未注册 ID 剔除告警（见 finalizeToolIds）
+    // 两条归一化路径（advertisedToolIds / toolIds）共享同一份未注册 ID 收集器：
+    // 同一死链 ID 只告警一次，不因两条路径重复刷屏
+    const unknownToolIds = new Set<string>();
+    const advertisedToolIds = finalizeToolIds(
+      [...new Set([
+        ...toolIdSet,
+        ...availableSkills.flatMap(skill => skill.allowedTools),
+      ])].filter(id => (!isVisionGuide || isVisionAssistantTool(id)) && allowedByPlugin(id)).sort(),
+      unknownToolIds,
+    );
+    const toolIds = finalizeToolIds(
+      (isVisionGuide ? filterVisionAssistantTools([...toolIdSet]) : [...toolIdSet]).filter(allowedByPlugin),
+      unknownToolIds,
+    );
+    if (unknownToolIds.size > 0)
+      console.warn(
+        `[RuntimeBuilder] 已剔除未注册的工具 ID（请求侧不可用）: ${[...unknownToolIds].join(', ')}`,
+      );
+
     return {
       chatId: input.chatId,
       pluginBindings: pluginBindings(),
       ...(pluginCeiling ? { pluginToolCeiling: [...new Set([...pluginCeiling, ...CORE_SESSION_TOOL_IDS, ...SKILL_TOOL_IDS])] } : {}),
       pluginOwners: [...new Set([agent?.id ?? '', ...input.skillNames].filter(isPluginRef).map(ownerOf))],
       agentId: agent?.id ?? '',
-      advertisedToolIds: finalizeToolIds([...new Set([
-        ...toolIdSet,
-        ...availableSkills.flatMap(skill => skill.allowedTools),
-      ])].filter(id => (!isVisionGuide || isVisionAssistantTool(id)) && allowedByPlugin(id)).sort()),
+      advertisedToolIds,
       systemPrompt,
-      // 交付前终态归一化：去重保序 + 脏数据过滤 + 未注册 ID 剔除告警（见 finalizeToolIds）
-      toolIds: finalizeToolIds((isVisionGuide ? filterVisionAssistantTools([...toolIdSet]) : [...toolIdSet]).filter(allowedByPlugin)),
+      // 交付前终态归一化（上方已算好：去重保序 + 脏数据过滤 + 未注册 ID 剔除告警）
+      toolIds,
       ...(isVisionGuide ? { toolPolicy: 'vision-assistant' as const } : {}),
       model,
       limits,

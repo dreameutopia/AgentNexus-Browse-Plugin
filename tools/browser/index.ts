@@ -15,9 +15,8 @@ import { consoleTool } from './capture';
 import { 
   networkRequestTool, 
 } from './network';
-import { 
-  webFetcherTool, 
-  vectorSearchTabsContentTool 
+import {
+  vectorSearchTabsContentTool
 } from './content';
 import { 
   sendCommandToInjectScriptTool
@@ -64,7 +63,6 @@ function createBrowserTools() {
     networkRequestTool,
     new NetworkObserverTool(),
     // Content tools
-    webFetcherTool,
     vectorSearchTabsContentTool,
     
     // Script tools

@@ -41,6 +41,7 @@ import {
 import { FILE_MAX_CHARS, FILE_PAGE_TOKEN_BUDGET } from '@/utils/conversation-files/file-store';
 import { countSkillChars, paginateSkillText } from '@/utils/skills/skill-pagination';
 import { showAlert, showConfirm, type AppDialogResult } from './use-app-dialog';
+import { WORKSPACE_MAX_FILE_BYTES } from '@/utils/python-workspace/paths';
 
 // ==================== 常量与类型 ====================
 
@@ -61,15 +62,17 @@ export const LARGE_TEXT_FILE_CONFIRM_BYTES = 15 * 1024 * 1024;
 export const MAX_ATTACHMENT_COUNT = 50;
 
 /** 附件形态（决定输入栏图标与气泡标记） */
-export type AttachmentSource = 'plain' | 'office' | 'image';
+export type AttachmentSource = 'plain' | 'office' | 'image' | 'workspace';
 
 /** 输入区待发送附件 */
 export interface ChatAttachment {
   id: string;
   /** 用户可见的原始文件名（保持原格式展示） */
   name: string;
-  /** text = 文本类（plain/office 解析产物）；image = 图片 */
-  kind: 'text' | 'image';
+  /** workspace = only the original file is sent to the local workspace. */
+  kind: 'text' | 'image' | 'workspace';
+  rawFile?: File;
+  previewFile?: { chatId: string; id: string };
   /** 图片 data URL（kind=image 时存在，已过压缩引擎整理） */
   dataUrl?: string;
   /**
@@ -147,6 +150,7 @@ export function formatBytes(bytes: number): string {
 export function createAttachmentManager(ctx: AttachmentHostContext) {
   const attachments = ref<ChatAttachment[]>([]);
   const isAdding = ref(false);
+  let generation = 0;
 
   const notify = (message: string): void => {
     try {
@@ -167,6 +171,7 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
   }
 
   function clearAttachments(): void {
+    generation += 1;
     attachments.value = [];
   }
 
@@ -176,8 +181,10 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
    * 竞态；单文件的意外异常被兜底捕获为可读提示，绝不中断批次。
    * 批量超限一次提示（整批拒绝或截断到剩余额度），杜绝逐文件连环弹窗。
    */
-  async function addFiles(files: File[]): Promise<void> {
+  async function addFiles(files: File[], workspaceOnly = false): Promise<void> {
     if (isAdding.value || files.length === 0) return;
+    const batchGeneration = generation;
+    const isCurrent = () => batchGeneration === generation;
     // 同步占位（在任何 await 之前）：并发入口（拖拽 + 选择器）在弹窗等待期
     // 不得双双进入处理循环
     isAdding.value = true;
@@ -204,9 +211,11 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
       // 批内视觉引导记忆：同批只问一次（见 BatchVisionMemo）
       const visionMemo: BatchVisionMemo = { decision: null, modelLabel: '', skipped: 0 };
       for (const file of batch) {
+        if (!isCurrent()) return;
         try {
-          await addOne(file, visionMemo);
+          await addOne(file, visionMemo, workspaceOnly, isCurrent);
         } catch (error) {
+          if (!isCurrent()) return;
           const reason = reasonOf(error);
           console.warn('[Attachments] 文件处理意外失败:', file.name, error);
           await showAlert(
@@ -218,7 +227,7 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
       }
       // 批次结束汇总：有图片因「无视觉能力且未放行」被跳过时一次性告知，
       // 逐文件弹提示只会把 N 张图变成 N 次打扰
-      if (visionMemo.skipped > 0) {
+      if (isCurrent() && visionMemo.skipped > 0) {
         notify(t('sidepanel.attachments.visionUploadBatchSkipped', { count: visionMemo.skipped }));
       }
     } finally {
@@ -230,7 +239,9 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
   async function addOne(
     file: File,
     /** 批内共享的视觉引导记忆（同批首问复用；缺省 = 每文件独立询问） */
-    visionMemo?: BatchVisionMemo,
+    visionMemo: BatchVisionMemo,
+    workspaceOnly: boolean,
+    isCurrent: () => boolean,
   ): Promise<void> {
     // ── 数量上限：防御海量小文件把信封元信息撑成超长消息 ──
     if (attachments.value.length >= MAX_ATTACHMENT_COUNT) {
@@ -244,29 +255,34 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
 
     const classification = classifyAttachmentFile(file.name, file.type);
 
-    // ── 明确拒绝：不支持的格式 / 旧版二进制 Office ──
-    if (classification.kind === 'unsupported') {
+    if (file.size > WORKSPACE_MAX_FILE_BYTES) {
       await showAlert(
-        t('sidepanel.attachments.unsupportedFormat', { name: file.name }),
+        t('sidepanel.attachments.workspaceFileTooLarge', { name: file.name, limit: formatBytes(WORKSPACE_MAX_FILE_BYTES) }),
         t('sidepanel.attachments.promptTitle'),
         'warn',
       );
       return;
     }
-    if (classification.kind === 'legacy-office') {
-      await showAlert(
-        t('sidepanel.attachments.legacyOfficeFormat', { name: file.name }),
-        t('sidepanel.attachments.promptTitle'),
-        'warn',
-      );
+    if (workspaceOnly || classification.kind === 'unsupported' || classification.kind === 'legacy-office') {
+      attachments.value.push({
+        id: crypto.randomUUID(),
+        name: file.name,
+        kind: 'workspace',
+        rawFile: file,
+        chars: 0,
+        sizeBytes: file.size,
+        ext: classification.ext,
+        mimeType: file.type,
+        source: 'workspace',
+      });
       return;
     }
 
     if (classification.kind === 'image') {
-      await addImage(file, classification.ext, visionMemo);
+      await addImage(file, classification.ext, visionMemo, isCurrent);
       return;
     }
-    await addText(file, classification.kind === 'office' ? 'office' : 'plain', classification.ext);
+    await addText(file, classification.kind === 'office' ? 'office' : 'plain', classification.ext, isCurrent);
   }
 
   // ── 图片链：视觉能力引导 → 99MB 硬限 → 压缩引擎整理（>2MB / 转码形态）→ 入列 ──
@@ -281,12 +297,13 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
   async function addImage(
     file: File,
     ext: string,
-    visionMemo?: BatchVisionMemo,
+    visionMemo: BatchVisionMemo,
+    isCurrent: () => boolean,
   ): Promise<void> {
     if (!ctx.isCurrentModelVision()) {
       const label = ctx.currentModelLabel?.() ?? '';
       // 同批且同模型：复用首问结果，不再弹窗
-      if (visionMemo && visionMemo.decision !== null && visionMemo.modelLabel === label) {
+      if (visionMemo.decision !== null && visionMemo.modelLabel === label) {
         if (visionMemo.decision !== 'confirm') {
           visionMemo.skipped += 1;
           console.info(`[Attachments] 模型「${label || '(未配置)'}」无视觉能力，沿用批内选择跳过 ${file.name}`);
@@ -296,12 +313,11 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
         const decision = ctx.confirmImageWithoutVision
           ? await ctx.confirmImageWithoutVision(label)
           : 'cancel';
-        if (visionMemo) {
-          visionMemo.decision = decision;
-          visionMemo.modelLabel = label;
-        }
+        if (!isCurrent()) return;
+        visionMemo.decision = decision;
+        visionMemo.modelLabel = label;
         if (decision !== 'confirm') {
-          if (visionMemo) visionMemo.skipped += 1;
+          visionMemo.skipped += 1;
           console.info(`[Attachments] 模型「${label || '(未配置)'}」无视觉能力，用户放弃上传 ${file.name}`);
           return;
         }
@@ -319,29 +335,16 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
       return;
     }
 
-    let buffer: ArrayBuffer;
-    try {
-      buffer = await file.arrayBuffer();
-    } catch (error) {
-      throw new Error(reasonOf(error));
-    }
+    const buffer = await file.arrayBuffer();
+    if (!isCurrent()) return;
 
     // 体积提示先行的长时操作反馈（>2MB 必然进压缩引擎）
     if (file.size > IMAGE_COMPRESS_TARGET_BYTES) {
       notify(t('sidepanel.attachments.compressing', { name: file.name, size: formatBytes(file.size) }));
     }
 
-    let prepared;
-    try {
-      prepared = await prepareImageForUpload(buffer, ext, file.type);
-    } catch (error) {
-      await showAlert(
-        t('sidepanel.attachments.parseFailed', { name: file.name, reason: reasonOf(error) }),
-        t('sidepanel.attachments.promptTitle'),
-        'error',
-      );
-      return;
-    }
+    const prepared = await prepareImageForUpload(buffer, ext, file.type);
+    if (!isCurrent()) return;
 
     // 整理结果反馈（压缩 / 转码发生时告知前后体积；直传静默）
     if (prepared.changed) {
@@ -355,8 +358,9 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
     }
 
     attachments.value.push({
-      id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: crypto.randomUUID(),
       name: file.name,
+      rawFile: file,
       kind: 'image',
       dataUrl: prepared.dataUrl,
       chars: 0,
@@ -369,7 +373,12 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
   }
 
   // ── 文本链：>15MB 确认 → 解析/解码（Office 含内嵌图片确认与空产物拒绝）→ 分页元信息 → 入列 ──
-  async function addText(file: File, source: AttachmentSource, ext: string): Promise<void> {
+  async function addText(
+    file: File,
+    source: 'office' | 'plain',
+    ext: string,
+    isCurrent: () => boolean,
+  ): Promise<void> {
     // ── 超大文件二次确认：不拒绝（分页架构下内容零丢失），但让用户知情 ──
     if (file.size > LARGE_TEXT_FILE_CONFIRM_BYTES) {
       const proceed = await showConfirm(
@@ -377,6 +386,7 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
         t('sidepanel.attachments.promptTitle'),
         'warn',
       );
+      if (!isCurrent()) return;
       if (!proceed) {
         notify(t('sidepanel.attachments.largeFileDeclined', { name: file.name }));
         return;
@@ -384,20 +394,12 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
     }
 
     // ── 提取文本：Office 先解析，纯文本走解码阶梯 ──
+    const buffer = await file.arrayBuffer();
+    if (!isCurrent()) return;
     let text: string;
     if (source === 'office') {
-      let parsed: { text: string; hasEmbeddedImages: boolean };
-      try {
-        const buffer = await file.arrayBuffer();
-        parsed = await parseOfficeDocument(buffer, ext);
-      } catch (error) {
-        await showAlert(
-          t('sidepanel.attachments.parseFailed', { name: file.name, reason: reasonOf(error) }),
-          t('sidepanel.attachments.promptTitle'),
-          'error',
-        );
-        return;
-      }
+      const parsed = await parseOfficeDocument(buffer, ext);
+      if (!isCurrent()) return;
       // 空产物防御：无任何文本的 Office 文档（空表 / 纯图片页）入列没有意义
       if (!parsed.text.trim()) {
         await showAlert(
@@ -413,21 +415,11 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
           t('sidepanel.attachments.promptTitle'),
           'warn',
         );
-        if (!proceed) return;
+        if (!isCurrent() || !proceed) return;
       }
       text = parsed.text;
     } else {
-      try {
-        const buffer = await file.arrayBuffer();
-        text = decodeTextBuffer(buffer);
-      } catch (error) {
-        await showAlert(
-          t('sidepanel.attachments.parseFailed', { name: file.name, reason: reasonOf(error) }),
-          t('sidepanel.attachments.promptTitle'),
-          'error',
-        );
-        return;
-      }
+      text = decodeTextBuffer(buffer);
       // 空产物防御（纯文本侧）：空文件 / 纯空白文件入列没有意义——
       // 注册层会拒绝空正文，在上传时就拦截比发送时失败可读得多
       if (!text.trim()) {
@@ -471,8 +463,9 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
     }
 
     attachments.value.push({
-      id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: crypto.randomUUID(),
       name: file.name,
+      rawFile: file,
       kind: 'text',
       text,
       chars: first.page.totalChars,

@@ -1,4 +1,6 @@
 import { OffscreenMsgType } from '../background/screen-share/types';
+import './mermaid-host';
+import './python-host';
 
 type ErrorDetails = Record<string, unknown>;
 type DisplayMediaConstraints = {

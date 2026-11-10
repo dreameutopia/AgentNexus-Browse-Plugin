@@ -41,8 +41,8 @@ try{
   await nextTick();assert.deepEqual(errors,[],'Streaming updates must not recreate the initialization error');
   console.log('[chat-ui] Actual ChatMessageList script setup, initial watcher evaluation, filtering and streaming updates passed.');
 }finally{app.unmount();dom.window.close();}
-const usage = spawnSync(process.execPath, [path.resolve('tests/chat-ui/usage.test.mjs')], { stdio: 'inherit' });
-assert.equal(usage.status, 0, 'Usage statistics UI regression');
+// 使用统计 UI 已迁至管理中心，覆盖随组件迁至 tests/hub/usage-python.test.mjs
+// （侧边栏旧组件与其回归用例一并移除，避免悬空测试）
 const learn = spawnSync(process.execPath, [path.resolve('tests/chat-ui/learn-session.test.mjs')], { stdio: 'inherit' });
 assert.equal(learn.status, 0, 'Learning/validation chat UI regression');
 const questions = spawnSync(process.execPath, [path.resolve('tests/chat-ui/questions.test.mjs')], { stdio: 'inherit' });
@@ -61,6 +61,10 @@ const richComponents = spawnSync(process.execPath, [path.resolve('tests/chat-ui/
 assert.equal(richComponents.status, 0, 'Rich components (envelope/registry/derivation/blocks) regression');
 const streamingMarkdown = spawnSync(process.execPath, [path.resolve('tests/chat-ui/streaming-markdown.test.mjs')], { stdio: 'inherit' });
 assert.equal(streamingMarkdown.status, 0, 'Streaming incremental freeze (boundary + MarkdownText host) regression');
+const pythonWorkspace = spawnSync(process.execPath, [path.resolve('tests/chat-ui/python-workspace.test.mjs')], { stdio: 'inherit' });
+assert.equal(pythonWorkspace.status, 0, 'Python workspace storage and download card regression');
+const chatDatabase = spawnSync(process.execPath, [path.resolve('tests/chat-ui/chat-database.test.mjs')], { stdio: 'inherit' });
+assert.equal(chatDatabase.status, 0, 'Chat database migrations and stream persistence regression');
 const visionTimeline = spawnSync(process.execPath, [path.resolve('tests/chat-ui/vision-timeline.test.mjs')], { stdio: 'inherit' });
 assert.equal(visionTimeline.status, 0, 'Vision screenshot timeline ordering regression');
 const guardConfirm = spawnSync(process.execPath, [path.resolve('tests/chat-ui/guard-confirm.test.mjs')], { stdio: 'inherit' });

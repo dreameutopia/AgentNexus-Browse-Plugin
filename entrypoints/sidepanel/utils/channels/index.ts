@@ -35,6 +35,9 @@ export {
   MAX_ITERATIONS_DEFAULT,
   modelRefKey,
   normalizeModelRef,
+  TOOL_TIMEOUT_DEFAULT_MINUTES,
+  TOOL_TIMEOUT_MAX_MINUTES,
+  TOOL_TIMEOUT_MIN_MINUTES,
 } from './channel-types';
 export type {
   AppSettings,

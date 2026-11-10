@@ -127,6 +127,21 @@
       />
       <p class="config-form-hint">{{ t('sidepanel.apiConfig.toolFailRoundsHint') }}</p>
     </div>
+
+    <!-- 单工具最长执行时间（全局应用级；由工具执行引擎作为硬上界执行） -->
+    <div class="config-form-group">
+      <label class="config-form-label">{{ t('sidepanel.apiConfig.toolTimeoutMinutes') }}</label>
+      <input
+        type="number"
+        class="config-form-input config-form-input-sm"
+        v-model.number="draft.toolTimeoutMinutes"
+        :min="TOOL_TIMEOUT_MIN_MINUTES"
+        :max="TOOL_TIMEOUT_MAX_MINUTES"
+        step="1"
+        placeholder="30"
+      />
+      <p class="config-form-hint">{{ t('sidepanel.apiConfig.toolTimeoutMinutesHint') }}</p>
+    </div>
   </div>
 </template>
 
@@ -151,6 +166,8 @@ import {
   FAILED_TOOL_ROUNDS_MIN,
   ITERATIONS_MAX,
   ITERATIONS_MIN,
+  TOOL_TIMEOUT_MAX_MINUTES,
+  TOOL_TIMEOUT_MIN_MINUTES,
 } from '../../../utils/channels';
 import { settingsFormKey, type SettingsFormApi } from '../composables/use-settings-form';
 

@@ -39,6 +39,7 @@ export function isAppSettingsLike(value: unknown): boolean {
     isOptionalString(value.defaultAgentId) &&
     isOptionalNumber(value.maxIterations) &&
     isOptionalNumber(value.maxConsecutiveFailedToolRounds) &&
+    isOptionalNumber(value.toolTimeoutMinutes) &&
     isOptionalNumber(value.retryCount) &&
     isOptionalNumber(value.retryInterval) &&
     isOptionalNumber(value.temperature) &&

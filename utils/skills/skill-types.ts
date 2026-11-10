@@ -1,10 +1,9 @@
-import { migrateVisionToolId } from '../tools/vision-tool-migration';
 /**
  * 技能（Skill）类型定义
  *
  * 遵循 Agent Skills 开放规范（agentskills.io）的浏览器扩展适配版：
  * 一个技能 = 一个 SKILL.md（YAML frontmatter + Markdown 正文）+ 可选资源文件。
- * 规范中的 scripts/ 目录在本环境不执行（无 bash），仅作为文字参考保留在正文中。
+ * 资源可按需复制到会话工作区，由可用的浏览器运行工具处理。
  *
  * 身份模型（v2）：
  *   - id：全局唯一且创建后不可变的机器标识（短 slug），是存储键与一切引用
@@ -43,6 +42,8 @@ export interface SkillRecord {
   allowedTools: string[];
   /** 相对路径 → 文本内容；必须包含 'SKILL.md'（原始全文，含 frontmatter） */
   files: Record<string, string>;
+  /** 无法无损表示为 UTF-8 文本的资源，按相对路径保存原始字节的 Base64。 */
+  resourceBytes?: Record<string, string>;
   /**
    * 显式目录（可能为空目录）：相对路径，以 / 分隔、无首尾斜杠。
    * 文件路径派生的目录不在此列（由 files 隐含）；此列只承载「用户显式创建、
@@ -123,7 +124,7 @@ export function normalizeFolderList(folders: unknown): string[] {
 // ──── 导入 / 导出防护上限 ────
 
 /** 单个技能允许携带的最大文件数（导入防御：zip 炸弹/超深目录） */
-export const SKILL_IMPORT_MAX_FILES = 60;
+export const SKILL_IMPORT_MAX_FILES = 256;
 
 /** 单个导入文件的大小上限（字符；约 2MB 文本） */
 export const SKILL_IMPORT_MAX_FILE_CHARS = 2_000_000;
@@ -166,7 +167,7 @@ export function normalizeAllowedToolList(values: readonly unknown[]): string[] {
   const result: string[] = [];
   for (const raw of values) {
     if (typeof raw !== 'string') continue;
-    const toolId = migrateVisionToolId(raw.trim());
+    const toolId = raw.trim();
     if (!toolId || seen.has(toolId)) continue;
     seen.add(toolId);
     result.push(toolId);

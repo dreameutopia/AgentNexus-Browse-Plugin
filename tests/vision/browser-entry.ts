@@ -15,4 +15,4 @@ export async function executeGui(action:GuiAction,parameters:GuiParameters,signa
 }
 export { renderPngCrop } from '../../tools/vision/image-region';
 export { planCrop,registerView,mapViewPoint } from '../../tools/vision/observation-model';
-export { createVisionReadTools } from '../../tools/vision/read-tools';
+// 只读观察已并入 vision_gui（action=read/read_scroll），不再有独立工具可导出

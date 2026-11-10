@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AsrConfigPrompt 配色预览</title>
+<!-- 复刻 .app-container 的中性 token，模拟真实挂载环境 -->
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: #faf9f7;
+    color: #292824;
+  }
+  .app-container {
+    --surface-canvas: #faf9f7;
+    --surface-card: #ffffff;
+    --surface-soft: #f3f1ed;
+    --surface-hover: #eeece7;
+    --surface-user: #eeece7;
+    --line-soft: #e4e2de;
+    --ink-primary: #292824;
+    --ink-secondary: #787671;
+    --ink-muted: #9b9790;
+    --focus-ring: #a5a09a;
+    min-height: 100vh;
+  }
+  /* 背景里放一点侧边栏元素，观察弹窗遮罩压在真实界面上的观感 */
+  .mock-sidepanel { padding: 14px 16px; }
+  .mock-sidepanel .mock-send {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; border-radius: 50%;
+    background: var(--ink-primary); color: #fff; font-size: 14px;
+  }
+  .mock-sidepanel .mock-chip {
+    display: inline-flex; padding: 6px 12px; border-radius: 999px;
+    background: var(--surface-soft); border: 1px solid var(--line-soft);
+    color: var(--ink-secondary); font-size: 11.5px; margin-right: 8px;
+  }
+</style>
+<link rel="stylesheet" href="/entrypoints/sidepanel/components/modals/asr-config-prompt.css" />
+</head>
+<body>
+  <div class="app-container">
+    <div class="mock-sidepanel">
+      <span class="mock-chip">侧边栏中性胶囊参照</span>
+      <span class="mock-send">➤</span>
+    </div>
+
+    <!-- 与 AsrConfigPrompt.vue 模板一致（文案取 zh-CN） -->
+    <div class="asr-prompt-overlay" id="asr-overlay">
+      <div class="asr-prompt-modal">
+        <div class="asr-prompt-icon">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12,2A3,3 0 0,1 15,5V11A3,3 0 0,1 12,14A3,3 0 0,1 9,11V5A3,3 0 0,1 12,2M19,11C19,14.53 16.39,17.44 13,17.93V21H11V17.93C7.61,17.44 5,14.53 5,11H7A5,5 0 0,0 12,16A5,5 0 0,0 17,11H19Z" fill="currentColor"/>
+          </svg>
+          <span class="asr-prompt-icon-badge">!</span>
+        </div>
+
+        <h3 class="asr-prompt-title">语音输入未配置</h3>
+        <p class="asr-prompt-message">尚未配置语音识别（ASR）供应商，语音输入暂时无法使用。前往设置的「语音识别」完成配置后即可使用。</p>
+
+        <div class="asr-prompt-providers">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M11,7H13V13H11V7M11,15H13V17H11V15Z" fill="currentColor"/>
+          </svg>
+          <span>支持 SiliconFlow / OpenAI / Groq 及任意 OpenAI 兼容服务</span>
+        </div>
+
+        <div class="asr-prompt-actions">
+          <button type="button" class="asr-prompt-btn asr-prompt-btn-secondary">暂不使用</button>
+          <button type="button" class="asr-prompt-btn asr-prompt-btn-primary">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.22,8.95 2.27,9.22 2.46,9.37L4.57,11C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.22,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.68 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z" fill="currentColor"/>
+            </svg>
+            去配置
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

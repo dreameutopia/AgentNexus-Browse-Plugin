@@ -1,4 +1,3 @@
-import { migrateVisionToolPrompt } from '../tools/vision-tool-migration';
 /**
  * 技能指令装配（L2 正文的唯一实现）
  *
@@ -116,7 +115,7 @@ function safeSkillParts(skill: SkillRecord): { body: string; files: Record<strin
  */
 export function buildSkillInstruction(skill: SkillRecord, page: number = 1): SkillInstructionResult {
   const { body: rawBody, files } = safeSkillParts(skill);
-  const body = migrateVisionToolPrompt(rawBody.trim());
+  const body = rawBody.trim();
   const paged = paginateSkillText(body, page);
   if (!paged.ok) {
     throw new SkillPageOutOfRangeError(page, paged.pageCount);
@@ -184,11 +183,15 @@ export function buildSkillInstruction(skill: SkillRecord, page: number = 1): Ski
  * 合成激活轮回传给模型的 tool 结果消息 content。
  *
  * 由 `buildSuccessPayload`（BaseTool.createSuccessResponse 同一函数）拼装，
- * 因此与真实 load_skill 调用的回传**逐字相同**：`content[0].text` 是
- * `{ message, ...载荷 }` 的 pretty JSON，`data` 是同一份载荷。模型无法也
- * 不需要区分「自己调的」与「系统代调的」。
+ * 因此与真实 load_skill 调用的回传**逐字相同**：`data` 是完整载荷
+ * （含技能正文 `instruction`），`content[0].text` 是它的紧凑摘要。
+ * 模型无法也（不需要）区分「自己调的」与「系统代调的」。
+ *
+ * `primary` 是消费方之间的路由约定（哪条通道是正题），模型侧不需要——
+ * 会话引擎在回传模型前会剥掉它（见 conversation-engine.applyToolOutcomes），
+ * 这里同步剥掉，两条路径才真正逐字同源。
  */
 export function skillLoadToolContent(result: SkillInstructionResult): string {
-  const payload = buildSuccessPayload(result, skillLoadSuccessMessage(result));
+  const { primary: _primary, ...payload } = buildSuccessPayload(result, skillLoadSuccessMessage(result));
   return JSON.stringify({ success: true, ...payload });
 }

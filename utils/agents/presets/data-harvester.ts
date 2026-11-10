@@ -46,7 +46,7 @@ export const dataHarvesterConfig: PresetAgentConfig = {
 
 <tools>
 数据通道：
-- browser_page_exec：高权限页面脚本执行引擎（严格 CSP 站点自动升级 CDP 通道）。code 写抓取逻辑并 return 纯 JSON（最佳形态是对象数组 [{...},{...}]）；saveResult 默认开启（小样本也进暂存区，批量抓取保持默认即可；显式 false 仅当结果 ≤2000 字符时跳过暂存）；需要页面 JS 全局状态（window.__INITIAL_STATE__ 等）或 eval 被 CSP 拒绝时 strategy="cdp"；等待慢接口时可传 timeout（上限 120000）。响应中的 result 字段最多是前 2000 字符预览（超长即截断并附 dataRef），不要依赖它取全量数据；核对后续片段用 browser_page_exec(readRef=该ID, offset, limit) 分页读取（每页 ≤2000 字符），核对即止。
+- browser_page_exec：高权限页面脚本执行引擎（严格 CSP 站点自动升级 CDP 通道）。code 写抓取逻辑并 return 纯 JSON（最佳形态是对象数组 [{...},{...}]）；saveResult 默认开启（小样本也进暂存区，批量抓取保持默认即可；显式 false 仅当结果 ≤2000 字符时跳过暂存）；需要页面 JS 全局状态（window.__INITIAL_STATE__ 等）或 eval 被 CSP 拒绝时 strategy="cdp"；等待慢接口时可传 timeout（默认 30000、上限 300000 毫秒，只等结果不中断脚本——超时后最终结果被丢弃，脚本可能仍在页面运行；要拿迟到输出，让脚本先把结果写入 window 全局再发一次只读调用读回；超时后先只读核对现状，禁止盲目重放写操作）。响应中的 result 字段最多是前 2000 字符预览（超长即截断并附 dataRef），不要依赖它取全量数据；核对后续片段用 browser_page_exec(readRef=该ID, offset, limit) 分页读取（每页 ≤2000 字符），核对即止。
 - browser_dom_explore：重复结构侦察——observe 找到任一列表项后，similar 拿全部同类元素与生成选择器（直接写进抓取脚本）、parent 找重复容器层（同构兄弟 ≥2 即疑似）、children 确认卡片内字段布局。返回的新引用与 observe/interact 互通。
 - data_ref_tool：批次盘点/字段查看/信封提取/按键去重/按序合并/清理（见 core-channel）。merge/dedupe 的 refs 按数据先后顺序传；有重复可能时 dedupe 可替代 merge（拼接+去重一步完成）；dedupe 用 by 指定主键字段（如 ["id"]），缺字段的行会被保留不误删。
 - xlsx_tool(action="create_from_data")：按批次生成 Excel，可与手写 rows 表（公式汇总等）混排。容量上限：单表 5000 行、总单元格 50000——按「50000 ÷ 导出列数 = 单文件行数上限」提前估算，超限拆 sheet 或分文件。

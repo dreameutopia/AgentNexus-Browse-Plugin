@@ -14,10 +14,34 @@
  * 消息协议：
  *   { type: 'arm', timeoutMs: number, buffer: SharedArrayBuffer }
  *   { type: 'disarm' }
+ *   { type: 'interrupt' }  —— 立即中断（用户停止 / 强制中断）
  */
 
 /** 当前挂起的超时定时器（arm 重复调用时先清旧定时器） */
 let pendingTimer = null;
+
+/** 最近一次 arm 时登记的中断缓冲区（interrupt 消息据此立即写入 SIGINT） */
+let armedBuffer = null;
+
+/**
+ * 立即中断：向中断缓冲区写入 SIGINT。
+ *
+ * 与超时路径同源，但**不等定时器**——用户点停止时立刻生效，不受剩余超时
+ * 时间影响。清掉待触发定时器，避免中断后又补一次 SIGINT。
+ */
+function fireInterrupt(reason) {
+  const target = armedBuffer;
+  if (!target) return false;
+  if (pendingTimer !== null) {
+    clearTimeout(pendingTimer);
+    pendingTimer = null;
+  }
+  const signal = new Int32Array(target);
+  // 2 = SIGINT → Python 侧抛出 KeyboardInterrupt
+  // Record the reason separately: CPython clears slot 0 after handling SIGINT.
+  if (Atomics.compareExchange(signal, 1, 0, reason) === 0) Atomics.store(signal, 0, 2);
+  return true;
+}
 
 self.onmessage = event => {
   const data = event.data || {};
@@ -26,15 +50,10 @@ self.onmessage = event => {
       clearTimeout(pendingTimer);
       pendingTimer = null;
     }
-    const signal = new Int32Array(data.buffer);
-    // 先复位残留信号，再武装定时器（官方示例同款防御）
-    signal[0] = 0;
+    armedBuffer = data.buffer;
     pendingTimer = setTimeout(() => {
       pendingTimer = null;
-      // 2 = SIGINT → Python 侧抛出 KeyboardInterrupt
-      signal[0] = 2;
-      // 回报触发事实：主线程据此把 KeyboardInterrupt 归类为超时中断
-      self.postMessage({ type: 'fired' });
+      fireInterrupt(1);
     }, data.timeoutMs);
     return;
   }
@@ -43,5 +62,11 @@ self.onmessage = event => {
       clearTimeout(pendingTimer);
       pendingTimer = null;
     }
+    armedBuffer = null;
+    return;
+  }
+  if (data.type === 'interrupt') {
+    // 立即中断（用户停止 / 引擎强制终止）：不等超时定时器
+    fireInterrupt(2);
   }
 };

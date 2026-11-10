@@ -202,7 +202,7 @@ storage 事件即时同步，页面重新获得焦点/可见及点击创建前�
 
 ## 学习工具与专属引导
 
-工具清单与 prompt 都是学习域**自有**配置：`tool-presets` 的学习/验证场景不展开 `AUTOMATION_TOOLS` / `VISION_AGENT_TOOLS`，`learn-prompts` 不 import 两个动作智能体的 SOP（`ELEMENT_INTERACTION_SOP` / `VISION_ACTION_SOP`）。文本通用助手与视觉通用助手的配置、提示词演进不会影响网站学习，反之亦然。
+工具清单与 prompt 都是学习域**自有**配置：`tool-presets` 的学习/验证场景不展开 `AUTOMATION_TOOLS` / `VISION_AGENT_TOOLS`，`learn-prompts` 不 import 两个动作智能体的 SOP（`ELEMENT_INTERACTION_SOP` / `vision-gui-prompt`）。文本通用助手与视觉通用助手的配置、提示词演进不会影响网站学习，反之亦然。
 
 | 目标模式 | 学习策略 | 场景 | 工具与引导 |
 | --- | --- | --- | --- |
@@ -219,9 +219,9 @@ storage 事件即时同步，页面重新获得焦点/可见及点击创建前�
 - `browser_get_all_tabs`、`browser_switch_tab`、`browser_network_capture`、`web_search`、`generic_wait`。
 - `plan_tool`、`note_tool` 与交互征询工具（同为 CORE_SESSION_TOOL_IDS 核心注入，所有会话恒定可用，学习域逐步留痕/记录卡点的用法由 learn-prompts 约束）、学习终止工具 `submit_skill`。
 
-视觉目标组合额外具备：`vision_gui`（10 个 action，参数由 schema 与学习域自有的 `<vision-gui-tool>` 分区描述）、`screenshot`、`browser_window`；文本目标×视觉策略仅额外具备 `screenshot`。
+视觉目标组合额外具备：`vision_gui`（12 个 action，参数由 schema 与学习域自有的 `<vision-gui-tool>` 分区描述）、`screenshot`、`browser_window`；文本目标×视觉策略仅额外具备 `screenshot`。
 
-`<vision-gui-tool>` 分区是 runtime-builder 的协议标记：学习提示词携带该分区时，引擎不再追加视觉通用助手的 `VISION_ACTION_SOP`。视觉目标在该分区放学习域自有的手势契约（含按需 mark/inspect）；文本目标放「本阶段没有视觉 GUI 工具」的禁用分区，同时显式禁止模型激活技能清单中的视觉工具。
+`<vision-gui-tool>` 分区是 prompt-hooks 钩子的协议标记：学习提示词携带该分区时，钩子不再注入视觉通用助手的 `vision-gui-prompt` 规程。视觉目标在该分区放学习域自有的手势契约（含按需 mark/inspect）；文本目标放「本阶段没有视觉 GUI 工具」的禁用分区，同时显式禁止模型激活技能清单中的视觉工具。
 
 视觉目标允许按需使用 `vision_gui` 的 mark/inspect action：先看原图和 DOM，仅在无文字图标、同名控件或视觉区域难以对应节点时打标；下一张截图出现数字框后再 inspect，数字不用于点击。
 

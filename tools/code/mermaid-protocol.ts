@@ -2,7 +2,7 @@
  * Mermaid 离屏渲染消息协议
  *
  * mermaid_renderer 工具（background / sidepanel 均可发起）与
- * mermaid-offscreen 离屏页（entrypoints/mermaid-offscreen/）之间的通信契约。
+ * 共享离屏宿主的 Mermaid 处理器之间的通信契约。
  * 双侧共用本文件，保证消息结构与错误码不漂移。
  *
  * 为什么需要离屏页：mermaid 渲染依赖 DOM（d3/dagre 测量）与 Canvas（PNG 转换），

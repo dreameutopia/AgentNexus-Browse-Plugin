@@ -1,5 +1,5 @@
 /**
- * Pyodide 运行时管理器（扩展页单例 · 混合加载核心）
+ * Pyodide 运行时管理器（扩展页 / 专用 Worker · 混合加载核心）
  *
  * ==================== 加载架构 ====================
  *
@@ -35,8 +35,8 @@
  *
  * ==================== 生命周期 ====================
  *
- * - 运行时驻留当前页面（sidepanel）：侧边栏关闭即整体释放内存，
- *   平时不占任何资源；IndexedDB 缓存跨会话持久。
+ * - 管理中心使用页面运行时。聊天运行由离屏宿主管理专用 Worker，
+ *   Worker 可独立回收，IndexedDB 中的会话工作区与运行时缓存继续保留。
  * - 无法原地"卸载"wasm 实例；uninstallPackages 仅更新清单与缓存，
  *   当前实例中模块残留至下次重载（已在 UI 中说明）。
  */
@@ -48,13 +48,19 @@ import {
   PYODIDE_CDN_BASE,
   PYODIDE_OUTPUT_CAP_BYTES,
   PYODIDE_PYTHON_VERSION,
+  PYTHON_RUN_DEFAULT_TIMEOUT_MS,
+  PYTHON_RUN_MAX_TIMEOUT_MS,
 } from './pyodide-config';
 import { deleteFile, getFile, putFile } from './pyodide-cache';
 import {
   getPyodideEnvState,
   updatePyodideEnvState,
   type PyodideInstalledPackage,
+  type PyodideEnvState,
 } from './pyodide-env';
+import { stagePythonWorkspace, withPythonWorkspace, WorkspaceRuntimeError } from '@/utils/python-workspace/python-filesystem';
+import type { WorkspaceEntry, WorkspaceSnapshot } from '@/utils/python-workspace/paths';
+import { pythonWorkerGlobals } from './python-worker-globals';
 
 // ==================== 错误码（调用方可 grep 定位） ====================
 
@@ -68,6 +74,8 @@ export const PY_ERR_BOOT = 'PY_BOOT_FAILED';
 export const PY_ERR_TIMEOUT = 'PY_EXEC_TIMEOUT';
 /** Python 抛出异常 */
 export const PY_ERR_PYTHON = 'PY_EXEC_ERROR';
+export const PY_ERR_WORKSPACE = 'PY_WORKSPACE_ERROR';
+export const PY_ERR_WORKSPACE_RUNTIME = 'PY_WORKSPACE_RUNTIME';
 
 /** 抛出带错误码的错误（工具层据此构造可读结果） */
 function codeError(code: string, message: string): Error {
@@ -140,9 +148,6 @@ function installFetchInterception(): void {
 
 interface InterruptController {
   worker: Worker;
-  buffer: Int32Array;
-  /** 本次武装以来 Worker 是否已写入 SIGINT（超时判定的事实来源） */
-  firedSinceArm: boolean;
 }
 
 interface BootedRuntime {
@@ -175,14 +180,7 @@ function createInterruptController(): InterruptController | null {
   try {
     if (typeof SharedArrayBuffer === 'undefined' || !globalThis.crossOriginIsolated) return null;
     const worker = new Worker(chrome.runtime.getURL('py-interrupt-worker.js'));
-    const buffer = new Int32Array(new SharedArrayBuffer(4));
-    const controller: InterruptController = { worker, buffer, firedSinceArm: false };
-    worker.onmessage = (event: MessageEvent) => {
-      if ((event.data as { type?: string } | null)?.type === 'fired') {
-        controller.firedSinceArm = true;
-      }
-    };
-    return controller;
+    return { worker };
   } catch {
     return null;
   }
@@ -192,8 +190,8 @@ function createInterruptController(): InterruptController | null {
  * 启动 Pyodide 运行时（幂等，多调用共享同一 Promise）。
  * 失败不缓存 rejection：下次调用自动重试。
  */
-export function ensurePyodideRuntime(): Promise<BootedRuntime> {
-  assertWindowContext();
+export function ensurePyodideRuntime(workerState?: PyodideEnvState): Promise<BootedRuntime> {
+  if (!workerState) assertWindowContext();
   if (booted) return Promise.resolve(booted);
   if (bootPromise) return bootPromise;
 
@@ -225,6 +223,7 @@ export function ensurePyodideRuntime(): Promise<BootedRuntime> {
           Parameters<typeof loaderModule.loadPyodide>[0]
         >['lockFileContents'],
         packageBaseUrl: PYODIDE_CDN_BASE,
+        ...(workerState ? { jsglobals: pythonWorkerGlobals() } : {}),
         stdout: (msg: string) => bootLog.push(msg),
         stderr: (msg: string) => bootLog.push(`[stderr] ${msg}`),
       });
@@ -236,13 +235,10 @@ export function ensurePyodideRuntime(): Promise<BootedRuntime> {
       );
     }
 
-    runtime.interrupt = createInterruptController();
-    if (runtime.interrupt) {
-      runtime.pyodide.setInterruptBuffer(runtime.interrupt.buffer);
-    }
+    runtime.interrupt = workerState ? null : createInterruptController();
 
     // 恢复已安装包（缓存命中时零网络；个别缺失按可失败项忽略）
-    const state = await getPyodideEnvState();
+    const state = workerState ?? await getPyodideEnvState();
     const savedNames = state.packages.map(pkg => pkg.name).filter(name => name !== 'micropip');
     if (savedNames.length > 0) {
       try {
@@ -309,7 +305,7 @@ export async function findCatalogEntry(name: string): Promise<PyodideCatalogEntr
 }
 
 /** 把工具执行时自动加载的包并入环境清单（版本从锁文件目录补齐；失败静默） */
-async function recordAutoLoadedPackages(names: string[]): Promise<void> {
+export async function recordAutoLoadedPackages(names: string[]): Promise<void> {
   try {
     const catalog = await getPackageCatalog();
     const catalogIndex = new Map(catalog.map(entry => [entry.name.toLowerCase(), entry]));
@@ -448,9 +444,23 @@ export interface PythonRunOutcome {
   errorDetail: string;
   /** 本次执行自动加载的包（loadPackagesFromImports） */
   autoLoadedPackages: string[];
+  packageWarning?: string;
+  workspaceOutputs?: string[];
 }
 
 /** 捕获缓冲：按行累积 + 字节上限截断 */
+const outputEncoder = new TextEncoder();
+const outputDecoder = new TextDecoder();
+const OUTPUT_TRUNCATED = '…（输出超出上限已截断）';
+
+function clipOutput(text: string, capBytes: number): { text: string; bytes: number; truncated: boolean } {
+  const buffer = new Uint8Array(Math.min(capBytes, text.length * 3));
+  const { read, written } = outputEncoder.encodeInto(text, buffer);
+  return read === text.length
+    ? { text, bytes: written, truncated: false }
+    : { text: outputDecoder.decode(buffer.subarray(0, written)), bytes: written, truncated: true };
+}
+
 function createCapture(capBytes: number) {
   const lines: string[] = [];
   let bytes = 0;
@@ -458,14 +468,17 @@ function createCapture(capBytes: number) {
   return {
     push(line: string) {
       if (truncated) return;
-      const size = line.length + 1;
-      if (bytes + size > capBytes) {
-        truncated = true;
-        lines.push('…（输出超出上限已截断）');
-        return;
+      const separator = lines.length ? 1 : 0;
+      const remaining = capBytes - bytes - separator;
+      const clipped = remaining < 0 ? { text: '', bytes: 0, truncated: true } : clipOutput(line, remaining);
+      if (remaining >= 0) {
+        bytes += clipped.bytes + separator;
+        lines.push(clipped.text);
       }
-      bytes += size;
-      lines.push(line);
+      if (clipped.truncated) {
+        truncated = true;
+        lines.push(OUTPUT_TRUNCATED);
+      }
     },
     text: () => lines.join('\n'),
   };
@@ -506,12 +519,13 @@ function reprResult(pyodide: PyodideInterface, value: unknown): string {
 async function runPythonCodeInternal(
   runtime: BootedRuntime,
   code: string,
-  options: { timeoutMs: number },
+  options: { timeoutMs: number; workerState?: PyodideEnvState; signal?: AbortSignal },
 ): Promise<PythonRunOutcome> {
   const startedAt = Date.now();
   const stdoutCapture = createCapture(PYODIDE_OUTPUT_CAP_BYTES);
   const stderrCapture = createCapture(PYODIDE_OUTPUT_CAP_BYTES);
   const autoLoadedPackages: string[] = [];
+  let packageWarning: string | undefined;
 
   // 自动按需加载代码导入的锁文件包（缓存命中零网络；失败不阻塞执行）
   try {
@@ -524,53 +538,62 @@ async function runPythonCodeInternal(
           .filter((name): name is string => typeof name === 'string' && name.length > 0),
       );
     }
-  } catch {
-    // 解析失败忽略：交由解释器抛出可读的 ImportError
+  } catch (error) {
+    packageWarning = (error instanceof Error ? error.message : String(error)).slice(0, 1000);
   }
 
+  options.signal?.throwIfAborted();
   const pyodide = runtime.pyodide;
   pyodide.setStdout({ batched: line => stdoutCapture.push(line) });
   pyodide.setStderr({ batched: line => stderrCapture.push(line) });
 
   // 自动加载的包回写环境清单：下次启动才能自动恢复（wheel 已在缓存层沉淀）
-  if (autoLoadedPackages.length > 0) {
+  if (autoLoadedPackages.length > 0 && !options.workerState) {
     void recordAutoLoadedPackages(autoLoadedPackages);
   }
 
   let timedOut = false;
+  let interrupted = false;
   const { interrupt } = runtime;
-  if (interrupt) {
-    interrupt.buffer[0] = 0;
-    interrupt.firedSinceArm = false;
-    interrupt.worker.postMessage({ type: 'arm', timeoutMs: options.timeoutMs, buffer: interrupt.buffer.buffer });
+  const buffer = interrupt ? new Int32Array(new SharedArrayBuffer(8)) : undefined;
+  if (interrupt && buffer) {
+    pyodide.setInterruptBuffer(buffer);
+    interrupt.worker.postMessage({ type: 'arm', timeoutMs: options.timeoutMs, buffer: buffer.buffer });
   }
 
   let resultText = '';
   let errorName = '';
   let errorDetail = '';
 
+  const abort = () => interruptPythonRun();
+  options.signal?.addEventListener('abort', abort, { once: true });
   try {
     const value = await pyodide.runPythonAsync(code);
-    resultText = reprResult(pyodide, value);
+    const clipped = clipOutput(reprResult(pyodide, value), PYODIDE_OUTPUT_CAP_BYTES);
+    resultText = clipped.text + (clipped.truncated ? OUTPUT_TRUNCATED : '');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    // 超时判定：以 Worker 是否实际写入过 SIGINT 为事实来源（Pyodide 处理
-    // 信号后会把缓冲区清零，不能靠缓冲区值判定）
-    if (interrupt && interrupt.firedSinceArm) {
-      timedOut = true;
-    }
     // PythonError.message 自带完整 traceback；取末行作为类型行
     const lines = message.trim().split('\n');
     errorName = lines[lines.length - 1]?.slice(0, 300) ?? 'PythonError';
     errorDetail = message.length > 8000 ? `${message.slice(0, 4000)}\n…\n${message.slice(-4000)}` : message;
   } finally {
-    if (interrupt) {
+    options.signal?.removeEventListener('abort', abort);
+    if (interrupt && buffer) {
+      const reason = Atomics.load(buffer, 1);
+      timedOut = reason === 1;
+      interrupted = reason === 2;
       interrupt.worker.postMessage({ type: 'disarm' });
-      interrupt.buffer[0] = 0;
-      interrupt.firedSinceArm = false;
+      // The next run uses a different buffer, so a late SIGINT can't reach it.
+      // Pyodide documents undefined for disabling interrupts; its npm declaration omits it.
+      (pyodide.setInterruptBuffer as (buffer?: Int32Array) => void)(undefined);
     }
+    pyodide.setStdout({ batched: () => undefined });
+    pyodide.setStderr({ batched: () => undefined });
   }
 
+  options.signal?.throwIfAborted();
+  if (interrupted) throw codeError('PY_EXEC_CANCELLED', 'Python execution was cancelled');
   return {
     ok: !errorName && !timedOut,
     stdout: stdoutCapture.text(),
@@ -581,7 +604,34 @@ async function runPythonCodeInternal(
     errorName,
     errorDetail,
     autoLoadedPackages,
+    packageWarning,
   };
+}
+
+/**
+ * 立即中断当前正在运行的 Python 代码（用户停止 / 引擎强制终止）。
+ *
+ * 与超时中断同源（SharedArrayBuffer + SIGINT），但**不等超时定时器**：
+ * 用户点停止即刻生效——解释器在字节码求值循环里轮询中断缓冲区，
+ * 因此连同步死循环都能被掐断（这正是主线程计时器做不到的）。
+ *
+ * 幂等且尽力而为：无在途执行 / 运行环境未跨域隔离（无中断能力）时静默返回
+ * false——终止钩子的失败不得影响引擎侧的结算。
+ */
+export function interruptPythonRun(): boolean {
+  const runtime = booted;
+  const interrupt = runtime?.interrupt;
+  if (!runtime || !interrupt) return false;
+  try {
+    // 不携带 buffer：Worker 只在「已武装」时才会写入 SIGINT（armedBuffer 由
+    // arm/disarm 消息维护）。若这里硬塞 buffer，会在**没有 Python 在跑**的
+    // 时刻写入信号——下一次执行开跑前虽会复位缓冲区，但那段窗口里任何
+    // 读到该缓冲区的解释器都会收到一个来路不明的 SIGINT。
+    interrupt.worker.postMessage({ type: 'interrupt' });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -589,15 +639,55 @@ async function runPythonCodeInternal(
  * @param code Python 源码（支持顶层 await）
  * @param options.timeoutMs 超时（跨域隔离可用时经 SIGINT 强制中断）
  */
-export async function runPythonCode(code: string, options: { timeoutMs?: number } = {}): Promise<PythonRunOutcome> {
-  assertWindowContext();
+export async function runPythonCode(
+  code: string,
+  options: { timeoutMs?: number; chatId?: string; signal?: AbortSignal } = {},
+): Promise<PythonRunOutcome> {
+  return withPythonRun(code, options, (runtime, run) => options.chatId
+    ? runWorkspaceOperation(() => withPythonWorkspace(runtime.pyodide.FS, options.chatId!, run, options.signal))
+    : run());
+}
 
-  const state = await getPyodideEnvState();
+export function runPythonInWorker(
+  code: string,
+  options: { timeoutMs: number; chatId?: string; workerState: PyodideEnvState; snapshot?: WorkspaceSnapshot },
+): Promise<{ outcome: PythonRunOutcome; entries?: WorkspaceEntry[] }> {
+  return withPythonRun(code, options, async (runtime, run) => options.chatId
+    ? runWorkspaceOperation(() => stagePythonWorkspace(runtime.pyodide.FS, options.chatId!, options.snapshot, run))
+    : { outcome: await run() });
+}
+
+async function runWorkspaceOperation<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof WorkspaceRuntimeError) {
+      booted?.interrupt?.worker.terminate();
+      booted = null;
+      bootPromise = null;
+      throw codeError(PY_ERR_WORKSPACE_RUNTIME, error.message);
+    }
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    throw codeError(PY_ERR_WORKSPACE, error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function withPythonRun<T>(
+  code: string,
+  options: { timeoutMs?: number; workerState?: PyodideEnvState; signal?: AbortSignal },
+  execute: (runtime: BootedRuntime, run: () => Promise<PythonRunOutcome>) => Promise<T>,
+): Promise<T> {
+  if (!options.workerState) assertWindowContext();
+
+  const state = options.workerState ?? await getPyodideEnvState();
   if (state.status !== 'ready') {
     throw codeError(PY_ERR_NOT_READY, 'Python 环境未就绪：请先在设置 → Python 环境中下载并核验。');
   }
 
-  const timeoutMs = Math.max(1_000, Math.min(options.timeoutMs ?? 60_000, 180_000));
+  const requestedTimeout = options.timeoutMs;
+  const timeoutMs = typeof requestedTimeout === 'number' && Number.isFinite(requestedTimeout)
+    ? Math.max(1_000, Math.min(requestedTimeout, PYTHON_RUN_MAX_TIMEOUT_MS))
+    : PYTHON_RUN_DEFAULT_TIMEOUT_MS;
 
   // 串行化：并发调用依次执行（finally 放行后续）
   const previous = runQueue;
@@ -607,8 +697,9 @@ export async function runPythonCode(code: string, options: { timeoutMs?: number 
   });
   await previous.catch(() => undefined);
   try {
-    const runtime = await ensurePyodideRuntime();
-    return await runPythonCodeInternal(runtime, code, { timeoutMs });
+    options.signal?.throwIfAborted();
+    const runtime = await ensurePyodideRuntime(options.workerState);
+    return await execute(runtime, () => runPythonCodeInternal(runtime, code, { ...options, timeoutMs }));
   } finally {
     release();
   }

@@ -25,14 +25,18 @@
  *    加载挂起时永远停在「渲染中」。
  * 6. **尺寸协商**：父页 ResizeObserver 观察块 body 宽度变化 → 通知沙箱
  *    chart.resize()（去抖 150ms），侧边栏拖宽 / 窗口缩放时图表自适应。
- * 7. **事件委托**：源码/图表切换按钮走 document 级委托（扩展 CSP 禁止
- *    内联脚本），与 code-copy / diagram-renderer 同构。
+ * 7. **保存为图片**：块的头部动作是单个「保存」按钮（component-image-save.ts
+ *    的委托），把当前渲染产物导出为高清 PNG。本模块注册产物解析器
+ *    （registerChartImageSource）：用 entry 持有的净化后 option 在离屏
+ *    画布上按 devicePixelRatio 重绘（矢量源，无级放大），不依赖 iframe
+ *    的跨源画布（会污染）。渲染未完成时返回 null，保存侧回落源码文本成图。
  */
 
 import { t } from '@/utils/i18n';
 import { escapeHtml } from './html-escape';
 import { sanitizeEchartsOptionJson } from './echarts-option-sanitizer';
 import { parseRichEnvelope, deriveChartOption } from './rich-components';
+import { registerChartImageSource, type ChartImageSource } from './component-image-save';
 
 /** 消息协议常量（与 entrypoints/chart-sandbox/main.ts 严格对齐） */
 const PARENT_SOURCE = 'an-chart-parent';
@@ -125,20 +129,6 @@ function ensureResizeObserver(): ResizeObserver {
   return resizeObserver;
 }
 
-// ==================== 视图切换（图表 ↔ 源码） ====================
-
-/** 切换块到源码/图表视图（同步更新切换按钮文案与 aria-pressed） */
-function setSourceView(block: HTMLElement, sourceView: boolean): void {
-  block.classList.toggle('show-source', sourceView);
-  const toggle = block.querySelector<HTMLElement>('.chart-toggle-btn');
-  if (toggle) {
-    toggle.textContent = sourceView
-      ? toggle.dataset.viewChartLabel || t('sidepanel.chat.chartViewChart')
-      : toggle.dataset.viewSourceLabel || t('sidepanel.chat.chartViewSource');
-    toggle.setAttribute('aria-pressed', String(sourceView));
-  }
-}
-
 // ==================== 失败降级 ====================
 
 /** 构造失败态 body 内容：错误摘要（i18n）+ 技术细节（截断） */
@@ -159,7 +149,8 @@ function failChart(id: string, detail: string): void {
   cleanupEntry(id, { keepEntry: true });
   entry.block.dataset.chartState = 'error';
   entry.body.innerHTML = buildErrorMarkup(detail);
-  setSourceView(entry.block, true);
+  // 源码没有切换入口，失败降级直接展开（错误摘要 + 原始代码互为印证）
+  entry.block.classList.add('show-source');
 }
 
 // ==================== 挂载与渲染 ====================
@@ -262,6 +253,69 @@ function sanitizeDerivedOption(code: string): { ok: true; json: string } | { ok:
   return sanitizeEchartsOptionJson(JSON.stringify(derived.option));
 }
 
+// ==================== 保存为图片的产物解析 ====================
+
+/**
+ * 图表块 → 可栅格化产物（供 component-image-save 使用）。
+ *
+ * 沙箱 iframe 跨源、无法从父页取像素；而 option 的唯一事实源就在本模块
+ * （entry.pendingOptionJson，净化后的 ECharts option）。因此在父页离屏
+ * 画布上按 devicePixelRatio 重绘一次：矢量源，无级放大不糊，也不碰
+ * iframe 的跨源画布。ECharts 本体经动态 import 拉取——只在用户首次点
+ * 「保存」时才加载（约 1MB+），与沙箱页 / diagram-renderer 的懒加载同口径；
+ * 与 chart-sandbox 共用同一 chunk 缓存。
+ *
+ * 「完整不截断」：离屏画布用**滚动宽度**（宽图表 / 窄侧边栏时图表的
+ * 内容宽度）而不是可视宽度——否则侧边栏拖窄时保存出来会比图表实际
+ * 内容更窄，裁掉右侧内容。
+ *
+ * 渲染未完成（无 entry / 未 done）或重绘失败 → null，保存侧回落源码文本。
+ */
+async function chartImageSource(block: HTMLElement): Promise<ChartImageSource | null> {
+  const id = block.dataset.chartId;
+  const entry = id ? entries.get(id) : undefined;
+  if (!entry || block.dataset.chartState !== 'done' || !entry.pendingOptionJson) return null;
+
+  try {
+    const echarts = await import('echarts');
+    const option = JSON.parse(entry.pendingOptionJson) as Record<string, unknown>;
+    const body = block.querySelector<HTMLElement>('.chart-body');
+    const width = Math.max(
+      1,
+      Math.round(Math.max(body?.getBoundingClientRect().width || 0, body?.scrollWidth || 0) || 640),
+    );
+    const height = CHART_HEIGHT_PX;
+
+    const canvas = document.createElement('canvas');
+    const ratio = Math.min(window.devicePixelRatio || 1, 3);
+    canvas.width = Math.round(width * ratio);
+    canvas.height = Math.round(height * ratio);
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+
+    const chart = echarts.init(canvas, undefined, {
+      width,
+      height,
+      devicePixelRatio: ratio,
+      renderer: 'canvas',
+    });
+    try {
+      // 与沙箱页同口径：setOption 即完成同步绘制（沙箱不额外调用 render）
+      chart.setOption({ ...option, animation: false } as Parameters<typeof chart.setOption>[0], {
+        notMerge: true,
+      });
+    } finally {
+      chart.dispose();
+    }
+    return { kind: 'dataUrl', dataUrl: canvas.toDataURL('image/png') };
+  } catch (error) {
+    console.warn('[ChartRenderer] 离屏重绘失败，保存回落源码文本:', error);
+    return null;
+  }
+}
+
+registerChartImageSource(chartImageSource);
+
 // ==================== 对外入口 ====================
 
 /**
@@ -295,7 +349,8 @@ export function processCharts(root: ParentNode): void {
       block.dataset.chartState = 'error';
       const body = block.querySelector<HTMLElement>('.chart-body');
       if (body) body.innerHTML = buildErrorMarkup(sanitized.error);
-      setSourceView(block, true);
+      // 源码没有切换入口，失败降级直接展开（错误摘要 + 原始代码互为印证）
+      block.classList.add('show-source');
       continue;
     }
 
@@ -325,22 +380,15 @@ export function processCharts(root: ParentNode): void {
 let handlerInstalled = false;
 
 /**
- * 安装 document 级事件委托 + window 消息监听（幂等；仅 DOM 上下文生效）。
+ * 扫描器入口 + 沙箱消息监听（幂等；仅 DOM 上下文生效）。
  * 消息来源校验：只信任 entries 中记录的沙箱 iframe（event.source 比对）。
+ *
+ * 块的头部动作只有一个「保存」按钮，其委托装在 component-image-save.ts
+ * （与 markdown-renderer 同一处），本模块不再自带点击委托。
  */
 export function installChartRenderer(): void {
   if (handlerInstalled || typeof document === 'undefined') return;
   handlerInstalled = true;
-
-  document.addEventListener('click', event => {
-    const target = event.target as HTMLElement | null;
-    const toggle = target?.closest?.('.chart-toggle-btn') as HTMLElement | null;
-    if (!toggle) return;
-    const block = toggle.closest<HTMLElement>('.chart-block');
-    if (!block) return;
-    event.preventDefault();
-    setSourceView(block, !block.classList.contains('show-source'));
-  });
 
   window.addEventListener('message', (event: MessageEvent) => {
     const data = event.data as

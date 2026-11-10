@@ -28,7 +28,7 @@ export interface ZoomArgs {
   scale?: number;
 }
 export function validateZoomArgs(raw: unknown): ZoomArgs {
-  const args = validateObject(raw, [
+  const args = validateObservationObject(raw, [
     "screenshotId",
     "region",
     "scale",
@@ -37,7 +37,9 @@ export function validateZoomArgs(raw: unknown): ZoomArgs {
   if (args.scale !== undefined) finiteRange(args.scale, "scale", 1, 4);
   return structuredClone(args);
 }
-function validateObject(
+/** 观察类 action 的字段白名单 + 形状核验（zoom/check/read/read_scroll 共用，
+ *  单一事实源：未知字段与缺失凭据一律在访问浏览器前拒绝）。 */
+export function validateObservationObject(
   raw: unknown,
   fields: string[],
 ): Record<string, unknown> {
@@ -59,7 +61,7 @@ function validateObject(
   return args;
 }
 export function validateCheckArgs(raw: unknown): CheckArgs {
-  const args = validateObject(raw, [
+  const args = validateObservationObject(raw, [
     "screenshotId",
     "point",
     "viewId",
@@ -152,6 +154,9 @@ export async function executeZoom(
       success: true,
       data,
       content: [{ type: "text" as const, text: JSON.stringify(metadata) }],
+      // 裁剪图与缩放说明都在 data 里一份，content 是它的 JSON 副本——
+      // 正题在 data（vision_gui 消费的是 data），避免同一份事实两遍回传
+      primary: 'data' as const,
     };
   } catch (error) {
     if (error instanceof Error && error.message.includes("background context"))
@@ -278,7 +283,9 @@ export async function executeCheck(
         ),
       context?.signal,
     );
-      return { success: true, ...buildSuccessPayload(data) };
+    // 原始诊断载荷只在 data 里一份（content 是它的摘要）——vision_gui 读的
+    // 是 data，此处不再把 data 内联进 content 造成第二份
+    return { success: true, ...buildSuccessPayload(data) };
   } catch (error) {
     if (error instanceof Error && error.message.includes("background context"))
       throw error;

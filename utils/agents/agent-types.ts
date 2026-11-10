@@ -1,10 +1,10 @@
-import { migrateVisionToolId, migrateVisionToolPrompt } from '../tools/vision-tool-migration';
 import {
   DEFAULT_LOCALE,
   NON_DEFAULT_LOCALES,
   type Locale,
   type NonDefaultLocale,
 } from '../i18n/locales';
+import { VISION_GUI_TOOL_ID } from '../../tools/vision/gui-contract';
 /**
  * 智能体领域类型与纯逻辑（无副作用层）
  *
@@ -175,6 +175,12 @@ export interface AgentConfig {
   skills?: string[];
   /** 分类 id（单个）；空串 = 未分类，展示与筛选时归入 general */
   category: string;
+  /**
+   * 启用状态：缺省 = 启用（默认全部启用）。
+   * 停用的智能体不出现在输入框的 @ 选择器中（不可被选中），
+   * 但仍可在管理中心查看 / 编辑 / 重新启用。
+   */
+  enabled?: boolean;
   /** 标签（多个；保序去重，用于选择器过滤与管理页检索） */
   tags: string[];
   /**
@@ -193,9 +199,10 @@ export interface AgentConfig {
    * 能力协商声明（影响系统提示词装配，不影响工具集与渲染层）。
    *
    * richComponents：富内容组件白名单（rich-components/registry.ts 的组件 id，
-   * 如 ['chart','stat','table','timeline','tree','diagram','diff']）：
+   * 如 ['chart','stat','table','timeline','tree','insight','diagram','diff']）：
    *   - 缺省 = 默认全集（与历史行为一致）；
-   *   - 声明 = 只在 <rich-output-guidelines> 分区中教模型使用这些组件，
+   *   - 声明 = 只在 <rich-output-guidelines> 分区中教模型使用这些组件
+   *     （分区正文由 rich-components/rich-output-prompt.ts 维护），
    *     未知 id 装配时剔除并告警；空数组 = 整段不注入（0 提示词开销）。
    * 只裁剪「教什么」，不裁剪「能渲染什么」——历史消息里的组件在任何
    * 会话中都必须继续可渲染。
@@ -355,7 +362,7 @@ export function normalizeToolIds(value: unknown): string[] {
   for (const raw of value) {
     if (result.length >= AGENT_TOOLS_MAX_COUNT) break;
     if (typeof raw === 'string' && raw.startsWith('ed25519:') && (raw.length > AGENT_TOOL_ID_MAX_CHARS || !/^ed25519:[a-z2-7]{52}\/[a-z][a-z0-9]*(?:-[a-z0-9]+)*\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(raw))) continue;
-    const toolId = migrateVisionToolId(clampText(raw, AGENT_TOOL_ID_MAX_CHARS));
+    const toolId = clampText(raw, AGENT_TOOL_ID_MAX_CHARS);
     if (!toolId) continue;
     if (seen.has(toolId)) continue;
     seen.add(toolId);
@@ -480,7 +487,7 @@ export function normalizeAgentConfig(value: unknown): AgentConfig | null {
   const candidate = value as Partial<AgentConfig>;
   const id = typeof candidate.id === 'string' ? candidate.id.trim() : '';
   const name = typeof candidate.name === 'string' ? candidate.name.trim() : '';
-  const system = typeof candidate.system === 'string' ? migrateVisionToolPrompt(candidate.system) : '';
+  const system = typeof candidate.system === 'string' ? candidate.system : '';
   // 结构性缺失不可修复：没有 id 无法参与预置判定与引用，没有名称无法定位存储键
   if (!id || !name || !system) return null;
 
@@ -489,7 +496,12 @@ export function normalizeAgentConfig(value: unknown): AgentConfig | null {
     name,
     description: clampText(candidate.description, AGENT_DESCRIPTION_MAX_CHARS),
     system: system.length > AGENT_SYSTEM_MAX_CHARS ? system.slice(0, AGENT_SYSTEM_MAX_CHARS) : system,
-    tools: normalizeToolIds(candidate.tools),
+    // vision_gui 不属于可持久化的工具选择面：它是「视觉操作」开关（AgentConfig.vision）
+    // 在运行时注入的受控能力（见 runtime-builder「视觉操作开关注入」），工具组也从不
+    // 提供勾选入口——存量记录里的历史勾选残留（旧版界面 / 外部写入）在本收敛点统一
+    // 剔除，保证「存储的 tools 恒不含 vision_gui」。数据层归一之外，装配层另有一道
+    // 兜底（插件智能体与预置表不经过本函数），两层共同维护该不变量。
+    tools: normalizeToolIds(candidate.tools).filter(toolId => toolId !== VISION_GUI_TOOL_ID),
     category: normalizeCategory(candidate.category),
     tags: normalizeTags(candidate.tags),
   };
@@ -501,6 +513,8 @@ export function normalizeAgentConfig(value: unknown): AgentConfig | null {
   if (vision) config.vision = vision;
   const avatar = normalizeAvatar(candidate.avatar);
   if (avatar) config.avatar = avatar;
+  // 启用态：缺省 = 启用；仅显式 false 才记录（避免给每条记录塞 true 噪音）
+  if (candidate.enabled === false) config.enabled = false;
   return config;
 }
 
@@ -513,6 +527,15 @@ export function normalizeAgentConfig(value: unknown): AgentConfig | null {
  */
 export function compareAgents(a: AgentConfig, b: AgentConfig): number {
   return a.name.localeCompare(b.name, 'zh-Hans-CN');
+}
+
+/**
+ * 过滤出「可被选中」的智能体（enabled 不为 false）。
+ * 停用 = 不可被选中：侧边栏输入框的 @ 选择器只列启用中的智能体，
+ * 管理中心仍展示全部（便于查看与重新启用）。
+ */
+export function filterEnabledAgents(agents: readonly AgentConfig[]): AgentConfig[] {
+  return agents.filter(agent => agent.enabled !== false);
 }
 
 /**

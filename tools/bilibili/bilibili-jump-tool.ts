@@ -276,17 +276,22 @@ export class BilibiliJumpTool extends BaseTool {
         data: {
           action,
           ...result
-        }
+        },
+        // 业务事实（action + 操作回执）在 data 一份，content 是状态句——正题在 data
+        primary: 'data'
       };
 
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       return {
         success: false,
         content: [{
           type: 'text',
-          text: `视频控制操作 ${action} 执行失败: ${error instanceof Error ? error.message : String(error)}`
+          text: `视频控制操作 ${action} 执行失败: ${message}`
         }],
-        error: error instanceof Error ? error.message : String(error)
+        error: message,
+        // 失败原因只在 content 与 error 里，data 无载荷——正题在 content
+        primary: 'content'
       };
     }
   }
@@ -357,13 +362,16 @@ export class BilibiliJumpTool extends BaseTool {
         throw new Error('无法获取视频时长');
       }
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       return {
         success: false,
         content: [{
           type: 'text',
-          text: `跳转到视频中间失败: ${error instanceof Error ? error.message : String(error)}`
+          text: `跳转到视频中间失败: ${message}`
         }],
-        error: error instanceof Error ? error.message : String(error)
+        error: message,
+        // 失败原因只在 content 与 error 里，data 无载荷——正题在 content
+        primary: 'content'
       };
     }
   }

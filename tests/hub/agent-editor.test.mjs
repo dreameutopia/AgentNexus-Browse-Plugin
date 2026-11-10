@@ -159,12 +159,51 @@ document.body.dispatchEvent(new dom.window.Event('pointerdown', { bubbles: true 
 await flush();
 assert.equal(q('.emoji-picker'), null, '点击外部后悬浮卡片收起');
 
-// 视觉声明（含视觉循环开关）位于左卡、名称字段之下
+// 视觉操作开关（原「视觉循环」）位于左卡、名称字段之下
 const formCard = q('.hub-editor-col--form');
 assert.ok(formCard, '左卡（表单）存在');
 const visionField = formCard.querySelector('fieldset');
 assert.ok(visionField, '视觉声明在左卡内');
 assert.ok(visionField.textContent.includes('视觉'), '视觉声明字段存在');
+// 标题改名 + 左右布局：标题与问号在左、开关在右，同处一行
+const visionHead = visionField.querySelector('.hub-vision-head');
+assert.ok(visionHead, '视觉操作行（标题+开关）存在');
+assert.ok(visionHead.textContent.includes('视觉操作'), '标题改名为「视觉操作」');
+const visionTitle = visionHead.querySelector('.hub-vision-title');
+const visionTip = visionHead.querySelector('.hub-help-tip');
+const visionSwitch = visionHead.querySelector('.hub-switch input[type="checkbox"]');
+assert.ok(visionTitle && visionTip, '标题右侧提供问号按钮');
+assert.ok(visionSwitch, '开关位于同一行');
+assert.ok(
+  Boolean(visionTitle.compareDocumentPosition(visionTip) & Node.DOCUMENT_POSITION_FOLLOWING),
+  '问号紧随标题之后',
+);
+assert.ok(
+  Boolean(visionTip.compareDocumentPosition(visionSwitch) & Node.DOCUMENT_POSITION_FOLLOWING),
+  '开关在标题与问号右侧（左右布局）',
+);
+// 问号 → 自定义解释框（挂编辑器层的悬浮卡片，文案为约定句）
+assert.equal(q('.hub-help-pop'), null, '默认不展开视觉说明框');
+visionTip.click();
+await flush();
+const visionPop = q('.hub-help-pop');
+assert.ok(visionPop, '点问号展开解释框');
+assert.ok(
+  visionPop.textContent.includes('此智能体必须由视觉模型驱动'),
+  '解释框承载「开启后由视觉模型驱动」的约定文案',
+);
+assert.ok(visionPop.textContent.includes('AI默认会看到当前正在操作的页面'), '解释框文案完整');
+visionTip.click();
+await flush();
+assert.equal(q('.hub-help-pop'), null, '再点问号收起解释框');
+// 开关关闭时隐藏子行（截图工具 / 重截图 / 坐标提示），开启后出现
+assert.equal(visionField.querySelector('.hub-vision-row'), null, '关闭时不展示视觉子配置');
+visionSwitch.click();
+await flush();
+assert.ok(visionField.querySelector('.hub-vision-row'), '开启后展示截图工具与重截图子配置');
+assert.ok(visionField.textContent.includes('0–1000'), '开启后展示坐标提示');
+visionSwitch.click();
+await flush();
 const nameField = qa('.hub-editor-col--form .hub-field').find(field => field.textContent.includes('名称'));
 assert.ok(nameField, '名称字段在左卡');
 assert.ok(
@@ -175,23 +214,136 @@ const listsCard = q('.hub-editor-col--lists');
 assert.ok(listsCard, '右卡（清单）存在');
 assert.ok(!listsCard.contains(visionField), '视觉声明不在右卡');
 
-// 工具组搜索：过滤生效；无匹配时给空态提示
+// ──── 工具区：默认「按工具」视图（每个工具独立一个元素），可切到「按组」视图 ────
 const groupSearch = q('.hub-section--groups .hub-list-search');
-assert.ok(groupSearch, '工具组区提供搜索框');
+assert.ok(groupSearch, '工具区提供搜索框');
 const groupRows = () => qa('.hub-section--groups .hub-group');
-assert.ok(groupRows().length > 1, '默认展示全部工具组');
-groupSearch.value = '统一网页搜索';
+const toolRows = () => qa('.hub-section--groups .hub-tool-row');
+assert.equal(toolRows().length > 0, true, '默认视图为「按工具」：每个工具独立一行');
+assert.equal(groupRows().length, 0, '默认视图不展示组卡片');
+// vision_gui 永不出现在工具组可选面（仅经「视觉操作」开关注入）
+const flatToolIds = () => qa('.hub-section--groups .hub-tool-row-id').map(el => el.textContent.trim());
+assert.ok(!flatToolIds().includes('vision_gui'), '扁平工具视图不提供 vision_gui 勾选');
+// 搜索在扁平视图按工具 id / 所属组过滤
+groupSearch.value = 'browser_get_page_info';
 groupSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
 await flush();
-assert.equal(groupRows().length, 1, '搜索词过滤工具组（按显示名精确命中一项）');
-groupSearch.value = '不存在的工具组xyz';
+assert.ok(toolRows().length > 0, '搜索命中工具');
+assert.ok(
+  toolRows().every(row => row.querySelector('.hub-tool-row-id')?.textContent.includes('browser_get_page_info')),
+  '搜索结果只含匹配工具',
+);
+groupSearch.value = '不存在的工具xyz';
 groupSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
 await flush();
-assert.equal(groupRows().length, 0, '无匹配时不渲染工具组');
+assert.equal(toolRows().length, 0, '无匹配时不渲染工具行');
 assert.ok(q('.hub-section--groups .hub-hint')?.textContent.includes('没有匹配'), '无匹配时给空态提示');
 groupSearch.value = '';
 groupSearch.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
 await flush();
+
+// 视图切换：切到「按组」后展示组卡片，切回「按工具」恢复扁平列表
+const viewSwitch = q('.hub-section--groups .hub-section-view');
+assert.ok(viewSwitch, '工具组标题右侧提供视图切换');
+const groupViewButton = [...viewSwitch.querySelectorAll('.hub-seg__btn')].find(b => b.textContent.trim() === '按组');
+assert.ok(groupViewButton, '视图切换含「按组」选项');
+groupViewButton.click();
+await flush();
+assert.ok(groupRows().length > 1, '切到「按组」视图后展示组卡片');
+assert.equal(toolRows().length, 0, '「按组」视图不展示扁平工具行');
+// 按组视图同样不提供 vision_gui；视觉坐标操作组仅含截图与 OCR
+const groupToolIds = () => qa('.hub-section--groups .hub-group-tool-id').map(el => el.textContent.trim());
+assert.ok(!groupToolIds().includes('vision_gui'), '按组视图不提供 vision_gui 勾选');
+const visionGroupCard = groupRows().find(card =>
+  card.querySelector('.hub-group-name')?.textContent.includes('视觉坐标操作'),
+);
+assert.ok(visionGroupCard, '视觉坐标操作组存在');
+assert.deepEqual(
+  [...visionGroupCard.querySelectorAll('.hub-group-tool-id')].map(el => el.textContent.trim()).sort(),
+  ['ocr', 'screenshot'],
+  '视觉坐标操作组仅含截图与 OCR（vision_gui 由开关注入）',
+);
+const toolViewButton = [...viewSwitch.querySelectorAll('.hub-seg__btn')].find(b => b.textContent.trim() === '按工具');
+toolViewButton.click();
+await flush();
+assert.ok(toolRows().length > 0, '切回「按工具」视图恢复扁平列表');
+
+// ──── 逐个勾选工具（扁平事实源 + 组三态复选框） ────
+// 切到「按组」视图以验证组三态；先找一个含多个工具的组（首个组 chat 只有 1 个工具）
+groupViewButton.click();
+await flush();
+const firstGroupCard = groupRows().find(card => card.querySelectorAll('.hub-group-tools .hub-check').length > 1);
+assert.ok(firstGroupCard, '存在含多个工具的组卡片');
+const groupHeadCheck = firstGroupCard.querySelector('.hub-group-head .hub-check');
+assert.ok(groupHeadCheck, '组头提供三态复选框');
+const toolChecks = [...firstGroupCard.querySelectorAll('.hub-group-tools .hub-check')];
+assert.ok(toolChecks.length > 0, '组内列出可逐个勾选的工具');
+assert.ok(
+  toolChecks.every(check => check.closest('.hub-group-tool') !== null),
+  '每个工具复选框都包在可点的工具芯片里',
+);
+// 初始全未选：组复选框未选且非部分选
+assert.equal(groupHeadCheck.checked, false, '初始组复选框未选中');
+assert.equal(groupHeadCheck.indeterminate, false, '初始组复选框非部分选中');
+// 逐个勾选一个 → 组进入部分选中（indeterminate）
+toolChecks[0].click();
+await flush();
+assert.ok(toolChecks[0].checked, '单个工具被勾选');
+assert.equal(groupHeadCheck.indeterminate, true, '只勾一个 → 组复选框显示部分选中');
+assert.equal(groupHeadCheck.checked, false, '部分选中时组复选框不显示全选');
+assert.ok(firstGroupCard.classList.contains('is-partial'), '卡片呈部分选中态');
+// 再勾一个 → 若组内恰好两个则全选，否则仍部分选
+toolChecks[1].click();
+await flush();
+const allChecked = toolChecks.every(check => check.checked);
+assert.equal(groupHeadCheck.indeterminate, !allChecked, '部分/全选状态随工具勾选实时联动');
+assert.equal(groupHeadCheck.checked, allChecked, '全部勾选后组复选框为全选态');
+assert.equal(firstGroupCard.classList.contains('checked'), allChecked, '卡片全选态与组复选框一致');
+// 组复选框一键取消全选（全选态下点击）
+if (allChecked) {
+  groupHeadCheck.click();
+  await flush();
+  assert.ok(toolChecks.every(check => !check.checked), '全选态下点组复选框 → 组内全部取消');
+  assert.equal(groupHeadCheck.checked, false, '取消后组复选框回到未选');
+}
+// 计数徽标与扁平集合同步
+const countBadge = q('.hub-section--groups .hub-groups-count');
+assert.ok(countBadge, '工具组区展示已选计数');
+assert.match(countBadge.textContent, /已选 \d+\/30/, '计数徽标格式为「已选 N/30」');
+
+const hubCssText = readFileSync(path.join(root, 'entrypoints/hub/hub.css'), 'utf8');
+
+// ──── 外部插件工具 / 关联技能默认收起；关联技能说明改为问号悬浮框 ────
+const externalSection = q('.hub-section--external');
+assert.ok(externalSection, '外部插件工具分区存在');
+assert.ok(externalSection.classList.contains('is-collapsed'), '外部插件工具默认收起');
+const skillsSection = q('.hub-section--skills');
+assert.ok(skillsSection, '关联技能分区存在');
+assert.ok(skillsSection.classList.contains('is-collapsed'), '关联技能默认收起');
+// 说明以问号按钮承载（不再有常驻说明文字）
+assert.equal(q('.hub-section--skills .hub-hint'), null, '关联技能区不再常驻说明文字');
+const helpTip = q('.hub-section--skills .hub-help-tip');
+assert.ok(helpTip, '关联技能标题行提供问号按钮');
+assert.equal(q('.hub-help-pop'), null, '默认不展示说明框');
+helpTip.click();
+await flush();
+const helpPop = q('.hub-help-pop');
+assert.ok(helpPop, '点问号展开说明悬浮卡片');
+assert.ok(
+  helpPop.textContent.includes('可用技能清单'),
+  '说明框承载完整的关联规则解释',
+);
+helpTip.click();
+await flush();
+assert.equal(q('.hub-help-pop'), null, '再点问号收起说明框');
+
+// ──── 搜索图标必须盖在输入框之上（输入框带 backdrop-filter 会形成层叠上下文） ────
+const searchIcon = q('.hub-section--groups .hub-search__icon');
+assert.ok(searchIcon, '搜索框左侧有搜索图标');
+assert.ok(
+  /\.hub-search__icon\s*\{[^}]*z-index:\s*1/s.test(hubCssText),
+  '搜索图标提升层级（输入框的 backdrop-filter 会盖住后绘制的兄弟节点）',
+);
 
 // 图片形态：走上传通道（图片处理被替身固定为一张 data URL）→ 可点开放大 + 下载
 const fileInput = q('.hub-avatar-upload input[type="file"]');
@@ -337,7 +489,6 @@ assert.ok(
   '标题在描述之上（上下布局）',
 );
 assert.ok(firstGroup.querySelector('.hub-group-info'), '卡片右侧有查看图标');
-const hubCssText = readFileSync(path.join(root, 'entrypoints/hub/hub.css'), 'utf8');
 assert.ok(/\.hub-group-desc\s*\{[^}]*-webkit-line-clamp:\s*2/s.test(hubCssText), '描述最多两行');
 
 // 查看图标 → 弹出完整信息悬浮窗（图标本身必须是可点按钮，曾是 span 导致点了没反应）
@@ -345,20 +496,33 @@ const infoButton = firstGroup.querySelector('.hub-group-info');
 assert.ok(infoButton, '卡片右侧有查看图标');
 assert.equal(infoButton.tagName, 'BUTTON', '查看图标是可点击的按钮（此前是 span，点击无反应）');
 firstGroup.querySelector('.hub-group-body').click();
-await flush();
+// 详情卡需按需加载工具元数据（异步）
+for (let i = 0; i < 20 && !q('.hub-detail-card'); i++) await flush();
 const detailCard = q('.hub-detail-card');
 assert.ok(detailCard, '点击标题区弹出详情悬浮窗卡片');
 assert.ok(detailCard.querySelector('.hub-detail-card__panel'), '悬浮窗为卡片形态');
 assert.ok(detailCard.querySelector('.hub-detail-card__title')?.textContent.trim(), '悬浮窗展示标题');
 assert.ok(detailCard.querySelector('.hub-detail-card__desc')?.textContent.trim(), '悬浮窗展示完整描述');
-assert.ok(detailCard.querySelectorAll('.hub-detail-card__chip').length > 0, '悬浮窗列出工具清单');
+// 工具明细：完整名称 + 介绍 + 输入参数说明（不再是裸工具 id 列表）
+const detailTools = detailCard.querySelectorAll('.hub-detail-tool');
+assert.ok(detailTools.length > 0, '悬浮窗逐个列出工具明细');
+const firstTool = detailTools[0];
+const toolName = firstTool.querySelector('.hub-detail-tool__name')?.textContent.trim() ?? '';
+assert.ok(toolName.length > 0, '工具明细展示名称');
+assert.notEqual(toolName, 'web_search', '工具名不是裸 id（应由元数据给出完整名称）');
+assert.ok(firstTool.querySelector('.hub-detail-tool__desc')?.textContent.trim(), '工具明细展示介绍');
+assert.ok(firstTool.querySelector('.hub-detail-tool__params'), '工具明细展示输入参数区块');
+assert.ok(firstTool.querySelector('.hub-detail-tool__param-name')?.textContent.trim(), '输入参数含参数名');
+assert.ok(firstTool.querySelector('.hub-detail-tool__param-desc')?.textContent.trim(), '输入参数含说明');
+// 不再出现「工具数量 / 包含的工具」这类无意义信息
+assert.equal(detailCard.querySelector('.hub-detail-card__chips'), null, '不再渲染裸工具 id 列表');
 // 点遮罩关闭
 detailCard.dispatchEvent(new dom.window.Event('click', { bubbles: true }));
 await flush();
 assert.equal(q('.hub-detail-card'), null, '点击遮罩关闭悬浮窗');
 // 直接点查看图标同样能打开
 infoButton.click();
-await flush();
+for (let i = 0; i < 20 && !q('.hub-detail-card'); i++) await flush();
 assert.ok(q('.hub-detail-card'), '点击「查看」图标同样打开详情悬浮窗');
 q('.hub-detail-card .hub-icon-btn').click();
 await flush();
@@ -374,6 +538,11 @@ for (const box of searchBoxes) {
 assert.ok(
   /\.hub-search--fill\s*\{[^}]*width:\s*100%/s.test(hubCssText),
   '卡片内搜索框占满父容器宽度（默认 .hub-list-search 是列表页定宽 220px）',
+);
+// 详情卡：固定高度 + 内部滚动（超出不撑破页面）
+assert.ok(
+  /\.hub-detail-card__panel\s*\{[^}]*height:\s*min\([^}]*overflow-y:\s*auto/s.test(hubCssText),
+  '详情卡片固定高度且超出内部滚动',
 );
 // 关联技能搜索：过滤生效
 const skillSearch = q('.hub-section--skills .hub-list-search');
@@ -446,6 +615,6 @@ assert.ok(q('.external-tools'), '外部插件工具分区存在');
 assert.ok(q('.external-tools .hub-section-toggle'), '外部插件工具提供折叠按钮');
 
 assert.deepEqual(errors, [], '组件渲染与交互过程无未捕获异常');
-console.log('[hub] 智能体编辑器：填满态两卡布局（级联回归锁）、头部按钮位、卡片上下布局、查看按钮与详情悬浮窗、三区可折叠、搜索框占满宽度（工具组 + 关联技能）、emoji 悬浮卡片 —— 通过');
+console.log('[hub] 智能体编辑器：填满态两卡布局（级联回归锁）、头部按钮位、卡片上下布局、查看按钮与详情悬浮窗、三区可折叠、搜索框占满宽度（工具组 + 关联技能）、emoji 悬浮卡片、视觉操作开关（改名/左右布局/问号解释框/子行开合）与工具组永不含 vision_gui —— 通过');
 app.unmount();
 dom.window.close();

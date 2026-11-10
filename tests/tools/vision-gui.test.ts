@@ -10,12 +10,6 @@ import {
   needsVisionRefresh,
   takeVisionToolImage,
 } from "../../entrypoints/sidepanel/core/conversation/vision-feedback";
-import {
-  normalizeToolIds,
-  normalizeAgentConfig,
-} from "../../utils/agents/agent-types";
-import { normalizeAllowedToolList } from "../../utils/skills/skill-types";
-import { migrateVisionToolPrompt } from "../../utils/tools/vision-tool-migration";
 import { resolveActionDefinition } from "../../entrypoints/sidepanel/components/tool/types";
 import { categories } from "../../entrypoints/sidepanel/components/tool/tool-definitions";
 
@@ -72,6 +66,8 @@ const valid = {
       valueEquals: "",
     },
   },
+  read: {},
+  read_scroll: { direction: "down", containerPercent: 75 },
 };
 assert.deepEqual(Object.keys(valid), [...VISION_GUI_ACTIONS]);
 assert.equal(toolRegistry.getTool("vision_gui")?.name, "vision_gui");
@@ -87,7 +83,7 @@ for (const action of VISION_GUI_ACTIONS) {
   };
   assert.equal(
     needsVisionRefresh([call], [], () => true),
-    !["inspect", "zoom", "check"].includes(action),
+    !["inspect", "zoom", "check", "read"].includes(action),
     `${action} lifecycle overrides whole-tool metadata`,
   );
   assert.equal(
@@ -188,6 +184,13 @@ for (const raw of [
   { action: "check", screenshotId: "s", timeoutMs: 5001 },
   { action: "zoom", screenshotId: "s", ...valid.zoom, confirm: true },
   { action: "click", screenshotId: "s", ...valid.click, expect: {} },
+  { action: "read_scroll", screenshotId: "s" },
+  { action: "read_scroll", screenshotId: "s", direction: "down", containerPercent: 0 },
+  { action: "read_scroll", screenshotId: "s", direction: "down", containerPercent: 101 },
+  // 百分比分名：容器相对用 containerPercent，视口相对的 percent 属于手势 scroll
+  { action: "read_scroll", screenshotId: "s", direction: "down", percent: 50 },
+  { action: "read", screenshotId: "s", point: { x: 0, y: 0, z: 1 } },
+  { action: "read", point: { x: 0, y: 0 } },
 ]) {
   const result = await gui.execute(raw);
   assert.equal(result.success, false, JSON.stringify(raw));
@@ -246,39 +249,39 @@ assert.equal(
   ),
   true,
 );
-const legacy = VISION_GUI_ACTIONS.map((a) => `vision_${a}`);
-assert.deepEqual(
-  normalizeToolIds([...legacy, "vision_gui", "vision_read_zoom"]),
-  ["vision_gui", "vision_read_zoom"],
-);
-assert.deepEqual(normalizeAllowedToolList(legacy), ["vision_gui"]);
-const prompt = migrateVisionToolPrompt(
-  "vision_click(point); vision_read_zoom; vision_check(expect)",
-);
-assert.ok(
-  prompt.includes('vision_gui(action="click", point)') &&
-    prompt.includes("vision_read_zoom"),
-);
-assert.equal(
-  migrateVisionToolPrompt(prompt),
-  prompt,
-  "Migration is idempotent",
-);
-assert.equal(
-  normalizeAgentConfig({
-    id: "custom",
-    name: "custom",
-    system: "vision_click",
-    tools: legacy,
-  })?.system,
-  'vision_gui(action="click")',
-);
 const ui = categories
   .flatMap((c) => c.tools)
   .find((t) => t.name === "vision_gui")!;
+// 顶层合并 schema 是各 action 分支的并集：同名参数若语义不同必须分名，
+// 否则后合并者会覆盖前者（手势 scroll 的 percent 视口相对 vs 阅读式滚动的
+// 容器相对）——顶层就会对某一族 action 谎报取值范围。
+{
+  const params = new VisionGuiTool().openaiSchema.function.parameters as {
+    properties: Record<string, { minimum?: number; maximum?: number }>;
+  };
+  assert.equal(params.properties.percent.minimum, 0.001, '顶层 percent 保持手势 scroll 的视口相对范围');
+  assert.equal(params.properties.percent.maximum, 300);
+  assert.equal(params.properties.containerPercent.minimum, 1, '容器相对百分比独立命名');
+  assert.equal(params.properties.containerPercent.maximum, 100);
+}
 const drag = resolveActionDefinition(ui, "drag");
 assert.ok(
   drag.required.includes("from") && !Object.hasOwn(drag.parameters, "text"),
+);
+const read = resolveActionDefinition(ui, "read");
+assert.ok(
+  read.required.includes("screenshotId") && Object.hasOwn(read.parameters, "region"),
+  "Merged read observation is reachable from the test panel",
+);
+assert.equal(
+  takeVisionToolImage(
+    { success: true, data: { screenshot: "data:image/png;base64,cG5n", text: "dom" } },
+    0,
+    "vision_gui",
+    { action: "read" },
+  ),
+  null,
+  "Read observation never impersonates an image producer",
 );
 assert.deepEqual(
   Object.keys(resolveActionDefinition(ui, undefined).parameters),
@@ -289,16 +292,5 @@ assert.deepEqual(
   ["action"],
 );
 console.log(
-  "[vision-gui] All ten actions, action boundaries, approval, lifecycle, image provenance, migration and test-panel schemas passed.",
-);
-
-assert.equal(
-  migrateVisionToolPrompt(
-    'vision_click({"screenshotId":"s","point":{"x":1,"y":2}})',
-  ),
-  'vision_gui({"action":"click","screenshotId":"s","point":{"x":1,"y":2}})',
-);
-assert.equal(
-  migrateVisionToolPrompt("vision_mark({})"),
-  'vision_gui({"action":"mark"})',
+  "[vision-gui] All twelve actions, action boundaries, approval, lifecycle, image provenance and test-panel schemas passed.",
 );

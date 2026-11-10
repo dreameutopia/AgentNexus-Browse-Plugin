@@ -276,12 +276,14 @@ function mdFiles(name: string, body: string, extraFrontmatter: string[] = []): R
   eq(single.toolIds, ['plan_tool', 'browser_get_page_text'], 'C1 预授权工具按声明顺序带出');
 
   // 与真实 load_skill 回传逐字同源（同一 buildSuccessPayload 拼装）
+  // primary 是消费方之间的路由约定，模型侧不需要：会话引擎回传前会剥掉它，
+  // 合成轮同步剥掉——两条路径才真正逐字同源。
   const payload = buildSkillInstruction(active);
-  const expectedContent = JSON.stringify({
-    success: true,
-    ...buildSuccessPayload(payload, skillLoadSuccessMessage(payload)),
-  });
+  const { primary: builtPrimary, ...primaryStripped } = buildSuccessPayload(payload, skillLoadSuccessMessage(payload));
+  eq(builtPrimary, 'data', 'C2 buildSuccessPayload 声明 data 为正题通道');
+  const expectedContent = JSON.stringify({ success: true, ...primaryStripped });
   eq(toolMessage.content, expectedContent, 'C2 合成结果与真实 load_skill 回传逐字相同');
+  check(!String(toolMessage.content).includes('primary'), 'C2 模型回传里不含 primary（消费方内部约定）');
   const parsed = JSON.parse(String(toolMessage.content)) as {
     success: boolean;
     content: Array<{ type: string; text: string }>;
@@ -290,7 +292,17 @@ function mdFiles(name: string, body: string, extraFrontmatter: string[] = []): R
   eq(parsed.success, true, 'C2 结果标记成功');
   eq(parsed.data.skill, modelSkillIdOf(active), 'C2 data 携带模型标识');
   eq(parsed.data.message, skillLoadSuccessMessage(payload), 'C2 data.message 与真实工具一致');
-  eq(parsed.content[0]?.text, JSON.stringify(parsed.data, null, 2), 'C2 content 文本与 data 同源');
+  // content 不再是 data 的副本：它是载荷的紧凑摘要，完整载荷只在 data 里一份
+  // （模型上下文不双份占用——技能正文动辄数千字符，抄两遍是纯浪费）。
+  const contentText = String(parsed.content[0]?.text ?? '');
+  const dataJson = JSON.stringify(parsed.data, null, 2);
+  check(contentText !== dataJson, 'C2 content 是摘要而非 data 的 JSON 副本');
+  check(contentText.length * 3 < dataJson.length, 'C2 摘要长度远小于完整载荷（正文不双份占用）');
+  eq(
+    (String(toolMessage.content).match(/技能预授权工具/g) ?? []).length,
+    1,
+    'C2 完整技能正文在整条回传里只出现一次',
+  );
   check(String(parsed.data.instruction).includes('技能一正文'), 'C2 data 携带完整指令');
   check(!String(toolMessage.content).includes('system'), 'C2 结果不夹带 system 相关字段');
 
@@ -779,7 +791,7 @@ function pageOf(text: string, page: number, budget?: number) {
   const DEEP_SEARCH_TOOLSET = [
     ...['interact', 'browser_get_page_text', 'plan_tool', 'note_tool'],
     'browser_go_back_or_forward', 'browser_navigate', 'browser_get_page_info',
-    'browser_web_fetcher', 'browser_observe', 'browser_interact',
+    'browser_observe', 'browser_interact',
     'browser_dom_explore', 'browser_page_exec', 'web_search',
   ];
   const deepList = idsOf(computeAvailableSkills(undefined, DEEP_SEARCH_TOOLSET));
@@ -789,8 +801,8 @@ function pageOf(text: string, page: number, budget?: number) {
     deepList,
   );
 
-  // automation 同构工具面（含 web_search 但缺 browser_web_fetcher）：承载校验
-  // 必须把 web-research-report 整个挡在清单外——缺任一工具即不得进入发现清单
+  // automation 同构工具面（含 web_search）：调研技能的全部工具均可承载 →
+  // 映射兜底放行（已下线的网页抓取工具不再把技能挡在清单外）
   const AUTOMATION_TOOLSET = [
     ...['interact', 'browser_get_page_text', 'plan_tool', 'note_tool'],
     'browser_observe', 'browser_interact', 'browser_dom_explore', 'browser_navigate',
@@ -799,20 +811,30 @@ function pageOf(text: string, page: number, budget?: number) {
   ];
   const autoList = idsOf(computeAvailableSkills(undefined, AUTOMATION_TOOLSET));
   check(
-    !autoList.includes(presetSkillIdFromName('web-research-report')),
-    'L2 缺任一承载工具的技能不得进清单（曾经的死链根因）',
+    autoList.includes(presetSkillIdFromName('web-research-report')),
+    'L2 工具面完整时通用助手同样可见调研技能（已下线工具不得再当挡板）',
     autoList,
+  );
+
+  // 承载校验本体：工具面缺任一必需工具（此处缺 web_search）→ 技能整项挡在
+  // 清单外——缺任一工具即不得进入发现清单（曾经的死链根因）
+  const PARTIAL_TOOLSET = AUTOMATION_TOOLSET.filter(id => id !== 'web_search');
+  const partialList = idsOf(computeAvailableSkills(undefined, PARTIAL_TOOLSET));
+  check(
+    !partialList.includes(presetSkillIdFromName('web-research-report')),
+    'L3 缺任一承载工具的技能不得进清单（曾经的死链根因）',
+    partialList,
   );
 
   // 显式关联通道同样过承载校验：关联了承载不了的技能 → 从发现清单剔除
   // （发送时预选不受此限，走 activation 另行注入——见 skill-availability 文件头）
   const explicitList = idsOf(computeAvailableSkills(
     [presetSkillIdFromName('web-research-report')],
-    AUTOMATION_TOOLSET,
+    PARTIAL_TOOLSET,
   ));
   check(
     !explicitList.includes(presetSkillIdFromName('web-research-report')),
-    'L3 显式关联的技能承载不了时同样剔除',
+    'L3b 显式关联的技能承载不了时同样剔除',
     explicitList,
   );
 
@@ -910,7 +932,7 @@ eq(
   const DEEP_SEARCH_TOOLSET = [
     'interact', 'browser_get_page_text', 'plan_tool', 'note_tool',
     'browser_go_back_or_forward', 'browser_navigate', 'browser_get_page_info',
-    'browser_web_fetcher', 'browser_observe', 'browser_interact',
+    'browser_observe', 'browser_interact',
     'browser_dom_explore', 'browser_page_exec', 'web_search',
   ];
   check(

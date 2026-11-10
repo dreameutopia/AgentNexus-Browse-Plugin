@@ -10,6 +10,7 @@ import {
   sliceTextToTokenBudget,
   trimDanglingSurrogate,
 } from './token-estimate';
+import { isCompactionSummaryMessage } from '../../core/context/summary-message';
 
 export interface ContextGuardResult {
   messages: ChatMessage[];
@@ -62,8 +63,8 @@ const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF
  *   - 组间保持消息原始顺序（组按下标升序，最终结果按 __normalizedIndex 重排）。
  *
  * 消费方：窗口守卫的「从新到旧保留」（retainNewestMessagesWithinBudget）与
- * 运行时压缩的 group-boundary 切分（core/conversation/compaction-boundary）。
- * 两处共享同一实现，配对约束的判定不会漂移。
+ * 运行时压缩的切分规划（core/conversation/compaction-boundary）。两处共享
+ * 同一实现，配对约束的判定不会漂移。
  *
  * @param messages 消息序列（下标即组内元素的引用键）
  * @returns 每组为其成员消息下标的升序数组（组间按下标升序）
@@ -178,8 +179,16 @@ export class ContextWindowGuard {
       };
     }
 
-    const systemMessages = normalizedMessages.filter(message => message.role === 'system');
-    const nonSystemMessages = normalizedMessages.filter(message => message.role !== 'system');
+    // system 消息 + 上下文压缩消息（assistant 角色的 <conversation-memory>
+    // 记忆，新旧角色都认）共同构成「受保护区」：摘要按定义位于历史最前，
+    // 若不单列保护，会被「从新到旧保留」当作最旧内容整条裁掉——模型随即
+    // 失去全部既往记忆。保护区整体优先于非保护消息参与预算。
+    const systemMessages = normalizedMessages.filter(
+      message => message.role === 'system' || isCompactionSummaryMessage(message),
+    );
+    const nonSystemMessages = normalizedMessages.filter(
+      message => message.role !== 'system' && !isCompactionSummaryMessage(message),
+    );
     const systemTokens = this.totalTokens(systemMessages);
 
     if (systemTokens >= safeThreshold) {
@@ -324,16 +333,45 @@ export class ContextWindowGuard {
     return messages.filter((_, index) => retainedIndices.has(index));
   }
 
-  /** system 消息超阈值时按 token 预算逐条截断正文（保持消息结构与顺序） */
+  /**
+   * 受保护区（system + 上下文压缩消息）超阈值时按 token 预算裁剪正文。
+   *
+   * 两条独立的顺序（刻意分离）：
+   *   - **预算分配顺序**：上下文压缩消息优先、主 system 提示词其次——记忆
+   *     是任务上下文（丢了它模型就不知道在做什么，降级是灾难性的）；system
+   *     提示词被截只丢掉靠后的次要分区（文本截断保留前缀：环境声明、交互
+   *     准则、智能体指令等最关键的开头部分完整留存）；
+   *   - **输出顺序**：始终保持原序——压缩消息紧随主提示词的位置不可漂移
+   *     （否则 wire 上「权威记忆」会跑到请求末尾，语义与提示词声明相悖）。
+   *
+   * 硬不变量：**裁剪后总量不得超过阈值**。文本截断按「文本 token」预算计算，
+   * 而消息总量还含 JSON 包装开销，二者存在数个 token 的取整差——不做收敛
+   * 就会在边界上超限（守卫的职责是「装进窗口」，超限即失去意义）。
+   *
+   * 空内容处理：压缩记忆若被挤到没有实质内容，宁可整条不放入（空的
+   * <conversation-memory> 比没有记忆更具误导性——模型会以为「记忆为空」）。
+   * 普通 system 消息沿用既有行为（保留结构，正文可为空）。
+   *
+   * 注：本分支在引擎链路中恒伴随 `truncated=true` → 引擎随即以可读错误
+   * 终止该轮（见 conversation-engine 的窗口守卫判定），不会真的发出去；
+   * 但守卫是通用工具，输出仍必须自洽（预算不超限、顺序正确、结构完整）。
+   */
   private static trimSystemMessagesToThreshold(messages: NormalizedMessage[], threshold: number): ChatMessage[] {
     if (messages.length === 0) {
       return [];
     }
 
-    let remaining = threshold;
-    const trimmed: ChatMessage[] = [];
+    // 分配顺序：压缩记忆优先（任务上下文价值最高），主 system 提示词其次
+    const allocationOrder = messages
+      .map((message, index) => ({ message, index }))
+      .sort((left, right) => {
+        const rank = (message: NormalizedMessage) => (isCompactionSummaryMessage(message) ? 0 : 1);
+        return rank(left.message) - rank(right.message);
+      });
 
-    for (const message of messages) {
+    let remaining = threshold;
+    const trimmedByIndex = new Map<number, ChatMessage>();
+    for (const { message, index } of allocationOrder) {
       if (remaining <= 0) {
         break;
       }
@@ -342,19 +380,41 @@ export class ContextWindowGuard {
         ...message,
         content: typeof message.content === 'string' ? '' : [],
       });
-      const availableContentTokens = Math.max(remaining - baseTokens, 0);
-      const nextMessage: ChatMessage = {
+      const isMemory = isCompactionSummaryMessage(message);
+      const build = (contentBudget: number): ChatMessage => ({
         role: message.role,
-        content: this.trimContentToTokens(message.content, availableContentTokens),
+        content: this.trimContentToTokens(message.content, contentBudget),
         name: message.name,
         tool_calls: message.tool_calls,
         tool_call_id: message.tool_call_id,
-      };
-      trimmed.push(nextMessage);
-      remaining -= estimateMessageTokens(nextMessage);
+      });
+
+      // 预算收敛：按文本预算截断后实测消息总量可能仍略超剩余（JSON 包装
+      // 开销的取整差）→ 逐轮收紧文本预算，直到装得下或文本预算归零
+      let contentBudget = Math.max(remaining - baseTokens, 0);
+      let next = build(contentBudget);
+      let cost = estimateMessageTokens(next);
+      for (let attempt = 0; attempt < 4 && cost > remaining && contentBudget > 0; attempt++) {
+        contentBudget = Math.max(0, contentBudget - (cost - remaining) - 1);
+        next = build(contentBudget);
+        cost = estimateMessageTokens(next);
+      }
+      // 装不下（文本预算已归零）→ 不放入：宁可缺一条，也不让总量超阈值
+      if (cost > remaining) {
+        break;
+      }
+      // 压缩记忆被挤到没有实质内容 → 整条不放入（空信封比无记忆更具误导性）
+      if (isMemory && typeof next.content === 'string' && next.content.trim().length === 0) {
+        continue;
+      }
+      trimmedByIndex.set(index, next);
+      remaining -= cost;
     }
 
-    return trimmed;
+    // 输出保持原序（未被分配到预算的消息自然缺席）
+    return messages
+      .map((_, index) => trimmedByIndex.get(index))
+      .filter((message): message is ChatMessage => message !== undefined);
   }
 
   /**

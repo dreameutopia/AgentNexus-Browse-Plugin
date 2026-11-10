@@ -96,11 +96,44 @@ export function sliceTextToTokenBudget(text: string, maxTokens: number): string 
 }
 
 /**
+ * 与 sliceTextToTokenBudget 对偶的**尾部**切片：返回 ≤ maxTokens 的文本**后缀**。
+ *
+ * 用途：压缩载荷的「从后往前保留」截断兜底（分段摘要触顶后的最后防线）——
+ * 被截的往往是单条超长工具结果，其结论通常在末尾，保留尾部比保留头部
+ * 更接近「可继续工作的信息」。
+ *
+ * 三条硬契约：
+ *   1. **恒 ≤ 预算**：二分求「最大的可行起点」（后缀成本随起点右移单调
+ *      不增，空后缀必可行 → 一定有解），不做比例估算式的近似收敛；
+ *   2. **代理对安全**：起点不得落在低位代理上（切在代理对中间会产出孤立
+ *      代理转义 → 严格网关整单 400，见 utils/text/truncate 的说明）；
+ *   3. **纯后缀语义**：不改动文本内容，只决定从哪里开始保留。
+ */
+export function sliceTextTailToTokenBudget(text: string, maxTokens: number): string {
+  if (maxTokens <= 0) return '';
+  if (text.length === 0) return '';
+  const whole = estimateTextTokens(text);
+  if (whole <= maxTokens) return text;
+
+  // 二分求「最小的可行起点」：起点右移 → 后缀变短 → 成本单调不增，
+  // 可行区间是 [首个可行起点, 长度]；取下界即得**预算内最长**的后缀
+  // （取上界会收敛到空后缀——与目标相反）
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (estimateTextTokens(text.slice(mid)) <= maxTokens) high = mid;
+    else low = mid + 1;
+  }
+  return trimLeadingLoneSurrogate(text, low);
+}
+
+/**
  * 截断点代理对回退——单一实现位于共享域 utils/text/truncate（background
  * 工具链同样引用），此处重导出保持既有导入方稳定；契约与理由见该模块。
  */
-import { trimDanglingSurrogate } from '@/utils/text/truncate';
-export { trimDanglingSurrogate };
+import { trimDanglingSurrogate, trimLeadingLoneSurrogate } from '@/utils/text/truncate';
+export { trimDanglingSurrogate, trimLeadingLoneSurrogate };
 
 /** 消息中「图片部件」数量（content 数组内 type=image_url 的部件；字符串 content 恒为 0） */
 function countImageParts(message: unknown): number {

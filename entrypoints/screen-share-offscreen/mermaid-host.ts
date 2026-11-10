@@ -1,5 +1,5 @@
 /**
- * Mermaid 离屏渲染页入口
+ * Mermaid 离屏渲染消息处理
  *
  * 响应 mermaid_renderer 工具的渲染请求（协议见 tools/code/mermaid-protocol.ts）：
  * mermaid 源码 → SVG → PNG dataURL。
@@ -50,13 +50,15 @@ function loadMermaid(): Promise<MermaidModule> {
       mermaid.initialize({
         startOnLoad: false,
         securityLevel: 'strict',
+        htmlLabels: false,
+        secure: [...new Set([...(mermaid.mermaidAPI.defaultConfig.secure ?? []), 'htmlLabels'])],
         theme: 'default',
         fontFamily: "'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif",
         // PNG 导出关键配置（见文件头「渲染管线与防御点」2/3 条）：
         // htmlLabels 关闭 → 无 foreignObject（Canvas 光栅化兼容）；
         // useMaxWidth 关闭 → SVG 自带绝对像素宽高（离屏环境可测量）
-        flowchart: { htmlLabels: false, useMaxWidth: false },
-        class: { htmlLabels: false, useMaxWidth: false },
+        flowchart: { useMaxWidth: false },
+        class: { useMaxWidth: false },
         // state 图类型无 htmlLabels 配置项（mermaid 状态图不走 HTML 标签），只关 useMaxWidth
         state: { useMaxWidth: false },
         sequence: { useMaxWidth: false },
@@ -89,7 +91,7 @@ function extractErrorDetail(error: unknown, maxLength = 600): string {
     text = error;
   } else {
     try {
-      text = JSON.stringify(error);
+      text = JSON.stringify(error) ?? String(error);
     } catch {
       text = String(error);
     }
@@ -268,7 +270,9 @@ async function renderToPng(code: string): Promise<MermaidRenderResponse> {
     return {
       ok: false,
       code: 'CONVERT_ERROR',
-      message: 'SVG → PNG 转换失败',
+      message: error instanceof DOMException && error.name === 'SecurityError'
+        ? '图表包含浏览器无法导出为 PNG 的内容，请改用纯文本标签或内置图形'
+        : 'SVG → PNG 转换失败',
       detail: extractErrorDetail(error),
     };
   } finally {

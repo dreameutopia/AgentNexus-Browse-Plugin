@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Screen Share Offscreen</title>
+  <title>AgentNexus Offscreen Host</title>
 </head>
 <body>
   <!--
@@ -10,6 +10,7 @@
       1. 调用 getDisplayMedia() 捕获屏幕
       2. 管理每个 LAN viewer 对应的 RTCPeerConnection
       3. 通过 chrome.runtime.sendMessage 将信令转发给 background service worker
+      4. 执行 Python 工作区任务和 Mermaid 图表渲染
 
     注意：此页面不可见，无 UI，仅用于突破 Service Worker 无法调用
          getDisplayMedia() 的限制（Chrome Offscreen DISPLAY_MEDIA reason）。

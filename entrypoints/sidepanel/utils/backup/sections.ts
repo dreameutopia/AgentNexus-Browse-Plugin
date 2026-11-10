@@ -28,6 +28,7 @@ import { downloadDB, type CapturedFileRecord } from '@/utils/download-database';
 import type { Note } from '@/types';
 
 import { base64ToBytes, bytesToBase64 } from './bytes';
+import { decodeWorkspaceBackups, encodeWorkspaceBackups } from './workspace-backup';
 import {
   AGENTS_STORAGE_KEY,
   FILES_STORAGE_KEY,
@@ -785,15 +786,22 @@ function isConversationsPayload(value: unknown): value is ConversationsPayload {
   if (!Array.isArray(value.messages) || !value.messages.every(isMessageLike)) return false;
   // 消息必须归属于本分区内的某个会话（否则恢复时会成为孤儿消息被丢弃）
   const chatIds = new Set(value.sessions.map(session => (session as { chatId: string }).chatId));
-  return value.messages.every(message => chatIds.has((message as { chatId: string }).chatId));
+  if (chatIds.size !== value.sessions.length ||
+      !value.messages.every(message => chatIds.has((message as { chatId: string }).chatId))) return false;
+  if (value.workspaces !== undefined) {
+    try { decodeWorkspaceBackups(value.workspaces, chatIds, false); }
+    catch { return false; }
+  }
+  return true;
 }
 
-export function createConversationsHandler(): SectionHandler {
+export function createConversationsHandler(includeMedia = true): SectionHandler {
   const notices: string[] = [];
   return {
     id: 'conversations',
     notices,
     async collect(): Promise<unknown | null> {
+      notices.length = 0;
       const [sessions, messages] = await Promise.all([
         chatDatabase.listAllSessions(),
         chatDatabase.listAllMessages(),
@@ -811,7 +819,19 @@ export function createConversationsHandler(): SectionHandler {
       if (dropped > 0) {
         notices.push(`${dropped} 条消息无法序列化（可能含循环引用或二进制），未包含在本次备份中`);
       }
-      return { sessions, messages: exportable } satisfies ConversationsPayload;
+      const payload: ConversationsPayload = { sessions, messages: exportable };
+      if (includeMedia) {
+        try {
+          payload.workspaces = await encodeWorkspaceBackups(
+            await chatDatabase.listWorkspaces(),
+            new Set(sessions.map(session => session.chatId)),
+          );
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          notices.push(`本次未包含 Python 工作区文件：${reason}。会话文字仍可备份，产物可从原会话单独下载。`);
+        }
+      }
+      return payload;
     },
     validate(data: unknown): boolean {
       return isConversationsPayload(data);
@@ -826,13 +846,18 @@ export function createConversationsHandler(): SectionHandler {
       }
       // 原子恢复（单事务清空 + 写入）；失败时自身状态不变。
       // 写入的是**备份里的**会话与消息——写本机现有数据等于什么都没做。
-      await chatDatabase.restoreSessions(
-        data.sessions as ChatSessionMeta[],
+      const sessions = data.sessions as ChatSessionMeta[];
+      const workspaces = data.workspaces === undefined ? undefined : decodeWorkspaceBackups(
+        data.workspaces, new Set(sessions.map(session => session.chatId)), true,
+      );
+      const previousWorkspaces = await chatDatabase.restoreSessions(
+        sessions,
         data.messages as ChatMessageRecord[],
+        workspaces,
       );
       return {
         rollback: async () => {
-          await chatDatabase.restoreSessions(existingSessions, existingMessages);
+          await chatDatabase.restoreSessions(existingSessions, existingMessages, previousWorkspaces);
         },
       };
     },
@@ -935,7 +960,7 @@ export function createDataSectionHandlers(deps: SectionDeps): SectionHandler[] {
     createPluginsBackupHandler(),
     createImagesHandler(),
     createNotesHandler(deps),
-    createConversationsHandler(),
+    createConversationsHandler(deps.includeMedia !== false),
     createCapturedFilesHandler(),
   ];
 }

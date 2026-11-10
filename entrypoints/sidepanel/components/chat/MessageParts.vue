@@ -48,6 +48,7 @@
         class="message-content"
         :content="entry.item.part.content"
         :streaming="streaming"
+        :workspace-chat-id="workspaceChatId"
       />
       <!-- 系统注记部分（守卫停止 / 截断说明等）：独立系统信息条容器 -->
       <div v-else-if="entry.item.part.type === 'notice' && entry.item.part.content" class="system-notice">
@@ -141,7 +142,7 @@
  *   - image 片段由 MessageImagePart 渲染为「查看屏幕」容器（默认收起，
  *     展开见原图，点击进共享看图层），折叠状态是组件本地态，无需回传。
  */
-import { computed, ref } from 'vue';
+import { computed, inject, ref, type Ref } from 'vue';
 import { t } from '@/utils/i18n';
 import type { IndexedMessagePart } from '../../types/chat';
 import { formatDuration } from '../../utils/chat/duration';
@@ -154,6 +155,7 @@ import CompactionItem from './CompactionItem.vue';
 import MarkdownText from './MarkdownText.vue';
 import MessageImagePart from './MessageImagePart.vue';
 
+const workspaceChatId = inject<Ref<string | undefined>>('workspaceChatId');
 const props = withDefaults(
   defineProps<{
     parts: IndexedMessagePart[];

@@ -33,12 +33,20 @@
  *   - 暂存批次用 readRef + offset/limit 分页读取（每页 ≤2000 字符），
  *     读取模式不执行脚本、不依赖标签页——模型可按需核对任意片段。
  * 三处阈值刻意同值：模型在任何一次响应里可见的数据都有同一上界，契约不易误判。
+ *
+ * 超时契约（与引擎外层同源，见 tools/common/page-exec-timeout.ts）：
+ *   - timeout 默认 30s、上限 300s，只约束「等待 return 结果」，不中断脚本；
+ *   - 超时后最终结果被丢弃（无句柄可轮询、不进暂存区），脚本可能仍在跑；
+ *     迟到输出的唯一回收通道 = 脚本先写 window 全局再发只读调用读回；
+ *   - 引擎层单工具超时对本工具按 pageExecEngineTimeout 抬高，保证工具的
+ *     精确超时文案先于引擎兜底到达模型。
  */
 
 import { BaseBrowserTool } from '../base/browser-tool';
 import { ToolMetadata } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
+import type { ToolExecutionContext } from '../registry';
 import { TOOL_NAMES, isRestrictedUrl } from '@/common/constants';
 import { cdpSession } from './cdp-session';
 import { CONFIRM_GUIDANCE, CONFIRM_PARAMETER_DESCRIPTION } from '../confirmation-policy';
@@ -49,11 +57,12 @@ import {
   type DataRefMeta,
 } from '@/utils/data-ref-store';
 import { trimDanglingSurrogate } from '@/utils/text/truncate';
-
-/** 页面内求值默认超时 */
-const DEFAULT_EVAL_TIMEOUT_MS = 15_000;
-/** 超时上限，避免工具调用长期挂起 */
-const MAX_EVAL_TIMEOUT_MS = 120_000;
+import {
+  PAGE_EXEC_DEFAULT_TIMEOUT_MS,
+  PAGE_EXEC_MAX_TIMEOUT_MS,
+  normalizePageExecTimeout,
+  validatePageExecTimeout,
+} from '../common/page-exec-timeout';
 /**
  * 数据通道统一阈值（字符）——三个用途共用同一数值：
  *   1. 单次响应可见数据正文的上限（超出即截为前缀预览）；
@@ -135,7 +144,7 @@ interface PageExecParams {
   strategy?: ExecStrategy;
   /** 是否等待返回的 Promise 完成（默认 true） */
   awaitPromise?: boolean;
-  /** 超时时间（毫秒，默认 15000，上限 120000） */
+  /** 超时时间（毫秒，默认 30000，上限 300000；见 page-exec-timeout.ts 契约） */
   timeout?: number;
   /** 目标标签页 ID（默认当前激活标签页） */
   tabId?: number;
@@ -438,14 +447,24 @@ async function pageConsoleEvaluate(
 export class PageExecTool extends BaseBrowserTool {
   name = TOOL_NAMES.BROWSER.PAGE_EXEC;
 
+  /**
+   * 本次求值的目标标签页（kill 钩子据此终止页面里的脚本）。
+   * 工具实例在扩展内共享，故按「最近一次执行」记账：引擎的强制串行保证同一
+   * 时刻至多有一次 page_exec 在跑，这个记账因此不会张冠李戴。
+   */
+  private activeTabId: number | null = null;
+  /** 本次求值实际使用的通道（决定 kill 能否真正终止脚本） */
+  private activeEngine: 'scripting' | 'cdp' | null = null;
+
   metadata: ToolMetadata = {
     name: TOOL_NAMES.BROWSER.PAGE_EXEC,
     description:
       '高权限页面脚本执行引擎：在当前页面执行任意 JavaScript，自动在受限 CSP 站点升级到 CDP 通道；' +
+      'timeout 默认 30s/上限 300s（只等结果不中断脚本，超时后结果丢弃、脚本可能仍在跑）；' +
       '结果默认存入数据暂存区（saveResult=false 可让 ≤2000 字符的小结果跳过暂存），' +
       '超 2000 字符只回传预览并附 dataRef 引用，支持 readRef 分页读取',
     category: 'browser',
-    version: '1.2.0',
+    version: '1.3.0',
     author: 'AgentNexus',
     tags: ['browser', 'script', 'exec', 'rpa', 'cdp', 'chrome'],
     displayName: '页面执行引擎',
@@ -465,12 +484,28 @@ export class PageExecTool extends BaseBrowserTool {
         '自动分层执行：普通代码走页面主世界注入；遇到严格 CSP 拒绝 eval 时自动升级 CDP 通道（无视页面 CSP）；' +
         '只有用户代码尚未执行的权限探测失败才切换引擎；代码开始后不自动重放。CDP 失败明确报错。' +
         '适用：普通观察不足时读取结构化数据/组件状态，或专用工具无法完成的必要操作；常规点击/填写优先 browser_interact。合并独立只读检查，写操作逐次执行并核对业务回执，不用长循环反复滚动/点击/提交。' +
-        '默认 auto 通常足够；只有确需调试器通道时才指定 strategy="cdp"。读取 DOM 可按需使用 world="ISOLATED"，不能假定隔离世界能读页面全局变量。超时不保证脚本已停止，先核对现状，不重放效果未知的操作。' +
+        '默认 auto 通常足够；只有确需调试器通道时才指定 strategy="cdp"。读取 DOM 可按需使用 world="ISOLATED"，不能假定隔离世界能读页面全局变量。' +
+        // 超时与执行语义（模型必须知道的四条）：
+        //   1. timeout 只管「等结果」，默认/上限由 page-exec-timeout.ts 契约渲染；
+        //   2. 超时 ≠ 脚本停止——脚本可能仍在页面运行且本响应拿不到它的最终输出；
+        //   3. 超时后唯一回收通道是脚本自己写页面全局（window）再发一次只读调用读取；
+        //   4. 禁止盲目重放——先只读探针核对现状。
+        `超时（必须理解）：timeout 默认 ${PAGE_EXEC_DEFAULT_TIMEOUT_MS}ms、上限 ${PAGE_EXEC_MAX_TIMEOUT_MS}ms，` +
+        '只约束「等待 return 结果」的时间，不中断脚本执行。' +
+        '超时返回的报错是「执行超时；代码可能仍在运行，先检查现状，不自动重试」——' +
+        '此时最终结果已被丢弃（没有可轮询的句柄、不会进暂存区），要拿迟到的输出，' +
+        '唯一办法是脚本设计时先把结果写入页面全局变量（如 window.__result__），' +
+        '超时后再调一次本工具以只读方式读回它。' +
+        '超时或不确定是否完成时，先发只读探针核对现状（读 window 全局/DOM），禁止直接重放写操作——' +
+        '重放可能造成重复提交等副作用。同步死循环会让页面主线程卡住，只能等引擎层兜底超时。' +
         '数据输出契约：单次响应的数据正文最多 2000 字符——结果默认（saveResult 省略或 true）存入数据暂存区并携带 dataRef 引用，' +
         '≤2000 字符时 result 同步全量返回，超长时只保留前 2000 字符预览（附 totalChars/resultTruncated 与行数/字段统计）；' +
         'saveResult=false 仅当结果 ≤2000 字符时跳过暂存（超长结果仍会自动暂存，否则数据随截断丢失）。' +
         '要查看暂存数据的其它片段：传 readRef=引用ID（此时不要传 code），用 offset/limit 分页读取，每页最多 2000 字符。' +
-        '批量抓取脚本 return 对象数组 [{...},{...}] 最佳（可直接 xlsx 导出），配 label 标注批次；多页批次先 data_ref_tool(action="merge") 合并再导出。' + CONFIRM_GUIDANCE,
+        '批量抓取脚本 return 对象数组 [{...},{...}] 最佳（可直接 xlsx 导出），配 label 标注批次；多页批次先 data_ref_tool(action="merge") 合并再导出。' +
+        '执行语义：同一页面的多次调用共享同一全局作用域（像同一个控制台连续敲命令，window/DOM 状态跨调用保留），' +
+        '但每次调用的函数作用域相互独立、绝不并行发起；上一次超时残留的异步任务可能与新调用交错，跨调用传参用 $args 而非依赖残留全局。' +
+        CONFIRM_GUIDANCE,
       parameters: {
         type: 'object',
         properties: {
@@ -507,8 +542,10 @@ export class PageExecTool extends BaseBrowserTool {
           },
           timeout: {
             type: 'number',
-            description: '超时时间（毫秒），默认 15000，上限 120000',
-            default: DEFAULT_EVAL_TIMEOUT_MS,
+            description:
+              `超时时间（毫秒），默认 ${PAGE_EXEC_DEFAULT_TIMEOUT_MS}，上限 ${PAGE_EXEC_MAX_TIMEOUT_MS}；` +
+              '只限制「等待返回结果」的时长，超时后脚本可能仍在页面里继续运行',
+            default: PAGE_EXEC_DEFAULT_TIMEOUT_MS,
           },
           frameId: {
             type: 'number',
@@ -565,7 +602,7 @@ export class PageExecTool extends BaseBrowserTool {
     },
   };
 
-  async execute(args: PageExecParams): Promise<ToolResult> {
+  async execute(args: PageExecParams, context?: ToolExecutionContext): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     // 参数整体可能为 null/undefined（executeTool 对缺失参数直接透传）——归一后解构，
@@ -576,7 +613,7 @@ export class PageExecTool extends BaseBrowserTool {
       world = 'auto',
       strategy = 'auto',
       awaitPromise = true,
-      timeout = DEFAULT_EVAL_TIMEOUT_MS,
+      timeout = PAGE_EXEC_DEFAULT_TIMEOUT_MS,
       tabId: requestedTabId,
       frameId = 0,
       saveResult: rawSaveResult,
@@ -639,13 +676,9 @@ export class PageExecTool extends BaseBrowserTool {
       typeof awaitPromise !== 'boolean'
     )
       return this.createErrorResponse('world/strategy/awaitPromise 参数无效');
-    if (
-      !Number.isFinite(timeout) ||
-      timeout < 1000 ||
-      timeout > MAX_EVAL_TIMEOUT_MS
-    )
-      return this.createErrorResponse('timeout 必须是1000..120000毫秒');
-    const timeoutMs = timeout;
+    const timeoutError = validatePageExecTimeout(timeout);
+    if (timeoutError) return this.createErrorResponse(timeoutError);
+    const timeoutMs = normalizePageExecTimeout(timeout);
 
     try {
       // 解析目标标签页：优先显式 tabId，否则当前激活标签页
@@ -667,6 +700,9 @@ export class PageExecTool extends BaseBrowserTool {
         return this.createErrorResponse('No active tab found');
       }
       const tabId = tab.id;
+      // 记账本次求值的目标（kill 钩子据此终止页面里的脚本）
+      this.activeTabId = tabId;
+      this.activeEngine = null;
 
       // 受限页面（chrome:// 等）无法注入/调试，提前给出可操作的提示
       if (isRestrictedPageUrl(tab.url)) {
@@ -678,6 +714,7 @@ export class PageExecTool extends BaseBrowserTool {
 
       if (!Number.isSafeInteger(frameId) || frameId < 0)
         return this.createErrorResponse('frameId 必须为非负整数');
+      if (requestedTabId != null) context?.onTabTarget?.(tabId);
       const expression = this.buildExpression(code, codeArgs);
       const startedAt = Date.now();
       const attempts: EngineAttempt[] = [];
@@ -824,7 +861,33 @@ export class PageExecTool extends BaseBrowserTool {
       const message = error instanceof Error ? error.message : String(error);
       // debugger 附加失败等同步错误直接透出原因，便于模型切换策略重试
       return this.createErrorResponse(`Script execution failed: ${message}`);
+    } finally {
+      // 清除求值记账：脚本已结束（或从未开始），此后不应再有 kill 请求打到
+      // 这个标签页——否则一次过期中断会误杀页面上的无关脚本
+      this.activeTabId = null;
+      this.activeEngine = null;
     }
+  }
+
+  /**
+   * 强制终止正在页面里运行的求值脚本（用户中断 / 单工具超时后由引擎调用）。
+   *
+   * 两条通道的能力差异（这是本工具的硬约束，必须如实告知调用方）：
+   *   - **CDP 通道**：可真正终止。Runtime.terminateExecution 打断目标页当前
+   *     正在执行的 JS，连同步死循环也杀得掉（注入通道对此无能为力）。
+   *   - **注入通道**（chrome.scripting）：**无法从扩展侧终止**——脚本已在页面
+   *     的同一个线程上跑起来，扩展没有「叫停页面 JS」的 API。此时只能放弃
+   *     等待：引擎层面已结算为「中断」，页面脚本的残留副作用由模型按工具
+   *     说明里的「先只读探针核对现状、禁止盲目重放」自行处理。
+   *
+   * 幂等：重复调用安全；目标已关闭 / 无调试会话 / 无正在执行的脚本时，
+   * 全部按「已尽力终止」处理，不抛错。
+   */
+  async kill(_args: unknown, _context?: ToolExecutionContext): Promise<void> {
+    const tabId = this.activeTabId;
+    const engine = this.activeEngine;
+    if (tabId === null || engine !== 'cdp') return;
+    await cdpSession.terminateExecution(tabId);
   }
 
   /**
@@ -1069,6 +1132,7 @@ export class PageExecTool extends BaseBrowserTool {
     rawJsonError?: string;
   }> {
     try {
+      this.activeEngine = 'scripting';
       const results = await chrome.scripting.executeScript({
         target: { tabId, frameIds: [frameId] },
         func: pageConsoleEvaluate,
@@ -1153,6 +1217,7 @@ export class PageExecTool extends BaseBrowserTool {
       return { ok: false, engine: 'cdp', world: 'MAIN', error: note };
     }
 
+    this.activeEngine = 'cdp';
     const result = await cdpSession.evaluate(tabId, expression, {
       awaitPromise,
       timeoutMs,

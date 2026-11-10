@@ -98,7 +98,6 @@ export class ScreenShareSignalHandler {
 
     this.stopCapturePolling();
     await offscreenBridge.sendToOffscreen({ type: OffscreenMsgType.STOP });
-    await offscreenBridge.closeDocument();
 
     if (sendStopSignal && roomId) {
       this.sendSignalToBackend<StopBroadcastPayload>(
@@ -375,7 +374,7 @@ export class ScreenShareSignalHandler {
       const pollingOk = await this.startCaptureVisibleTabPolling(roomId);
       if (!pollingOk) {
         this.isStartRequested = false;
-        await offscreenBridge.closeDocument().catch(() => {});
+        await offscreenBridge.sendToOffscreen({ type: OffscreenMsgType.STOP });
         throw new Error(result.error ?? '屏幕采集启动失败（所有方式均失败，含 captureVisibleTab）');
       }
     }

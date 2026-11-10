@@ -68,6 +68,12 @@
             <SkillManager ref="skillManagerRef" @editor-state="onSkillEditorState" />
           </section>
           <section v-show="activeSection === 'plugins'" class="api-section"><PluginManager /></section>
+          <section v-show="activeSection === 'usage'" class="api-section">
+            <UsageSection />
+          </section>
+          <section v-show="activeSection === 'python'" class="api-section">
+            <PythonSection :active="activeSection === 'python'" />
+          </section>
           <section v-show="activeSection === 'backup'" class="api-section">
             <BackupSection :active="activeSection === 'backup'" />
           </section>
@@ -85,6 +91,10 @@
  * 各分区为自包含管理组件，直接读写共享存储层（utils/agents、utils/skills），
  * 保存后经 chrome.storage 跨上下文同步实时作用于 sidepanel。
  *
+ * 「使用监控」与「Python 环境」由设置弹窗迁入（侧边栏不再保留入口）：
+ * 两者的数据均来自共享存储层（用量统计引擎 / Pyodide 环境状态），
+ * 跨上下文变更经 storage 订阅实时回流到本视图。
+ *
  * 学习深链仅选择待接收成果，保留各分区编辑状态；主动确认后才交给 SkillManager。
  * 挂载、hashchange 与 storage 变化均可刷新队列，不依赖一次性消费信号。
  */
@@ -101,15 +111,19 @@ import { startPluginClient } from '@/utils/plugins/client';
 void startPluginClient().catch(error => console.warn('[Plugins] Startup failed', error));
 import SkillManager from './skills/SkillManager.vue';
 import BackupSection from './BackupSection.vue';
+import UsageSection from './usage/UsageSection.vue';
+import PythonSection from './python/PythonSection.vue';
 import { LEARN_DRAFT_HASH, type LearnDraftTransfer } from '@/utils/learn/learn-types';
 import { listLearnDrafts, readLearnDraft, watchLearnDrafts, isLearnTransferId } from '@/utils/learn/learn-draft-store';
 
-type HubSection = 'agents' | 'skills' | 'plugins' | 'backup';
+type HubSection = 'agents' | 'skills' | 'plugins' | 'usage' | 'python' | 'backup';
 
 const sections: ReadonlyArray<{ id: HubSection; labelKey: MessageKey }> = [
   { id: 'agents', labelKey: 'hub.tabAgents' },
   { id: 'skills', labelKey: 'hub.tabSkills' },
   { id: 'plugins', labelKey: 'hub.tabPlugins' },
+  { id: 'usage', labelKey: 'hub.tabUsage' },
+  { id: 'python', labelKey: 'hub.tabPython' },
   { id: 'backup', labelKey: 'sidepanel.backup.title' },
 ];
 
@@ -194,6 +208,8 @@ const SECTION_HASHES: Readonly<Record<string, HubSection>> = {
   '#skills': 'skills',
   '#backup': 'backup',
   '#plugins': 'plugins',
+  '#usage': 'usage',
+  '#python': 'python',
 };
 
 function consumeSectionHash(): boolean {

@@ -30,6 +30,9 @@ import {
   FAILED_TOOL_ROUNDS_DEFAULT,
   MAX_ITERATIONS_DEFAULT,
   DEFAULT_SESSION_AGENT_ID,
+  TOOL_TIMEOUT_DEFAULT_MINUTES,
+  TOOL_TIMEOUT_MAX_MINUTES,
+  TOOL_TIMEOUT_MIN_MINUTES,
   type ChannelConfig,
 } from '../../entrypoints/sidepanel/utils/channels';
 import { driverRegistry } from '../../entrypoints/sidepanel/utils/stream/driver-registry';
@@ -182,6 +185,29 @@ async function testNormalize(): Promise<void> {
   eq(defaults.maxConsecutiveFailedToolRounds, FAILED_TOOL_ROUNDS_DEFAULT, 'null → 默认失败阈值 5');
   eq(defaults.defaultAgentId, DEFAULT_SESSION_AGENT_ID, 'null → 默认智能体 Auto-Action');
 
+  // 单工具最长执行时间（分钟）：越界钳制 / 脏类型回落 / 缺省默认
+  const dirtyToolTimeout = normalizeAppSettings({ toolTimeoutMinutes: 9999 });
+  eq(
+    dirtyToolTimeout.toolTimeoutMinutes,
+    TOOL_TIMEOUT_MAX_MINUTES,
+    'toolTimeoutMinutes 越界钳制到上限',
+  );
+  eq(
+    normalizeAppSettings({ toolTimeoutMinutes: -5 }).toolTimeoutMinutes,
+    TOOL_TIMEOUT_MIN_MINUTES,
+    'toolTimeoutMinutes 负值钳制到下限',
+  );
+  eq(
+    normalizeAppSettings({ toolTimeoutMinutes: 'x' }).toolTimeoutMinutes,
+    TOOL_TIMEOUT_DEFAULT_MINUTES,
+    '非数字 toolTimeoutMinutes 回落默认',
+  );
+  eq(
+    normalizeAppSettings(null).toolTimeoutMinutes,
+    TOOL_TIMEOUT_DEFAULT_MINUTES,
+    'null → 默认单工具超时 30 分钟',
+  );
+
   // 默认智能体：脏类型 / 空串回落预置默认；合法 id 原样保留
   eq(
     normalizeAppSettings({ defaultAgentId: 123 }).defaultAgentId,
@@ -241,13 +267,14 @@ async function testValidate(): Promise<void> {
     maxIterations: 0,
     defaultAgentId: '',
     maxConsecutiveFailedToolRounds: 999,
+    toolTimeoutMinutes: 999,
     retryCount: 99,
     retryInterval: 0,
     temperature: 9,
     defaultContextThreshold: 1,
     activeModelRef: null,
   });
-  check(settingsErrors.length >= 8, '应用设置越界逐项报错', settingsErrors);
+  check(settingsErrors.length >= 9, '应用设置越界逐项报错', settingsErrors);
   check(
     settingsErrors.some(e => e.includes('对话轮次上限')),
     'maxIterations 越界被拦截',

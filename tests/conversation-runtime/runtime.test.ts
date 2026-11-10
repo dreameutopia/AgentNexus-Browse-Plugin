@@ -6,8 +6,12 @@ class EventHook {
   addListener(fn: (...args: any[]) => void) {
     this.listeners.push(fn);
   }
+  removeListener(fn: (...args: any[]) => void) {
+    const index = this.listeners.indexOf(fn);
+    if (index >= 0) this.listeners.splice(index, 1);
+  }
   fire(...args: any[]) {
-    for (const fn of this.listeners) fn(...args);
+    for (const fn of [...this.listeners]) fn(...args);
   }
 }
 const connections: any[] = [];
@@ -70,6 +74,76 @@ let readyChecks = 0;
 };
 
 const runs = new Map<string, any>();
+const glowPorts = new Map<number, string>();
+const glowActivated = new EventHook();
+const glowCommitted = new EventHook();
+const glowFocused = new EventHook();
+const glowRemoved = new EventHook();
+const glowReplaced = new EventHook();
+const glowUpdated = new EventHook();
+let activeTab = 7;
+let activeWindow = 1;
+let workerFocusDiffersFromPanel = true;
+let delayInjection: Promise<void> | undefined;
+let delayQuery: Promise<void> | undefined;
+let acknowledgeHide: Promise<void> | undefined;
+let injectAttempts = 0;
+(globalThis as any).chrome.tabs = {
+  onUpdated: glowUpdated,
+  onActivated: glowActivated,
+  onRemoved: glowRemoved,
+  onReplaced: glowReplaced,
+  query: async (query: chrome.tabs.QueryInfo) => {
+    if (query.windowId === 99) return [];
+    if (query.lastFocusedWindow && workerFocusDiffersFromPanel) {
+      return [{ id: 9, windowId: 2, active: true }];
+    }
+    const tab = { id: activeTab, windowId: activeWindow, active: true };
+    await delayQuery;
+    return [tab];
+  },
+  connect(tabId: number, options: chrome.tabs.ConnectInfo) {
+    assert.equal(options.name, 'agentnexus:page-glow-v2');
+    assert.equal(glowPorts.size, 0, 'Close the old document connection before opening another');
+    const receiver = new EventHook();
+    queueMicrotask(() => receiver.fire({ type: 'ready' }));
+    return {
+      onMessage: receiver,
+      onDisconnect: new EventHook(),
+      postMessage(message: { type: string }) {
+        if (message.type === 'show') {
+          assert.equal(glowPorts.size, 0, 'Only one document may show the glow');
+          glowPorts.set(tabId, options.documentId!);
+          queueMicrotask(() => receiver.fire({ type: 'shown' }));
+        } else if (message.type === 'hide') {
+          const hidden = () => {
+            glowPorts.delete(tabId);
+            receiver.fire({ type: 'hidden' });
+          };
+          if (acknowledgeHide) void acknowledgeHide.then(hidden);
+          else queueMicrotask(hidden);
+        }
+      },
+      disconnect() { glowPorts.delete(tabId); },
+    };
+  },
+};
+(globalThis as any).chrome.windows = {
+  onFocusChanged: glowFocused,
+  WINDOW_ID_NONE: -1,
+};
+(globalThis as any).chrome.scripting = {
+  executeScript: async ({ target, files }: { target: chrome.scripting.InjectionTarget; files?: string[] }) => {
+    assert.deepEqual(files, ['inject-scripts/page-glow.js']);
+    if (target.tabId === 9 && target.documentIds?.[0] !== 'eligible-again') {
+      throw new Error('Cannot access contents of a protected page');
+    }
+    if (target.tabId === 14 && ++injectAttempts === 1) throw new Error('Frame is not ready');
+    await delayInjection;
+    return [{ documentId: target.documentIds?.[0] ?? `doc-${target.tabId}`, frameId: 0 }];
+  },
+};
+(globalThis as any).chrome.webNavigation = { onCommitted: glowCommitted };
 const summary = {
   status: "completed",
   iterations: 1,
@@ -80,7 +154,7 @@ const testEngine = {
   getRunningRecord: (chatId: string) =>
     structuredClone(runs.get(chatId)?.record ?? null),
   run: (runtime: any, options: any) =>
-    new Promise((resolve) => {
+    new Promise((resolve, reject) => {
       const record = {
         id: `${runtime.chatId}-reply`,
         chatId: runtime.chatId,
@@ -90,7 +164,7 @@ const testEngine = {
         toolCalls: [],
         createdAt: 1,
       };
-      runs.set(runtime.chatId, { record, options, resolve });
+      runs.set(runtime.chatId, { record, options, resolve, reject });
       options.observer({
         type: "assistant-start",
         chatId: runtime.chatId,
@@ -114,12 +188,95 @@ const { ConversationRuntimeClient } =
 initConversationRuntime();
 
 const first = new ConversationRuntimeClient();
+const endPreflight = first.beginPreparingGlow();
+await tick();
+await tick();
+assert.deepEqual([...glowPorts], [[7, 'doc-7']], 'Light the page before assembling the runtime');
+workerFocusDiffersFromPanel = false;
 const events: any[] = [];
 const initialRun = first
   .run({ chatId: "one" } as any, { observer: (event) => events.push(event) })
   .catch(() => undefined);
 for (let n = 0; n < 5; n++) await tick();
 assert.equal(runs.size, 1);
+endPreflight();
+for (let n = 0; n < 3; n++) await tick();
+assert.deepEqual([...glowPorts], [[7, 'doc-7']]);
+const commit = (tabId: number, documentId: string, frameId = 0) =>
+  glowCommitted.fire({ tabId, frameId, documentId, documentLifecycle: 'active' });
+const activate = (tabId: number) => {
+  activeTab = tabId;
+  glowActivated.fire({ tabId, windowId: 1 });
+};
+commit(7, 'iframe', 1);
+assert.deepEqual([...glowPorts], [[7, 'doc-7']]);
+commit(7, 'navigated');
+assert.equal(glowPorts.size, 0);
+await tick();
+assert.deepEqual([...glowPorts], [[7, 'navigated']]);
+activate(9);
+await tick();
+assert.equal(glowPorts.size, 0, 'A restricted target must leave the old tab dark');
+activate(8);
+await tick();
+assert.deepEqual([...glowPorts], [[8, 'doc-8']]);
+const beginOperation = runs.get('one').options.beginPageOperation;
+const reportTarget = beginOperation(false);
+reportTarget(7);
+await tick();
+assert.deepEqual([...glowPorts], [[7, 'doc-7']], 'A tool can target an inactive tab');
+let finishHide = () => {};
+acknowledgeHide = new Promise<void>(resolve => { finishHide = resolve; });
+activate(10);
+activate(9);
+activate(10);
+reportTarget(7);
+await tick();
+assert.deepEqual([...glowPorts], [[7, 'doc-7']], 'Wait for removal before promoting the latest tab');
+finishHide();
+acknowledgeHide = undefined;
+await tick();
+assert.deepEqual([...glowPorts], [[10, 'doc-10']]);
+glowActivated.fire({ tabId: 12, windowId: 2 });
+assert.deepEqual([...glowPorts], [[10, 'doc-10']], 'Background window activation must not steal focus');
+let finishQuery = () => {};
+delayQuery = new Promise<void>(resolve => { finishQuery = resolve; });
+activeWindow = 2;
+activeTab = 11;
+glowFocused.fire(2);
+activeTab = 12;
+glowActivated.fire({ tabId: 12, windowId: 2 });
+finishQuery();
+delayQuery = undefined;
+await tick();
+assert.deepEqual([...glowPorts], [[12, 'doc-12']], 'A delayed window query must not roll back a newer activation');
+activeWindow = 1;
+activeTab = 9;
+glowFocused.fire(1);
+await tick();
+assert.equal(glowPorts.size, 0);
+commit(9, 'eligible-again');
+await tick();
+assert.deepEqual([...glowPorts], [[9, 'eligible-again']], 'Same-tab navigation can restore a protected target');
+activeTab = 8;
+glowRemoved.fire(9);
+await tick();
+assert.deepEqual([...glowPorts], [[8, 'doc-8']]);
+activeTab = 13;
+glowReplaced.fire(13, 8);
+await tick();
+assert.deepEqual([...glowPorts], [[13, 'doc-13']]);
+glowFocused.fire(99);
+await tick();
+assert.deepEqual([...glowPorts], [[13, 'doc-13']], 'DevTools focus without a normal tab keeps the page target');
+activate(14);
+await tick();
+assert.equal(glowPorts.size, 0, 'A temporary injection failure leaves the old document dark');
+glowUpdated.fire(14, { status: 'complete' });
+await tick();
+assert.deepEqual([...glowPorts], [[14, 'doc-14']], 'A completed load recovers a transient injection failure');
+activate(13);
+await tick();
 const token = (delta: string) => {
   const run = runs.get("one");
   run.record.content += delta;
@@ -135,6 +292,7 @@ token("before");
 await tick();
 connections[0].disconnect();
 await initialRun;
+assert.equal(glowPorts.size, 1, 'Closing the panel must not detach the worker-owned glow');
 token(" hidden");
 assert.equal(
   runs.get("one").record.content,
@@ -196,6 +354,7 @@ await third.attach(
 assert.equal(await approval, false);
 assert.equal(approvals, 1);
 await third.abortAndWait("one");
+assert.equal(glowPorts.size, 0);
 assert.equal(
   runs.size,
   0,
@@ -382,6 +541,57 @@ assert.equal(await readActiveChat(), '', 'Restarting the browser opens the welco
 await rememberActiveChat('another-chat');
 await rememberActiveChat('');
 assert.equal(await readActiveChat(), '', 'Creating a new chat keeps the welcome selection on panel reopen');
+// Completion, rejection, and a delayed injection resolving after Stop.
+const glowView = new ConversationRuntimeClient();
+for (const chatId of ['glow-success', 'glow-failure', 'glow-abort']) {
+  let release = () => {};
+  if (chatId === 'glow-abort') delayInjection = new Promise<void>(resolve => { release = resolve; });
+  const task = glowView.run({ chatId } as any);
+  const settled = chatId === 'glow-failure' ? assert.rejects(task, /simulated failure/) : task;
+  for (let n = 0; n < 5; n++) await tick();
+  const run = runs.get(chatId);
+  if (chatId === 'glow-abort') {
+    await glowView.abortAndWait(chatId);
+    run.options.beginPageOperation(false)(7);
+    release();
+    delayInjection = undefined;
+  } else {
+    assert.equal(glowPorts.size, 1);
+    if (chatId === 'glow-failure') run.reject(new Error('simulated failure'));
+    else run.resolve(summary);
+    runs.delete(chatId);
+  }
+  await settled;
+  await tick();
+  assert.equal(glowPorts.size, 0);
+  assert.equal(glowActivated.listeners.length, 0);
+  assert.equal(glowCommitted.listeners.length, 0);
+}
+glowView.detach();
+const abandoned = new ConversationRuntimeClient();
+const releaseAbandoned = abandoned.beginPreparingGlow();
+await tick();
+await tick();
+assert.equal(glowPorts.size, 1);
+abandoned.detach();
+releaseAbandoned();
+await tick();
+assert.equal(glowPorts.size, 0, 'Abandoning local preparation clears its glow');
+const local = abandoned.beginLocalPageGlow()!;
+await tick();
+assert.deepEqual([...glowPorts], [[13, 'doc-13']]);
+const setLocalTarget = local.beginPageOperation(false);
+setLocalTarget(7);
+await tick();
+await tick();
+assert.deepEqual([...glowPorts], [[7, 'doc-7']]);
+activate(8);
+setLocalTarget(7);
+await tick();
+assert.deepEqual([...glowPorts], [[8, 'doc-8']]);
+local.stop();
+await tick();
+assert.equal(glowPorts.size, 0, 'Local learning or validation must release the same renderer');
 console.log(
-  "[conversation-runtime] Close/reopen, hidden streaming, hydration races, approval restoration and stop passed.",
+  "[conversation-runtime] Close/reopen, hidden streaming, hydration races, approval restoration, stop and page-glow lifecycle passed.",
 );

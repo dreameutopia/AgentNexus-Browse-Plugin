@@ -65,6 +65,8 @@ function planSuccess(text: string, data: Record<string, unknown>): ToolResult {
     isError: false,
     content: [{ type: 'text', text }],
     data,
+    // 清单正文（模型读的那份）在 content，data 是结构化计划项——正题在 content
+    primary: 'content',
   };
 }
 
@@ -81,6 +83,8 @@ function planFailure(operation: string, kind: string, reason: string, hint?: str
     error: text,
     content: [{ type: 'text', text }],
     data: { errorKind: kind, operation },
+    // 失败说明只在 content 里——正题在 content
+    primary: 'content',
   };
 }
 

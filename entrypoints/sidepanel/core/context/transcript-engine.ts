@@ -100,6 +100,7 @@ class TranscriptEngine {
   private latestWrites = new Map<string, number>();
   private writeChats = new Map<string, string>();
   private writeEpoch = 0;
+  private lastFlushIssue: { reason: string; at: number } | null = null;
 
   private withVolatile(chatId: string, records: ChatMessageRecord[], afterSeq = 0): ChatMessageRecord[] {
     const merged = new Map(records.map(record => [record.id, record]));
@@ -116,7 +117,7 @@ class TranscriptEngine {
 
   /**
    * 订阅持久化降级事件。引擎自身保持「降级不阻塞主流程」的策略不变，
-   * 但每次降级都会通知订阅方——静默丢数据是必须消除的风险，用户有权知情。
+   * 降级会通知订阅方，同一流式落库错误限频提示。
    * 返回取消订阅函数。
    */
   onPersistenceIssue(listener: (issue: PersistenceIssue) => void): () => void {
@@ -438,11 +439,11 @@ class TranscriptEngine {
       snapshot = structuredClone(record);
       const { skipped } = await chatDatabase.saveMessage(snapshot);
       messageSaved = true;
+      this.lastFlushIssue = null;
       if (this.latestWrites.get(record.id) === epoch) {
         this.volatileRecords.delete(record.id); this.latestWrites.delete(record.id); this.writeChats.delete(record.id);
       }
       if (skipped) {
-        console.warn(`[TranscriptEngine] 会话 ${record.chatId} 已不存在，丢弃消息 ${record.id} 的落库`);
         return;
       }
       // 预览只在消息进入终态时刷新：流式过程中的半截文本不代表会话最后一条内容
@@ -455,8 +456,13 @@ class TranscriptEngine {
     } catch (error) {
       if (!messageSaved && this.latestWrites.get(record.id) !== epoch) return;
       if (this.latestWrites.get(record.id) === epoch) this.volatileRecords.set(record.id, snapshot);
-      console.warn('[TranscriptEngine] 消息落库失败（已降级为内存态）:', error);
-      this.notifyPersistenceIssue('message-flush', error);
+      const reason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      const now = Date.now();
+      if (this.lastFlushIssue?.reason !== reason || now - this.lastFlushIssue.at >= 60_000) {
+        this.lastFlushIssue = { reason, at: now };
+        console.warn('[TranscriptEngine] 消息落库失败（已降级为内存态）:', error);
+        this.notifyPersistenceIssue('message-flush', error);
+      }
     }
   }
 

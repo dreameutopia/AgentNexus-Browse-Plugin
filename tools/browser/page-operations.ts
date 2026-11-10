@@ -4,7 +4,7 @@
  */
 
 import { BaseBrowserTool } from '../base/browser-tool';
-import { ToolMetadata } from '../registry';
+import { ToolMetadata, type ToolExecutionContext } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
 
@@ -63,7 +63,7 @@ export class ScrollTool extends BaseBrowserTool {
     screens?: number;
     clickBox?: [number, number, number, number];
     tabId?: number;
-  }): Promise<ToolResult> {
+  }, context?: ToolExecutionContext): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     try {
@@ -83,6 +83,8 @@ export class ScrollTool extends BaseBrowserTool {
       if (clickBox && clickBox.length !== 4) {
         return this.createErrorResponse('clickBox must be in [x1, y1, x2, y2] format');
       }
+
+      if (args.tabId !== undefined) context?.onTabTarget?.(tab.id);
 
       // 执行滚动脚本（确保 clickBox 可序列化）
       const results = await chrome.scripting.executeScript({
@@ -192,7 +194,7 @@ export class WaitForElementTool extends BaseBrowserTool {
     selector: string; 
     timeout?: number;
     tabId?: number;
-  }): Promise<ToolResult> {
+  }, context?: ToolExecutionContext): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     try {
@@ -207,6 +209,8 @@ export class WaitForElementTool extends BaseBrowserTool {
       }
 
       const { selector, timeout = 5000 } = args;
+
+      if (args.tabId !== undefined) context?.onTabTarget?.(tab.id);
 
       // 执行等待脚本
       const results = await chrome.scripting.executeScript({

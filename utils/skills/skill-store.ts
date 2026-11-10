@@ -27,6 +27,7 @@ import { pluginSkills, onPluginsChange } from '@/utils/plugins/catalog';
  */
 
 import type { SkillRecord, StoredSkill } from './skill-types';
+import { validateSkillBinaries } from './skill-resources';
 import {
   SKILL_NAME_PATTERN,
   SKILL_NAME_MAX_CHARS,
@@ -353,7 +354,7 @@ function deserializeSkill(raw: unknown): SkillRecord | null {
     return null;
   }
   // files 值必须是字符串（外部写入/旧版本可能塞入任意 JSON），否则逐条跳过该键
-  const files: Record<string, string> = {};
+  const files: Record<string, string> = Object.create(null);
   for (const [path, content] of Object.entries(candidate.files as Record<string, unknown>)) {
     if (typeof content === 'string') files[path] = content;
   }
@@ -382,6 +383,7 @@ function deserializeSkill(raw: unknown): SkillRecord | null {
     }
     // 显式目录（可能为空目录）随记录恢复：否则用户新建的空目录在重启后消失
     record.folders = normalizeFolderList(candidate.folders);
+    if (candidate.resourceBytes !== undefined) record.resourceBytes = validateSkillBinaries(candidate.resourceBytes, files);
     return record;
   } catch (error) {
     console.warn(`[SkillStore] 自定义技能 "${candidate.name}" 解析失败，已跳过:`, error);
@@ -698,6 +700,7 @@ export function setCustomSkill(input: {
   id?: string;
   name: string;
   files: Record<string, string>;
+  resourceBytes?: Record<string, string>;
   /** 显式目录（含空目录）：相对路径列表，经归一化后随记录持久化 */
   folders?: string[];
   description?: string;
@@ -732,6 +735,15 @@ export function setCustomSkill(input: {
 
   const record = buildSkillRecord(normalizedName, input.files, 'custom', id, input.enabled !== false);
   if (!record) return { ok: false, reason: 'invalid' };
+  const resourceBytes = input.resourceBytes ?? skillMap.get(id)?.resourceBytes;
+  if (resourceBytes !== undefined) {
+    try {
+      record.resourceBytes = validateSkillBinaries(resourceBytes, record.files);
+    } catch (error) {
+      console.warn('[SkillStore] Invalid skill resources:', error);
+      return { ok: false, reason: 'invalid' };
+    }
+  }
 
   // 名称不查重：同名是常态（见文件头身份模型），id 与模型标识已足够消歧。
   // 编辑自身改名到任意既有名称同样放行——不存在「与谁冲突」的概念。

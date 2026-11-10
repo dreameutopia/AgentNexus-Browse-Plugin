@@ -22,6 +22,7 @@
  *   - rows 为对象数组时按列名映射回数组；rows 为 {名:值} 映射时转二元组；
  *   - 行长与 columns 不齐：短补 null、长截断；
  *   - 单元格对象/数组 JSON.stringify 兜底；超长字符串截断；
+ *   - source（组件级来源说明）保留并按上限截断；
  *   - rows 超上限截断保留前缀（数据主体不丢）。
  *
  * 硬失败（返回 ok:false，渲染侧降级源码视图）：
@@ -33,7 +34,7 @@ import { ENVELOPE_COMPONENT_TYPES } from './registry';
 // ==================== 资源上限（提示词不教模型记上限；超限由此层兜底） ====================
 
 /** 围栏源码最大字符数（信封数据以表格为主，20K 已远超「一屏可读」上限） */
-const MAX_SOURCE_CHARS = 20_000;
+const MAX_FENCE_CHARS = 20_000;
 /** 列数上限（超出判结构性失败：过宽表格是建模错误，截断反而误导） */
 const MAX_COLUMNS = 12;
 /** 行数上限（超出截断保留前缀——时间序列多给一些行属正常） */
@@ -44,17 +45,29 @@ const MAX_CELL_CHARS = 500;
 const MAX_TITLE_CHARS = 80;
 /** kind / unit 上限（超出截断；kind 非法值由派生层回落） */
 const MAX_AUX_CHARS = 20;
+/**
+ * 来源说明上限（信封级 source 字段）。
+ * 组件级来源标注是「敏感数据必须附来源」纪律的落地形态：一行短说明
+ * （机构·报告·年份 或 页面 URL）足够，长引用交回正文，不进组件。
+ */
+const MAX_SOURCE_CHARS = 200;
 
 // ==================== 类型 ====================
 
 export type RichCell = string | number | boolean | null;
 
-export type RichEnvelopeType = 'chart' | 'stat' | 'table' | 'timeline' | 'tree';
+export type RichEnvelopeType = 'chart' | 'stat' | 'table' | 'timeline' | 'tree' | 'insight';
 
 /** 归一化后的信封：下游可信任的结构（字段齐全、行列对齐、单元格类型收敛） */
 export interface NormalizedEnvelope {
   type: RichEnvelopeType;
   title: string;
+  /**
+   * 组件级来源说明（可选）。「敏感数据必须附来源」纪律的落地形态：
+   * 模型给出这块数据的出处（机构·报告·年份 或 页面 URL），由宿主渲染成
+   * 组件脚注。空串 = 未提供（渲染时不显示脚注）。
+   */
+  source: string;
   /** chart 可选图型偏好（未经合法性校验，由 derive-chart 决定采纳与否） */
   kind: string;
   /** 数值轴单位（chart 轴名 / 展示后缀；空串 = 未提供） */
@@ -230,8 +243,8 @@ export function parseRichEnvelope(raw: string): EnvelopeParseResult {
   if (!text) {
     return { ok: false, error: '组件数据为空' };
   }
-  if (text.length > MAX_SOURCE_CHARS) {
-    return { ok: false, error: `组件数据超过 ${MAX_SOURCE_CHARS} 字符上限` };
+  if (text.length > MAX_FENCE_CHARS) {
+    return { ok: false, error: `组件数据超过 ${MAX_FENCE_CHARS} 字符上限` };
   }
 
   const parsed = tolerantJsonParse(text);
@@ -318,6 +331,7 @@ export function parseRichEnvelope(raw: string): EnvelopeParseResult {
   });
 
   const title = typeof root.title === 'string' ? clampText(root.title.trim(), MAX_TITLE_CHARS) : '';
+  const source = typeof root.source === 'string' ? clampText(root.source.trim(), MAX_SOURCE_CHARS) : '';
   const kind = typeof root.kind === 'string' ? clampText(root.kind.trim().toLowerCase(), MAX_AUX_CHARS) : '';
   const unit = typeof root.unit === 'string' ? clampText(root.unit.trim(), MAX_AUX_CHARS) : '';
 
@@ -326,6 +340,7 @@ export function parseRichEnvelope(raw: string): EnvelopeParseResult {
     envelope: {
       type: type as RichEnvelopeType,
       title,
+      source,
       kind,
       unit,
       columns,

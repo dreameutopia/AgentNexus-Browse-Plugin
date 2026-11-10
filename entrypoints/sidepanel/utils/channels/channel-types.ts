@@ -89,6 +89,14 @@ export interface AppSettings {
    * 用户决策（确认继续 / 停止），避免重复撞墙烧 token。
    */
   maxConsecutiveFailedToolRounds: number;
+  /**
+   * 单个工具的最长执行时间（分钟，1~120，默认 30）。
+   * 超时判定为失败：引擎自动封装为标准 tool 结果回传模型（文案告知模型
+   * 「超时未响应，请重新规划或调整工具参数」），会话流程不中断。
+   * 该上界是**引擎级**的硬约束，与「对话运行时长上限」是两个维度：
+   * 前者约束单个工具，后者约束整轮运行。
+   */
+  toolTimeoutMinutes: number;
   /** 全局自动重试次数（0~10；失败后指数退避重试） */
   retryCount: number;
   /** 全局重试间隔基数（秒，指数退避；1~120） */
@@ -156,6 +164,14 @@ export const FAILED_TOOL_ROUNDS_MIN = 1;
 export const FAILED_TOOL_ROUNDS_MAX = 50;
 export const FAILED_TOOL_ROUNDS_DEFAULT = 5;
 
+/**
+ * 单工具最长执行时间的合法边界（校验 / 钳制 / UI 三处共用）。
+ * 默认 30 分钟；范围 1-120 分钟。
+ */
+export const TOOL_TIMEOUT_MIN_MINUTES = 1;
+export const TOOL_TIMEOUT_MAX_MINUTES = 120;
+export const TOOL_TIMEOUT_DEFAULT_MINUTES = 30;
+
 // ==================== 归一化与工具函数（防御性编程的公共件） ====================
 
 /**
@@ -214,6 +230,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   defaultAgentId: DEFAULT_SESSION_AGENT_ID,
   maxIterations: MAX_ITERATIONS_DEFAULT,
   maxConsecutiveFailedToolRounds: FAILED_TOOL_ROUNDS_DEFAULT,
+  toolTimeoutMinutes: TOOL_TIMEOUT_DEFAULT_MINUTES,
   retryCount: RETRY_COUNT_DEFAULT,
   retryInterval: RETRY_INTERVAL_DEFAULT,
   temperature: TEMPERATURE_DEFAULT,

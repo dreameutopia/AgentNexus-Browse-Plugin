@@ -46,6 +46,7 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
 /** 反序列化导出格式中的 content（兼容旧的纯字符串格式） */
 function deserializeFileContent(value: unknown): string | ArrayBuffer | null {
   if (typeof value === 'string') return value;
+  if (value instanceof ArrayBuffer) return value;
   if (value && typeof value === 'object') {
     const wrapped = value as { __t?: unknown; v?: unknown };
     if (wrapped.__t === 'text' && typeof wrapped.v === 'string') return wrapped.v;
@@ -58,6 +59,24 @@ function deserializeFileContent(value: unknown): string | ArrayBuffer | null {
     }
   }
   return null;
+}
+
+function readStoredFile(value: unknown, id: string): ManagedFile | null {
+  if (!value || typeof value !== 'object') return null;
+  const stored = value as Partial<ManagedFile>;
+  if (stored.id !== id || typeof stored.name !== 'string') return null;
+  const content = deserializeFileContent(stored.content);
+  if (content === null) return null;
+  return {
+    id,
+    name: stored.name,
+    content,
+    type: typeof stored.type === 'string' ? stored.type : 'application/octet-stream',
+    size: typeof content === 'string' ? new Blob([content]).size : content.byteLength,
+    createdAt: typeof stored.createdAt === 'number' ? stored.createdAt : 0,
+    updatedAt: typeof stored.updatedAt === 'number' ? stored.updatedAt : 0,
+    metadata: stored.metadata,
+  };
 }
 
 class FileManagerEngine {
@@ -86,8 +105,9 @@ class FileManagerEngine {
       const stored = await this.getFromStorage();
       if (stored) {
         // 将存储的数据转换为Map
-        Object.entries(stored).forEach(([id, file]) => {
-          this.files.set(id, file as ManagedFile);
+        Object.entries(stored).forEach(([id, value]) => {
+          const file = readStoredFile(value, id);
+          if (file) this.files.set(id, file);
         });
       }
       this.initialized = true;
@@ -114,10 +134,16 @@ class FileManagerEngine {
   /**
    * 从Chrome存储中获取数据
    */
-  private async getFromStorage(): Promise<Record<string, ManagedFile> | null> {
-    return new Promise((resolve) => {
+  private async getFromStorage(): Promise<Record<string, unknown> | null> {
+    return new Promise((resolve, reject) => {
       chrome.storage.local.get([this.STORAGE_KEY], (result) => {
-        resolve(result[this.STORAGE_KEY] || null);
+        const error = chrome.runtime.lastError;
+        if (error) {
+          reject(new Error(error.message));
+          return;
+        }
+        const stored: unknown = result?.[this.STORAGE_KEY];
+        resolve(stored && typeof stored === 'object' ? stored as Record<string, unknown> : null);
       });
     });
   }
@@ -126,7 +152,10 @@ class FileManagerEngine {
    * 保存数据到Chrome存储
    */
   private async saveToStorage(): Promise<void> {
-    const data = Object.fromEntries(this.files);
+    const data = Object.fromEntries([...this.files].map(([id, file]) => [id, {
+      ...file,
+      content: typeof file.content === 'string' ? file.content : { __t: 'bin', v: arrayBufferToBase64(file.content) },
+    }]));
     return new Promise((resolve, reject) => {
       chrome.storage.local.set({ [this.STORAGE_KEY]: data }, () => {
         if (chrome.runtime.lastError) {
@@ -177,6 +206,12 @@ class FileManagerEngine {
   async getFile(id: string): Promise<ManagedFile | null> {
     await this.initialize();
     return this.files.get(id) || null;
+  }
+
+  /** Resolve records written by another extension context since initialization. */
+  async getStoredFile(id: string): Promise<ManagedFile | null> {
+    const stored = await this.getFromStorage();
+    return readStoredFile(stored?.[id], id);
   }
 
   /**

@@ -3,7 +3,7 @@ import { BrowserObserveTool } from '@/tools/browser/observe';
 import { BrowserInteractTool } from '@/tools/browser/interact';
 import { NetworkObserverTool } from '@/tools/browser/network-observer';
 import { VisionGuiTool } from '@/tools/vision/gui-tool';
-import { createVisionReadTools } from '@/tools/vision/read-tools';
+// 只读观察（vision_read*）已并入 vision_gui 的 action 面，不再单独成卡
 /**
  * 工具分类与工具定义数据
  */
@@ -568,25 +568,6 @@ export const categories: ToolCategory[] = [
         required: ['url']
       },
       {
-        name: 'browser_web_fetcher',
-        description: '获取网页内容和元数据',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {
-          url: {
-            type: 'string',
-            description: '要获取内容的URL（可选，默认当前页面）',
-            placeholder: 'https://example.com'
-          },
-          selector: {
-            type: 'string',
-            description: 'CSS选择器（可选）',
-            placeholder: '#content'
-          }
-        },
-        required: []
-      },
-      {
         name: 'browser_vector_search',
         description: '在所有打开的标签页内容中进行向量搜索',
         category: 'browser',
@@ -779,7 +760,7 @@ export const categories: ToolCategory[] = [
         parameters: {
           url: {
             type: 'string',
-            description: '目标网址（可选，仅单个 http/https；后台加载提取后自动关闭）',
+            description: '目标网址（可选，仅单个 http/https；前台新建并激活标签页打开、等待加载完成后提取，标签页保留可见不自动关闭）',
             placeholder: 'https://example.com（留空读当前标签页）'
           },
           tabId: {
@@ -982,7 +963,6 @@ export const categories: ToolCategory[] = [
     tools: [
       { name: 'screenshot', description: '截图：action 保留调试会话用于操作；observe 不附加调试器，仅用于观察', category: 'vision', version: '3.1.0', parameters: { mode: { type: 'string', enum: ['action','observe'], default: 'action', description: '观察模式不可用于 GUI 输入' } }, required: [] },
       visionGuiDefinition(),
-      ...createVisionReadTools().map(tool => ({ name: tool.name, description: tool.metadata.description, category: 'vision', version: '1.0.0', parameters: tool.openaiSchema.function.parameters.properties, required: tool.openaiSchema.function.parameters.required || [] })),
       { name: 'ocr', description: 'OCR 文字识别', category: 'vision', version: '1.0.0', parameters: { selector: { type: 'string', description: '可选图片选择器' } }, required: [] },
     ]
   },

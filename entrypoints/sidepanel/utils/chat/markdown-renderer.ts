@@ -33,8 +33,9 @@ import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
-import { renderFileCards, installFileCardHandler } from './file-card';
+import { installFileCardHandler, installFileCardSyntax, protectWorkspaceFileTags, renderPlainFileCards } from './file-card';
 import { installCodeCopyHandler } from './code-copy';
+import { installComponentImageSaveHandler } from './component-image-save';
 import { installTableActionHandler } from './table-actions';
 import { installApiErrorModelHandler } from './api-error-model';
 import { installApiErrorRetryHandler } from './api-error-retry';
@@ -53,9 +54,10 @@ import { driverRegistry } from '../stream/driver-registry';
 import type { ProviderType } from '../stream/types';
 import { t } from '@/utils/i18n/core';
 
-// 文件下载委托 + 代码复制委托 + 表格工具栏委托 + 错误卡片浮层/重试委托（均为幂等安装）；本模块只在 DOM 上下文被使用
+// 文件下载委托 + 代码复制委托 + 组件保存图片委托 + 表格工具栏委托 + 错误卡片浮层/重试委托（均为幂等安装）；本模块只在 DOM 上下文被使用
 installFileCardHandler();
 installCodeCopyHandler();
+installComponentImageSaveHandler();
 installTableActionHandler();
 installApiErrorModelHandler();
 installApiErrorRetryHandler();
@@ -226,9 +228,16 @@ function renderFormula(formula: string, displayMode: boolean): string {
  */
 function extractLatex(source: string, suffix: string): { text: string; formulas: string[] } {
   const formulas: string[] = [];
+  const fileTags: string[] = [];
+  // Restore the original attributes before Markdown parses them. A path can contain dollar signs.
+  const tagPrefix = `ANWORKSPACE${suffix}FILE`;
+  const protectedSource = protectWorkspaceFileTags(source, tag => {
+    fileTags.push(tag);
+    return `${tagPrefix}${fileTags.length - 1}END`;
+  });
   let text = '';
 
-  for (const segment of splitByCodeSegments(source)) {
+  for (const segment of splitByCodeSegments(protectedSource)) {
     if (segment.code) {
       text += segment.text;
       continue;
@@ -236,13 +245,16 @@ function extractLatex(source: string, suffix: string): { text: string; formulas:
     text += segment.text.replace(LATEX_PATTERN, (match, display: string | undefined, inline: string | undefined) => {
       const isDisplay = display !== undefined;
       const formula = (display ?? inline ?? '').trim();
-      if (!formula) return match;
+      if (!formula || formula.includes(tagPrefix)) return match;
       const index = formulas.length;
       formulas.push(renderFormula(formula, isDisplay));
       return `ANLATEX${index}END${suffix}`;
     });
   }
 
+  if (fileTags.length) {
+    text = text.replace(new RegExp(`${tagPrefix}(\\d+)END`, 'g'), (_match, index) => fileTags[Number(index)]);
+  }
   return { text, formulas };
 }
 
@@ -324,6 +336,7 @@ export interface RenderOptions {
   /** 富内容组件围栏渲染开关（```component 信封 + legacy 直连名 + diff） */
   enableRichCharts?: boolean;
   codeTheme?: string;
+  workspaceChatId?: string;
 }
 
 /**
@@ -351,6 +364,7 @@ export class MarkdownRenderer {
     });
 
     this.md.enable(['table']);
+    installFileCardSyntax(this.md);
 
     // ── 代码块：整体由 fence 规则渲染，避免 markdown-it 默认的 <pre><code> 包裹
     //    与自定义容器嵌套产生的非法 HTML；同时不使用任何内联脚本 ──
@@ -362,7 +376,7 @@ export class MarkdownRenderer {
       // ── 富内容围栏：注册表分发（语言名单单一事实源见 rich-components/registry.ts）──
       // 三类入口共用此处分发：
       //   1. ```component 统一信封（type 字段决定组件；chart 走骨架 + 异步派生，
-      //      stat/table/timeline/tree 渲染期同步产出可信 HTML）；
+      //      stat/table/timeline/tree/insight 渲染期同步产出可信 HTML）；
       //   2. legacy 直连名（echarts / stat-card 等，历史消息兼容）；
       //   3. 原生 DSL 名（mermaid / plantuml / puml / diff）。
       // 任何解析 / 校验失败都继续下落为普通代码块：源码可见、信息不丢。
@@ -372,7 +386,7 @@ export class MarkdownRenderer {
           if (parsed.envelope.type === 'chart') {
             // 图表：骨架 + data-chart-input="envelope"，chart-renderer 在
             // v-html 注入后解析信封 → 派生 option → 净化 → 沙箱渲染
-            return this.buildChartBlock(code, 'envelope');
+            return this.buildChartBlock(code, 'envelope', parsed.envelope.source);
           }
           const componentHtml = buildEnvelopeComponentBlock(parsed.envelope);
           if (componentHtml !== null) return componentHtml;
@@ -510,9 +524,9 @@ export class MarkdownRenderer {
 
       // ── 5. Markdown 解析 ──
       if (enableMarkdown) {
-        rendered = this.md.render(rendered);
+        rendered = this.md.render(rendered, { workspaceChatId: options.workspaceChatId });
       } else {
-        rendered = escapeHtml(rendered);
+        rendered = renderPlainFileCards(escapeHtml(rendered));
       }
 
       // ── 6. 回填 LaTeX 公式（KaTeX 产物为可信 HTML）──
@@ -524,9 +538,6 @@ export class MarkdownRenderer {
 
       // ── 7. 表格包裹：工具栏（复制 / 导出 xlsx）+ 横向滚动容器 ──
       rendered = this.wrapTables(rendered);
-
-      // ── 8. 文件标记 → 可下载文件卡片 ──
-      rendered = renderFileCards(rendered);
 
       // ── 9. 回填 <agent-image> 截图引用卡片（可信 HTML，图片本体异步注入）──
       agentImages.refs.forEach((ref, index) => {
@@ -609,12 +620,15 @@ export class MarkdownRenderer {
    *   <div class="diagram-block" data-diagram-kind="mermaid|plantuml" data-diagram-state="pending">
    *     <div class="diagram-header">
    *       <span class="diagram-lang-label">…</span>
-   *       <button class="code-copy-btn" …>复制</button>        ← 复用代码块复制委托（code-copy.ts）
-   *       <button class="diagram-toggle-btn" data-view-source-label data-view-chart-label>…</button>
+   *       <button class="code-copy-btn component-save-btn" data-save-idle-label data-save-done-label>保存</button>
    *     </div>
    *     <div class="diagram-body">…状态占位，异步渲染后替换为 SVG / <img>…</div>
-   *     <pre class="diagram-source"><code>转义源码</code></pre>  ← 默认隐藏，切换/复制的事实源
+   *     <pre class="diagram-source"><code>转义源码</code></pre>  ← 默认隐藏（渲染失败时由降级路径展开）
    *   </div>
+   *
+   * 头部动作只有一个「保存」：把当前渲染产物导出为高清 PNG（保存委托见
+   * component-image-save.ts）。源码不再有切换入口——渲染失败时由
+   * diagram-renderer 自动展开源码视图，信息不丢。
    *
    * 源码只以转义文本形态存在；.diagram-body 初始内容为无害占位文本，
    * 真正的图表产物由 diagram-renderer 注入（Mermaid strict 模式 / 远程 SVG 图片）。
@@ -624,20 +638,15 @@ export class MarkdownRenderer {
       kind === 'mermaid'
         ? t('sidepanel.chat.diagramMermaidLabel')
         : t('sidepanel.chat.diagramPlantumlLabel');
-    const copyLabel = t('sidepanel.chat.copyLabel');
-    const copiedLabel = t('sidepanel.chat.copiedLabel');
-    const viewSourceLabel = t('sidepanel.chat.diagramViewSource');
-    const viewChartLabel = t('sidepanel.chat.diagramViewChart');
+    const saveLabel = t('sidepanel.chat.saveImageLabel');
+    const savedLabel = t('sidepanel.chat.saveImageDoneLabel');
     return (
       `<div class="diagram-block" data-diagram-kind="${kind}" data-diagram-state="pending">` +
       `<div class="diagram-header">` +
       `<span class="diagram-lang-label">${escapeHtml(label)}</span>` +
-      `<button type="button" class="code-copy-btn diagram-copy-btn"` +
-      ` data-copy-idle-label="${escapeHtml(copyLabel)}"` +
-      ` data-copy-done-label="${escapeHtml(copiedLabel)}">${escapeHtml(copyLabel)}</button>` +
-      `<button type="button" class="diagram-toggle-btn" aria-pressed="false"` +
-      ` data-view-source-label="${escapeHtml(viewSourceLabel)}"` +
-      ` data-view-chart-label="${escapeHtml(viewChartLabel)}">${escapeHtml(viewSourceLabel)}</button>` +
+      `<button type="button" class="code-copy-btn component-save-btn"` +
+      ` data-save-idle-label="${escapeHtml(saveLabel)}"` +
+      ` data-save-done-label="${escapeHtml(savedLabel)}">${escapeHtml(saveLabel)}</button>` +
       `</div>` +
       `<div class="diagram-body">${escapeHtml(t('sidepanel.chat.diagramRendering'))}</div>` +
       `<pre class="diagram-source"><code>${escapeHtml(code)}</code></pre>` +
@@ -652,36 +661,41 @@ export class MarkdownRenderer {
    *   <div class="chart-block" data-chart-kind="echarts" data-chart-input="option|envelope" data-chart-state="pending">
    *     <div class="chart-header">
    *       <span class="chart-lang-label">…</span>
-   *       <button class="code-copy-btn chart-copy-btn" …>复制</button>   ← 复用代码块复制委托
-   *       <button class="chart-toggle-btn" data-view-source-label data-view-chart-label>…</button>
+   *       <button class="code-copy-btn component-save-btn" data-save-idle-label data-save-done-label>保存</button>
    *     </div>
    *     <div class="chart-body">…状态占位，chart-renderer 注入沙箱 iframe…</div>
-   *     <pre class="chart-source"><code>转义源码</code></pre>  ← 默认隐藏，切换/复制的事实源
+   *     <pre class="chart-source"><code>转义源码</code></pre>  ← 默认隐藏（渲染失败时由降级路径展开）
    *   </div>
+   *
+   * 头部动作只有一个「保存」：把当前渲染产物导出为高清 PNG（保存委托见
+   * component-image-save.ts，图表产物经 registerChartImageSource 由
+   * chart-renderer 提供）。源码不再有切换入口——渲染失败时由
+   * chart-renderer 自动展开源码视图，信息不丢。
    *
    * data-chart-input 决定 chart-renderer 的处理路径：option = legacy 直连
    * （源码即 option，直接净化）；envelope = 统一信封（源码是列式数据，
    * 先信封解析 → derive-chart 派生 option → 再净化）。源码只以转义文本
    * 形态存在；.chart-body 初始内容为无害占位文本，真正的图表产物由沙箱页
    * 内 ECharts 渲染（见 chart-renderer.ts 安全模型）。
+   *
+   * source = 信封级来源说明（可选）：渲染成图表下方的脚注，让「数据出处」
+   * 与图表本体同屏可见（敏感数据必须附来源纪律的落地形态）。
    */
-  private buildChartBlock(code: string, input: 'option' | 'envelope'): string {
+  private buildChartBlock(code: string, input: 'option' | 'envelope', source = ''): string {
     const label = t('sidepanel.chat.chartEchartsLabel');
-    const copyLabel = t('sidepanel.chat.copyLabel');
-    const copiedLabel = t('sidepanel.chat.copiedLabel');
-    const viewSourceLabel = t('sidepanel.chat.chartViewSource');
-    const viewChartLabel = t('sidepanel.chat.chartViewChart');
+    const saveLabel = t('sidepanel.chat.saveImageLabel');
+    const savedLabel = t('sidepanel.chat.saveImageDoneLabel');
     return (
       `<div class="chart-block" data-chart-kind="echarts" data-chart-input="${input}" data-chart-state="pending">` +
       `<div class="chart-header">` +
       `<span class="chart-lang-label">${escapeHtml(label)}</span>` +
-      `<button type="button" class="code-copy-btn chart-copy-btn"` +
-      ` data-copy-idle-label="${escapeHtml(copyLabel)}"` +
-      ` data-copy-done-label="${escapeHtml(copiedLabel)}">${escapeHtml(copyLabel)}</button>` +
-      `<button type="button" class="chart-toggle-btn" aria-pressed="false"` +
-      ` data-view-source-label="${escapeHtml(viewSourceLabel)}"` +
-      ` data-view-chart-label="${escapeHtml(viewChartLabel)}">${escapeHtml(viewSourceLabel)}</button>` +
+      `<button type="button" class="code-copy-btn component-save-btn"` +
+      ` data-save-idle-label="${escapeHtml(saveLabel)}"` +
+      ` data-save-done-label="${escapeHtml(savedLabel)}">${escapeHtml(saveLabel)}</button>` +
       `</div>` +
+      (source
+        ? `<div class="component-block-source">${escapeHtml(t('sidepanel.chat.componentSourceLabel'))}${escapeHtml(source)}</div>`
+        : '') +
       `<div class="chart-body">${escapeHtml(t('sidepanel.chat.chartRendering'))}</div>` +
       `<pre class="chart-source"><code>${escapeHtml(code)}</code></pre>` +
       `</div>\n`

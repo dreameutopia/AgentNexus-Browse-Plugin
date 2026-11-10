@@ -36,7 +36,8 @@ await build({
       "export { parseRichEnvelope } from './entrypoints/sidepanel/utils/chat/rich-components/envelope';",
       "export { deriveChartOption } from './entrypoints/sidepanel/utils/chat/rich-components/derive-chart';",
       "export { buildEnvelopeComponentBlock, buildDiffBlock } from './entrypoints/sidepanel/utils/chat/rich-components/component-blocks';",
-      "export { RICH_COMPONENTS, findRichComponentByFenceLang, buildRichOutputSystemPrompt, COMPONENT_FENCE_LANG } from './entrypoints/sidepanel/utils/chat/rich-components/registry';",
+      "export { RICH_COMPONENTS, findRichComponentByFenceLang, COMPONENT_FENCE_LANG } from './entrypoints/sidepanel/utils/chat/rich-components/registry';",
+      "export { buildRichOutputSystemPrompt } from './entrypoints/sidepanel/utils/chat/rich-components/rich-output-prompt';",
       "export { sanitizeEchartsOptionJson } from './entrypoints/sidepanel/utils/chat/echarts-option-sanitizer';",
       "export { t, setLocale } from './utils/i18n/core';",
     ].join('\n'),
@@ -111,31 +112,55 @@ setLocale('zh-CN');
 {
   const prompt = buildRichOutputSystemPrompt();
   assert.ok(prompt.startsWith('<rich-output-guidelines>'), '分区标签开头');
+  assert.ok(prompt.endsWith('</rich-output-guidelines>'), '分区标签收尾');
+
+  // 形式表：宿主支持的全部形式在一张表里给出（形式 / 适用场景 / 怎么写）
+  assert.ok(prompt.includes('| 形式 | 适用场景 | 怎么写 |'), '形式表头在场');
+  for (const spec of RICH_COMPONENTS) {
+    // 信封组件教 type 值，原生组件教围栏名——两种形式都必须在提示词里可教
+    const token = spec.form === 'envelope' ? spec.envelopeType : spec.fenceLangs[0];
+    assert.ok(prompt.includes(token), `组件 ${spec.id} 的输出形式 ${token} 在提示词中可教`);
+  }
+  assert.ok(prompt.includes('`component` · `chart` |'), 'chart 行在场');
+  assert.ok(prompt.includes('`component` · `stat` |'), 'stat 行在场');
+  assert.ok(prompt.includes('`component` · `table` |'), 'table 行在场');
+  assert.ok(prompt.includes('`component` · `timeline` |'), 'timeline 行在场');
+  assert.ok(prompt.includes('`component` · `tree` |'), 'tree 行在场');
+  assert.ok(prompt.includes('`component` · `insight` |'), 'insight 行在场');
+  assert.ok(prompt.includes('`mermaid` 围栏 |'), 'mermaid 原生围栏行在场');
+  assert.ok(prompt.includes('`diff` 围栏 |'), 'diff 原生围栏行在场');
+
+  // 形状教学（模型照抄字段名即可）
   assert.ok(prompt.includes('"type":"chart"'), 'chart 示例在场（形状教学）');
-  assert.ok(prompt.includes('- stat：'), 'stat 类型行');
-  assert.ok(prompt.includes('- table：'));
-  assert.ok(prompt.includes('- timeline：'));
-  assert.ok(prompt.includes('- tree：'));
-  assert.ok(prompt.includes('mermaid'), '原生围栏提示在场');
-  assert.ok(prompt.includes('diff'), 'diff 原生围栏提示在场');
+
+  // 事实优先 / 交叉验证 / 来源标注 / 关键见解拆解：四条纪律必须在场
+  assert.ok(prompt.includes('事实优先'), '事实优先在场');
   assert.ok(prompt.includes('严禁编造'), '数据纪律在场');
+  assert.ok(prompt.includes('换一个独立来源'), '交叉验证纪律在场');
+  assert.ok(prompt.includes('source'), '来源字段在场');
+  assert.ok(prompt.includes('insight 组件逐条列出'), '关键见解拆解在场');
+
+  // 不得教模型写图表 option 内部结构（宿主派生，外观由界面负责）
   assert.ok(!prompt.includes('series'), '不得再教模型写 series（宿主派生）');
+  assert.ok(!prompt.includes('```echarts'), 'legacy 直连名不进提示词（只服务历史消息）');
+  assert.ok(!prompt.includes('stat-card'), 'legacy 直连名不进提示词（只服务历史消息）');
 
   // 恒定性（同一输入产出逐字节相同——system 前缀缓存安全）
   assert.equal(prompt, buildRichOutputSystemPrompt(), '提示词生成必须恒定');
 
   // 能力裁剪：只教声明的组件
   const trimmed = buildRichOutputSystemPrompt(['chart', 'stat']);
-  assert.ok(trimmed.includes('- stat：'));
-  assert.ok(!trimmed.includes('- table：'), '未声明组件不得出现在提示词');
+  assert.ok(trimmed.includes('`component` · `stat` |'), '已声明组件在场');
+  assert.ok(!trimmed.includes('`component` · `table` |'), '未声明组件不得出现在提示词');
   assert.ok(!trimmed.includes('mermaid'), '未声明 diagram 时原生围栏提示不出现');
+  assert.ok(!trimmed.includes('insight'), '未声明 insight 时不得出现');
 
   // 显式空数组 = 整段不注入
   assert.equal(buildRichOutputSystemPrompt([]), '', '空能力集必须返回空串');
 
   // 未知 id 剔除后仍有命中则渲染
   const withBogus = buildRichOutputSystemPrompt(['chart', 'bogus-component']);
-  assert.ok(withBogus.includes('- chart：') || withBogus.includes('chart：'), '合法 id 保留');
+  assert.ok(withBogus.includes('`component` · `chart` |'), '合法 id 保留');
   assert.ok(!withBogus.includes('bogus-component'), '未知 id 不进提示词');
 }
 
@@ -475,6 +500,121 @@ function envelopeOf(json) {
   assert.ok(!diffXss.includes('<script>'));
 }
 
+// ==================== 5.5 insight 关键见解卡 + 组件级来源 ====================
+
+{
+  // 信封解析：insight 是合法 type，source 字段被保留
+  const parsed = parseRichEnvelope(
+    '{"type":"insight","title":"关键结论","source":"IDC 2026 报告","columns":["洞察","证据","来源","置信度"],"rows":[["需求回升","出货量 +18%","idc.example.com","高"]]}',
+  );
+  assert.ok(parsed.ok, 'insight 信封必须解析成功');
+  assert.equal(parsed.envelope.type, 'insight');
+  assert.equal(parsed.envelope.source, 'IDC 2026 报告', 'source 字段保留');
+  assert.equal(parsed.envelope.rows.length, 1);
+
+  // 组件构建：一条见解一卡（断言 + 证据 + 来源 + 置信度徽标）
+  const html = buildEnvelopeComponentBlock(parsed.envelope);
+  assert.ok(html !== null, 'insight 必须产出可信 HTML');
+  assert.ok(html.includes('component-insight-block'), 'insight 容器在场');
+  assert.ok(html.includes('ins-item'), '见解条目在场');
+  assert.ok(html.includes('ins-claim'), '断言主文在场');
+  assert.ok(html.includes('需求回升'), '断言文本在场');
+  assert.ok(html.includes('ins-evidence'), '证据行在场');
+  assert.ok(html.includes('ins-source'), '来源行在场');
+  assert.ok(html.includes('ins-conf lv-high'), '置信度徽标按档位着色');
+  assert.ok(html.includes('component-block-source'), '组件级来源脚注在场');
+  assert.ok(html.includes('IDC 2026 报告'), '脚注内容在场');
+
+  // XSS：模型内容全量转义
+  const xss = buildEnvelopeComponentBlock(
+    parseRichEnvelope(
+      '{"type":"insight","columns":["洞察"],"rows":[["<script>alert(1)</script>"]]}',
+    ).envelope,
+  );
+  assert.ok(xss !== null && xss.includes('&lt;script&gt;'), 'insight 内容必须转义');
+  assert.ok(!xss.includes('<script>'), 'insight 不得出现裸 script 标签');
+
+  // 列角色兜底：列名不规整时按位置补位（洞察 / 证据 / 来源 / 置信度）
+  const positional = buildEnvelopeComponentBlock(
+    parseRichEnvelope(
+      '{"type":"insight","columns":["a","b","c","d"],"rows":[["结论","数字","链接","中"]]}',
+    ).envelope,
+  );
+  assert.ok(positional !== null && positional.includes('ins-claim'), '兜底：第 1 列作断言');
+  assert.ok(positional.includes('ins-evidence'), '兜底：第 2 列作证据');
+  assert.ok(positional.includes('ins-source'), '兜底：第 3 列作来源');
+  assert.ok(positional.includes('ins-conf lv-mid'), '兜底：第 4 列作置信度');
+
+  // 置信度未识别 → 归「未验证」档，不美化
+  const unknownConf = buildEnvelopeComponentBlock(
+    parseRichEnvelope('{"type":"insight","columns":["洞察","置信度"],"rows":[["x","待复核"]]}').envelope,
+  );
+  assert.ok(unknownConf.includes('ins-conf lv-unknown'), '未识别置信度归未验证档');
+
+  // 行数超限（>12）判建模错误 → 降级源码（调用方回落代码块）
+  const tooMany = buildEnvelopeComponentBlock(
+    parseRichEnvelope(
+      JSON.stringify({
+        type: 'insight',
+        columns: ['洞察'],
+        rows: Array.from({ length: 13 }, (_, i) => [`结论 ${i}`]),
+      }),
+    ).envelope,
+  );
+  assert.equal(tooMany, null, '超行数上限必须降级');
+
+  // 组件级来源脚注：table 也带
+  const tableWithSource = buildEnvelopeComponentBlock(
+    parseRichEnvelope('{"type":"table","source":"统计局","columns":["a"],"rows":[["1"]]}').envelope,
+  );
+  assert.ok(tableWithSource.includes('component-block-source'), 'table 也渲染来源脚注');
+  assert.ok(tableWithSource.includes('统计局'), '来源内容在场');
+
+  // 未提供 source 时不渲染脚注（不出现「来源：无」噪音）
+  const noSource = buildEnvelopeComponentBlock(
+    parseRichEnvelope('{"type":"table","columns":["a"],"rows":[["1"]]}').envelope,
+  );
+  assert.ok(!noSource.includes('component-block-source'), '无来源时不得渲染脚注');
+}
+
+// ==================== 6.5 组件头部动作：单个「保存」按钮 ====================
+
+{
+  // 契约：富组件头部动作只有「保存」（无复制 / 无查看源码），且带定格文案 data-*
+  const CASES = [
+    ['信封 chart', '```component\n{"type":"chart","columns":["a","b"],"rows":[["x",1]]}\n```'],
+    ['信封 stat', '```component\n{"type":"stat","columns":["a","b"],"rows":[["x","1"]]}\n```'],
+    ['信封 table', '```component\n{"type":"table","columns":["a"],"rows":[["1"]]}\n```'],
+    ['信封 timeline', '```component\n{"type":"timeline","columns":["步骤"],"rows":[["1"]]}\n```'],
+    ['信封 tree', '```component\n{"type":"tree","columns":["路径"],"rows":[["a/b"]]}\n```'],
+    ['信封 insight', '```component\n{"type":"insight","columns":["洞察"],"rows":[["结论"]]}\n```'],
+    ['legacy stat-card', '```stat-card\n{"items":[{"label":"旧卡","value":"42"}]}\n```'],
+    ['mermaid', '```mermaid\nflowchart LR\nA-->B\n```'],
+    ['diff', '```diff\n+ 新增行\n```'],
+  ];
+
+  for (const [label, markdown] of CASES) {
+    const html = markdownRenderer.renderMessage(markdown);
+    assert.ok(html.includes('component-save-btn'), `${label}：保存按钮在场`);
+    assert.ok(html.includes('data-save-idle-label='), `${label}：初始文案定格`);
+    assert.ok(html.includes('data-save-done-label='), `${label}：完成文案定格`);
+    // 复制与查看源码已从富组件头部移除（源码查看改为渲染失败时自动展开）
+    assert.ok(!html.includes('chart-copy-btn') && !html.includes('diagram-copy-btn'), `${label}：无复制按钮`);
+    assert.ok(!html.includes('chart-toggle-btn') && !html.includes('diagram-toggle-btn'), `${label}：无查看源码按钮`);
+  }
+
+  // 普通代码块仍走复制（不被「保存」替换）
+  const plainCode = markdownRenderer.renderMessage('```js\nconst a = 1;\n```');
+  assert.ok(plainCode.includes('code-copy-btn'), '普通代码块保留复制按钮');
+  assert.ok(!plainCode.includes('component-save-btn'), '普通代码块不注入保存按钮');
+
+  // 每个富组件根恰有一个保存按钮（不多不少——重复按钮会让用户存两次图）
+  const table = markdownRenderer.renderMessage('```component\n{"type":"table","columns":["a"],"rows":[["1"]]}\n```');
+  assert.equal((table.match(/class="[^"]*component-save-btn/g) || []).length, 1, 'table：恰一个保存按钮');
+  const stat = markdownRenderer.renderMessage('```component\n{"type":"stat","columns":["a"],"rows":[["x","1"]]}\n```');
+  assert.equal((stat.match(/class="[^"]*component-save-btn/g) || []).length, 1, 'stat：恰一个保存按钮');
+}
+
 // ==================== 6. markdown 渲染器集成 ====================
 
 {
@@ -491,6 +631,21 @@ function envelopeOf(json) {
   );
   assert.ok(statHtml.includes('stat-card-block'));
   assert.ok(statHtml.includes('214'));
+
+  // 信封 insight → 关键见解卡
+  const insightHtml = markdownRenderer.renderMessage(
+    '```component\n{"type":"insight","source":"IDC 2026","columns":["洞察","证据","来源","置信度"],"rows":[["需求回升","出货量 +18%","idc.example.com","高"]]}\n```',
+  );
+  assert.ok(insightHtml.includes('component-insight-block'), 'insight 组件渲染');
+  assert.ok(insightHtml.includes('ins-claim'), 'insight 断言在场');
+  assert.ok(insightHtml.includes('IDC 2026'), 'insight 来源脚注在场');
+
+  // 信封 chart 带 source → 图表块下方渲染来源脚注
+  const chartWithSource = markdownRenderer.renderMessage(
+    '```component\n{"type":"chart","source":"统计局 2026","columns":["日期","值"],"rows":[["周一",1],["周二",2]]}\n```',
+  );
+  assert.ok(chartWithSource.includes('component-block-source'), '图表来源脚注在场');
+  assert.ok(chartWithSource.includes('统计局 2026'), '图表来源内容在场');
 
   // 信封解析失败 → 普通代码块降级（源码可见）
   const bad = markdownRenderer.renderMessage('```component\n{"type":"chart", not json\n```');

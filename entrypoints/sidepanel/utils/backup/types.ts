@@ -279,6 +279,8 @@ export interface ConversationsPayload {
   sessions: unknown[];
   /** 消息记录 */
   messages: unknown[];
+  /** Optional binary workspace data. Older and media-free backups omit this field. */
+  workspaces?: import('./workspace-backup').WorkspaceBackup[];
 }
 
 /** 捕获文件分区载荷的单条记录（Blob 以 base64 承载） */

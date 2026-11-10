@@ -5,7 +5,7 @@
 
 import { BaseBrowserTool } from '../base/browser-tool';
 import { existingNavigationWindowId } from './navigation-window';
-import { ToolMetadata } from '../registry';
+import { ToolMetadata, type ToolExecutionContext } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
 
@@ -159,7 +159,7 @@ export class CreateTabTool extends BaseBrowserTool {
     }
   };
 
-  async execute(args: { url?: string; active?: boolean }): Promise<ToolResult> {
+  async execute(args: { url?: string; active?: boolean }, context?: ToolExecutionContext): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     try {
@@ -169,6 +169,7 @@ export class CreateTabTool extends BaseBrowserTool {
         active: args.active !== false
       });
 
+      if (args.active === false && typeof tab.id === 'number') context?.onTabTarget?.(tab.id);
       return this.createSuccessResponse({
         tabId: tab.id,
         url: tab.url,

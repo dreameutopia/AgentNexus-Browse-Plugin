@@ -17,6 +17,7 @@ import { ApiRequestError, createInBandError } from '../errors';
 import { mergeUsageSafe, normalizeGeminiUsage } from './usage-normalize';
 import { parseReplayArguments, parseReplayToolResponse } from './unified-normalize';
 import { nativeItems, setNativeItems } from './native-replay';
+import { splitLeadingCompactionProduct } from './compaction-product';
 import type {
   AdapterCapabilities,
   ProviderType,
@@ -53,19 +54,33 @@ export class GeminiAdapter extends BaseAdapter {
 
     // 系统指令：全部 system 消息按出现顺序合并
     // （保证「压缩摘要记忆」等附加系统消息不会被静默丢弃）
+    //
+    // 首条压缩记忆（assistant 角色的上下文压缩消息）：并入系统指令——
+    // Gemini 的 contents 必须以 user 角色开头（multiturn 校验），压缩记忆
+    // 本就是系统级上下文；并入后 wire 形态与压缩前逐字一致。
+    const { product, rest } = splitLeadingCompactionProduct(config.messages);
     const systemTexts = config.messages
       .filter(m => m.role === 'system')
       .map(m => this.plainTextOf(m.content))
       .filter(text => text.length > 0);
+    if (product && rest.length > 0) {
+      const productText = this.plainTextOf(product.content);
+      if (productText.length > 0) systemTexts.push(productText);
+    }
     if (systemTexts.length > 0) {
       body.systemInstruction = { parts: [{ text: systemTexts.join('\n\n') }] };
     }
+
+    // 退化情形（整段上下文只剩压缩记忆）：contents 不得为空且首条须为 user，
+    // 此时把压缩记忆降为 user 轮承载（文本原样，wire 角色归一）
+    const wireMessages: readonly UnifiedChatMessage[] =
+      rest.length > 0 ? rest : product ? [{ ...product, role: 'user' as const }] : [];
 
     // tool_call_id → 工具名映射：Gemini 的 functionResponse 按「名称」配对（非 id），
     // 优先取消息自带 name，缺失时回查对应 assistant.tool_calls
     const toolNameById = new Map<string, string>();
     const nativeCallIds = new Set<string>();
-    for (const msg of config.messages) {
+    for (const msg of wireMessages) {
       if (msg.role !== 'assistant') continue;
       for (const part of nativeItems(msg, config, 'gemini') ?? []) {
         if (typeof part.functionCall?.id === 'string') nativeCallIds.add(part.functionCall.id);
@@ -90,7 +105,7 @@ export class GeminiAdapter extends BaseAdapter {
       }
     };
 
-    for (const msg of config.messages) {
+    for (const msg of wireMessages) {
       if (msg.role === 'system') continue;
 
       // 工具结果 → functionResponse（user 轮；响应体经防御性解析恒为对象）

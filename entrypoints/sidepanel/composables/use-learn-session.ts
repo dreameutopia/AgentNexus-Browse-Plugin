@@ -31,6 +31,7 @@
 
 import { computed, ref, type Ref } from 'vue';
 import type { MessageKey } from '@/utils/i18n';
+import type { LocalPageGlow } from '../core/conversation/runtime-protocol';
 
 import {
   transcriptEngine,
@@ -249,6 +250,7 @@ class LearnRunAbortedError extends Error {
 // ──── 注入依赖 ────
 
 export interface LearnSessionDeps {
+  beginPageGlow?: () => LocalPageGlow | undefined;
   /** 转发给 UI 的会话事件（App 的 handleConversationEvent） */
   observer: (event: ConversationEvent) => void;
   /** 系统提示条（配置切换、降级提示等） */
@@ -359,6 +361,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
   // ──── 运行期私有状态 ────
   /** 当前在跑的 run Promise（终止时需等待其干净退出） */
   let activeRun: Promise<RunSummary> | null = null;
+  let activeGlow: LocalPageGlow | undefined;
   /** 用户已请求终止：post-run 一律不再推进业务（清理由 requestAbort 负责） */
   let aborting = false;
   /**
@@ -537,6 +540,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     terminating = true;
     try {
       deps.dismissQuestions(chatId);
+      activeGlow?.stop();
       conversationEngine.abort(chatId);
       if (activeRun) await activeRun.catch(() => undefined);
       activeRun = null;
@@ -714,6 +718,8 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     const skillDraft = draft.value;
     const forceSubmit = options?.forceSubmit === true;
     limitAction = null;
+    const glow = deps.beginPageGlow?.();
+    activeGlow = glow;
 
     // 装配与运行包在同一个 promise 里：**activeRun 必须在装配开始时就占位**。
     // 否则用户在装配阶段（runtimeBuilder.build 是异步的）点终止，终止逻辑
@@ -769,6 +775,7 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
       }
 
       return conversationEngine.run(runtime, {
+        beginPageOperation: glow?.beginPageOperation,
         observer: makeObserver(kind, cfg.targetMode),
         onLimitReached: limitKind => handleLimitReached(limitKind, runtime.limits, kind),
         resetBudgetOnContinue: true,
@@ -780,6 +787,8 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     try {
       return await runPromise;
     } finally {
+      glow?.stop();
+      if (activeGlow === glow) activeGlow = undefined;
       activeRun = null;
       deps.dismissQuestions(chatId);
       deps.setResponding(chatId, false);
@@ -1276,6 +1285,8 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
 
   async function reset(options: { keepConfig: boolean }): Promise<void> {
     stopTicker();
+    activeGlow?.stop();
+    activeGlow = undefined;
     activeRun = null;
     aborting = false;
     terminating = false;

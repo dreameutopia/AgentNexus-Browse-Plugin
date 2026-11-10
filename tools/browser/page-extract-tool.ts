@@ -15,7 +15,7 @@
  */
 
 import { BaseBrowserTool } from '../base/browser-tool';
-import { ToolMetadata } from '../registry';
+import { ToolMetadata, type ToolExecutionContext } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
 import { TOOL_NAMES, isRestrictedUrl } from '@/common/constants';
@@ -253,7 +253,7 @@ export class PageExtractDataTool extends BaseBrowserTool {
     },
   };
 
-  async execute(args: ExtractParams): Promise<ToolResult> {
+  async execute(args: ExtractParams, context?: ToolExecutionContext): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     const {
@@ -284,6 +284,8 @@ export class PageExtractDataTool extends BaseBrowserTool {
           `Current page is a restricted URL (${tab.url || 'no URL'}) where DOM extraction is not permitted`,
         );
       }
+
+      if (requestedTabId != null) context?.onTabTarget?.(tabId);
 
       this.log(`Extracting data (mode=${mode}, selector=${selector || 'auto'}) from tab ${tabId}`);
 

@@ -3,9 +3,9 @@
  *
  * 用户面转录的唯一持久化层。与统一笔记库（utils/notes-database，AgentNexusNotesDB）同模式，但：
  *   - sessions / messages 两个 store，[chatId, seq] 复合索引支持按会话分页
- *   - 删除会话在同一事务内级联删除消息（图片等关联回收由会话删除引擎统一判定）
+ *   - 删除会话在同一事务内级联删除消息和 Python 工作区
  *   - 消息仅持有图片引用（imageRefs，内容哈希），图片二进制存于独立图片库
- *     （core/images/image-database），本库绝不内联二进制
+ *     （core/images/image-database），工作区二进制存于独立的 pythonWorkspaces 表
  *   - 所有 API 幂等初始化（首次调用自动 open），写失败抛错由上层降级
  * 容量：IndexedDB 无固定上限（受磁盘配额约束），满足「无长度限制」要求。
  */
@@ -13,6 +13,7 @@
 import type { ChatMessageRecord, ChatSessionMeta } from '../types';
 import { normalizeImageRefs } from '../images/image-store';
 import { protocolImageRefs } from './protocol-history';
+import { WorkspaceMissingChatError, type WorkspaceSnapshot } from '@/utils/python-workspace/paths';
 
 /** 数据库名（导出供备份 / 存储统计引擎定位同一份数据，避免键名漂移） */
 export const CHAT_DB_NAME = 'AgentNexusChatDB';
@@ -20,12 +21,61 @@ export const CHAT_DB_NAME = 'AgentNexusChatDB';
 export const CHAT_SESSIONS_STORE = 'sessions';
 /** 消息表名（导出供备份引擎定位） */
 export const CHAT_MESSAGES_STORE = 'messages';
+export type StoredChatWorkspace = [chatId: string, snapshot: WorkspaceSnapshot];
 
-/** v2：messages 增加 byImageRef（multiEntry）索引——按图片引用统计引用方 / 回收判定 */
-const DB_VERSION = 2;
-const DB_NAME = CHAT_DB_NAME;
+/** v3 增加 Python 工作区；v2 增加 messages.byImageRef 多值索引。 */
+const MIN_SCHEMA_VERSION = 3;
 const SESSIONS_STORE = CHAT_SESSIONS_STORE;
 const MESSAGES_STORE = CHAT_MESSAGES_STORE;
+const WORKSPACES_STORE = 'pythonWorkspaces';
+const OPEN_RETRY_DELAY_MS = 2_000;
+const OPEN_TIMEOUT_MS = 5_000;
+
+interface StoreSchema {
+  name: string;
+  keyPath: string | null;
+  indexes: readonly {
+    name: string;
+    keyPath: string | string[];
+    unique?: boolean;
+    multiEntry?: boolean;
+  }[];
+}
+
+const CHAT_SCHEMA: readonly StoreSchema[] = [
+  { name: SESSIONS_STORE, keyPath: 'chatId', indexes: [{ name: 'updatedAt', keyPath: 'updatedAt' }] },
+  {
+    name: MESSAGES_STORE,
+    keyPath: 'id',
+    indexes: [
+      { name: 'byChatSeq', keyPath: ['chatId', 'seq'], unique: true },
+      { name: 'chatId', keyPath: 'chatId' },
+      { name: 'byImageRef', keyPath: 'imageRefs', multiEntry: true },
+    ],
+  },
+  { name: WORKSPACES_STORE, keyPath: null, indexes: [] },
+];
+
+/** 迁移只补充缺失的表和索引。已存在的结构须满足当前读写契约。 */
+function checkChatSchema(db: IDBDatabase, tx: IDBTransaction, upgrading = false): void {
+  for (const { name, keyPath, indexes } of CHAT_SCHEMA) {
+    const store = upgrading && !db.objectStoreNames.contains(name)
+      ? db.createObjectStore(name, { keyPath })
+      : tx.objectStore(name);
+    if (store.keyPath !== keyPath || store.autoIncrement) {
+      throw new Error(`会话数据库表 ${name} 的主键结构不兼容`);
+    }
+    for (const { name: indexName, keyPath: indexKeyPath, unique = false, multiEntry = false } of indexes) {
+      const index = upgrading && !store.indexNames.contains(indexName)
+        ? store.createIndex(indexName, indexKeyPath, { unique, multiEntry })
+        : store.index(indexName);
+      if (JSON.stringify(index.keyPath) !== JSON.stringify(indexKeyPath)
+        || index.unique !== unique || index.multiEntry !== multiEntry) {
+        throw new Error(`会话数据库索引 ${name}.${indexName} 的结构不兼容`);
+      }
+    }
+  }
+}
 /** 列表页标题/预览截断 */
 const PREVIEW_MAX_CHARS = 80;
 
@@ -78,92 +128,139 @@ export function mergeMessagePatch(
 class ChatDatabase {
   private db: IDBDatabase | null = null;
   private opening: Promise<IDBDatabase> | null = null;
+  private openFailure: { error: unknown; retryAt: number } | null = null;
 
   // ──── 连接管理 ────
 
   private open(): Promise<IDBDatabase> {
     if (this.db) return Promise.resolve(this.db);
     if (this.opening) return this.opening;
+    if (this.openFailure && Date.now() < this.openFailure.retryAt) {
+      return Promise.reject(this.openFailure.error);
+    }
 
     this.opening = new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, DB_VERSION);
-      request.onerror = () => {
-        this.opening = null;
-        console.error('[ChatDatabase] 打开失败:', request.error);
-        reject(request.error);
+      // 若排在另一条被阻塞的请求之后，本请求可能收不到 blocked 事件。
+      // 超时或阻塞都只结束调用方的等待，原生请求仍由所有调用共享。
+      const timer = setTimeout(() => {
+        reject(new Error('等待会话数据库连接超时，请检查是否有旧扩展页面阻塞升级'));
+      }, OPEN_TIMEOUT_MS);
+      const onBlocked = () => {
+        clearTimeout(timer);
+        reject(new Error('会话数据库升级被其他扩展页面阻塞，请关闭旧页面或重新加载扩展后重试'));
       };
-      request.onblocked = () => {
-        console.warn('[ChatDatabase] 打开被其他标签页阻塞（版本升级中）');
-      };
-      request.onsuccess = () => {
-        this.db = request.result;
-        // 连接被其他上下文强制关闭（如版本升级）时允许重新打开
-        this.db.onclose = () => {
-          this.db = null;
+      void this.connect(onBlocked).then(
+        db => {
+          clearTimeout(timer);
+          this.db = db;
           this.opening = null;
-        };
-        // 其他上下文请求升级版本时主动让位，避免阻塞对方升级（本连接置空后按需重连）
-        this.db.onversionchange = () => {
-          console.warn('[ChatDatabase] 检测到其他上下文升级数据库，当前连接主动断开');
-          try {
-            this.db?.close();
-          } catch {
-            /* 连接可能已关闭 */
-          }
-          this.db = null;
+          this.openFailure = null;
+          const invalidate = () => {
+            if (this.db === db) this.db = null;
+          };
+          db.onclose = invalidate;
+          db.onversionchange = () => {
+            invalidate();
+            db.close();
+          };
+          resolve(db);
+        },
+        error => {
+          clearTimeout(timer);
           this.opening = null;
-        };
-        resolve(this.db);
-      };
-      request.onupgradeneeded = event => {
-        const db = (event.target as IDBOpenDBRequest).result;
-        if (!db.objectStoreNames.contains(SESSIONS_STORE)) {
-          const sessions = db.createObjectStore(SESSIONS_STORE, { keyPath: 'chatId' });
-          sessions.createIndex('updatedAt', 'updatedAt', { unique: false });
-        }
-        if (!db.objectStoreNames.contains(MESSAGES_STORE)) {
-          const messages = db.createObjectStore(MESSAGES_STORE, { keyPath: 'id' });
-          messages.createIndex('byChatSeq', ['chatId', 'seq'], { unique: true });
-          messages.createIndex('chatId', 'chatId', { unique: false });
-          messages.createIndex('byImageRef', 'imageRefs', { unique: false, multiEntry: true });
-        } else {
-          // v1 → v2 升级：为既有 messages store 补建图片引用索引
-          //（multiEntry：一条消息引用 N 张图即产生 N 个索引项；无 imageRefs 的旧记录不产生项）
-          const upgradeTx = (event.target as IDBOpenDBRequest).transaction;
-          const existing = upgradeTx?.objectStore(MESSAGES_STORE);
-          if (existing && !existing.indexNames.contains('byImageRef')) {
-            existing.createIndex('byImageRef', 'imageRefs', { unique: false, multiEntry: true });
+          this.openFailure = { error, retryAt: Date.now() + OPEN_RETRY_DELAY_MS };
+          reject(error);
+        },
+      );
+    });
+    return this.opening;
+  }
+
+  private async connect(onBlocked: () => void): Promise<IDBDatabase> {
+    let db: IDBDatabase;
+    try {
+      db = await this.requestConnection(onBlocked, MIN_SCHEMA_VERSION);
+    } catch (error) {
+      if (!(error instanceof DOMException) || error.name !== 'VersionError') throw error;
+      // 其他扩展上下文或曾安装的构建可能已经升级。读取现有版本并验证结构，
+      // 避免降版、删库，或仅凭更高的版本号就允许读写。
+      db = await this.requestConnection(onBlocked);
+    }
+
+    try {
+      checkChatSchema(db, db.transaction(CHAT_SCHEMA.map(store => store.name), 'readonly'));
+      return db;
+    } catch (error) {
+      db.close();
+      throw new Error(`会话数据库 v${db.version} 的结构与当前扩展不兼容`, { cause: error });
+    }
+  }
+
+  private requestConnection(onBlocked: () => void, version?: number): Promise<IDBDatabase> {
+    return new Promise((resolve, reject) => {
+      const request = version === undefined
+        ? indexedDB.open(CHAT_DB_NAME)
+        : indexedDB.open(CHAT_DB_NAME, version);
+      let migrationError: unknown;
+      request.onblocked = onBlocked;
+      request.onerror = () => reject(migrationError ?? request.error);
+      request.onsuccess = () => resolve(request.result);
+      request.onupgradeneeded = () => {
+        const tx = request.transaction!;
+        try {
+          if (version === undefined) {
+            throw new Error('会话数据库在重连期间被删除');
           }
+          checkChatSchema(request.result, tx, true);
+        } catch (error) {
+          migrationError = error;
+          tx.abort();
         }
       };
     });
-    return this.opening;
   }
 
   private async tx<T>(
     stores: string[],
     mode: IDBTransactionMode,
     work: (tx: IDBTransaction) => Promise<T> | T,
+    signal?: AbortSignal,
   ): Promise<T> {
+    signal?.throwIfAborted();
     const db = await this.open();
+    signal?.throwIfAborted();
     return new Promise<T>((resolve, reject) => {
       const tx = db.transaction(stores, mode);
       let result: T;
-      tx.onabort = () => reject(tx.error ?? new Error('事务中断'));
-      tx.onerror = () => reject(tx.error ?? new Error('事务失败'));
-      tx.oncomplete = () => resolve(result);
-      Promise.resolve(work(tx)).then(
+      const abort = () => {
+        try { tx.abort(); } catch { /* The transaction already settled. */ }
+      };
+      signal?.addEventListener('abort', abort, { once: true });
+      tx.onabort = () => {
+        signal?.removeEventListener('abort', abort);
+        reject(signal?.aborted ? signal.reason : tx.error ?? new Error('事务中断'));
+      };
+      tx.oncomplete = () => {
+        signal?.removeEventListener('abort', abort);
+        resolve(result);
+      };
+      const rejectWork = (error: unknown) => {
+        abort();
+        reject(signal?.aborted ? signal.reason : error);
+      };
+      // Start the first request while the transaction is active in this turn.
+      let workResult: Promise<T> | T;
+      try {
+        workResult = work(tx);
+      } catch (error) {
+        rejectWork(error);
+        return;
+      }
+      Promise.resolve(workResult).then(
         value => {
           result = value;
         },
-        error => {
-          try {
-            tx.abort();
-          } catch {
-            /* 事务可能已结束 */
-          }
-          reject(error);
-        },
+        rejectWork,
       );
     });
   }
@@ -240,10 +337,11 @@ class ChatDatabase {
     });
   }
 
-  /** 删除会话并级联删除其全部消息（同一事务；游标限定在该会话范围内，避免全库扫描） */
+  /** 在同一事务内删除会话、消息和工作区。 */
   async deleteSession(chatId: string): Promise<void> {
-    await this.tx([SESSIONS_STORE, MESSAGES_STORE], 'readwrite', async tx => {
+    await this.tx([SESSIONS_STORE, MESSAGES_STORE, WORKSPACES_STORE], 'readwrite', async tx => {
       tx.objectStore(SESSIONS_STORE).delete(chatId);
+      tx.objectStore(WORKSPACES_STORE).delete(chatId);
       const index = tx.objectStore(MESSAGES_STORE).index('chatId');
       const cursorRequest = index.openCursor(IDBKeyRange.only(chatId));
       cursorRequest.onsuccess = () => {
@@ -255,6 +353,48 @@ class ChatDatabase {
         cursor.continue();
       };
     });
+  }
+
+  async readWorkspace(chatId: string, signal?: AbortSignal): Promise<WorkspaceSnapshot | undefined> {
+    return this.tx([SESSIONS_STORE, WORKSPACES_STORE], 'readonly', async tx => {
+      if ((await ChatDatabase.requestToPromise(tx.objectStore(SESSIONS_STORE).getKey(chatId))) === undefined) {
+        throw new WorkspaceMissingChatError();
+      }
+      return ChatDatabase.requestToPromise(tx.objectStore(WORKSPACES_STORE).get(chatId));
+    }, signal);
+  }
+
+  /** Update files and verify session ownership inside the same transaction as deletion. */
+  async updateWorkspace<T>(
+    chatId: string,
+    update: (current: WorkspaceSnapshot | undefined) => { snapshot?: WorkspaceSnapshot; result: T },
+    signal?: AbortSignal,
+  ): Promise<T> {
+    return this.tx([SESSIONS_STORE, WORKSPACES_STORE], 'readwrite', async tx => {
+      const sessions = tx.objectStore(SESSIONS_STORE);
+      const workspaces = tx.objectStore(WORKSPACES_STORE);
+      if ((await ChatDatabase.requestToPromise(sessions.getKey(chatId))) === undefined) {
+        throw new WorkspaceMissingChatError();
+      }
+      const current = await ChatDatabase.requestToPromise(workspaces.get(chatId));
+      signal?.throwIfAborted();
+      const { snapshot, result } = update(current);
+      signal?.throwIfAborted();
+      if (snapshot) workspaces.put(snapshot, chatId);
+      return result;
+    }, signal);
+  }
+
+  private async readWorkspaces(store: IDBObjectStore): Promise<StoredChatWorkspace[]> {
+    const [keys, snapshots] = await Promise.all([
+      ChatDatabase.requestToPromise(store.getAllKeys()),
+      ChatDatabase.requestToPromise(store.getAll()) as Promise<WorkspaceSnapshot[]>,
+    ]);
+    return keys.map((key, index) => [String(key), snapshots[index]]);
+  }
+
+  async listWorkspaces(): Promise<StoredChatWorkspace[]> {
+    return this.tx([WORKSPACES_STORE], 'readonly', tx => this.readWorkspaces(tx.objectStore(WORKSPACES_STORE)));
   }
 
   // ──── 消息 ────
@@ -542,13 +682,22 @@ class ChatDatabase {
   async restoreSessions(
     sessions: readonly ChatSessionMeta[],
     messages: readonly ChatMessageRecord[],
-  ): Promise<void> {
-    await this.tx([CHAT_SESSIONS_STORE, CHAT_MESSAGES_STORE], 'readwrite', tx => {
+    workspaces?: readonly StoredChatWorkspace[],
+  ): Promise<StoredChatWorkspace[]> {
+    return this.tx([CHAT_SESSIONS_STORE, CHAT_MESSAGES_STORE, WORKSPACES_STORE], 'readwrite', async tx => {
       const sessionStore = tx.objectStore(CHAT_SESSIONS_STORE);
       const messageStore = tx.objectStore(CHAT_MESSAGES_STORE);
+      const workspaceStore = tx.objectStore(WORKSPACES_STORE);
+      const previousWorkspaces = await this.readWorkspaces(workspaceStore);
+      const restoredIds = new Set(sessions.map(session => session.chatId));
       sessionStore.clear();
       messageStore.clear();
+      workspaceStore.clear();
       for (const meta of sessions) sessionStore.put(meta);
+      // A legacy backup has no workspace data. Keep local files only for matching chats.
+      for (const [chatId, snapshot] of workspaces ?? previousWorkspaces) {
+        if (restoredIds.has(chatId)) workspaceStore.put({ ...snapshot, revision: crypto.randomUUID() }, chatId);
+      }
       for (const record of messages) {
         // 与 saveMessage 同一存储边界口径：imageRefs 并入协议引用、
         // uploadImageRefs 收敛为 imageRefs 子集（备份为外部数据，同样防御）
@@ -559,6 +708,7 @@ class ChatDatabase {
           ...(record.uploadImageRefs !== undefined ? { uploadImageRefs: [...new Set(normalizeImageRefs(record.uploadImageRefs))]
             .filter(ref => imageRefs.includes(ref)) } : {}) });
       }
+      return previousWorkspaces;
     });
   }
 }

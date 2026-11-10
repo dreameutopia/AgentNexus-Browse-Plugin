@@ -28,7 +28,8 @@
  *  12. browser_get_page_text：结构化荷载序列化自包含 + jsdom DOM 行为
  *      （标题/表格 rowspan·colspan/列表/代码块/链接/shadow·slot/噪声剔除）、
  *      宿主流程（短文全量、多 frame 组装、超 15k 自动 dataRef 缓存 + ref/page
- *      分页含代理项跨页配对、url 后台标签页模式、参数互斥与越界防御）
+ *      分页含代理项跨页配对、url 前台打开模式（激活标签页、加载就绪后提取、
+ *      标签页保留不关闭）、参数互斥与越界防御）
  *  13. 数据通道治理 + xlsx 数据源统一：dedupe/extract 领域契约与工具动作契约、
  *      xlsx 混排（dataRef 表 + 手写公式表）、数据来源二选一/字段误用/空表/
  *      失效引用的精准报错、openaiSchema 数据源声明（见 ./xlsx-dataref.test.ts）
@@ -285,21 +286,22 @@ registerAllTools();
   // 豁免 = true 的准入：纯读不碰像素/视口/活动标签页，且不替换 GUI 截图身份。
   // 漏标只是多一次重拍（安全），错标会让模型拿失效截图坐标继续操作（危险），
   // 因此本清单收紧/扩张都必须同步 needsVisionRefresh 语义评审。
+  // 注：只读观察已并入 vision_gui 的 action 面——read/zoom 的豁免走
+  // gui-contract 的动作级判定（visionGuiRefresh），不经过本字段；
+  // 原 vision_read* 独立工具已删除。
   const NO_RECAPTURE_TOOLS = [
     'browser_get_page_text', 'browser_get_page_info', 'browser_get_all_tabs', 'browser_window',
     'browser_observe', 'browser_dom_explore', 'browser_network_capture',
-    'vision_read', 'vision_read_zoom',
     'plan_tool', 'interact', 'note_tool', 'data_ref_tool', 'load_skill', 'read_skill_file', 'read_file',
   ];
   for (const id of NO_RECAPTURE_TOOLS) {
     check(toolRegistry.getTool(id)?.metadata.noVisionRecapture === true, `纯读工具 ${id} 声明 noVisionRecapture=true`);
   }
   // 必须保守重拍的高危反例：改页面 / 等待变化 / 内部自拍替换截图身份 /
-  // 名单特例工具（screenshot、vision_read_wait、vision_gui 由 needsVisionRefresh
-  // 按名字单独处理，不依赖字段）；get_page_html 属自定义组合扩展组，未经
-  // 确认保持缺省保守
+  // 名单特例工具（screenshot 按名字、vision_gui 按 action 由 needsVisionRefresh
+  // 单独处理，不依赖字段）；get_page_html 属自定义组合扩展组，未经确认保持缺省保守
   for (const id of ['web_search', 'generic_wait', 'wait_page_load', 'browser_interact', 'browser_navigate',
-    'browser_switch_tab', 'browser_page_exec', 'vision_read_scroll', 'vision_read_wait', 'screenshot',
+    'browser_switch_tab', 'browser_page_exec', 'screenshot',
     'vision_gui', 'ocr', 'extract_data', 'ai_locate', 'browser_console', 'file_uploader', 'browser_get_page_html']) {
     check(toolRegistry.getTool(id)?.metadata.noVisionRecapture !== true, `工具 ${id} 保持保守重拍（未豁免）`);
   }
@@ -396,6 +398,18 @@ registerAllTools();
     check(okData.results.markdown === undefined, 'inline: data.results 不含 markdown（单份契约，防引擎序列化双份）');
     const okContent = (ok.content as Array<{ text?: string }>)[0]?.text ?? '';
     check(okContent.includes('| title |') && okContent.includes('https://a'), 'inline: content 携带唯一一份 Markdown 表', okContent.slice(0, 80));
+    check(
+      !okContent.includes('credibility') && !('credibility' in (okData.results as Record<string, unknown>)),
+      'inline: 结果不再带可信度分级列（改由模型按域名自行判断）',
+    );
+    check(
+      !('items' in (okData.results as Record<string, unknown>)),
+      'inline: data.results 不重复条目本体（条目只在 content 的表里出现一次）',
+    );
+    check(
+      (tool.openaiSchema.function.description ?? '').includes('域名'),
+      '工具描述要求模型按来源域名判断可信度',
+    );
 
     // 2) 解析失败不拖垮导航封装（inline 抛错）
     scriptingStub.executeScript = (async () => { throw new Error('CSP blocked'); }) as typeof scriptingStub.executeScript;
@@ -454,6 +468,124 @@ registerAllTools();
     scriptingStub.executeScript = originalExecuteScript;
     globalThis.setTimeout = originalSetTimeout;
   }
+}
+
+// ==================== 2c. 百度结果解析器（实测 DOM 回归） ====================
+
+{
+  // 实测驱动（2026-11 百度 SERP F12 实测）的类名形态回归：稳定前缀_hash 轮换类、
+  // mu 直链与桩/伪域名、错位污染归一。以 func.toString() 在干净作用域求值，
+  // 等价 chrome.scripting 的序列化注入——同时验证自包含约束（闭包引用在
+  // 页面上下文会直接丢失，此处即抛 ReferenceError）。
+  const { JSDOM } = await import('jsdom');
+  const { SEARCH_PLATFORMS } = await import('../../tools/search/search-platforms');
+  type BaiduRow = { title: string; link: string; description: string; source: string; time: string };
+
+  const baiduHtml = `<!DOCTYPE html><body><div id="content_left">
+    <div class="c-container" id="1" tpl="jr_quote">
+      <h3><a href="http://www.baidu.com/link?url=quoteRedirect">英特尔[INTC]美股实时行情 - FinScope</a></h3>
+      <span class="cur-num_TBaK4">56.28</span>
+      <span class="cur-range_1Zt06">-4.66</span>
+      <span class="cur-ratio_4l3tZ">-7.71%</span>
+      <span class="update_6yJgf">收盘</span>
+    </div>
+    <div class="c-container" id="2" tpl="www_index" mu="https://quote.eastmoney.com/us/INTC.html?Market=NASDAQ">
+      <h3><a href="http://www.baidu.com/link?url=wwwRedirect">英特尔(INTC)最新价格_行情_走势图—东方财富网</a></h3>
+      <div class="content_MUfFD">东方财富网为您提供英特尔股票行情走势分析</div>
+      <span class="source-text_1w-M9">东方财富网</span>
+      <span class="prefix-time_650Xx">2天前</span>
+    </div>
+    <div class="c-container" id="3" tpl="recommend_list" mu="http://28608.recommend_list.baidu.com">
+      <h3><a href="/s?wd=recommend">大家还在搜</a></h3>
+      <span class="item_3WKCf">英特尔股票</span>
+    </div>
+    <div class="c-container" id="4" tpl="rel_base_realtime" mu="https://www.baidu.com/s?tn=news&rtt=1&wd=x">
+      <h3><a href="http://www.baidu.com/link?url=relRedirect">英特尔股价大跌 最新相关信息</a></h3>
+      <span class="cosc-source-text">东方财富网\n前天12:22</span>
+    </div>
+    <div class="c-container" id="5" tpl="www_index" mu="http://nourl.ubs.baidu.com/nourl">
+      <h3><a href="http://www.baidu.com/link?url=stubRedirect">标题五</a></h3>
+      <span class="c-color-gray2">12小时前东方财富独家</span>
+    </div>
+    <div class="c-container" id="6" tpl="www_index" mu="http://28608.recommend_list.baidu.com">
+      <h3><a href="/s?wd=relative">标题六</a></h3>
+    </div>
+    <div class="c-container" id="7" tpl="www_index">
+      <h3><a href="http://www.baidu.com/link?url=legacyRedirect">标题七</a></h3>
+      <div class="c-abstract">旧版摘要结构仍然需要兼容。</div>
+      <span class="c-color-gray2">来源识别不出的时间词</span>
+    </div>
+  </div></body>`;
+
+  const dom = new JSDOM(baiduHtml, { url: 'https://www.baidu.com/s?wd=test' });
+  const savedDoc = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  (globalThis as Record<string, unknown>).document = dom.window.document;
+  let rows: BaiduRow[] = [];
+  try {
+    const extractor = SEARCH_PLATFORMS.baidu.extractor;
+    check(extractor.kind === 'inline' && typeof extractor.func === 'function', '百度解析器为 inline 通道且有解析函数');
+    if (extractor.kind === 'inline' && extractor.func) {
+      try {
+        const fn = (0, eval)('(' + extractor.func.toString() + ')') as () => BaiduRow[];
+        rows = fn();
+        check(true, '百度解析器在干净作用域求值并执行（自包含）');
+      } catch (error) {
+        check(false, '百度解析器在干净作用域求值并执行（自包含）', error);
+      }
+    }
+  } finally {
+    if (savedDoc) Object.defineProperty(globalThis, 'document', savedDoc);
+    else delete (globalThis as Record<string, unknown>).document;
+  }
+
+  eq(rows.length, 6, '解析出 6 条（「大家还在搜」UI 卡剔除）', rows.map(r => r.title));
+  const pick = (needle: string): BaiduRow | undefined => rows.find(r => r.title.includes(needle));
+
+  const quote = pick('FinScope');
+  check(
+    quote?.description.includes('56.28') === true && quote?.description.includes('-7.71%') === true,
+    '行情卡：现价与涨跌幅并入描述',
+    quote?.description,
+  );
+  check(
+    quote?.link === 'http://www.baidu.com/link?url=quoteRedirect',
+    '行情卡：无 mu → 落回跳转串',
+    quote?.link,
+  );
+
+  const www = pick('最新价格_行情_走势图');
+  check(
+    www?.link === 'https://quote.eastmoney.com/us/INTC.html?Market=NASDAQ',
+    '网页卡：mu 校验通过 → 真实直链（可信度可按域名判断）',
+    www?.link,
+  );
+  check(www?.description.includes('行情走势分析') === true, '网页卡：哈希轮换类摘要命中', www?.description);
+  check(www?.source === '东方财富网' && www?.time === '2天前', '网页卡：来源与时间命中', { source: www?.source, time: www?.time });
+
+  check(!rows.some(r => r.title === '大家还在搜'), 'recommend_list UI 卡剔除');
+
+  const rel = pick('最新相关信息');
+  check(
+    rel?.link === 'https://www.baidu.com/s?tn=news&rtt=1&wd=x',
+    '聚合卡：非桩 mu 保留（可导航的内部聚合页）',
+    rel?.link,
+  );
+  check(rel?.source === '东方财富网' && rel?.time === '前天12:22', '聚合卡：来源与时间同节点 → 拆分归一', rel);
+
+  const stub = pick('标题五');
+  check(stub?.link === 'http://www.baidu.com/link?url=stubRedirect', '桩 mu（nourl.ubs）→ 落回跳转串', stub?.link);
+  check(stub?.time === '12小时前', '时间错位文本归一为可识别前缀', stub?.time);
+
+  const relHref = pick('标题六');
+  check(
+    relHref?.link === 'https://www.baidu.com/s?wd=relative',
+    '伪域名 mu（recommend_list）→ 落回跳转串且相对 href 解析为绝对地址',
+    relHref?.link,
+  );
+
+  const legacy = pick('标题七');
+  check(legacy?.description.includes('旧版摘要结构') === true, '旧版 c-abstract 摘要兼容', legacy?.description);
+  check(legacy?.time === '', '无法识别的时间清空（不回传错位文本）', legacy?.time);
 }
 
 // ==================== 3. 测试面板目录对齐 ====================
@@ -1217,6 +1349,87 @@ await testTextAutomation(check, eq);
   );
   eq(saveFailData.result, { a: 1 }, '小结果仍结构化返回');
 
+  // —— 9b. 超时契约（30s 默认 / 300s 上限；描述、校验、引擎三处同源） ——
+  {
+    const {
+      PAGE_EXEC_DEFAULT_TIMEOUT_MS,
+      PAGE_EXEC_MAX_TIMEOUT_MS,
+      PAGE_EXEC_ENGINE_TIMEOUT_MS,
+      PAGE_EXEC_TIMEOUT_SAFETY_MS,
+      normalizePageExecTimeout,
+      validatePageExecTimeout,
+      pageExecEngineTimeout,
+    } = await import('../../tools/common/page-exec-timeout');
+
+    eq(PAGE_EXEC_DEFAULT_TIMEOUT_MS, 30_000, '页面求值默认超时 30s');
+    eq(PAGE_EXEC_MAX_TIMEOUT_MS, 300_000, '页面求值超时上限 300s');
+    eq(
+      PAGE_EXEC_ENGINE_TIMEOUT_MS,
+      PAGE_EXEC_MAX_TIMEOUT_MS + PAGE_EXEC_TIMEOUT_SAFETY_MS,
+      '引擎地板 = 工具上限 + 缓冲',
+    );
+
+    // 描述里的默认/上限必须来自契约常量（防三处漂移）
+    const schemaDesc = String(execTool.openaiSchema.function.description);
+    check(schemaDesc.includes(`默认 ${PAGE_EXEC_DEFAULT_TIMEOUT_MS}ms`), '工具描述含默认超时', schemaDesc.slice(0, 80));
+    check(schemaDesc.includes(`上限 ${PAGE_EXEC_MAX_TIMEOUT_MS}ms`), '工具描述含上限超时');
+    // 超时≠停止、禁止盲目重放：模型必须知道这两条，否则会重放写操作造成重复提交
+    check(schemaDesc.includes('不中断脚本执行'), '工具描述说明超时≠停止', schemaDesc.slice(0, 120));
+    check(schemaDesc.includes('禁止直接重放写操作'), '工具描述禁止盲目重放');
+    check(schemaDesc.includes('window'), '工具描述说明迟到输出的回收通道');
+    const timeoutParamDesc = String(
+      (execTool.openaiSchema.function.parameters as { properties?: { timeout?: { description?: string } } })
+        .properties?.timeout?.description ?? '',
+    );
+    check(timeoutParamDesc.includes(String(PAGE_EXEC_DEFAULT_TIMEOUT_MS)), 'timeout 参数描述含默认值');
+    check(timeoutParamDesc.includes(String(PAGE_EXEC_MAX_TIMEOUT_MS)), 'timeout 参数描述含上限');
+
+    // 严格校验：越界与非法类型拒绝并给出范围
+    eq(validatePageExecTimeout(PAGE_EXEC_MAX_TIMEOUT_MS), null, '上限值本身合法');
+    eq(validatePageExecTimeout(PAGE_EXEC_DEFAULT_TIMEOUT_MS), null, '默认值合法');
+    check(!!validatePageExecTimeout(300_001), '超上限被拒绝');
+    check(!!validatePageExecTimeout(999), '低于下限被拒绝');
+    check(!!validatePageExecTimeout('30000'), '字符串 timeout 被拒绝');
+    check(!!validatePageExecTimeout(NaN), 'NaN timeout 被拒绝');
+
+    // 归一：合法值原样、越界收敛、非法回落默认
+    eq(normalizePageExecTimeout(150_000), 150_000, '合法值原样');
+    eq(normalizePageExecTimeout(999), 1_000, '低于下限收敛到下限');
+    eq(normalizePageExecTimeout(1_000_000), PAGE_EXEC_MAX_TIMEOUT_MS, '超上限收敛到上限');
+    eq(normalizePageExecTimeout(undefined), PAGE_EXEC_DEFAULT_TIMEOUT_MS, '未传回落默认');
+    eq(normalizePageExecTimeout('x'), PAGE_EXEC_DEFAULT_TIMEOUT_MS, '非法类型回落默认');
+
+    // 引擎超时：地板恒为 300s+缓冲（应用设置 1 分钟也压不掉），按参数再抬高
+    const engineOneMinute = pageExecEngineTimeout({}, 60_000);
+    eq(engineOneMinute, PAGE_EXEC_ENGINE_TIMEOUT_MS, '引擎地板不受低应用设置压制');
+    const engineThirtyMinutes = pageExecEngineTimeout({}, 30 * 60_000);
+    eq(engineThirtyMinutes, 30 * 60_000, '应用设置更高时从设置');
+    const engineLongCall = pageExecEngineTimeout({ timeout: PAGE_EXEC_MAX_TIMEOUT_MS }, 60_000);
+    eq(engineLongCall, PAGE_EXEC_MAX_TIMEOUT_MS + PAGE_EXEC_TIMEOUT_SAFETY_MS, '按传入 timeout 抬高');
+    eq(
+      pageExecEngineTimeout({ timeout: '300000' }, 60_000),
+      PAGE_EXEC_ENGINE_TIMEOUT_MS,
+      '脏 timeout 类型不注入引擎定时器（回落地板）',
+    );
+
+    // 工具校验与引擎计算共用同一契约：工具拒 300001，引擎也绝不为它放大
+    check(!!validatePageExecTimeout(300_001), '工具层拒绝超上限值');
+    check(
+      pageExecEngineTimeout({ timeout: 300_001 }, 60_000) <= PAGE_EXEC_ENGINE_TIMEOUT_MS + PAGE_EXEC_TIMEOUT_SAFETY_MS,
+      '引擎层对越界 timeout 收敛到契约内',
+      pageExecEngineTimeout({ timeout: 300_001 }, 60_000),
+    );
+
+    // 工具执行路径：合法 timeout 放行，越界 timeout 在执行前被拒
+    setExecResult({ value: 1, rawJson: '1' });
+    const okTimeout = await execTool.execute({ code: 'return 1', timeout: PAGE_EXEC_MAX_TIMEOUT_MS });
+    check(okTimeout.success, '300s timeout 被工具接受', okTimeout.error);
+    const overTimeout = await execTool.execute({ code: 'return 1', timeout: 300_001 });
+    check(!overTimeout.success && String(overTimeout.error).includes('300000'), '超上限 timeout 执行前被拒', overTimeout.error);
+    const underTimeout = await execTool.execute({ code: 'return 1', timeout: 500 });
+    check(!underTimeout.success && String(underTimeout.error).includes('1000'), '低于下限 timeout 执行前被拒', underTimeout.error);
+  }
+
   await dataRefStore.remove('all');
   resetTabStub();
 }
@@ -1456,8 +1669,10 @@ await testTextAutomation(check, eq);
     resetTabStub();
     let createdTabId = 0;
     const removedTabIds: number[] = [];
-    let injectedTabId = 0;    tabsStub.create = (async (props: { url?: string }) => {
+    let injectedTabId = 0;    let createdActive: boolean | undefined;
+    tabsStub.create = (async (props: { url?: string; active?: boolean }) => {
       createdTabId = 99;
+      createdActive = props.active;
       return { id: 99, url: props.url, status: 'complete' };
     }) as typeof tabsStub.create;
     tabsStub.get = (async (tabId: number) => ({ id: tabId, url: 'https://target.example/', status: 'complete' })) as typeof tabsStub.get;
@@ -1469,13 +1684,18 @@ await testTextAutomation(check, eq);
     const byUrl = await tool.execute({ url: 'https://target.example/' });
     const byUrlData = dataOf(byUrl);
     check(
-      byUrl.success === true && createdTabId === 99 && injectedTabId === 99 && removedTabIds.includes(99),
-      'url 模式：后台标签页提取后关闭',
-      { createdTabId, injectedTabId, removedTabIds },
+      byUrl.success === true && createdTabId === 99 && injectedTabId === 99 && createdActive === true,
+      'url 模式：前台打开（激活标签页）后提取，标签页保留不关闭',
+      { createdTabId, injectedTabId, createdActive, removedTabIds },
+    );
+    check(
+      !removedTabIds.includes(99),
+      'url 模式：不得自动关闭用户可见的标签页（人机验证需用户手动完成）',
+      { removedTabIds },
     );
     check(String(byUrlData.textContent).includes('# 目标页') && byUrlData.url === 'https://target.example/', 'url 模式正文与元数据正确');
 
-    // url 与当前活动标签页完全同址：直接读当前页，不开重复后台标签页
+    // url 与当前活动标签页完全同址：直接读当前页，不开重复标签页
     resetTabStub();
     let dedupCreated = 0, dedupInjected = 0;
     tabsStub.create = (async () => { dedupCreated++; return { id: 55, url: 'about:blank' }; }) as typeof tabsStub.create;
@@ -1487,9 +1707,80 @@ await testTextAutomation(check, eq);
     const dedup = await tool.execute({ url: 'https://example.com/' });
     check(
       dedup.success === true && dedupCreated === 0 && dedupInjected === 1,
-      'url 与当前页同址时去重：不开后台标签页、直接注入当前标签页',
+      'url 与当前页同址时去重：不开新标签页、直接注入当前标签页',
       { dedupCreated, dedupInjected },
     );
+
+    // 人机验证 / 风控拦截页：必须显式告知模型「需要人工验证」，不得把挑战页
+    // 文本当作正文事实静默返回
+    resetTabStub();
+    tabsStub.create = (async (props: { url?: string }) => ({ id: 77, url: props.url, status: 'complete' })) as typeof tabsStub.create;
+    tabsStub.get = (async (tabId: number) => ({ id: tabId, url: 'https://guarded.example/', status: 'complete' })) as typeof tabsStub.get;
+    scriptingStub.executeScript = (async () => [
+      frameResult('# Just a moment...\n\n正在进行安全验证，请稍候。', { url: 'https://guarded.example/', title: 'Just a moment...' }),
+    ]) as typeof scriptingStub.executeScript;
+    const challenged = await tool.execute({ url: 'https://guarded.example/' });
+    const challengedData = dataOf(challenged);
+    check(
+      challenged.success === true && challengedData.verificationRequired === true,
+      '人机验证页：显式标记 verificationRequired',
+      challengedData,
+    );
+    check(
+      Array.isArray(challengedData.warnings) && challengedData.warnings.some((w: string) => /人机验证/.test(w)),
+      '人机验证页：warnings 说明需人工验证',
+      challengedData.warnings,
+    );
+
+    // 误判防线：正常短文里出现「安全验证」「请稍候」等通用措辞**不得**被判成
+    // 验证页——把真实内容当验证页丢弃，比漏判更糟
+    resetTabStub();
+    tabsStub.create = (async (props: { url?: string }) => ({ id: 78, url: props.url, status: 'complete' })) as typeof tabsStub.create;
+    tabsStub.get = (async (tabId: number) => ({ id: tabId, url: 'https://normal.example/', status: 'complete' })) as typeof tabsStub.get;
+    scriptingStub.executeScript = (async () => [
+      frameResult(
+        '# 登录安全验证指南\n\n许多站点在登录前会弹出安全验证，请稍候片刻再继续。这是正常说明文。',
+        { url: 'https://normal.example/', title: '登录安全验证指南' },
+      ),
+    ]) as typeof scriptingStub.executeScript;
+    const normalPage = await tool.execute({ url: 'https://normal.example/' });
+    const normalData = dataOf(normalPage);
+    check(
+      normalPage.success === true && normalData.verificationRequired === undefined,
+      '正常短文含验证类措辞：不得误判为验证页',
+      normalData,
+    );
+
+    // 复用来的标签页在等待期间被用户关掉：必须放弃复用、转走新建分支，
+    // 而不是拿着已消失的 tabId 去注入（只会得到一句无信息量的报错）
+    resetTabStub();
+    let createdAfterVanish = 0;
+    tabsStub.query = (async () => [
+      { id: 66, url: 'https://vanish.example/', status: 'complete', windowId: 1 },
+    ]) as typeof tabsStub.query;
+    tabsStub.update = (async () => undefined) as typeof tabsStub.update;
+    tabsStub.get = (async (tabId: number) => {
+      if (tabId === 66) throw new Error('tab gone');
+      return { id: tabId, url: 'https://vanish.example/', status: 'complete', windowId: 1 };
+    }) as typeof tabsStub.get;
+    tabsStub.create = (async (props: { url?: string }) => {
+      createdAfterVanish++;
+      return { id: 79, url: props.url, status: 'complete' };
+    }) as typeof tabsStub.create;
+    scriptingStub.executeScript = (async (options: { target?: { tabId?: number } }) => {
+      if (options?.target?.tabId !== 79) throw new Error('injected into a dead tab');
+      return [frameResult('# 新开的页面', { url: 'https://vanish.example/' })];
+    }) as typeof scriptingStub.executeScript;
+    const afterVanish = await tool.execute({ url: 'https://vanish.example/' });
+    check(
+      afterVanish.success === true && createdAfterVanish === 1 && String(dataOf(afterVanish).textContent).includes('新开的页面'),
+      '复用标签页消失：转走新建分支并从新标签页提取',
+      { createdAfterVanish, error: afterVanish.error },
+    );
+    resetTabStub();
+    // 还原注入桩：后续用例（受限页面等）依赖各自的脚本注入行为
+    scriptingStub.executeScript = (async () => [frameResult('# 目标页\n\n内容', { url: 'https://target.example/' })]) as typeof scriptingStub.executeScript;
+    tabsStub.query = originalTabs.query;
 
     // 受限页面（chrome://）拒绝注入
     resetTabStub();
@@ -1504,6 +1795,132 @@ await testTextAutomation(check, eq);
   }
 }
 
+// ==================== 2c. 成功响应载荷单份契约（buildSuccessPayload） ====================
+
+{
+  const { buildSuccessPayload } = await import('../../common/tool-handler');
+  const big = '正文内容'.repeat(2_000); // 约 8000 字符，模拟页面正文
+  const payload = buildSuccessPayload({ textContent: big, totalChars: big.length, ok: true }, '已提取正文');
+  const contentText = (payload.content[0]?.text ?? '');
+  // content 是摘要、不是 data 的副本——同一份载荷在模型上下文里只出现一次
+  check(contentText !== JSON.stringify(payload.data, null, 2), 'content 不是 data 的 JSON 副本');
+  check(payload.data.textContent === big, 'data 承载完整载荷（信息不丢）');
+  check(
+    !contentText.includes(big.slice(0, 500)),
+    'content 不复制正文（正文只在 data 里）',
+    contentText.slice(0, 120),
+  );
+  check(contentText.includes('已提取正文'), 'content 保留一句话结论（message）');
+  check(
+    contentText.includes('textContent') && contentText.includes('totalChars'),
+    'content 给出字段名清单，模型知道去 data 翻哪个键',
+    contentText,
+  );
+  // 小载荷不必附字段清单（否则摘要只是等量复制）
+  const small = buildSuccessPayload({ ok: true }, '完成');
+  eq((small.content[0]?.text ?? ''), '完成', '小载荷的 content 就是 message');
+
+  // 防御：载荷含循环引用时摘要降级为纯 message，绝不让「算摘要」把整次
+  // 工具调用带崩（载荷本身仍原样在 data 里）
+  const cyclic: Record<string, unknown> = { note: '循环引用载荷' };
+  cyclic.self = cyclic;
+  let cyclicPayload: ReturnType<typeof buildSuccessPayload> | null = null;
+  try {
+    cyclicPayload = buildSuccessPayload(cyclic, '带循环引用');
+  } catch (error) {
+    check(false, '循环引用载荷：buildSuccessPayload 不得抛错', String(error));
+  }
+  if (cyclicPayload) {
+    eq((cyclicPayload.content[0]?.text ?? ''), '带循环引用', '循环引用载荷：摘要降级为纯 message');
+    eq((cyclicPayload.data as Record<string, unknown>).note, '循环引用载荷', '循环引用载荷：data 原样承载');
+  }
+}
+
+// ==================== 2d. 对外载荷投影（projectToolPayload / primary 通道） ====================
+// 外部调用方与工具面板共用同一口径：哪条通道是正题由生产者声明，
+// 消费方只取一份——同一份事实不在外部响应里出现两次，也不丢信息。
+
+{
+  const { projectToolPayload, primaryChannelOf, extractContentText, buildSuccessPayload } =
+    await import('../../common/tool-handler');
+
+  // ① 默认（正题在 data）：返回 data，且不再重复 content 里的摘要
+  const viaPayload = buildSuccessPayload({ textContent: '正文' }, '已读取');
+  eq(primaryChannelOf(viaPayload), 'data', 'buildSuccessPayload 声明 data 为正题');
+  const projectionData = projectToolPayload({ success: true, ...viaPayload });
+  eq(projectionData.kind, 'payload', '默认结果可投影');
+  if (projectionData.kind === 'payload') {
+    eq(projectionData.value.textContent, '正文', '默认投影返回 data');
+    check(!JSON.stringify(projectionData.value).includes('完整载荷见 data'), '投影不带 content 摘要（不双份）');
+  }
+
+  // ② 正题在 content（如 web_search 结果表）：返回「元数据 + 正文」，两边不丢
+  const searchLike = {
+    success: true,
+    primary: 'content' as const,
+    content: [{ type: 'text' as const, text: '| title |\n| --- |\n| a |' }],
+    data: { navigation: { success: true }, results: { count: 1 } },
+  };
+  eq(primaryChannelOf(searchLike), 'content', 'primary 显式声明 content');
+  const projectionContent = projectToolPayload(searchLike);
+  eq(projectionContent.kind, 'payload', 'content 正题结果可投影');
+  if (projectionContent.kind === 'payload') {
+    eq(projectionContent.value.text, '| title |\n| --- |\n| a |', '投影保留正文');
+    eq((projectionContent.value.results as { count?: number })?.count, 1, '投影保留事实元数据');
+  }
+
+  // ③ 历史形态（content 里放的是 data 的 JSON 副本）：按原样返回，老客户端不变
+  const legacy = {
+    success: true,
+    content: [{ type: 'text' as const, text: JSON.stringify({ a: 1 }, null, 2) }],
+  };
+  const projectionLegacy = projectToolPayload(legacy);
+  eq(projectionLegacy.kind, 'payload', '历史形态可投影');
+  if (projectionLegacy.kind === 'payload') {
+    eq(projectionLegacy.value.a, 1, '历史形态按原样返回解析结果');
+  }
+
+  // ④ 正题在 content、data 只有元数据：可读原因在正文，元数据一并保留
+  //    （note/plan 的失败形态；会话引擎另按 success=false 保证 error 字段在场）
+  const structuredFailure = projectToolPayload({
+    success: false,
+    isError: true,
+    error: '原因：X',
+    data: { errorKind: '参数错误' },
+    primary: 'content' as const,
+    content: [{ type: 'text' as const, text: '失败原因与处置建议' }],
+  });
+  eq(structuredFailure.kind, 'payload', '有 data 的失败结果同样可投影');
+  if (structuredFailure.kind === 'payload') {
+    eq(structuredFailure.value.errorKind, '参数错误', '失败结果保留错误元数据');
+    eq(structuredFailure.value.text, '失败原因与处置建议', '失败结果保留可读正文');
+  }
+
+  // ⑤ 两者皆无的错误结果：抛出可读错误，而不是吞成空对象
+  const bareError = projectToolPayload({ success: false, isError: true, error: '彻底失败' });
+  eq(bareError.kind, 'error', '无载荷的错误结果应抛出');
+  if (bareError.kind === 'error') eq(bareError.error, '彻底失败', '错误信息可读');
+
+  // ⑥ 空结果：不抛错，返回空载荷
+  const empty = projectToolPayload({ success: true });
+  eq(empty.kind, 'payload', '空结果不抛错');
+
+  // ⑦ extractContentText：只取文本块、跳过图片等非文本块，非数组输入不炸
+  eq(extractContentText(undefined), '', '缺失 content 返回空串');
+  eq(extractContentText(null as unknown as undefined), '', 'null content 返回空串');
+  eq(extractContentText('not-an-array' as unknown as undefined), '', '非数组 content 返回空串');
+  eq(
+    extractContentText([
+      { type: 'text', text: '第一段' },
+      { type: 'image', source: { type: 'base64' } } as never,
+      { type: 'text', text: '第二段' },
+      { type: 'text', text: 123 as unknown as string },
+    ]),
+    '第一段\n第二段',
+    '只拼接文本块并跳过非法文本',
+  );
+}
+
 // ==================== 汇总 ====================
 await import('./wait-navigation.test');
 await import('./vision-gui.test');
@@ -1512,12 +1929,15 @@ await import('./vision-assistant.test');
 await import('./prompt-cache.test');
 await import('./agent-i18n.test');
 await import('./agent-image.test');
-await import('./domain-credibility.test');
 await import('./plan.test');
 await import('./vision-context-e2e.test');
 await import('./vision-capability-guard.test');
 await import('./xlsx-dataref.test');
 await import('./upload-file.test');
+await import('./tool-execution-engine.test');
+await import('./tool-execution-contract.test');
+await import('./protocol-continuity.test');
+
 
 console.log(`\n[tools] 通过 ${passed} 项，失败 ${failures.length} 项`);
 if (failures.length > 0) {

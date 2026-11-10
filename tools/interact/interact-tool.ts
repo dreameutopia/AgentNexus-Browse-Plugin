@@ -254,6 +254,8 @@ export class InteractTool extends BaseTool {
           : { status: resolution.status ?? 'dismissed' }),
         sensitive,
       },
+      // 提问与答复正文在 content，data 是结构化答复字段——正题在 content
+      primary: 'content',
     };
   }
 }

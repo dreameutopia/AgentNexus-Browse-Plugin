@@ -23,11 +23,11 @@ import { validationToolIds } from './learn-tool-policy';
  *
  * ── 与动作智能体的隔离（重要）──
  * 本文件**不 import** ELEMENT_INTERACTION_SOP（文本通用助手）与
- * VISION_ACTION_SOP（视觉通用助手）：学习/验证的操作契约由本文件自有维护
+ * vision-gui-prompt（视觉通用助手的 vision_gui 规程）：学习/验证的操作契约由本文件自有维护
  * （LEARN_DOM_GUIDANCE、learnVisionGuiGuide、learnNoVisionGuiGuide），
  * 两个动作智能体的提示词演进不会改变学习行为，反之亦然。
- * <vision-gui-tool> 分区名是 runtime-builder 的协议标记：装配方提示词携带
- * 该分区时引擎不再追加智能体的 VISION_ACTION_SOP——视觉目标放完整手势
+ * <vision-gui-tool> 分区名是 prompt-hooks 钩子的协议标记：装配方提示词携带
+ * 该分区时钩子不再注入智能体的 vision-gui 规程——视觉目标放完整手势
  * 契约，文本目标放「本阶段没有视觉 GUI」的禁用分区，两种情况都不注入
  * 智能体提示词。
  *
@@ -163,7 +163,7 @@ export const LEARN_WORKFLOW = section(
 );
 
 // ──── 学习域自有操作指南（与两个动作智能体的 SOP 完全隔离）───
-// 以下契约由本文件独立维护，不 import ELEMENT_INTERACTION_SOP / VISION_ACTION_SOP。
+// 以下契约由本文件独立维护，不 import ELEMENT_INTERACTION_SOP / vision-gui-prompt。
 // 修改任一块时同步核对 tool-presets 的学习/验证场景清单（文中工具名必须在
 // 对应场景已注册），两边靠注释交叉锚定。
 
@@ -188,8 +188,8 @@ browser_get_page_text 读取页面正文；需要加载诊断且该工具可用�
 
 /**
  * 视觉 GUI 使用契约——仅 targetMode='vision' 的学习/验证组合携带。
- * 标签名 <vision-gui-tool> 是 runtime-builder 的协议标记：装配方提示词携带
- * 该分区时，引擎不再追加视觉通用助手的 VISION_ACTION_SOP，
+ * 标签名 <vision-gui-tool> 是 prompt-hooks 钩子的协议标记：装配方提示词携带
+ * 该分区时，钩子不再注入视觉通用助手的 vision-gui 规程，
  * 由此学习域持有自己的一份手势引导，与智能体提示词互不影响。
  * 参数明细以 vision_gui 的工具 schema 为准，此处只约束行为与生命周期。
  */
@@ -197,7 +197,7 @@ export function learnVisionGuiGuide(): string {
   return `<vision-gui-tool>
 本阶段唯一视觉手势入口是 vision_gui（参数明细以工具 schema 为准）：
 【调用形态】每次只选一个 action；action、screenshotId 与该 action 的字段全部放在同一顶层对象，不嵌套 parameters，不混入其它 action 的字段。坐标为最新完整截图的 x/y 0..1000（支持小数），不是像素、不加页面滚动偏移。
-【截图生命周期】click/drag/input/hover/keyboard/scroll 与 mark 消耗源截图，工具结束后系统等待并回传新截图；inspect/zoom/check 不消耗源图、不触发重拍；截图失效时调用 screenshot 恢复，禁止用旧 screenshotId 重放动作，禁止用数字 ID 点击。
+【截图生命周期】click/drag/input/hover/keyboard/scroll、read_scroll 与 mark 消耗源截图，工具结束后系统等待并回传新截图；inspect/zoom/check/read 不消耗源图、不触发重拍；截图失效时调用 screenshot 恢复，禁止用旧 screenshotId 重放动作，禁止用数字 ID 点击。
 【手势纪律】一次只执行一个交互手势，等待新截图再继续；DOM 操作也会改变界面，下一手势必须用操作后的新图。工具 success 只表示调用完成，不能据此宣称业务完成。
 【打标核对（按需）】仅当视觉区域与 DOM 候选难以对应、无文字图标或同名控件难消歧时，才 vision_gui(action="mark") 请求下一张自动截图绘制数字框，再 vision_gui(action="inspect", id) 反查 CSS/XPath、frameId、属性与状态；不是每一步都打标。数字只用于核对，不用于点击，也不得作为长期定位写入技能。
 【控制循环】观察最新截图 → 定义本步可观察结果 → 单次手势 → 用新截图与明确条件验收；观察与条件检查可有界重试（同一方案最多 3 次），提交/发送类动作不能自动重放；连续两次未达预期就换观察方式或说明卡点，不在同一位置反复点击。
@@ -693,6 +693,6 @@ export function validateKickoffMessage(config: LearnConfig, draft: SkillDraft): 
 //    用户过程约束、抽样标准及工具契约块（LEARN_DOM_GUIDANCE、learnVisionGuiGuide、learnNoVisionGuiGuide）
 //    属于学习域内部共享，学习段与验证段都可以引用；
 // 5. 与动作智能体隔离：本文件禁止 import ELEMENT_INTERACTION_SOP /
-//    VISION_ACTION_SOP；<vision-gui-tool> 分区必须始终存在（视觉目标放手势
-//    契约、文本目标放禁用分区），否则 runtime-builder 会向学习提示词追加
-//    视觉通用助手的 SOP，破坏隔离。
+//    vision-gui-prompt；<vision-gui-tool> 分区必须始终存在（视觉目标放手势
+//    契约、文本目标放禁用分区），否则 prompt-hooks 钩子会向学习提示词注入
+//    视觉通用助手的规程，破坏隔离。

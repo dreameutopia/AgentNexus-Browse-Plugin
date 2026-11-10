@@ -62,6 +62,21 @@ const CASES: PreviewCase[] = [
       '```component\n{"type":"tree","title":"导出的书签结构","columns":["路径","备注"],"rows":[["工作/",""],["工作/文档/","周报与纪要"],["工作/文档/2026-Q3.md",""],["工具/",""],["工具/AI 服务/",""],["工具/AI 服务/Claude.md",""],["工具/AI 服务/OpenAI.md",""],["娱乐/",""]]}\n```\n',
   },
   {
+    label: '信封 insight：关键见解卡（结论 + 证据 + 来源 + 置信度）',
+    markdown:
+      '本次调研的三条关键结论：\n\n```component\n{"type":"insight","title":"关键结论","source":"IDC 2026 全球 AI 支出报告 · 三个独立来源交叉","columns":["洞察","证据","来源","置信度"],"rows":[["企业侧投入仍在加速","2026 年支出同比 +18%，连续三年双位数增长","idc.example.com/report","高"],["增长主要由推理侧带动","推理服务占新增支出的 61%（上年 44%）","gartner.example.com/ai","中"],["自建算力的性价比优势收窄","自有集群单位成本较云 API 仅低 9%，低于去年的 24%","analyst-note.example.org","中"]]}\n```\n',
+  },
+  {
+    label: '信封 insight：来源脚注 + 未识别置信度归未验证档',
+    markdown:
+      '```component\n{"type":"insight","source":"内部看板（未公开）","columns":["结论","证据","来源","置信度"],"rows":[["库存周转天数上升","周转 47 天（上月 44 天）","内部库存看板","待复核"]]}\n```\n',
+  },
+  {
+    label: '信封 table：组件级来源脚注',
+    markdown:
+      '```component\n{"type":"table","title":"本次采集的字段来源","source":"各页面公开接口 · 采集于 2026-11-10","columns":["字段","来源接口","状态"],"rows":[["价格","/api/v2/price","正常"],["库存","/api/v2/stock","降级"],["销量","/api/v2/sales","正常"]]}\n```\n',
+  },
+  {
     label: 'diff 原生围栏：行级着色 + 统计徽标',
     markdown:
       '顺手调整了净化器上限：\n\n```diff\n--- a/echarts-option-sanitizer.ts\n+++ b/echarts-option-sanitizer.ts\n@@ -34,7 +34,7 @@\n-const MAX_SERIES = 4;\n+const MAX_SERIES = 8;\n const MAX_DATA_POINTS_PER_SERIES = 500;\n+const MAX_DATASET_ROWS = 1_000;\n```\n',

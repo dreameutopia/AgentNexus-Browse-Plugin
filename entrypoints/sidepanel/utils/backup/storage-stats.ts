@@ -122,6 +122,7 @@ const CATEGORY_TIP_KEYS: Partial<Record<StorageCategoryId, MessageKey>> = {
 const CHILD_LABEL_KEYS: Record<string, MessageKey> = {
   'conversations.sessions': 'sidepanel.backup.subSessions',
   'conversations.messages': 'sidepanel.backup.subMessages',
+  'conversations.workspace': 'sidepanel.backup.subPythonWorkspace',
   'images.referenced': 'sidepanel.backup.subReferenced',
   'images.orphan': 'sidepanel.backup.subOrphan',
   'skills.custom': 'sidepanel.backup.subCustomSkills',
@@ -658,6 +659,24 @@ async function measureIndexedDb(
     known = false;
     messages = null;
     issues.push(`会话数据库统计失败：${describe(error)}`);
+  }
+
+  // ── 会话工作区：二进制与元信息 ──
+  try {
+    const workspaces = await chatDatabase.listWorkspaces();
+    let bytes = 0;
+    let entries = 0;
+    for (const [, workspace] of workspaces) {
+      bytes += estimateValueBytes(workspace);
+      entries += workspace.entries.length;
+    }
+    total += bytes;
+    bucket('conversations').bytes += bytes;
+    bucket('conversations').count += entries;
+    addChild(bucket('conversations'), 'workspace', bytes, entries);
+  } catch (error) {
+    known = false;
+    issues.push(`Python 工作区统计失败：${describe(error)}`);
   }
 
   // ── 图片库：按内容寻址的字节 + 引用 / 孤儿拆分 ──

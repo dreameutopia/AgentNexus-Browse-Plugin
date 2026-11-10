@@ -2,7 +2,8 @@
   <!--
     iOS 形态自定义开关（Hub 全站替换原生 checkbox 开关）。
     玻璃轨道 + 弹性滑块：按住微展宽、开启染品牌渐变（样式见 hub.css .hub-switch）。
-    文案走默认插槽（i18n 由使用方传入），不传则只渲染开关本体。
+    文案走默认插槽（i18n 由使用方传入），不传则只渲染开关本体；
+    无可见文案时使用 aria-label 保证读屏可辨名（标题+开关同行的紧凑布局）。
   -->
   <label class="hub-switch" :class="{ 'is-disabled': disabled }">
     <input
@@ -11,6 +12,7 @@
       role="switch"
       :checked="modelValue"
       :disabled="disabled"
+      :aria-label="ariaLabel"
       @change="onChange"
     />
     <span class="hub-switch__track" aria-hidden="true"></span>
@@ -23,12 +25,14 @@
  * 自定义开关（受控组件，v-model 绑定布尔值）。
  * 纯视觉替换：状态语义仍由真实 checkbox 承载（键盘 / 读屏可用），
  * change 事件回写 modelValue；disabled 时整体弱化且不可点。
+ * ariaLabel：无插槽文案时传入，作为 checkbox 的读屏名称（可选）。
  */
 import { useSlots } from 'vue';
 
 defineProps<{
   modelValue: boolean;
   disabled?: boolean;
+  ariaLabel?: string;
 }>();
 
 const emit = defineEmits<{

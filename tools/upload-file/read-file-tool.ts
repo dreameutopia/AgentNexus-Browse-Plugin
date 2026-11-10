@@ -36,6 +36,8 @@ function fileSuccess(text: string, data: Record<string, unknown>): ToolResult {
     isError: false,
     content: [{ type: 'text', text }],
     data,
+    // 文件页文本只在 content 里，data 只是分页元数据——正题在 content
+    primary: 'content',
   };
 }
 
@@ -52,6 +54,8 @@ function fileFailure(operation: string, kind: string, reason: string, hint?: str
     error: text,
     content: [{ type: 'text', text }],
     data: { errorKind: kind, operation },
+    // 失败说明（原因 + 处置建议）只在 content 里——正题在 content
+    primary: 'content',
   };
 }
 

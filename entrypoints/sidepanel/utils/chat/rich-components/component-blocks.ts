@@ -1,5 +1,5 @@
 /**
- * 同步信封组件构建器（stat / table / timeline / tree）+ diff 围栏构建器
+ * 同步信封组件构建器（stat / table / timeline / tree / insight）+ diff 围栏构建器
  *
  * 与 stat-card.ts 同一信任模型：模型内容在本模块只经历
  * 「envelope 归一化（envelope.ts）→ 受控模板拼装 + 全量 escapeHtml」
@@ -10,10 +10,13 @@
  *
  * DOM 契约（chat-message-list.css 按此着色）：
  *   .component-block .component-block-title         — 通用容器 + 标题
+ *   .component-block .component-block-source        — 组件级来源脚注（信封 source）
  *   .component-table-block table.component-data-table — thead/tbody；数值列 .num；
  *     状态单元格 .st-good/.st-warn/.st-bad/.st-doing（关键词命中才加）
  *   .component-timeline-block .tl-item(.done/.active/.todo/.fail) — 节点 + 主文 + 元信息
  *   .component-tree-block .tree-row[data-depth]     — 缩进层级（padding 由宿主计算）
+ *   .component-insight-block .ins-item(.ins-claim/.ins-evidence/.ins-source)
+ *     .ins-conf.lv-high/.lv-mid/.lv-low/.lv-unknown — 置信度徽标
  *   .diff-block .diff-line.add/.del/.meta           — unified diff 行级着色
  */
 
@@ -24,6 +27,8 @@ import type { NormalizedEnvelope, RichCell } from './envelope';
 
 /** stat 组件行数上限（与 legacy stat-card zod 契约一致；超限降级源码） */
 const STAT_MAX_ROWS = 6;
+/** insight 组件行数上限（超过 = 建模错误，应改用 table；超限降级源码） */
+const INSIGHT_MAX_ROWS = 12;
 /** tree 路径层级上限（更深按 10 层截断显示，防病态深路径撑爆） */
 const TREE_MAX_DEPTH = 10;
 /** diff 源码上限 */
@@ -70,10 +75,43 @@ function plainText(value: RichCell): string {
 
 // ==================== 通用容器 ====================
 
-function wrapBlock(extraClass: string, title: string, inner: string): string {
+/**
+ * 组件级来源脚注（信封 source 字段）。
+ *
+ * 「敏感数据必须附来源」是提示词层的纪律，这里是它的落地形态：模型给出
+ * 这块数据的出处，宿主在组件下方一行小字展示。模型未提供 source 时不渲染
+ * 任何占位——脚注必须对应真实出处，不能出现「来源：无」这种噪音。
+ */
+function sourceFootnote(source: string): string {
+  if (!source) return '';
+  return `<div class="component-block-source">${escapeHtml(t('sidepanel.chat.componentSourceLabel'))}${escapeHtml(source)}</div>`;
+}
+
+/**
+ * 头部动作条（同步组件：stat / table / timeline / tree / insight / diff）。
+ *
+ * 富组件的头部动作只有一个「保存」：把当前组件导出为高清 PNG（委托见
+ * component-image-save.ts）。与图表 / 图块的头部同构——标签 + 按钮，
+ * 按钮复用 .code-copy-btn 的外观（组件块没有 .code-block-wrapper 祖先，
+ * 由 .component-block / .stat-card-block / .diff-block 作用域提供样式）。
+ */
+function saveAction(): string {
+  const idle = escapeHtml(t('sidepanel.chat.saveImageLabel'));
+  const done = escapeHtml(t('sidepanel.chat.saveImageDoneLabel'));
+  return (
+    `<div class="component-block-actions">` +
+    `<button type="button" class="code-copy-btn component-save-btn"` +
+    ` data-save-idle-label="${idle}" data-save-done-label="${done}">${idle}</button>` +
+    `</div>`
+  );
+}
+
+function wrapBlock(extraClass: string, title: string, inner: string, source = ''): string {
   return (
     `<div class="component-block ${extraClass}">` +
+    saveAction() +
     (title ? `<div class="component-block-title">${escapeHtml(title)}</div>` : '') +
+    sourceFootnote(source) +
     inner +
     `</div>\n`
   );
@@ -119,7 +157,9 @@ function buildStatBlock(env: NormalizedEnvelope): string | null {
 
   return (
     `<div class="stat-card-block">` +
+    saveAction() +
     (env.title ? `<div class="stat-card-block-title">${escapeHtml(env.title)}</div>` : '') +
+    sourceFootnote(env.source) +
     `<div class="stat-cards">${cards.join('')}</div>` +
     `</div>\n`
   );
@@ -173,6 +213,7 @@ function buildTableBlock(env: NormalizedEnvelope): string | null {
     env.title,
     `<div class="component-table-scroll"><table class="component-data-table">` +
       `<thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`,
+    env.source,
   );
 }
 
@@ -221,7 +262,12 @@ function buildTimelineBlock(env: NormalizedEnvelope): string | null {
   }
   if (items.length === 0) return null;
 
-  return wrapBlock('component-timeline-block', env.title, `<ul class="tl-list">${items.join('')}</ul>`);
+  return wrapBlock(
+    'component-timeline-block',
+    env.title,
+    `<ul class="tl-list">${items.join('')}</ul>`,
+    env.source,
+  );
 }
 
 // ==================== tree ====================
@@ -258,7 +304,139 @@ function buildTreeBlock(env: NormalizedEnvelope): string | null {
   }
   if (rows.length === 0) return null;
 
-  return wrapBlock('component-tree-block', env.title, `<div class="tree-list">${rows.join('')}</div>`);
+  return wrapBlock(
+    'component-tree-block',
+    env.title,
+    `<div class="tree-list">${rows.join('')}</div>`,
+    env.source,
+  );
+}
+
+// ==================== insight（关键见解卡） ====================
+
+/**
+ * insight 的列角色：一条见解 = 断言 + 证据 + 来源 + 置信度。
+ *
+ * 角色按**列名语义**识别（模型自选列名，中英文皆可），未命中的列再按出现
+ * 顺序兜底补位——这样既尊重模型的列命名习惯，又不因列名不规整而丢内容。
+ */
+type InsightRole = 'claim' | 'evidence' | 'source' | 'confidence';
+
+const INSIGHT_COLUMN_PATTERNS: readonly { role: InsightRole; pattern: RegExp }[] = [
+  // claim 先判（"关键结论" 含 "结论"）；source 先于 evidence（"数据来源" 是出处不是证据）
+  { role: 'claim', pattern: /洞察|结论|要点|发现|insight|claim|finding|conclusion|takeaway/i },
+  { role: 'source', pattern: /来源|出处|引用|source|citation|reference/i },
+  { role: 'evidence', pattern: /证据|依据|支撑|数据|evidence|data|support/i },
+  { role: 'confidence', pattern: /置信|可信|信心|确定|confidence|certainty|reliability/i },
+];
+
+/** 列 → 角色映射（未认领的列按 claim → evidence → source → confidence 顺序补位） */
+function insightColumnRoles(columns: string[]): (InsightRole | null)[] {
+  const roles: (InsightRole | null)[] = columns.map(() => null);
+  const taken = new Set<InsightRole>();
+  for (let i = 0; i < columns.length; i++) {
+    const name = plainText(columns[i]);
+    if (!name) continue;
+    for (const { role, pattern } of INSIGHT_COLUMN_PATTERNS) {
+      if (taken.has(role)) continue;
+      if (pattern.test(name)) {
+        roles[i] = role;
+        taken.add(role);
+        break;
+      }
+    }
+  }
+  // 兜底补位：把没认领的列依次安到还没占用的角色上
+  const order: InsightRole[] = ['claim', 'evidence', 'source', 'confidence'];
+  for (let i = 0; i < columns.length; i++) {
+    if (roles[i] !== null) continue;
+    const role = order.find(candidate => !taken.has(candidate));
+    if (!role) break;
+    roles[i] = role;
+    taken.add(role);
+  }
+  return roles;
+}
+
+/** 置信度档位（高 / 中 / 低 / 未验证）；未识别的一律归「未验证」，不美化 */
+type ConfidenceLevel = 'high' | 'mid' | 'low' | 'unknown';
+
+function confidenceLevelOf(text: string): ConfidenceLevel {
+  const value = plainText(text);
+  if (!value) return 'unknown';
+  if (/未验证|未核实|未确认|无法确认|unverified|unconfirmed|unknown/i.test(value)) return 'unknown';
+  if (/^高|^high|confirmed/i.test(value)) return 'high';
+  if (/^中|medium|moderate/i.test(value)) return 'mid';
+  if (/^低|low|weak/i.test(value)) return 'low';
+  return 'unknown';
+}
+
+/**
+ * 信封 insight → 关键见解卡组。
+ *
+ * 一条见解一卡：断言（主文）+ 证据 + 来源 + 置信度徽标。这正是「长段落里
+ * 的结论要能被逐条核对」的落地形态——把论证拆成可核对的单元，读者不必
+ * 在散文里回溯数字出处。
+ *
+ * 行数上限 12（超限判建模错误，应改用 table；降级源码视图）。
+ */
+function buildInsightBlock(env: NormalizedEnvelope): string | null {
+  if (env.rows.length > INSIGHT_MAX_ROWS) return null;
+
+  const roles = insightColumnRoles(env.columns);
+  const indexOf = (role: InsightRole): number => roles.indexOf(role);
+  const claimIdx = indexOf('claim');
+  const evidenceIdx = indexOf('evidence');
+  const sourceIdx = indexOf('source');
+  const confidenceIdx = indexOf('confidence');
+
+  const items: string[] = [];
+  for (const row of env.rows) {
+    const claim = claimIdx >= 0 ? plainText(row[claimIdx]) : '';
+    if (!claim) continue;
+
+    const evidence = evidenceIdx >= 0 ? plainText(row[evidenceIdx]) : '';
+    const source = sourceIdx >= 0 ? plainText(row[sourceIdx]) : '';
+    const confidence = confidenceIdx >= 0 ? plainText(row[confidenceIdx]) : '';
+
+    const parts: string[] = [`<li class="ins-item">`];
+    parts.push('<div class="ins-head">');
+    parts.push(`<span class="ins-claim">${escapeHtml(claim)}</span>`);
+    if (confidence) {
+      parts.push(
+        `<span class="ins-conf lv-${confidenceLevelOf(confidence)}">${escapeHtml(confidence)}</span>`,
+      );
+    }
+    parts.push('</div>');
+
+    if (evidence) {
+      // 行内小标签用模型自己的列名（"证据" / "Evidence"…），语义与语言都跟模型走
+      const label = plainText(env.columns[evidenceIdx]);
+      parts.push(
+        `<div class="ins-evidence">` +
+          (label ? `<span class="ins-label">${escapeHtml(label)}</span>` : '') +
+          `${escapeHtml(evidence)}</div>`,
+      );
+    }
+    if (source) {
+      const label = plainText(env.columns[sourceIdx]);
+      parts.push(
+        `<div class="ins-source">` +
+          (label ? `<span class="ins-label">${escapeHtml(label)}</span>` : '') +
+          `${escapeHtml(source)}</div>`,
+      );
+    }
+    parts.push('</li>');
+    items.push(parts.join(''));
+  }
+  if (items.length === 0) return null;
+
+  return wrapBlock(
+    'component-insight-block',
+    env.title,
+    `<ul class="ins-list">${items.join('')}</ul>`,
+    env.source,
+  );
 }
 
 // ==================== 统一分发 ====================
@@ -274,6 +452,8 @@ export function buildEnvelopeComponentBlock(env: NormalizedEnvelope): string | n
       return buildTimelineBlock(env);
     case 'tree':
       return buildTreeBlock(env);
+    case 'insight':
+      return buildInsightBlock(env);
     default:
       return null;
   }
@@ -317,6 +497,7 @@ export function buildDiffBlock(code: string): string {
     `<span class="diff-label">${escapeHtml(t('sidepanel.chat.componentDiffLabel'))}</span>` +
     `<span class="diff-stats"><span class="diff-add-count">+${added}</span>` +
     `<span class="diff-del-count">−${removed}</span></span>` +
+    saveAction() +
     `</div>` +
     `<pre class="diff-body">${lineHtml.join('')}</pre>` +
     `</div>\n`

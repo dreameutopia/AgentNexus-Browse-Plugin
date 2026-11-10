@@ -75,13 +75,11 @@ export interface ErrorDialogState {
   detail?: string;
 }
 
-/** 设置分区 id（前五个对外可见；files / system 为迁入的历史功能，导航隐藏） */
+/** 设置分区 id（对外可见四个；files / system 为迁入的历史功能，导航隐藏） */
 export type SettingsSectionId =
   | 'channels'
   | 'advanced'
   | 'asr'
-  | 'usage'
-  | 'python'
   | 'websites'
   | 'files'
   | 'system';

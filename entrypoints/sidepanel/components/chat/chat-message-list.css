@@ -132,8 +132,11 @@
 }
 
 .code-block-wrapper .code-copy-btn,
-.diagram-block .diagram-copy-btn,
-.chart-block .chart-copy-btn {
+.component-block .component-save-btn,
+.stat-card-block .component-save-btn,
+.diff-block .component-save-btn,
+.diagram-block .component-save-btn,
+.chart-block .component-save-btn {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -149,15 +152,21 @@
 }
 
 .code-block-wrapper .code-copy-btn:hover,
-.diagram-block .diagram-copy-btn:hover,
-.chart-block .chart-copy-btn:hover {
+.component-block .component-save-btn:hover,
+.stat-card-block .component-save-btn:hover,
+.diff-block .component-save-btn:hover,
+.diagram-block .component-save-btn:hover,
+.chart-block .component-save-btn:hover {
   background: var(--line-soft, #e4e2de);
   color: var(--ink-primary, #292824);
 }
 
 .code-block-wrapper .code-copy-btn.copied,
-.diagram-block .diagram-copy-btn.copied,
-.chart-block .chart-copy-btn.copied {
+.component-block .component-save-btn.copied,
+.stat-card-block .component-save-btn.copied,
+.diff-block .component-save-btn.copied,
+.diagram-block .component-save-btn.copied,
+.chart-block .component-save-btn.copied {
   color: #1a7f37;
   border-color: #1a7f37;
 }
@@ -477,10 +486,11 @@
 /* ==================== 图表块（Mermaid / PlantUML） ====================
    结构契约见 markdown-renderer.buildDiagramBlock：
    .diagram-block[data-diagram-kind][data-diagram-state]
-     ├─ .diagram-header（.diagram-lang-label + .diagram-copy-btn + .diagram-toggle-btn）
+     ├─ .diagram-header（.diagram-lang-label + .component-save-btn）
      ├─ .diagram-body（占位文本 → 异步注入 SVG / <img>）
-     └─ .diagram-source（隐藏源码 pre；.show-source 时显示）
-   状态机：pending → rendering → done | error（error 时错误条与源码同时展示） */
+     └─ .diagram-source（隐藏源码 pre；渲染失败时由降级路径展开）
+   状态机：pending → rendering → done | error（error 时错误条与源码同时展示）
+   头部只有一个「保存」按钮：把当前渲染产物导出为高清 PNG。 */
 
 .diagram-block {
   position: relative;
@@ -491,7 +501,8 @@
   background: #ffffff;
 }
 
-.diagram-block .diagram-header {
+.diagram-block .diagram-header,
+.chart-block .chart-header {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -502,32 +513,13 @@
   color: var(--ink-secondary, #787671);
 }
 
-.diagram-block .diagram-lang-label {
+.diagram-block .diagram-lang-label,
+.chart-block .chart-lang-label {
   margin-right: auto;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   font-size: 11px;
-}
-
-.diagram-block .diagram-toggle-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  background: transparent;
-  border: 1px solid var(--line-soft, #e4e2de);
-  border-radius: 4px;
-  padding: 2px 8px;
-  cursor: pointer;
-  font-size: 11px;
-  color: var(--ink-secondary, #787671);
-  transition: all 0.15s ease;
-  line-height: 1.4;
-}
-
-.diagram-block .diagram-toggle-btn:hover {
-  background: var(--line-soft, #e4e2de);
-  color: var(--ink-primary, #292824);
 }
 
 /* 图表主体：占位态给出呼吸感与最小高度，避免渲染完成前后块高度跳变 */
@@ -1621,6 +1613,13 @@
   background: rgba(220, 38, 38, 0.1);
 }
 
+/* 调试轨迹按钮：与「复制」同属取内容一族（中性底），刻意不借用赞/踩的
+   绿/红语义色——它不是对回答的评价，而是取一份执行过程 */
+.message-action-btn.is-debug:hover {
+  background: rgba(120, 118, 113, 0.08);
+  color: var(--ink-secondary, #787671);
+}
+
 /* 无可复制正文（空消息等）：禁用而非留死按钮——点击无响应的控件是交互歧义 */
 .message-action-btn:disabled {
   opacity: 0.35;
@@ -1642,6 +1641,52 @@
   letter-spacing: 0.01em;
   white-space: nowrap;
   padding-right: 2px;
+}
+
+/* ══════════════ 调试按钮的收起 / 展开 ══════════════
+   开关紧贴踩按钮右侧；展开时调试按钮插到二者之间，开关被顶到最右。
+   展开：按钮宽度 0 → 26px + 透明度淡入 + 图标由小放大；
+   收起：反向收拢，图标被按钮裁掉，负外边距抵消 flex gap 不留空档。 */
+.message-action-btn.message-action-fold-enter-active,
+.message-action-btn.message-action-fold-leave-active {
+  overflow: hidden;
+  transition:
+    width 0.26s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.2s ease,
+    margin-right 0.26s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.message-action-btn.message-action-fold-enter-from,
+.message-action-btn.message-action-fold-leave-to {
+  width: 0;
+  margin-right: -2px;
+  opacity: 0;
+}
+
+/* 图标随容器一同收放：放大到常态（展开）/ 缩小（收起），与宽度过渡同步 */
+.message-action-btn.is-debug svg {
+  transition: transform 0.26s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.message-action-btn.is-debug.message-action-fold-enter-from svg,
+.message-action-btn.is-debug.message-action-fold-leave-to svg {
+  transform: scale(0.5);
+}
+
+/* 收起 / 展开开关：常态与其它操作按钮同款；展开态加一层浅底，
+   箭头转向被放出的按钮一侧（向左）——与前奏收起条同一套箭头语言 */
+.message-action-btn.is-fold-toggle .fold-chevron {
+  flex-shrink: 0;
+  transition: transform 0.26s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.message-action-btn.is-fold-toggle.expanded .fold-chevron {
+  transform: rotate(180deg);
+}
+
+.message-action-btn.is-fold-toggle.expanded {
+  background: rgba(120, 118, 113, 0.08);
+  color: var(--ink-secondary, #787671);
 }
 
 /* 思考中状态样式 */
@@ -1836,11 +1881,12 @@
 /* ==================== 数据图表块（ECharts，沙箱 iframe 渲染） ====================
    结构契约见 markdown-renderer.buildChartBlock / chart-renderer.ts：
    .chart-block[data-chart-kind][data-chart-state]
-     ├─ .chart-header（.chart-lang-label + .chart-copy-btn + .chart-toggle-btn）
+     ├─ .chart-header（.chart-lang-label + .component-save-btn）
      ├─ .chart-body（占位文本 → 沙箱 iframe 注入）
-     └─ .chart-source（隐藏源码 pre；.show-source 时显示）
+     └─ .chart-source（隐藏源码 pre；渲染失败时由降级路径展开）
    状态机：pending → queued → rendering → done | error（error 时错误条与源码同时展示）。
-   样式与 .diagram-block 同构但类名独立（避免 diagram-renderer 误拾取）。 */
+   样式与 .diagram-block 同构但类名独立（避免 diagram-renderer 误拾取）。
+   头部只有一个「保存」按钮：把当前渲染产物导出为高清 PNG。 */
 
 .chart-block {
   position: relative;
@@ -1849,45 +1895,6 @@
   border: 1px solid var(--line-soft, #e4e2de);
   overflow: hidden;
   background: #ffffff;
-}
-
-.chart-block .chart-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  background: var(--surface-hover, #eeece7);
-  border-bottom: 1px solid var(--line-soft, #e4e2de);
-  font-size: 12px;
-  color: var(--ink-secondary, #787671);
-}
-
-.chart-block .chart-lang-label {
-  margin-right: auto;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  font-size: 11px;
-}
-
-.chart-block .chart-toggle-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  background: transparent;
-  border: 1px solid var(--line-soft, #e4e2de);
-  border-radius: 4px;
-  padding: 2px 8px;
-  cursor: pointer;
-  font-size: 11px;
-  color: var(--ink-secondary, #787671);
-  transition: all 0.15s ease;
-  line-height: 1.4;
-}
-
-.chart-block .chart-toggle-btn:hover {
-  background: var(--line-soft, #e4e2de);
-  color: var(--ink-primary, #292824);
 }
 
 /* 图表主体：占位/渲染中给呼吸感；done 态由沙箱 iframe 填充 */
@@ -2266,11 +2273,12 @@
   white-space: nowrap;
 }
 
-/* ==================== 信封组件（```component：table / timeline / tree）====================
+/* ==================== 信封组件（```component：table / timeline / tree / insight）====================
    结构契约见 rich-components/component-blocks.ts（校验 + 全量转义的可信 HTML）：
-   .component-block(.component-table-block|.component-timeline-block|.component-tree-block)
+   .component-block(.component-table-block|.component-timeline-block|.component-tree-block|.component-insight-block)
      ├─ .component-block-title（可选，来自信封 title）
-     └─ 类型专属主体（表格 / 时间轴 / 结构树）
+     ├─ .component-block-source（可选，来自信封 source：组件级数据出处）
+     └─ 类型专属主体（表格 / 时间轴 / 结构树 / 关键见解卡）
    stat 信封复用 .stat-card-block 既有样式；diff 为原生围栏独立块。 */
 
 .component-block {
@@ -2280,6 +2288,23 @@
   background: #ffffff;
   padding: 10px 12px;
   overflow: hidden;
+}
+
+/* —— 同步组件头部动作条：标签占满左侧，右上角单个「保存」按钮 —— */
+
+.component-block-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+
+.stat-card-block .component-block-actions {
+  margin-bottom: 8px;
+}
+
+.diff-block .component-block-actions {
+  margin: 0 0 0 auto;
 }
 
 .component-block-title {
@@ -2469,6 +2494,88 @@ table.component-data-table td.st-doing { color: #0969da; font-weight: 600; }
   white-space: nowrap;
 }
 
+/* —— 组件级来源脚注（信封 source 字段）：数据出处与组件同屏可见 —— */
+
+.component-block-source {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ink-muted, #94918a);
+  margin-bottom: 8px;
+  word-break: break-word;
+}
+
+/* —— 关键见解卡：一条见解一卡（断言 + 证据 + 来源 + 置信度）—— */
+
+.component-insight-block .ins-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.component-insight-block .ins-item {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-soft, #e4e2de);
+}
+
+.component-insight-block .ins-item:last-child {
+  border-bottom: none;
+  padding-bottom: 2px;
+}
+
+.component-insight-block .ins-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.component-insight-block .ins-claim {
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--ink-primary, #292824);
+}
+
+.component-insight-block .ins-conf {
+  flex: none;
+  font-size: 11px;
+  line-height: 1.6;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  color: var(--ink-secondary, #787671);
+  white-space: nowrap;
+}
+
+.component-insight-block .ins-conf.lv-high {
+  color: #059669;
+  border-color: rgba(5, 150, 105, 0.35);
+}
+
+.component-insight-block .ins-conf.lv-mid {
+  color: #9a6700;
+  border-color: rgba(154, 103, 0, 0.35);
+}
+
+.component-insight-block .ins-conf.lv-low,
+.component-insight-block .ins-conf.lv-unknown {
+  color: var(--ink-secondary, #787671);
+}
+
+.component-insight-block .ins-evidence,
+.component-insight-block .ins-source {
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--ink-secondary, #787671);
+  margin-top: 3px;
+  word-break: break-word;
+}
+
+.component-insight-block .ins-label {
+  color: var(--ink-muted, #94918a);
+  margin-right: 6px;
+}
+
 /* ==================== diff 块（```diff 原生围栏）====================
    结构契约见 rich-components/component-blocks.ts（buildDiffBlock）：
    .diff-block > .diff-header（.diff-label + .diff-stats）+ .diff-body（行级 span） */
@@ -2499,6 +2606,7 @@ table.component-data-table td.st-doing { color: #0969da; font-weight: 600; }
 .diff-block .diff-stats {
   display: flex;
   gap: 8px;
+  margin-left: auto;
   font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', 'Menlo', monospace;
   font-size: 11px;
 }

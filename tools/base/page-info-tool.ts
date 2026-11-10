@@ -9,7 +9,7 @@ import { existingNavigationWindowId } from '../browser/navigation-window';
  */
 
 import { BaseBrowserTool } from './browser-tool';
-import { ToolMetadata } from '../registry';
+import { ToolMetadata, type ToolExecutionContext } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
 
@@ -17,7 +17,7 @@ import { ToolResult } from '@/common/tool-handler';
 const PAGE_CHARS_LIMIT = 15_000;
 /** 整篇正文上限（字符）：防超大页撑爆注入回传与暂存区（8MB 字节配额按最坏 CJK 3 字节预留） */
 const MAX_DOC_CHARS = 2_000_000;
-/** url 模式后台标签页的加载等待上限 */
+/** url 模式前台标签页的加载等待上限 */
 const URL_LOAD_TIMEOUT_MS = 30_000;
 /** url 参数长度上限（超长必为误用） */
 const MAX_URL_PARAM_CHARS = 8_192;
@@ -25,6 +25,28 @@ const MAX_URL_PARAM_CHARS = 8_192;
 const MAX_TITLE_CHARS = 300;
 /** frame 标头中 URL 的展示上限 */
 const MAX_FRAME_URL_CHARS = 200;
+/** 人机验证页判定：正文长度上限（超过即视为有真实内容，不判验证页） */
+const CHALLENGE_MAX_CONTENT_CHARS = 1_200;
+/** 判定采样的正文前缀长度（验证页的标记总在页面顶部） */
+const CHALLENGE_SCAN_CHARS = 400;
+/**
+ * 强标记：出现即高度指向人机验证页——这些是风控页的固定文案，正常正文不会
+ * 用它们起头。刻意不含「安全验证」「请稍候」「人机验证」等通用措辞：它们在
+ * 正常文章里频繁出现，误判会把真实内容当成验证页丢弃（比漏判更糟）。
+ */
+const CHALLENGE_STRONG_PATTERN =
+  /(Just a moment|Checking your browser|Attention Required|Verify you are human|Enable JavaScript and cookies|正在进行安全验证|正在进行安全检查|请完成安全验证|请完成下列验证)/i;
+/**
+ * 标题特征（英文风控页固定文案，出现在标题开头即可）。
+ */
+const CHALLENGE_TITLE_EN_PATTERN =
+  /^(just a moment|attention required|checking your browser|verify you are human|access denied|forbidden)/i;
+/**
+ * 标题特征（中文风控页固定文案：**整条标题就是该词**才算数）。
+ * 不能用「包含」——「登录安全验证指南」这类正常标题会被包含匹配命中。
+ */
+const CHALLENGE_TITLE_ZH_PATTERN =
+  /^(请稍候|安全验证|人机验证|访问验证|正在验证|请完成验证|请完成安全验证)[\s。.…·～~]*$/;
 
 /**
  * 按页切片（代理项安全）：
@@ -56,7 +78,11 @@ function pageSlice(doc: string, page: number, limit: number): string {
  *     代码块+语言 / 链接目标 / 引用 / 图片 / 表单控件；
  *   - 覆盖面：全部可注入 frame（allFrames）+ 可访问 shadow root（slot 分发感知）；
  *     自动剔除 script/style/svg/canvas 等噪声、隐藏内容与无意义空白/编码串；
- *   - url 参数（单个，http/https）：后台标签页加载后提取，完成即关闭；
+ *   - url 参数（单个，http/https）：**前台**打开目标页（新建并激活标签页，等同
+ *     browser_navigate 的 newTab=true），等待加载完成后再提取，标签页保留在用户
+ *     眼前（不后台打开、不自动关闭）——后台加载拿不到真实浏览上下文，是触发
+ *     人机验证（Cloudflare 等）的常见诱因；页面若弹出验证，用户可在该标签页
+ *     手动完成后重试；
  *   - 分页：单次正文 ≤15k 字符；超长全文自动缓存为 dataRef（引用 ID + 页码续读，
  *     与 browser_page_exec 的 readRef 同一暂存区、同一 TTL）。
  */
@@ -72,7 +98,9 @@ export class GetPageTextTool extends BaseBrowserTool {
     version: '2.0.0',
     author: 'AgentNexus',
     tags: ['browser', 'content', 'text', 'markdown', 'structured'],
-    // 纯读（url 参数走后台加载，不动当前标签页）：视觉循环整批纯读时不重拍
+    // 纯读豁免重拍的前提是「不改变用户可见的页面」：不带 url 时只读当前标签页，
+    // 视图未变可豁免；带 url 的前台打开会切换用户眼前的页面，必须重拍
+    // （豁免口径见 vision-feedback.ts 的 FOREGROUND_OPENING_TOOLS：按调用参数判定）。
     noVisionRecapture: true
   };
 
@@ -83,16 +111,17 @@ export class GetPageTextTool extends BaseBrowserTool {
       description:
         '读取页面正文并转为结构化 Markdown：保留标题层级、表格（含合并单元格）、列表、代码块及语言、链接目标、引用、图片与表单控件；' +
         '覆盖当前页全部可注入 frame（iframe）与可访问 shadow root，自动剔除隐藏内容、脚本/样式/SVG/Canvas 与无意义空白。' +
-        '默认读当前活动标签页；url=单个网址 时后台加载后提取（不动当前标签页）；tabId 可指定标签页。' +
+        '默认读当前活动标签页；url=单个网址 时**前台打开该页面**（新建并激活标签页，等同 browser_navigate）并等待加载完成后提取，' +
+        '标签页会保留在用户眼前（不后台打开、不自动关闭）——遇到人机验证可在该标签页手动完成后再重试；tabId 可指定标签页。' +
         '单次正文最多 15000 字符：超出时全量自动缓存并返回引用 ID（ref）与总页数，' +
         '用 ref+page 分页续读（缓存浏览器会话内约 12 小时有效），响应含 totalChars/hasMore/nextPage。' +
-        '需要交互展开、批量抽取时用 browser_interact / browser_page_exec；正文抽取质量优先 browser_web_fetcher。',
+        '需要交互展开、批量抽取时用 browser_interact / browser_page_exec。',
       parameters: {
         type: 'object',
         properties: {
           url: {
             type: 'string',
-            description: '目标网址（可选，仅支持单个 http/https URL）。提供后在后台标签页加载并提取，完成后自动关闭；不提供则读当前标签页'
+            description: '目标网址（可选，仅支持单个 http/https URL）。提供后在前台新建并激活标签页打开、等待加载完成再提取，标签页保留不关闭；不提供则读当前标签页'
           },
           tabId: {
             type: 'number',
@@ -112,7 +141,7 @@ export class GetPageTextTool extends BaseBrowserTool {
     }
   };
 
-  async execute(rawArgs: { url?: unknown; tabId?: unknown; ref?: unknown; page?: unknown } = {}): Promise<ToolResult> {
+  async execute(rawArgs: { url?: unknown; tabId?: unknown; ref?: unknown; page?: unknown } = {}, context?: ToolExecutionContext): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     // 参数整体形态防御：非对象（含数组/字符串）按模型误用拒绝，
@@ -164,12 +193,11 @@ export class GetPageTextTool extends BaseBrowserTool {
       return this.readCachedPage(ref, page);
     }
     if (url && requestedTabId !== undefined && requestedTabId !== null) {
-      return this.createErrorResponse('url 与 tabId 互斥：url 模式自行创建后台标签页，请只提供其一');
+      return this.createErrorResponse('url 与 tabId 互斥：url 模式自行打开目标页面，请只提供其一');
     }
 
     // ── 解析目标标签页 ──
     let targetTabId: number | undefined;
-    let createdTabId: number | null = null;
     let loadNote: string | undefined;
     let resolvedUrl: string | undefined;
     if (url) {
@@ -185,35 +213,54 @@ export class GetPageTextTool extends BaseBrowserTool {
       if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
         return this.createErrorResponse(`url 仅支持 http/https 协议，实际收到 ${parsedUrl.protocol}`);
       }
-      // 与当前活动标签页完全同址时直接读当前页：内容就是刚加载的同一 URL，
-      // 免开重复后台标签页（不匹配时仍走后台加载，不做模糊归一）
+      // 复用同址标签页：窗口内已有同 URL 的标签时直接切过去读，免开重复页面
+      // （与 browser_navigate「新建或复用相同完整 URL 标签」同策略）。
+      // 不做模糊归一——路径 / 查询的大小写与尾斜杠可能有业务含义。
       try {
-        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (activeTab && typeof activeTab.id === 'number' && activeTab.url === parsedUrl.href) {
-          targetTabId = activeTab.id;
-          resolvedUrl = activeTab.url ?? url;
+        const windowId = await existingNavigationWindowId();
+        const sameUrlTabs = await chrome.tabs.query({ windowId });
+        const reusable = sameUrlTabs.find(tab => typeof tab.id === 'number' && tab.url === parsedUrl.href);
+        if (reusable && typeof reusable.id === 'number') {
+          await chrome.tabs.update(reusable.id, { active: true });
+          // 复用来的标签页可能仍在加载（刚被打开过）——同样等就绪再提取；
+          // 标签页在等待期间被用户关掉时**放弃复用**，转走新建分支——
+          // 拿着已消失的 tabId 去注入只会得到一句无信息量的报错。
+          const wait = await this.waitForUrlTab(reusable.id, URL_LOAD_TIMEOUT_MS);
+          if (wait.ok) {
+            targetTabId = reusable.id;
+            resolvedUrl = reusable.url ?? url;
+            context?.onTabTarget?.(reusable.id);
+            loadNote = wait.note;
+          }
         }
-      } catch { /* 查询失败不阻断，走正常后台加载 */ }
+      } catch { /* 查询失败不阻断，走正常前台打开 */ }
       if (targetTabId === undefined) {
         try {
-          // 绑定现有普通窗口（无窗口时明确报错，绝不隐式新建浏览器窗口——
-          // 与 browser_navigate 等导航工具同一窗口边界）
+          // 前台打开（等同 browser_navigate 的 newTab=true 语义）：标签页可见、
+          // 获得焦点并**保留在用户眼前**——后台打开的页面拿不到真实浏览上下文，
+          // 正是人机验证（Cloudflare 等）最常见的触发原因。用户可在该标签页
+          // 手动完成验证后重试，模型也不必猜内容。
+          // 窗口边界与 browser_navigate 一致：绑定现有普通窗口，绝不隐式新建窗口。
           const windowId = await existingNavigationWindowId();
-          const created = await chrome.tabs.create({ url, active: false, windowId });
+          const created = await chrome.tabs.create({ url, active: true, windowId });
           if (!created || typeof created.id !== 'number') {
-            return this.createErrorResponse('后台标签页创建失败');
+            return this.createErrorResponse('目标标签页打开失败');
           }
-          createdTabId = created.id;
+          context?.onTabTarget?.(created.id);
+          // 聚焦窗口，让用户看见这次跳转（与 navigate 的行为对齐）
+          try {
+            await chrome.windows.update(windowId, { focused: true });
+          } catch {
+            // 聚焦失败（窗口最小化 / API 不可用）不阻断提取
+          }
           const wait = await this.waitForUrlTab(created.id, URL_LOAD_TIMEOUT_MS);
           if (!wait.ok) {
-            await this.quietCloseTab(created.id);
             return this.createErrorResponse(`目标页面加载失败：${wait.note ?? '未知原因'}`);
           }
           loadNote = wait.note;
           targetTabId = created.id;
           resolvedUrl = url;
         } catch (error) {
-          if (createdTabId !== null) await this.quietCloseTab(createdTabId);
           return this.createErrorResponse('目标页面打开失败', error);
         }
       }
@@ -241,6 +288,8 @@ export class GetPageTextTool extends BaseBrowserTool {
       return this.createErrorResponse('未能解析目标标签页（未提供可用 tabId/url，且无活动标签页）');
     }
 
+    if (requestedTabId != null) context?.onTabTarget?.(targetTabId);
+
     // ── 注入提取（allFrames + shadow root 感知荷载）──
     try {
       const results = await chrome.scripting.executeScript({
@@ -251,30 +300,52 @@ export class GetPageTextTool extends BaseBrowserTool {
       return this.assembleResponse(results ?? [], { targetTabId, requestedUrl: resolvedUrl, page, loadNote });
     } catch (error) {
       return this.createErrorResponse('Failed to get page text', error);
-    } finally {
-      if (createdTabId !== null) await this.quietCloseTab(createdTabId);
     }
   }
 
-  /** url 模式的后台标签页加载等待：完成 / 超时软失败（按已渲染内容继续）/ 标签页消失 */
+  /**
+   * url 模式的前台标签页加载等待：完成 / 超时软失败（按已渲染内容继续）/ 标签页消失。
+   *
+   * 判定比「tab.status === complete」更严一档：额外要求 document.readyState
+   * 为 complete 且连续两次命中——动态渲染站点（正文由 JS 异步注入）在
+   * status=complete 时往往还没出正文，早一步提取会拿到空壳。
+   */
   private async waitForUrlTab(tabId: number, timeoutMs: number): Promise<{ ok: boolean; note?: string }> {
     const startedAt = Date.now();
+    let consecutive = 0;
     while (Date.now() - startedAt < timeoutMs) {
       try {
         const tab = await chrome.tabs.get(tabId);
-        if (tab.status === 'complete') return { ok: true };
+        if (tab.status === 'complete') {
+          let readyState: unknown;
+          try {
+            const probe = await chrome.scripting.executeScript({
+              target: { tabId },
+              func: () => document.readyState,
+            });
+            readyState = probe?.[0]?.result;
+          } catch {
+            // 受限页面（扩展商店等）不允许注入：取不到就绪状态，按已就绪处理
+            readyState = 'complete';
+          }
+          // 只在**明确**知道未就绪时继续等待；取不到状态（脚本被拒 / 非字符串
+          // 返回）一律按就绪处理，避免在无法探测的页面上空等到超时
+          const ready = typeof readyState === 'string' ? readyState === 'complete' : true;
+          if (ready) {
+            consecutive += 1;
+            if (consecutive >= 2) return { ok: true };
+          } else {
+            consecutive = 0;
+          }
+        } else {
+          consecutive = 0;
+        }
       } catch {
         return { ok: false, note: '标签页在加载期间被关闭' };
       }
       await new Promise(resolve => setTimeout(resolve, 250));
     }
     return { ok: true, note: '页面加载超时，已按当前已渲染内容提取' };
-  }
-
-  private async quietCloseTab(tabId: number): Promise<void> {
-    try {
-      await chrome.tabs.remove(tabId);
-    } catch { /* 标签页可能已被用户关闭 */ }
   }
 
   /** 组装多 frame 结果 → 整篇正文 → 缓存与分页封装 */
@@ -320,6 +391,24 @@ export class GetPageTextTool extends BaseBrowserTool {
         : frame.markdown,
     );
     let doc = (title ? `# ${title}\n\n` : '') + sections.join('\n\n');
+
+    // ── 人机验证 / 风控拦截页识别 ──
+    // 判定同时看三件事，缺一不可，避免把正常文章误判成验证页：
+    //   ① 正文极短（真内容不会这么短）；② 标题命中验证页特征；
+    //   ③ 或正文开头命中强特征词（验证页的标记总在顶部）。
+    // 命中时不静默返回挑战页文本，而是明确告知模型「需要人工完成验证」——
+    // 用户可在刚打开的前台标签页里手动过验证后重试，或换一个来源。
+    const challengeBody = mainFrame.markdown.trim();
+    const challengeDetected =
+      challengeBody.length < CHALLENGE_MAX_CONTENT_CHARS &&
+      (CHALLENGE_TITLE_EN_PATTERN.test(title) ||
+        CHALLENGE_TITLE_ZH_PATTERN.test(title) ||
+        CHALLENGE_STRONG_PATTERN.test(challengeBody.slice(0, CHALLENGE_SCAN_CHARS)));
+    if (challengeDetected) {
+      warnings.push(
+        '页面疑似人机验证 / 风控拦截页（正文未加载）。请在刚打开的前台标签页手动完成验证后重试，或改用其它来源；不要把本页内容当作事实依据。',
+      );
+    }
 
     let docTruncated = false;
     if (doc.length > MAX_DOC_CHARS) {
@@ -400,6 +489,7 @@ export class GetPageTextTool extends BaseBrowserTool {
         ...(docTruncated ? { docTruncated: true } : {}),
       },
       ...(loadNote ? { note: loadNote } : {}),
+      ...(challengeDetected ? { verificationRequired: true } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
       hint:
         '结构化 Markdown 正文：保留标题/表格/列表/代码块/链接结构，覆盖全部可注入 frame 与可访问 shadow root；' +
@@ -407,11 +497,13 @@ export class GetPageTextTool extends BaseBrowserTool {
     };
     return this.createSuccessResponse(
       payload,
-      totalChars === 0
-        ? '页面没有可提取的可见文本（空白页或全部内容在画布/受限 frame 内）'
-        : `已提取结构化正文 ${totalChars} 字符` +
-          `${contentFrames.length > 1 ? `（${contentFrames.length} 个 frame）` : ''}` +
-          `${refId ? `，超长已缓存为 ${refId}（第 ${page}/${totalPages} 页）` : ''}`,
+      challengeDetected
+        ? '页面被人机验证 / 风控拦截，未取到正文。请在已打开的前台标签页手动完成验证后重试，或换来源。'
+        : totalChars === 0
+          ? '页面没有可提取的可见文本（空白页或全部内容在画布/受限 frame 内）'
+          : `已提取结构化正文 ${totalChars} 字符` +
+            `${contentFrames.length > 1 ? `（${contentFrames.length} 个 frame）` : ''}` +
+            `${refId ? `，超长已缓存为 ${refId}（第 ${page}/${totalPages} 页）` : ''}`,
     );
   }
 
@@ -501,7 +593,7 @@ export class GetPageHTMLTool extends BaseBrowserTool {
     }
   };
 
-  async execute(args: { tabId?: number } = {}): Promise<ToolResult> {
+  async execute(args: { tabId?: number } = {}, context?: ToolExecutionContext): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     try {
@@ -512,6 +604,8 @@ export class GetPageHTMLTool extends BaseBrowserTool {
       if (!tab || typeof tab.id !== 'number') {
         return this.createErrorResponse('No active tab found');
       }
+
+      if (typeof args?.tabId === 'number') context?.onTabTarget?.(tab.id);
 
       // 执行脚本获取页面 HTML
       const results = await chrome.scripting.executeScript({
@@ -571,7 +665,7 @@ export class GetCurrentPageInfoTool extends BaseBrowserTool {
     }
   };
 
-  async execute(args: { tabId?: number } = {}): Promise<ToolResult> {
+  async execute(args: { tabId?: number } = {}, context?: ToolExecutionContext): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     try {
@@ -582,6 +676,8 @@ export class GetCurrentPageInfoTool extends BaseBrowserTool {
       if (!tab || typeof tab.id !== 'number') {
         return this.createErrorResponse('No active tab found');
       }
+
+      if (typeof args?.tabId === 'number') context?.onTabTarget?.(tab.id);
 
       // 获取页面加载状态和其他信息
       const results = await chrome.scripting.executeScript({

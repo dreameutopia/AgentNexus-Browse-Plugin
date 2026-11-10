@@ -29,6 +29,9 @@ import {
   INTERACT_TIMEOUT_MAX_MINUTES,
   INTERACT_TIMEOUT_MIN_MINUTES,
   INTERACT_TIMEOUT_DEFAULT_MINUTES,
+  TOOL_TIMEOUT_MAX_MINUTES,
+  TOOL_TIMEOUT_MIN_MINUTES,
+  TOOL_TIMEOUT_DEFAULT_MINUTES,
   ITERATIONS_MAX,
   ITERATIONS_MIN,
   MAX_ITERATIONS_DEFAULT,
@@ -153,6 +156,13 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
       FAILED_TOOL_ROUNDS_MIN,
       FAILED_TOOL_ROUNDS_MAX,
       FAILED_TOOL_ROUNDS_DEFAULT,
+    ),
+    // 单工具最长执行时间（分钟）：引擎级硬上界，默认 30
+    toolTimeoutMinutes: clampInt(
+      value.toolTimeoutMinutes,
+      TOOL_TIMEOUT_MIN_MINUTES,
+      TOOL_TIMEOUT_MAX_MINUTES,
+      TOOL_TIMEOUT_DEFAULT_MINUTES,
     ),
     retryCount: clampInt(
       value.retryCount,
@@ -312,6 +322,13 @@ export function validateAppSettings(settings: AppSettings): string[] {
     settings.maxConsecutiveFailedToolRounds > FAILED_TOOL_ROUNDS_MAX
   ) {
     errors.push(t('sidepanel.apiConfig.validateToolFailRoundsRange'));
+  }
+  if (
+    !Number.isInteger(settings.toolTimeoutMinutes) ||
+    settings.toolTimeoutMinutes < TOOL_TIMEOUT_MIN_MINUTES ||
+    settings.toolTimeoutMinutes > TOOL_TIMEOUT_MAX_MINUTES
+  ) {
+    errors.push(t('sidepanel.apiConfig.validateToolTimeoutRange'));
   }
   if (
     !Number.isInteger(settings.retryCount) ||

@@ -192,6 +192,11 @@ class CdpSessionManager {
     const { awaitPromise = true, timeoutMs = DEFAULT_EVALUATE_TIMEOUT_MS, contextId } = options;
 
     await this.attach(tabId);
+    // 求值期间会话绝不闲置脱离：attach 只刷 60s 闲置 TTL，而 timeoutMs 可达
+    // 300s——不保留的话，长求值跑到 60s 会被 TTL 定时器 detach 掉，CDP 响应
+    // 永远不会回来（工具层白等满超时，模型收到的还是兜底文案）。
+    // 求值结束后保留期仍生效，但恢复正常闲置回收节奏。
+    this.retainUntil(tabId, Date.now() + timeoutMs + 5_000);
 
     const baseParams: Record<string, unknown> = {
       expression,
@@ -249,6 +254,31 @@ class CdpSessionManager {
       remote.description ||
       (remote.subtype === 'null' ? null : `[${remote.type}${remote.subtype ? `:${remote.subtype}` : ''}]`);
     return { ok: true, value: fallbackValue, remoteType: remote.type, description: remote.description };
+  }
+
+  /**
+   * 终止目标页当前正在执行的 JavaScript（CDP Runtime.terminateExecution）。
+   *
+   * 这是页面求值通道的**硬杀**手段：注入通道（chrome.scripting）无法终止
+   * 页面里已在运行的脚本（同一线程上的死循环更是谁都杀不掉），而 CDP 走的是
+   * 浏览器调试器，可以打断当前执行——包括死循环。
+   *
+   * 作用域说明：terminateExecution 作用于「目标当前正在执行的那段 JS」，
+   * 未必精确是我们注入的那一段。因此调用方只在**用户主动中断 / 单工具超时**
+   * 时使用（此时页面上的任何脚本继续跑都属于用户预期之外的残留），并把它
+   * 定位为「尽力而为」的清理手段，而非精确取消。
+   *
+   * 幂等：目标没有正在执行的脚本时命令同样成功（无副作用）。
+   */
+  async terminateExecution(tabId: number): Promise<boolean> {
+    if (!this.isSupported() || !this.hasSession(tabId)) return false;
+    try {
+      await chrome.debugger.sendCommand({ tabId }, 'Runtime.terminateExecution');
+      return true;
+    } catch {
+      // 目标已关闭 / 调试器已脱离 / 当前无可终止的执行：清理手段失败不影响主流程
+      return false;
+    }
   }
 
   /**

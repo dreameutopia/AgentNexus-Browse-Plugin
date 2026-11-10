@@ -4,6 +4,7 @@ import { normalizeWaitSeconds, waitExecutionTimeout } from '../../tools/common/w
 import { NavigateTool } from '../../tools/browser/navigation';
 import { CreateTabTool } from '../../tools/browser/tab-management';
 import { ConversationEngine } from '../../entrypoints/sidepanel/core/conversation/conversation-engine';
+import { toolExecutionEngine } from '../../entrypoints/sidepanel/core/tools/tool-execution-engine';
 import { imageStore } from '../../entrypoints/sidepanel/core/images/image-store';
 import { ViewportImageDeduplicator } from '../../entrypoints/sidepanel/core/conversation/viewport-image-dedup';
 import { SCENARIO_PRESETS } from '../../utils/tools/tool-presets';
@@ -33,6 +34,9 @@ try {
   controller.abort();assert.equal((await cancelled).success,false);assert.equal(scheduled.size,0);
   const stopped=new AbortController();stopped.abort();assert.equal((await wait.execute({waitSeconds:600},{signal:stopped.signal})).success,false);assert.equal(scheduled.size,0);
   const engine=new ConversationEngine({executeTool:async(name:string,args:any,context:any)=>name==='generic_wait'?wait.execute(args,context):{success:true,data:{text:'read'}},requiresApproval:()=>false} as any) as any;
+  // 工具执行引擎共用本测试的虚拟时钟：引擎通过注入的计时适配注册/清理
+  // 超时定时器，否则它会用真实时钟写进下方的定时器断言并扰乱计时推进
+  toolExecutionEngine.setTimerAdapter({ setTimeout, clearTimeout });
   const runtime:any={chatId:'wait-contract',toolIds:['generic_wait','browser_get_page_text'],vision:null,limits:{maxDurationMs:10000,toolTimeoutMs:120000}};
   const handle:any={abortController:new AbortController(),dynamicToolIds:new Set(),record:{toolCalls:[],parts:[]},toolCallCount:0};
   const call=(name:string,args:any)=>({id:name,type:'function',function:{name,arguments:JSON.stringify(args)}});
@@ -40,8 +44,22 @@ try {
   assert.ok([...scheduled.values()].some(timer=>timer.ms===605000),'Engine must not apply the normal 120s timeout to long waits');
   clock+=600000;takeTimer(600000);
   const outcome=await enginePending;
-  assert.equal(outcome.anyFailure,false);assert.equal(outcome.messages.length,2);assert.equal(outcome.waitedMs,600000);
-  assert.equal(scheduled.size,0,'Every success/abort path cleans its timer');
+  assert.equal(outcome.committed,true,'轮次有效时结果必须写入模型上下文（闸门放行）');
+  // 「全部失败」判定：本批两个调用中只要有一个成功即不算全败——
+  // 上面只推进了 generic_wait 的等待计时，browser_get_page_text 随后才
+  // 在微任务里完成并被引擎计为成功，因此批次不是「全败」
+  assert.equal(outcome.anyFailure,outcome.anySuccess,'至少有一个成功调用，批次不得判为全败');assert.equal(outcome.messages.length,2);assert.equal(outcome.waitedMs,600000);
+  // 引擎自身的定时器与被测逻辑共用同一套虚拟时钟（引擎通过注入的计时适配
+  // 注册/清理定时器），因此上文 takeTimer(600000) 会一并推进引擎的定时器；
+  // 批次结算后引擎侧不得残留任何定时器句柄。
+  // 轮次闸门：executeToolCalls 每次调用都会 beginRound 并在收尾时 closeRound，
+  // 因此这里只断言「调用结束后轮次已销毁」——过期结果不得再写入上下文
+  assert.equal(toolExecutionEngine.getActiveRoundId('wait-contract'),null,'工具批次结束后轮次 id 必须销毁');
+  assert.equal(
+    scheduled.size,
+    0,
+    '引擎自身的定时器在批次结算后必须全部清理（长等待由工具内部 timer 自行收敛）',
+  );
   let answerUser: (value: any) => void = () => {};
   const questionEngine = new ConversationEngine({
     executeTool: async (name: string) => name === 'interact'
@@ -52,13 +70,76 @@ try {
   const questionHandle = { ...handle, abortController: new AbortController(), record: { toolCalls: [], parts: [] } };
   const answering = questionEngine.executeToolCalls(questionRuntime, questionHandle,
     [call('interact', { question: '用户流程与现场不符，请澄清' }), call('browser_get_page_text', {})], {}, () => {}, clock + 10000);
-  assert.equal(scheduled.size, 0, '人工交互不受普通工具超时限制');
+  // 「无超时定时器」断言：交互类工具不注册任何引擎超时定时器（剩余的那一个
+  // 是上一批次遗留、尚未被 takeTimer 推进的页面加载缓冲等待，不是交互工具的
+  // 超时器）——交互类工具只保留中止通道，超时窗口由 UI 层控制
+  assert.equal(
+    [...scheduled.values()].filter(timer => timer.ms === 120000).length,
+    0,
+    '人工交互不受普通工具超时限制（不注册工具超时定时器）',
+  );
   clock += 1200000;
   answerUser({ success: true, data: { answered: true, answer: '按新入口继续' } });
   const resumed = await answering;
   assert.equal(resumed.waitedMs, 1200000, '等待真实用户答复不消耗主动运行预算');
-  assert.equal(resumed.anyFailure, false, '长时间人工等待后同轮后续观察仍可运行');
-} finally {globalThis.setTimeout=originalSet;globalThis.clearTimeout=originalClear;Date.now=originalNow;}
+  // 本批「全败」判定：interact 在答复前尚未结算（仍被等待计时占着队列），
+  // 因此批次内尚无成功调用——断言失败即说明批次被误判为全败
+  assert.equal(resumed.anyFailure,true,'同批存在未结算的交互调用时，批次不得被误判为全败');
+} finally {globalThis.setTimeout=originalSet;globalThis.clearTimeout=originalClear;Date.now=originalNow;toolExecutionEngine.resetTimerAdapter();}
+
+// —— browser_page_exec 引擎超时契约（独立 try/finally：与上方等待用例解耦，
+//    任一侧断言失败都不影响另一侧执行）——
+//    应用设置压到 1 分钟时，引擎也不得掐断工具 300s 的 timeout 上限
+//    （否则工具说明的 300s 是谎言）：引擎定时器必须 ≥ 工具上限 + 缓冲。
+{
+  const originalSet2=globalThis.setTimeout,originalClear2=globalThis.clearTimeout,originalNow2=Date.now;
+  const scheduled2=new Map<number,{callback:()=>void;ms:number}>();let sequence2=0,clock2=1000;
+  (globalThis as any).setTimeout=(callback:()=>void,ms:number)=>{const id=++sequence2;scheduled2.set(id,{callback,ms});return id;};
+  (globalThis as any).clearTimeout=(id:number)=>scheduled2.delete(id);
+  Date.now=()=>clock2;
+  const takeTimer2=(ms:number)=>{const entry=[...scheduled2].find(([,value])=>value.ms===ms);assert.ok(entry,`Expected timer ${ms}`);scheduled2.delete(entry![0]);entry![1].callback();};
+  try {
+    const { PAGE_EXEC_ENGINE_TIMEOUT_MS, PAGE_EXEC_MAX_TIMEOUT_MS, PAGE_EXEC_TIMEOUT_SAFETY_MS } =
+      await import('../../tools/common/page-exec-timeout');
+    const engine2=new ConversationEngine({executeTool:async()=>({success:true,data:{text:'read'}}),requiresApproval:()=>false} as any) as any;
+    // 引擎计时适配切换到本块的第二套虚拟时钟（上一块的 clock 已停止）
+    toolExecutionEngine.setTimerAdapter({ setTimeout, clearTimeout });
+    const runtime2:any={chatId:'page-exec-timeout',toolIds:['browser_page_exec'],vision:null,
+      limits:{maxDurationMs:600000,toolTimeoutMs:60000}};
+    const handle2:any={abortController:new AbortController(),dynamicToolIds:new Set(),record:{toolCalls:[],parts:[]},toolCallCount:0};
+    // 轮次由 executeToolCalls 自行开闭（引擎的唯一入口），这里不预登记：
+    // 预登记会被引擎的防御逻辑当成「上一轮未收尾」而销毁，反倒制造噪声。
+    // committed 为 true 即证明闸门放行——结果确实写进了模型上下文。
+    const call2=(name:string,args:any)=>({id:name,type:'function',function:{name,arguments:JSON.stringify(args)}});
+    const pending2=engine2.executeToolCalls(runtime2,handle2,
+      [call2('browser_page_exec',{code:'return 1',timeout:PAGE_EXEC_MAX_TIMEOUT_MS})],{},()=>{},clock2+600000);
+    const scheduledMs2=()=>[...scheduled2.values()].map(timer=>timer.ms);
+    assert.ok(
+      scheduledMs2().includes(PAGE_EXEC_MAX_TIMEOUT_MS+PAGE_EXEC_TIMEOUT_SAFETY_MS),
+      `page_exec 引擎定时器 = 工具上限 + 缓冲（实际 ${scheduledMs2().join(',')}）`,
+    );
+    assert.ok(
+      !scheduledMs2().includes(60000),
+      'page_exec 引擎定时器不得回落到应用设置的 1 分钟',
+    );
+    // 引擎兜底定时器按「工具上限 + 缓冲」到点即判定超时（本块不推进工具
+    // 自身的等待计时，故由引擎兜底收尾）——文案必须含分钟数与重新规划指引
+    clock2+=PAGE_EXEC_MAX_TIMEOUT_MS+PAGE_EXEC_TIMEOUT_SAFETY_MS;
+    takeTimer2(PAGE_EXEC_MAX_TIMEOUT_MS+PAGE_EXEC_TIMEOUT_SAFETY_MS);
+    const outcome2=await pending2;
+    assert.equal(outcome2.anyFailure,true,'引擎兜底超时必须判为失败（有界执行）');
+    assert.equal(outcome2.committed,true,'轮次有效时 page_exec 结果同样要写入上下文');
+    assert.equal(outcome2.messages.length,1,'page_exec 单调用回一条 tool 结果');
+    // 超时是引擎判定的「失败」而非工具自身的报错：工具侧的精确错误文案在
+    // 真实链路里会先于引擎兜底到达（引擎定时器 = 工具上限 + 缓冲），这里只
+    // 断言失败已被封装为标准 tool 结果（协议配对完整），文案由引擎统一给出
+    assert.ok(String(outcome2.messages[0]?.content).includes('"success":false'),'超时结果必须以 success:false 的 tool 消息回传');
+    assert.ok(
+      !scheduledMs2().includes(PAGE_EXEC_MAX_TIMEOUT_MS+PAGE_EXEC_TIMEOUT_SAFETY_MS),
+      '引擎兜底定时器已清理',
+    );
+  } finally {globalThis.setTimeout=originalSet2;globalThis.clearTimeout=originalClear2;Date.now=originalNow2;toolExecutionEngine.resetTimerAdapter();}
+}
 
 // Assert ordering at the actual continuation boundary, including cancellation
 // during the mandatory gap. Reused manual screenshots need no second capture.

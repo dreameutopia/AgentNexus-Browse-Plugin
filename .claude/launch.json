@@ -12,6 +12,10 @@
       "url": "http://localhost:4173/.preview/collapse-preview.html"
     },
     {
+      "name": "action-fold-preview",
+      "url": "http://localhost:4173/.preview/action-fold-preview.html"
+    },
+    {
       "name": "hub-skill-editor",
       "url": "http://localhost:4173/.preview/hub-skill-editor.html"
     },
@@ -20,12 +24,28 @@
       "url": "http://localhost:4173/.preview/hub-agent-editor.html"
     },
     {
+      "name": "hub-usage-python",
+      "url": "http://localhost:4173/.preview/hub-usage-python.html"
+    },
+    {
       "name": "skill-selector-preview",
       "url": "http://localhost:4173/.preview/skill-selector-preview.html"
     },
     {
       "name": "guard-confirm-preview",
       "url": "http://localhost:4173/.preview/guard-confirm.html"
+    },
+    {
+      "name": "asr-config-prompt",
+      "url": "http://localhost:4173/.preview/asr-config-prompt.html"
+    },
+    {
+      "name": "deep-search-warning",
+      "url": "http://localhost:4173/.preview/deep-search-warning.html"
+    },
+    {
+      "name": "page-glow-preview",
+      "url": "http://localhost:4173/.preview/page-glow.html"
     }
   ]
 }

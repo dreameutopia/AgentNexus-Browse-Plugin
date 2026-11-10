@@ -70,5 +70,9 @@ export interface ExecutionResult {
   }>;
   success?: boolean;
   error?: string;
+  /** 主载荷通道（'data' | 'content'）：哪一条是正题，见 common/tool-handler */
+  primary?: 'data' | 'content';
+  /** 结构化载荷 */
+  data?: unknown;
   [key: string]: any;
 }

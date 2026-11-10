@@ -12,6 +12,10 @@
  *   2. API 错误卡片复制：<button class="api-error-copy-btn" …>
  *      内容按「分类 / 状态 / 摘要 / 原始响应」拼装为结构化报告——用户把它
  *      粘贴到 git issue 或反馈渠道时，无需二次整理即携带定位所需的全部信息。
+ *
+ * 富组件（图表 / Mermaid / diff）头部**没有**复制按钮：那类块的头部动作
+ * 收敛为单个「保存」按钮（component-image-save.ts），把渲染产物导出为
+ * 高清 PNG——图片才是跨环境可交付的形态。
  */
 
 import { t } from '@/utils/i18n';
@@ -19,17 +23,11 @@ import { t } from '@/utils/i18n';
 /** 复制成功后的提示恢复时长（毫秒） */
 const FEEDBACK_DURATION_MS = 2000;
 
-/** 从代码块容器中取出待复制的纯文本（兼容图表块 / 图表块的源码 pre） */
+/** 从代码块容器中取出待复制的纯文本 */
 function extractCodeText(button: HTMLElement): string {
   const wrapper = button.closest('.code-block-wrapper');
   const code = wrapper?.querySelector('pre code');
-  if (code) return code.textContent ?? '';
-  // 图表块（Mermaid / PlantUML）：复制隐藏源码 pre 中的原始图表代码
-  const diagram = button.closest('.diagram-block');
-  if (diagram) return diagram.querySelector('.diagram-source code')?.textContent ?? '';
-  // 数据图表块（ECharts）：复制隐藏源码 pre 中的原始 option JSON
-  const chart = button.closest('.chart-block');
-  return chart?.querySelector('.chart-source code')?.textContent ?? '';
+  return code?.textContent ?? '';
 }
 
 /**

@@ -47,6 +47,7 @@ export default defineConfig({
       'tabs',
       'activeTab',
       'scripting',
+      'webNavigation',
       'downloads',
       'webRequest',
       'debugger',
@@ -127,6 +128,7 @@ export default defineConfig({
     },
   },
   vite: (env) => ({
+    worker: { format: 'es' },
     define: {
       __APP_VERSION__: JSON.stringify(APP_VERSION),
       __BROWSER_UUID__: JSON.stringify(BROWSER_UUID),

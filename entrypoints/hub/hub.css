@@ -500,6 +500,10 @@ body {
 .hub-search__icon {
   position: absolute;
   left: 10px;
+  /* 必须提升到输入框之上：.hub-list-search 带 backdrop-filter，会形成独立层叠上下文，
+     图标在 DOM 中位于输入框之前，若不加 z-index 会被后绘制的输入框整块盖住
+     （外部插件输入框无 backdrop-filter，所以那边图标本就可见） */
+  z-index: 1;
   width: 15px;
   height: 15px;
   color: var(--ink-secondary, #787671);
@@ -816,9 +820,17 @@ body {
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.55);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
-  overflow: hidden;
+  /* 不用 overflow:hidden：说明悬浮卡片要溢出标题行显示。
+     内容裁剪由 .hub-section-body-inner（overflow:hidden）与列表滚动容器各自负责。 */
+  overflow: visible;
   transition: flex-grow 0.28s var(--ease-spring), min-height 0.28s var(--ease-spring),
     box-shadow 0.2s ease;
+}
+
+/* 圆角裁剪交给内层内容区：折叠动画时内容不溢出卡片边界 */
+.hub-editor-split--agent .hub-section-body-inner {
+  border-bottom-left-radius: 11px;
+  border-bottom-right-radius: 11px;
 }
 
 /* 展开态：按 flex-grow 比例瓜分右卡高度（34 : 26 : 34 ≈ 高度占比） */
@@ -852,6 +864,157 @@ body {
 /* 计数徽标：靠右对齐，与折叠按钮分居标题行两端 */
 .hub-section-head .hub-groups-count {
   margin-left: auto;
+}
+
+/* 工具区视图切换（按工具 / 按组）：贴在计数右侧，尺寸压紧以适配标题行 */
+.hub-section-head .hub-section-view {
+  flex: none;
+}
+
+.hub-section-head .hub-section-view .hub-seg__btn {
+  padding: 3px 10px;
+  font-size: 11.5px;
+}
+
+.hub-section-head .hub-section-view .hub-seg {
+  padding: 2px;
+  border-radius: 9px;
+}
+
+.hub-section-head .hub-section-view .hub-seg__thumb {
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  border-radius: 7px;
+}
+
+/* 关联技能说明问号：轻量圆形按钮，与标题基线对齐 */
+.hub-help-tip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--ink-muted, #9b9790);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.hub-help-tip svg {
+  width: 15px;
+  height: 15px;
+}
+
+.hub-help-tip:hover {
+  color: var(--ink-primary, #292824);
+  background: rgba(41, 40, 36, 0.08);
+}
+
+/* 说明悬浮卡片：挂在编辑器层（绝对定位，坐标由脚本按按钮位置换算），
+   不占用表单竖向空间，也不受分区卡片裁剪 */
+.hub-help-pop {
+  position: absolute;
+  z-index: 46;
+  width: 360px;
+  max-width: calc(100% - 16px);
+  padding: 12px 14px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.98);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  box-shadow: 0 12px 32px rgba(41, 40, 36 / 16%), 0 1px 3px rgba(41, 40, 36 / 8%);
+  animation: hubPopIn 0.16s var(--ease-out) both;
+  transform-origin: top right;
+}
+
+.hub-help-pop__title {
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-primary, #292824);
+}
+
+.hub-help-pop__text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-secondary, #787671);
+}
+
+/* 问号开启态：按钮本身也高亮，便于看出「说明框是这个按钮开的」 */
+.hub-help-tip.is-open {
+  color: var(--ink-primary, #292824);
+  background: rgba(41, 40, 36, 0.1);
+}
+
+/* ──── 工具扁平视图（按工具）：每个工具独立一行可选 ──── */
+
+.hub-tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hub-tool-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+
+.hub-tool-row:hover {
+  background: rgba(41, 40, 36, 0.05);
+}
+
+.hub-tool-row.is-checked {
+  background: rgba(41, 40, 36, 0.09);
+  border-color: rgba(41, 40, 36, 0.18);
+}
+
+.hub-tool-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.hub-tool-row-id {
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  color: var(--ink-secondary, #787671);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hub-tool-row.is-checked .hub-tool-row-id {
+  color: var(--ink-primary, #292824);
+  font-weight: 600;
+}
+
+/* 所属组：弱化的归属标注，帮助用户在扁平视图里定位 */
+.hub-tool-row-group {
+  flex: none;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-muted, #9b9790);
+  white-space: nowrap;
+}
+
+.hub-tool-row.is-locked {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 /* 折叠按钮：明确可见的小方块，紧贴标题左侧并与标题垂直居中对齐 */
@@ -934,7 +1097,37 @@ body {
   align-items: start;
 }
 
-/* 视觉声明行：开关与下拉并排 */
+/* 视觉操作开关（原「视觉循环」）：标题 + 问号在左、开关在右的玻璃卡行；
+   开启后子行（截图工具 / 重截图开关 / 坐标提示）接续在卡下方 */
+.hub-vision-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(41 40 36, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 1px 2px rgba(41 40 36, 0.04);
+  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+}
+
+/* 开启态：卡面略微提亮加深边界，与轨道染色呼应（不引入彩色，保持中性） */
+.hub-vision-head.is-on {
+  border-color: rgba(41, 40, 36, 0.18);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: inset 0 1px 2px rgba(41, 40, 36, 0.05), 0 1px 3px rgba(41, 40, 36, 0.06);
+}
+
+/* 标题与问号同行紧凑排列（问号紧随标题右侧） */
+.hub-vision-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 开关右侧子行：截图工具下拉 + 重截图开关 */
 .hub-vision-row {
   display: flex;
   align-items: center;
@@ -1471,9 +1664,10 @@ body {
 
 /* 清单条目卡片：勾选框 + 主体（标题/描述上下布局）+ 右侧查看图标。
    主体是可点按钮（点击查看完整信息），勾选框仍是独立的 label 控件。 */
+/* 组卡片：纵向结构 = 头部行（三态复选框 + 组名描述 + 查看）+ 组内工具清单 */
 .hub-group {
   display: flex;
-  align-items: flex-start;
+  flex-direction: column;
   gap: 8px;
   border: 1px solid var(--glass-border);
   border-radius: 12px;
@@ -1489,11 +1683,25 @@ body {
   transform: translateY(-1px);
 }
 
+/* 全选态 */
 .hub-group.checked {
   border-color: rgba(41, 40, 36, 0.4);
   background: rgba(41, 40, 36, 0.08);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55),
     0 2px 8px rgba(41, 40, 36, 0.1);
+}
+
+/* 部分选中态（组内只勾了一部分工具） */
+.hub-group.is-partial {
+  border-color: rgba(41, 40, 36, 0.3);
+  background: rgba(41, 40, 36, 0.04);
+}
+
+/* 组头行：复选框 + 主体 + 锁定提示 + 查看 */
+.hub-group-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
 }
 
 /* Python 计算组锁定态：环境未就绪，仅展示与引导 */
@@ -1588,6 +1796,95 @@ body {
   opacity: 1;
 }
 
+/* ──── 组内工具清单：逐个勾选（与组复选框共享同一扁平已选集合） ──── */
+
+.hub-group-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  /* 与组头的主体文字左缘对齐（复选框 18 + gap 8） */
+  padding-left: 26px;
+  border-top: 1px dashed rgba(41, 40, 36, 0.12);
+  padding-top: 8px;
+}
+
+.hub-group-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid rgba(41, 40, 36, 0.12);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.65);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.14s ease, background 0.14s ease,
+    color 0.14s ease;
+}
+
+.hub-group-tool:hover {
+  border-color: rgba(41, 40, 36, 0.3);
+  background: #ffffff;
+}
+
+.hub-group-tool.is-checked {
+  border-color: rgba(41, 40, 36, 0.4);
+  background: rgba(41, 40, 36, 0.1);
+}
+
+.hub-group-tool .hub-check {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  border-radius: 4px;
+}
+
+/* 14px 复选框的勾按比例内缩 */
+.hub-group-tool .hub-check::after {
+  left: 3.5px;
+  top: 1.5px;
+  width: 3.5px;
+  height: 7.5px;
+}
+
+.hub-group-tool-id {
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  font-size: 11.5px;
+  color: var(--ink-secondary, #787671);
+}
+
+.hub-group-tool.is-checked .hub-group-tool-id {
+  color: var(--ink-primary, #292824);
+  font-weight: 600;
+}
+
+.hub-group.locked .hub-group-tool {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* 三态复选框：部分选中显示横杠 */
+.hub-check:indeterminate {
+  background: var(--primary-gradient);
+  border-color: transparent;
+  box-shadow: 0 2px 6px rgba(41, 40, 36, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.hub-check:indeterminate::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 7px;
+  width: 10px;
+  height: 2.5px;
+  border: none;
+  border-radius: 2px;
+  background: #ffffff;
+  transform: none;
+  transition: none;
+}
+
 .hub-group-info:hover {
   color: var(--ink-primary, #292824);
   background: rgba(255, 255, 255, 0.9);
@@ -1621,9 +1918,9 @@ body {
 }
 
 .hub-detail-card__panel {
-  width: min(520px, 100%);
-  max-height: 100%;
-  overflow-y: auto;
+  width: min(560px, 100%);
+  /* 固定高度（不超过视口），内容超出时面板内部滚动 */
+  height: min(460px, 78vh);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1632,6 +1929,8 @@ body {
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.98);
   box-shadow: 0 20px 48px rgba(41 40 36 / 24%), 0 2px 6px rgba(41 40 36 / 10%);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   animation: hubPopIn 0.2s var(--ease-out) both;
 }
 
@@ -1640,6 +1939,11 @@ body {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  position: sticky;
+  top: -16px;
+  z-index: 2;
+  padding-bottom: 2px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99) 72%, rgba(255, 255, 255, 0));
 }
 
 .hub-detail-card__title {
@@ -1684,25 +1988,123 @@ body {
   word-break: break-word;
 }
 
-.hub-detail-card__items {
+/* 工具明细：完整名称 + 介绍 + 输入参数 */
+.hub-detail-tool {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid rgba(41, 40, 36, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.hub-detail-tool + .hub-detail-tool {
+  margin-top: 2px;
+}
+
+.hub-detail-tool__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.hub-detail-tool__name {
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-primary, #292824);
+}
+
+.hub-detail-tool__version {
+  font-size: 11px;
+  color: var(--ink-muted, #9b9790);
+}
+
+.hub-detail-tool__desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--ink-secondary, #787671);
+}
+
+.hub-detail-tool__params {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: rgba(41, 40, 36, 0.045);
+  border: 1px solid rgba(41, 40, 36, 0.07);
+}
+
+.hub-detail-tool__params-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-muted, #9b9790);
+}
+
+.hub-detail-tool__param {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1px;
+}
+
+.hub-detail-tool__param-name {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-primary, #292824);
+}
+
+.hub-detail-tool__param-type {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--ink-muted, #9b9790);
+}
+
+.hub-detail-tool__required {
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.hub-detail-tool__param-desc {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-secondary, #787671);
+}
+
+/* 技能资源文件 */
+.hub-detail-files {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.hub-detail-card__items-label {
+.hub-detail-files__label {
   font-size: 11.5px;
   font-weight: 600;
   color: var(--ink-muted, #9b9790);
 }
 
-.hub-detail-card__chips {
+.hub-detail-files__list {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
 }
 
-.hub-detail-card__chip {
+.hub-detail-files__item {
   font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
   font-size: 11px;
   padding: 2px 7px;

@@ -23,15 +23,21 @@
  *    markdown-it 中不产生 fence token，天然不会出现半截图表块。
  * 5. **失败降级且可分析**：解析/网络失败 → body 显示错误摘要 + 技术细节
  *    （如 mermaid 的行号级解析错误），并自动切换到源码视图，信息永不丢失。
- * 6. **事件委托**：切换按钮（图表 ↔ 源码）走 document 级委托，符合扩展 CSP
- *    （无内联脚本），与 code-copy.ts / file-card.ts 同构；按钮同步维护
- *    aria-pressed 供辅助技术读取。
+ * 6. **保存为图片**：块的头部动作是单个「保存」按钮（component-image-save.ts
+ *    的委托），把当前渲染产物导出为高清 PNG。本模块注册产物解析器
+ *    （registerDiagramImageSource）：Mermaid 用本地 SVG 的原始文本（矢量，
+ *    无级放大），PlantUML 用已加载 <img> 的 data URL。渲染未完成时返回
+ *    null，保存侧回落到源码文本成图（信息不丢）。
  * 7. **旧结构升级**：历史会话中旧版渲染器产出的裸 <div class="mermaid">，
  *    扫描时就地升级为新图表块，历史记录里的图表同样获得渲染能力。
  */
 
 import { t } from '@/utils/i18n';
 import { escapeHtml } from './html-escape';
+import {
+  registerDiagramImageSource,
+  type DiagramImageSource,
+} from './component-image-save';
 
 /** PlantUML 官方公共渲染服务（SVG 格式；img 加载不受扩展 CSP 限制） */
 const PLANTUML_SERVER = 'https://www.plantuml.com/plantuml/svg/';
@@ -224,31 +230,51 @@ async function renderDiagramBlock(block: HTMLElement): Promise<void> {
     console.warn(`[DiagramRenderer] ${kind} 图表渲染失败: ${detail}`);
     block.dataset.diagramState = 'error';
     body.innerHTML = buildErrorMarkup(detail);
-    // 失败降级：自动切到源码视图，用户仍可读到完整图表代码
-    setSourceView(block, true);
+    // 失败降级：错误条与源码同时展示（错误摘要 + 原始代码互为印证），
+    // 用户仍可读到完整图表代码——源码没有切换入口，因此直接展开
+    block.classList.add('show-source');
   }
 }
 
-// ==================== 视图切换（图表 ↔ 源码） ====================
+// ==================== 保存为图片的产物解析 ====================
 
-/** 切换块到源码/图表视图（同步更新切换按钮文案与 aria-pressed） */
-function setSourceView(block: HTMLElement, sourceView: boolean): void {
-  block.classList.toggle('show-source', sourceView);
-  const toggle = block.querySelector<HTMLElement>('.diagram-toggle-btn');
-  if (toggle) {
-    toggle.textContent = sourceView
-      ? toggle.dataset.viewChartLabel || t('sidepanel.chat.diagramViewChart')
-      : toggle.dataset.viewSourceLabel || t('sidepanel.chat.diagramViewSource');
-    toggle.setAttribute('aria-pressed', String(sourceView));
+/**
+ * 图表块 → 可栅格化产物（供 component-image-save 使用）。
+ *
+ * Mermaid：body 内的 <svg> 取原始文本——矢量源按 viewBox 放大导出，
+ * 与页面上的像素尺寸无关（页面缩窄也不糊）。
+ * PlantUML：body 内的 <img> 取 data URL（远程 SVG 已解码成位图，
+ * 按原始分辨率放大）。
+ * 渲染未完成 / 渲染失败（body 里是错误条）→ null，保存侧回落源码文本。
+ */
+function diagramImageSource(block: HTMLElement): DiagramImageSource | null {
+  const body = block.querySelector<HTMLElement>('.diagram-body');
+  if (!body || block.dataset.diagramState !== 'done') return null;
+
+  const svg = body.querySelector('svg');
+  if (svg) {
+    const text = new XMLSerializer().serializeToString(svg);
+    if (text.includes('<svg')) return { kind: 'svg', svg: text };
+    return null;
   }
+
+  const image = body.querySelector('img');
+  if (image?.src) {
+    if (image.src.startsWith('data:')) return { kind: 'dataUrl', dataUrl: image.src };
+    // 远程 src 走不了 canvas（跨源污染）：回落 null，保存侧存源码文本
+    return null;
+  }
+  return null;
 }
+
+registerDiagramImageSource(diagramImageSource);
 
 // ==================== 旧结构升级 ====================
 
 /**
  * 就地升级旧版渲染器产出的裸 <div class="mermaid">源码</div>。
  * 新结构契约见 markdown-renderer.buildDiagramBlock；此处用 DOM API
- * 重建同构节点，升级后与新版消息走完全相同的渲染/切换/复制链路。
+ * 重建同构节点，升级后与新版消息走完全相同的渲染 / 保存链路。
  */
 function upgradeLegacyMermaidBlocks(root: ParentNode): void {
   // 新图表块内部不含 .mermaid 类名，命中即旧结构
@@ -272,22 +298,14 @@ function upgradeLegacyMermaidBlocks(root: ParentNode): void {
     label.textContent = t('sidepanel.chat.diagramMermaidLabel');
     header.appendChild(label);
 
-    const copy = document.createElement('button');
-    copy.type = 'button';
-    copy.className = 'code-copy-btn diagram-copy-btn';
-    copy.dataset.copyIdleLabel = t('sidepanel.chat.copyLabel');
-    copy.dataset.copyDoneLabel = t('sidepanel.chat.copiedLabel');
-    copy.textContent = t('sidepanel.chat.copyLabel');
-    header.appendChild(copy);
-
-    const toggle = document.createElement('button');
-    toggle.type = 'button';
-    toggle.className = 'diagram-toggle-btn';
-    toggle.dataset.viewSourceLabel = t('sidepanel.chat.diagramViewSource');
-    toggle.dataset.viewChartLabel = t('sidepanel.chat.diagramViewChart');
-    toggle.textContent = t('sidepanel.chat.diagramViewSource');
-    toggle.setAttribute('aria-pressed', 'false');
-    header.appendChild(toggle);
+    // 头部动作与新版一致：单个「保存」按钮（无复制 / 切换）
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'code-copy-btn component-save-btn';
+    save.dataset.saveIdleLabel = t('sidepanel.chat.saveImageLabel');
+    save.dataset.saveDoneLabel = t('sidepanel.chat.saveImageDoneLabel');
+    save.textContent = t('sidepanel.chat.saveImageLabel');
+    header.appendChild(save);
 
     const body = document.createElement('div');
     body.className = 'diagram-body';
@@ -330,18 +348,14 @@ export function processDiagrams(root: ParentNode): void {
 
 let handlerInstalled = false;
 
-/** 安装 document 级视图切换委托（幂等；仅 DOM 上下文生效） */
+/**
+ * 扫描器入口（幂等；仅 DOM 上下文生效）。
+ *
+ * 块的头部动作只有一个「保存」按钮，其委托装在 component-image-save.ts
+ * （与 markdown-renderer 同一处），本模块不再自带点击委托——避免两条
+ * 委托链对同一按钮各做各的事。
+ */
 export function installDiagramRenderer(): void {
   if (handlerInstalled || typeof document === 'undefined') return;
   handlerInstalled = true;
-
-  document.addEventListener('click', event => {
-    const target = event.target as HTMLElement | null;
-    const toggle = target?.closest?.('.diagram-toggle-btn') as HTMLElement | null;
-    if (!toggle) return;
-    const block = toggle.closest<HTMLElement>('.diagram-block');
-    if (!block) return;
-    event.preventDefault();
-    setSourceView(block, !block.classList.contains('show-source'));
-  });
 }

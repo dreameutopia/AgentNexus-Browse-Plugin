@@ -1,20 +1,22 @@
 /**
- * 运行时压缩边界规划回归（compaction-boundary 纯模块）
+ * 运行时压缩切分规划回归（compaction-boundary 纯模块）
  *
- * 覆盖两类边界模式与全部切分不变量（见 compaction-boundary.ts 模块注释）：
- *   1. user-boundary 语义与历史版本逐字一致（多轮对话 / 视觉续拍）；
- *   2. group-boundary 回退覆盖「单用户消息长自治运行」（网站学习 / 盲试验证
- *      的真实形态：kickoff 用户消息位于下标 0，其后是数十个工具轮次）——
- *      旧实现在此结构性放弃压缩，越过阈值整段运行报错；
- *   3. 切分不变量：无损拼接、尾部非空且含最新组、尾部无悬空 tool_call
- *      （每个 tool 消息的属主 assistant 同在尾部）、头部非空、预算约束；
- *   4. 防御：空历史、单组、预算全容纳等不可压缩情形一律返回 null。
+ * 覆盖新策略的全部形态与不变量（见 compaction-boundary.ts 模块注释）：
+ *   1. tool-round（工具轮次模式）：
+ *      - 末轮 ≤ 阈值×15% → 末轮原样保留为尾部起点，其后续续拍消息一并保留；
+ *      - 末轮 > 阈值×15% → 巨型末轮并入压缩，切分点落在末轮之后（尾部可空）；
+ *      - 单轮批量工具调用（并行调用 + 多条结果）作为一轮整体保留；
+ *   2. user-turn（纯对话模式，无工具轮）：以最后一条用户消息为界；
+ *      该回合本身 > 15% 则整段压缩（尾部为空）；
+ *   3. 首发保护（protectFromIndex）：切分点是下界——受保护消息恒在尾部；
+ *   4. 切分不变量：无损拼接、尾部无悬空 tool_call、尾部首条不是 tool 消息；
+ *   5. 防御：空历史 / 无可压头部 / 头部无实质体量 / 非法阈值一律安全收敛。
  */
 
 import assert from "node:assert/strict";
 import {
   planRuntimeCompaction,
-  RUNTIME_COMPACTION_TAIL_RATIO,
+  RUNTIME_LAST_ROUND_MAX_RATIO,
   USER_BOUNDARY_MIN_HEAD_TOKENS,
 } from "../../entrypoints/sidepanel/core/conversation/compaction-boundary";
 import {
@@ -34,6 +36,11 @@ function user(text: string): ChatMessage {
   return { role: "user", content: text };
 }
 
+/** 助手纯文本回复（纯对话历史用） */
+function assistantText(text: string): ChatMessage {
+  return { role: "assistant", content: text };
+}
+
 /** 带单个工具调用的 assistant（id 即配对键） */
 function assistantRound(callId: string, content = ""): ChatMessage {
   return {
@@ -42,6 +49,19 @@ function assistantRound(callId: string, content = ""): ChatMessage {
     tool_calls: [
       { id: callId, type: "function", function: { name: "browser_observe", arguments: "{}" } },
     ],
+  };
+}
+
+/** 单轮批量工具调用：一条 assistant 携 N 个调用（结果各自成 tool 消息） */
+function assistantParallel(callIds: string[], content = ""): ChatMessage {
+  return {
+    role: "assistant",
+    content,
+    tool_calls: callIds.map(id => ({
+      id,
+      type: "function" as const,
+      function: { name: "browser_observe", arguments: "{}" },
+    })),
   };
 }
 
@@ -55,17 +75,20 @@ function round(callId: string, textTokens: number): ChatMessage[] {
   return [assistantRound(callId, filler.slice(0, textTokens * 2)), toolResult(callId, filler.slice(textTokens * 2))];
 }
 
+/** 上下文压缩消息（assistant 角色，新契约）；legacy 形态为 system 角色 */
+function compactionMessage(role: "assistant" | "system" = "assistant"): ChatMessage {
+  return { role, content: "<conversation-memory>先前摘要</conversation-memory>" };
+}
+
 function messageCost(message: ChatMessage): number {
   const detail = estimateMessageTokensDetailed(message);
   return detail.textTokens + detail.imageTokens;
 }
 
-/** 断言切分不变量（除「头部非空」外全部适用；head 非空由调用方按需追加断言） */
+/** 断言切分不变量（head 非空由各用例按需追加） */
 function assertInvariants(history: ChatMessage[], plan: { head: ChatMessage[]; tail: ChatMessage[] }): void {
   // 无损切分：按原序拼接恒等于原历史
   assert.deepEqual([...plan.head, ...plan.tail], history, "head+tail must reconstruct the original history");
-  // 尾部非空
-  assert.ok(plan.tail.length > 0, "tail must keep at least the newest group");
   // 尾部无悬空 tool_call：每个 tool 消息的属主 assistant 必同在尾部
   const tailOwners = new Set(
     plan.tail
@@ -79,211 +102,219 @@ function assertInvariants(history: ChatMessage[], plan: { head: ChatMessage[]; t
       `tool ${message.tool_call_id} retained in tail must have its owner assistant in tail`,
     );
   }
-  // 尾部首条不是 tool 消息（组边界切分的直接体现）
-  assert.notEqual(plan.tail[0].role, "tool", "tail must start at a group boundary, never a tool message");
+  // 尾部首条不是 tool 消息（切分恒落在组边界 / 用户回合边界）
+  if (plan.tail.length > 0) {
+    assert.notEqual(plan.tail[0].role, "tool", "tail must start at a group boundary, never a tool message");
+  }
 }
 
-// ──── 1. user-boundary：既有语义（头部须具备实质可压体量）────
+/** 阈值下的末轮保留上限 */
+const roundLimit = (threshold: number) => Math.floor(resolveContextThreshold(threshold) * RUNTIME_LAST_ROUND_MAX_RATIO);
 
+// ════════ 1. tool-round：末轮 ≤ 15% → 原样保留 ════════
 {
-  // 头部体量 ≥ USER_BOUNDARY_MIN_HEAD_TOKENS：user-boundary 语义保持不变
   const history = [
     user("第一轮任务"),
     ...round("c1", USER_BOUNDARY_MIN_HEAD_TOKENS + 100),
-    user("第二轮任务"),
-    ...round("c2", 10),
-  ];
-  const plan = planRuntimeCompaction(history, 1_000_000);
-  assert.ok(plan, "multi-turn history must produce a plan");
-  assert.equal(plan.mode, "user-boundary");
-  assert.equal(plan.head.length, 3, "head = everything before the last user message");
-  assert.equal(plan.head[0].role, "user");
-  assert.equal(plan.tail[0].content, "第二轮任务", "tail starts at the last user message");
-  assertInvariants(history, plan);
-}
-
-{
-  // 视觉续拍形态：合成 user 消息（工具后重截图）位于末尾——语义与多轮一致
-  const history = [
-    user("开始网站学习任务"),
-    ...round("c1", USER_BOUNDARY_MIN_HEAD_TOKENS + 100),
-    user("vision_gui 调用成功，执行结果：执行成功\n继续完成任务"),
-    ...round("c2", 10),
-  ];
-  const plan = planRuntimeCompaction(history, 1_000_000);
-  assert.ok(plan);
-  assert.equal(plan.mode, "user-boundary", "vision continuation messages anchor the same boundary");
-  assert.equal(plan.tail[0].role, "user");
-  assertInvariants(history, plan);
-}
-
-{
-  // 头部含旧摘要 + 实质内容：仍是 user-boundary（摘要不阻碍既有语义）
-  const history = [
-    { role: "system", content: "<conversation-memory>先前摘要</conversation-memory>" } as ChatMessage,
-    ...round("c0", USER_BOUNDARY_MIN_HEAD_TOKENS + 500),
-    user("第二轮任务"),
-    ...round("c2", 10),
-  ];
-  const plan = planRuntimeCompaction(history, 1_000_000);
-  assert.ok(plan);
-  assert.equal(plan.mode, "user-boundary", "substantial head keeps the legacy user boundary");
-  assert.equal(plan.tail[0].content, "第二轮任务");
-  assert.ok(plan.head[0].role === "system", "old summary stays inside the compacted head");
-  assertInvariants(history, plan);
-}
-
-{
-  // 头部无可压缩实质（只有零星短消息）：user-boundary 语义下压缩零收益，
-  // 必须降级 group-boundary 重新规划（头部实质判定）
-  const history = [
-    user("旧问题"),
-    ...round("c1", 10),
-    user("第二轮任务"),
-    ...round("c2", 4_000),
-  ];
-  const plan = planRuntimeCompaction(history, 10_000);
-  assert.ok(plan, "insubstantial head must fall back to group planning instead of giving up");
-  assert.equal(plan.mode, "group-boundary");
-  assert.ok(
-    plan.head.some(message => message === history[2]),
-    "the last user message joins the compacted head when the head lacks substance",
-  );
-  assert.ok(plan.tail.some(message => message.role === "tool" && message.tool_call_id === "c2"), "newest round stays in tail");
-  assertInvariants(history, plan);
-}
-
-{
-  // 二次压缩空转形态（根因回归）：首次压缩后头部只剩一条旧摘要系统消息。
-  // 旧实现持续以 user-boundary 反复压缩这条摘要（零收益，每轮一次压缩请求）；
-  // 现在必须降级 group-boundary，把摘要与其后的轮次一起重新规划。
-  const history = [
-    { role: "system", content: "<conversation-memory>先前摘要</conversation-memory>" } as ChatMessage,
-    user("第二轮任务"),
-    ...round("c2", 4_000),
-  ];
-  const plan = planRuntimeCompaction(history, 10_000);
-  assert.ok(plan, "summary-only head must fall back to group planning");
-  assert.equal(plan.mode, "group-boundary");
-  assert.equal(plan.head[0].role, "system", "old summary joins the re-planned head");
-  assert.ok(plan.head.some(message => message === history[1]), "the kickoff user message is compacted into the head");
-  assert.ok(plan.tail.some(message => message.role === "tool" && message.tool_call_id === "c2"), "newest round stays in tail");
-  assertInvariants(history, plan);
-}
-
-// ──── 2. group-boundary：单用户消息长自治运行（学习/验证的真实形态）────
-// 注意：阈值经 resolveContextThreshold 统一解析（非法回落默认、下限钳制
-// CONTEXT_THRESHOLD_MIN=8192），预算场景一律用 ≥8192 的阈值构造。
-
-{
-  // kickoff 用户消息位于下标 0：旧实现在此返回 null（结构性放弃），必须回退。
-  // 阈值 10000 → 尾部预算 3000：最新两组（100+2000）容纳、最旧组（4000）放不下
-  const history = [
-    user("开始网站学习任务"),
-    ...round("c1", 4_000),
-    ...round("c2", 2_000),
-    ...round("c3", 100),
-  ];
-  const plan = planRuntimeCompaction(history, 10_000);
-  assert.ok(plan, "single-user long run must fall back to group boundary instead of giving up");
-  assert.equal(plan.mode, "group-boundary");
-  assert.equal(plan.head[0].role, "user", "kickoff message is compacted into the summary head");
-  assert.equal(plan.tail[0].role, "assistant", "tail starts at an atomic-group boundary");
-  assert.ok(plan.tail.some(message => message.role === "tool" && message.tool_call_id === "c2"), "budgeted rounds stay in tail");
-  assert.ok(plan.tail.some(message => message.role === "tool" && message.tool_call_id === "c3"), "newest round stays in tail");
-  assert.ok(!plan.tail.some(message => message.role === "tool" && message.tool_call_id === "c1"), "over-budget oldest round moves to head");
-  assertInvariants(history, plan);
-  assert.ok(plan.head.length > 0, "head must be non-empty (compaction has work to do)");
-
-  // 预算约束：尾部总量 ≤ 阈值×比例，或尾部恰为最新一组（最新组无条件保留）
-  const tailTokens = plan.tail.reduce((total, message) => total + messageCost(message), 0);
-  const budget = Math.floor(10_000 * RUNTIME_COMPACTION_TAIL_RATIO);
-  assert.ok(
-    tailTokens <= budget || plan.tail.every(message => message.role !== "tool" || message.tool_call_id === "c3"),
-    "tail must respect the budget unless it is exactly the newest group",
-  );
-}
-
-{
-  // 极小阈值（钳制到下限 8192 → 预算 2457）：最新组即使独占超预算也必须保留
-  // （当前回合证据不丢），次新组放不下进入头部
-  const history = [user("任务"), ...round("c1", 3_000), ...round("c2", 3_000)];
-  const plan = planRuntimeCompaction(history, 1);
-  assert.ok(plan, "tiny threshold still yields a plan while head content exists");
-  assert.equal(plan.mode, "group-boundary");
-  assert.equal(plan.head.length, 3, "head = kickoff + first round");
-  assert.deepEqual(
-    plan.tail.map(message => message.role),
-    ["assistant", "tool"],
-    "tail = the newest group alone",
-  );
-  assertInvariants(history, plan);
-}
-
-{
-  // 首次压缩后的二次压缩形态：摘要系统消息位于头部，其后全是工具轮次
-  // （kickoff 用户消息已被首次压缩消化，历史中不再有用户消息）
-  const history = [
-    { role: "system", content: "<conversation-memory>先前摘要</conversation-memory>" } as ChatMessage,
-    ...round("c1", 3_000),
     ...round("c2", 100),
   ];
-  const plan = planRuntimeCompaction(history, 1_000);
-  assert.ok(plan);
-  assert.equal(plan.mode, "group-boundary", "no user message at all → group fallback (summary-of-summary cascade)");
-  assert.equal(plan.head[0].role, "system", "old summary message joins the compacted head");
-  assert.ok(!plan.tail.some(message => message.role === "system"));
-  assertInvariants(history, plan);
-}
-
-{
-  // 较大预算：尾部可容纳多个最新组（连续窗口，无时序空洞）
-  const history = [user("任务"), ...round("c1", 3_000), ...round("c2", 80), ...round("c3", 80)];
-  const plan = planRuntimeCompaction(history, 10_000); // 预算 3000：c2+c3（约 160）放下，c1（3000）放不下
-  assert.ok(plan);
-  assert.ok(
-    plan.tail.some(message => message.role === "tool" && message.tool_call_id === "c2") &&
-      plan.tail.some(message => message.role === "tool" && message.tool_call_id === "c3"),
-    "contiguous newest window may span multiple groups",
-  );
+  const plan = planRuntimeCompaction(history, 10_000);
+  assert.ok(plan, "工具轮次历史必须产出方案");
+  assert.equal(plan.mode, "tool-round");
+  assert.equal(plan.tail.length, 2, "尾部 = 末轮（assistant + 配对结果）");
+  assert.equal((plan.tail[0] as { tool_calls?: { id: string }[] }).tool_calls?.[0].id, "c2");
+  assert.ok(plan.head.some(message => message.role === "tool" && message.tool_call_id === "c1"), "更早的轮次进入头部");
   assert.ok(!plan.tail.some(message => message.role === "tool" && message.tool_call_id === "c1"));
   assertInvariants(history, plan);
 }
 
-// ──── 3. 防御：不可压缩情形返回 null ────
-
-assert.equal(planRuntimeCompaction([], 1_000), null, "empty history → null");
-assert.equal(
-  planRuntimeCompaction([user("只有一条")], 1_000),
-  null,
-  "single group (no head to compact) → null",
-);
 {
-  // 全部组都装进尾部预算：无头部可压缩（触发 95% 线时不可能出现，防御兜底）
-  const history = [user("任务"), ...round("c1", 10), ...round("c2", 10)];
-  assert.equal(
-    planRuntimeCompaction(history, 1_000_000_000),
-    null,
-    "everything fits the tail budget → nothing to compact",
-  );
+  // 末轮之后的合成消息（视觉续拍 / 计划提醒）一并保留为尾部——它们承载
+  // 最新现场状态（当前截图），体量小且不应被摘要化
+  const history = [
+    user("开始网站学习任务"),
+    ...round("c1", USER_BOUNDARY_MIN_HEAD_TOKENS + 100),
+    ...round("c2", 100),
+    user("vision_gui 调用成功，执行结果：执行成功\n继续完成任务"),
+  ];
+  const plan = planRuntimeCompaction(history, 10_000);
+  assert.ok(plan);
+  assert.equal(plan.mode, "tool-round");
+  assert.equal(plan.tail.length, 3, "尾部 = 末轮 + 其后续合成消息");
+  assert.equal(plan.tail[plan.tail.length - 1].role, "user");
+  assertInvariants(history, plan);
 }
+
 {
-  // 非法阈值回落共享默认值而非抛错（与 ContextWindowGuard.resolveThreshold 同口径）；
-  // 默认 256K 下的尾部预算约 78K：旧组放大到预算之外，规划依然成立
-  const history = [user("任务"), ...round("c1", 300_000), ...round("c2", 100)];
-  const plan = planRuntimeCompaction(history, Number.NaN);
-  assert.ok(plan, "invalid threshold falls back to the shared default and still plans");
-  assert.ok(
-    plan.tail.some(message => message.role === "tool" && message.tool_call_id === "c2"),
-    "newest group retained under the default threshold",
+  // 单轮批量工具调用（一条 assistant 携 2 个调用 + 2 条结果）：作为一轮整体保留
+  const history = [
+    user("任务"),
+    ...round("c0", USER_BOUNDARY_MIN_HEAD_TOKENS + 100),
+    assistantParallel(["p1", "p2"]),
+    toolResult("p1", "ok1"),
+    toolResult("p2", "ok2"),
+  ];
+  const plan = planRuntimeCompaction(history, 10_000);
+  assert.ok(plan);
+  assert.equal(plan.tail.length, 3, "批量调用轮的 assistant + 两条结果整体保留");
+  assert.deepEqual(
+    plan.tail.map(message => message.role),
+    ["assistant", "tool", "tool"],
   );
   assertInvariants(history, plan);
 }
 
-// ──── 4. 多阈值扫描：不变量对任意切分恒成立 ────
+// ════════ 2. tool-round：末轮 > 15% → 并入压缩，尾部只留其后续 ════════
+{
+  const history = [
+    user("任务"),
+    ...round("c1", USER_BOUNDARY_MIN_HEAD_TOKENS + 100),
+    ...round("c2", 3_000),
+  ];
+  const plan = planRuntimeCompaction(history, 10_000);
+  assert.ok(plan);
+  assert.equal(plan.mode, "tool-round");
+  assert.ok(
+    roundLimit(10_000) < 3_000,
+    "测试前提：末轮确实超过 15% 保留上限",
+  );
+  assert.equal(plan.tail.length, 0, "末轮超线且其后无消息 → 尾部为空（整段压缩）");
+  assert.equal(plan.head.length, history.length, "头部 = 全部历史");
+  assertInvariants(history, plan);
+}
 
 {
-  // 组体量放大到跨数量级（10K–60K token），扫描钳制下限、默认值与多个真实档位
+  // 末轮超线、其后有合成消息：末轮进头部，其后消息保留为尾部
+  const history = [
+    user("任务"),
+    ...round("c1", USER_BOUNDARY_MIN_HEAD_TOKENS + 100),
+    ...round("c2", 3_000),
+    user("续拍：当前页面已滚动到详情区"),
+  ];
+  const plan = planRuntimeCompaction(history, 10_000);
+  assert.ok(plan);
+  assert.equal(plan.tail.length, 1, "尾部 = 末轮之后的合成消息");
+  assert.equal(plan.tail[0].role, "user");
+  assert.ok(plan.head.some(message => message.role === "tool" && message.tool_call_id === "c2"), "超线末轮并入头部");
+  assertInvariants(history, plan);
+}
+
+// ════════ 3. user-turn：纯对话历史以最后一条用户消息为界 ════════
+{
+  const history = [
+    user("第一轮问题" + "详".repeat(2_600)),
+    assistantText("第一轮回答" + "答".repeat(2_600)),
+    user("第二轮问题"),
+    assistantText("第二轮回答"),
+  ];
+  const plan = planRuntimeCompaction(history, 10_000);
+  assert.ok(plan, "纯对话历史必须产出方案");
+  assert.equal(plan.mode, "user-turn");
+  assert.equal(plan.tail.length, 2, "尾部 = 最后一条用户消息起的完整回合");
+  assert.equal(plan.tail[0].content, "第二轮问题");
+  assert.equal(plan.head.length, 2, "头部 = 最后一条用户消息之前");
+  assertInvariants(history, plan);
+}
+
+{
+  // 纯对话且最后回合本身超 15% → 整段压缩（尾部为空）
+  const history = [
+    user("很长的第一轮提问" + "详".repeat(2_600)),
+    assistantText("很长的第一轮回答" + "答".repeat(2_600)),
+    user("很长的第二轮提问" + "详".repeat(3_000)),
+    assistantText("很长的第二轮回答" + "答".repeat(3_000)),
+  ];
+  const plan = planRuntimeCompaction(history, 10_000);
+  assert.ok(plan);
+  assert.equal(plan.mode, "user-turn");
+  assert.equal(plan.tail.length, 0, "最后回合超 15% → 整段压缩");
+  assertInvariants(history, plan);
+}
+
+// ════════ 4. 首发保护：protectFromIndex 是切分点下界 ════════
+{
+  const history = [
+    user("历史内容" + "详".repeat(2_600)),
+    user("本轮最新请求"),
+  ];
+  // 无保护：纯对话模式以最后一条用户消息为界（头部 = 首条）
+  const free = planRuntimeCompaction(history, 10_000);
+  assert.ok(free);
+  assert.equal(free.tail[0].content, "本轮最新请求");
+  // 有保护：受保护下标是切分点**上界**——切分左移，受保护消息恒在尾部
+  const protectedPlan = planRuntimeCompaction(history, 10_000, { protectFromIndex: 1 });
+  assert.ok(protectedPlan);
+  assert.equal(protectedPlan.tail[0].content, "本轮最新请求", "受保护消息恒在尾部");
+  assert.equal(protectedPlan.head.length, 1);
+  // 保护下标在天然切分点右侧时不动切分（切分点本就 ≤ 保护下标）
+  const later = planRuntimeCompaction(history, 10_000, { protectFromIndex: 2 });
+  assert.ok(later, "保护范围覆盖全部历史时仍可规划");
+  assert.equal(later.tail.length, 1, "切分点本就早于保护下标 → 切分不变");
+  assert.equal(later.tail[0].content, "本轮最新请求");
+  assert.equal(later.head.length, 1);
+}
+
+// ════════ 4b. 首发保护与工具轮次并用：天然切分点在受保护消息之后时左移 ════════
+{
+  // 形态：历史 = [旧内容, 本轮用户消息, 合成激活轮(assistant+tool)]
+  // 天然切分点 = 最后一轮（激活轮）起点 → 会把本轮用户消息压进头部；
+  // 保护下标 = 本轮用户消息下标 → 切分左移，用户消息与激活轮都留在尾部
+  const history = [
+    user("历史内容" + "详".repeat(2_600)),
+    user("本轮最新请求"),
+    assistantRound("act1", "activation"),
+    toolResult("act1", "ok"),
+  ];
+  const natural = planRuntimeCompaction(history, 10_000);
+  assert.ok(natural);
+  assert.ok(
+    natural.head.some(message => message.content === "本轮最新请求"),
+    "无保护时天然切分会把本轮用户消息压进头部（这正是要防的形态）",
+  );
+  const protectedPlan = planRuntimeCompaction(history, 10_000, { protectFromIndex: 1 });
+  assert.ok(protectedPlan);
+  assert.equal(protectedPlan.tail[0].content, "本轮最新请求", "保护后本轮用户消息回到尾部");
+  assert.equal(protectedPlan.head.length, 1, "头部收缩为初始上下文");
+  assert.equal(protectedPlan.tail.length, 3, "尾部 = 用户消息 + 激活轮");
+  assertInvariants(history, protectedPlan);
+}
+
+// ════════ 5. 防御：不可压缩情形返回 null ════════
+assert.equal(planRuntimeCompaction([], 1_000), null, "空历史 → null");
+assert.equal(
+  planRuntimeCompaction([user("只有一条")], 1_000),
+  null,
+  "单条消息（头部为空）→ null",
+);
+{
+  // 头部只有压缩消息 → 实质体量为零（摘要再压零收益）→ null
+  const history = [compactionMessage("assistant"), user("新一轮请求")];
+  assert.equal(planRuntimeCompaction(history, 10_000), null, "头部无实质可压体量 → null");
+}
+{
+  // legacy system 角色的压缩消息同样不计入实质体量
+  const history = [compactionMessage("system"), user("新一轮请求")];
+  assert.equal(planRuntimeCompaction(history, 10_000), null, "旧版 system 摘要不计入实质体量");
+}
+{
+  // 非法阈值回落共享默认而非抛错（与 ContextWindowGuard.resolveThreshold 同口径）
+  const history = [
+    user("任务"),
+    ...round("c1", 3_000),
+    ...round("c2", 30_000),
+  ];
+  const plan = planRuntimeCompaction(history, Number.NaN);
+  assert.ok(plan, "非法阈值回落共享默认后仍能规划");
+  assert.ok(
+    roundLimit(Number.NaN) >= 30_000,
+    `测试前提：默认阈值下末轮未超 15%（${roundLimit(Number.NaN)}）`,
+  );
+  assert.equal(plan.tail.length, 2, "默认阈值下末轮原样保留");
+  assertInvariants(history, plan);
+}
+
+// ════════ 6. 多阈值扫描：不变量对任意切分恒成立 ════════
+{
   const history = [
     user("开始网站学习任务"),
     ...round("c1", 60_000),
@@ -296,44 +327,27 @@ assert.equal(
   let planned = 0;
   for (const threshold of thresholds) {
     const plan = planRuntimeCompaction(history, threshold);
-    if (!plan) continue; // 预算全容纳 → null 合法
+    if (!plan) continue;
     planned += 1;
     assertInvariants(history, plan);
     assert.ok(plan.head.length > 0, `head non-empty at threshold ${threshold}`);
-    // 尾部永远包含最新组
-    assert.ok(
-      plan.tail.some(message => message.role === "tool" && message.tool_call_id === "c5"),
-      `newest group always retained at threshold ${threshold}`,
-    );
-    // 尾部预算约束（或恰为最新一组）
-    const tailTokens = plan.tail.reduce((total, message) => total + messageCost(message), 0);
-    const budget = Math.floor(resolveContextThreshold(threshold) * RUNTIME_COMPACTION_TAIL_RATIO);
-    assert.ok(
-      tailTokens <= budget || plan.tail.every(message => message.role !== "tool" || message.tool_call_id === "c5"),
-      `tail budget respected at threshold ${threshold}`,
-    );
+    // 末轮要么整体在尾部（≤15%），要么整体在头部（>15%）——绝不半配对
+    const inTail = plan.tail.some(message => message.role === "tool" && message.tool_call_id === "c5");
+    const inHead = plan.head.some(message => message.role === "tool" && message.tool_call_id === "c5");
+    assert.notEqual(inTail, inHead, `末轮必须整体归属一侧（threshold ${threshold}）`);
   }
   assert.ok(planned >= thresholds.length - 1, "threshold sweep must exercise real plans, not only nulls");
 }
 
-// ──── 5. 共享单一事实源的直接契约：原子组构建与阈值解析 ────
-
+// ════════ 7. 共享单一事实源的直接契约 ════════
 {
   // 并行调用同组、孤儿 tool 自成一组、组间按下标升序
-  const parallelAssistant: ChatMessage = {
-    role: "assistant",
-    content: "",
-    tool_calls: [
-      { id: "p1", type: "function", function: { name: "browser_observe", arguments: "{}" } },
-      { id: "p2", type: "function", function: { name: "browser_interact", arguments: "{}" } },
-    ],
-  };
+  const parallelAssistant = assistantParallel(["p1", "p2"]);
   const history: ChatMessage[] = [
     user("任务"),
     parallelAssistant,
-    { role: "tool", tool_call_id: "p1", name: "browser_observe", content: "ok" },
-    { role: "tool", tool_call_id: "p2", name: "browser_interact", content: "ok" },
-    // 孤儿 tool（属主不在场，协议脏数据）：不并入任何组，自成一组保持原子性
+    toolResult("p1", "ok"),
+    toolResult("p2", "ok"),
     { role: "tool", tool_call_id: "ghost", name: "browser_observe", content: "?" },
     assistantRound("c9"),
     toolResult("c9", "ok"),
@@ -355,4 +369,4 @@ assert.equal(
   assert.equal(resolveContextThreshold(100_000.9), 100_000, "fractional floors");
 }
 
-console.log("[compaction] Runtime compaction boundary planning (user/group modes, invariants, defenses) passed.");
+console.log("[compaction] Runtime compaction planning (tool-round 15% rule, user-turn fallback, first-send protection, invariants, defenses) passed.");

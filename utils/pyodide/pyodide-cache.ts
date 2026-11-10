@@ -43,6 +43,11 @@ function openDb(): Promise<IDBDatabase> {
       return;
     }
     const request = indexedDB.open(DB_NAME, DB_VERSION);
+    let blocked = false;
+    request.onblocked = () => {
+      blocked = true;
+      reject(new Error('Python 缓存数据库被其他扩展页面阻塞，请关闭旧页面后重试'));
+    };
     request.onupgradeneeded = () => {
       // v1：单 store，url 为主键
       if (!request.result.objectStoreNames.contains(STORE)) {
@@ -51,8 +56,18 @@ function openDb(): Promise<IDBDatabase> {
     };
     request.onsuccess = () => {
       const db = request.result;
+      if (blocked) {
+        db.close();
+        return;
+      }
+      const current = dbPromise;
+      const invalidate = () => { if (dbPromise === current) dbPromise = null; };
       // 其它上下文要求升版时静默让位（本层无升级路径，仅防止阻塞对方）
-      db.onversionchange = () => db.close();
+      db.onclose = invalidate;
+      db.onversionchange = () => {
+        invalidate();
+        db.close();
+      };
       resolve(db);
     };
     request.onerror = () => reject(request.error ?? new Error('IndexedDB 打开失败'));
@@ -87,9 +102,10 @@ export function putFile(entry: PyodideCacheEntry): Promise<void> {
     runRequest('readwrite', store => store.put(entry)).then(() => undefined),
   );
   pendingPuts.set(entry.url, task);
-  task.finally(() => {
+  const clearPending = () => {
     if (pendingPuts.get(entry.url) === task) pendingPuts.delete(entry.url);
-  });
+  };
+  void task.then(clearPending, clearPending);
   return task;
 }
 

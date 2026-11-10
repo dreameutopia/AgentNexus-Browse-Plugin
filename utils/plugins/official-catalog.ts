@@ -12,7 +12,8 @@
 // 显式标注为 string：常量是字面量类型时 TS 会把 `!== ''` 判定为永真比较，
 // 导致「尚未部署」分支在类型层面失效（TS2367）。
 export const OFFICIAL_CATALOG_URL: string =
-  'https://dreameutopia.github.io/agentnexus-browse-plugin-registry/catalog.json';
+  // GitHub Pages 项目站点 URL 保留仓库名原始大小写（全小写会 404）
+  'https://dreameutopia.github.io/AgentNexus-Browse-Plugin-Registry/catalog.json';
 export const OFFICIAL_CATALOG_PUBLIC_KEY: string =
   'wYisR27jKk9I44y+9BIf5HKkqD48zFAEwbr5GGqodIE=';
 
