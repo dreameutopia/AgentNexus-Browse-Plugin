@@ -61,7 +61,7 @@ try {
       id,
       displayName: id,
       version: '1.0.0',
-      engines: { agentnexus: '>=0.0.1 <1.0.0', pluginApi: '^1.0.0' },
+      engines: { agentnexus: '>=0.0.1 <1.0.0', pluginApi: '^1.2.0' },
       license: 'MIT',
       capabilities: {
         network: [],
@@ -74,7 +74,6 @@ try {
         agents: [{ id: 'researcher', path: 'agents/researcher.json' }],
       },
       dependencies: {},
-      optionalDependencies: {},
     };
     await writeNew(
       path.join(dir, 'plugin.json'),

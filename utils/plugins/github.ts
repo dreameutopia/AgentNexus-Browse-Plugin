@@ -4,13 +4,14 @@ import { canonicalize } from 'json-canonicalize';
 import {
   invariant,
   LIMITS,
+  PluginError,
   validatePluginKey,
   versionSchema,
   type GithubSource,
 } from './contracts';
 import { limitedDownload } from './network';
 import { strictJson } from './json';
-import { decode64, sha256 } from './package';
+import { decode64, sha256 } from './codec';
 
 export interface GithubCandidate {
   name: string;
@@ -46,8 +47,11 @@ export function parseGithubRepository(value: string): {
     url.protocol === 'https:' &&
       url.hostname === 'github.com' &&
       !url.username &&
-      !url.password,
+      !url.password &&
+      !url.search &&
+      !url.hash,
     'INVALID_GITHUB_URL',
+    value,
   );
   const parts = url.pathname.split('/').filter(Boolean);
   invariant(
@@ -191,11 +195,24 @@ export async function fetchCatalog(
   publicKey64: string,
   minimumSequence: number,
 ): Promise<{ sequence: number; plugins: GithubCandidate[] }> {
-  const raw = strictJson(
-      new TextDecoder().decode(await limitedDownload(url, 4 * 1024 ** 2)),
-    ),
-    parsed = catalogSchema.parse(raw),
-    { signature, ...payload } = parsed;
+  const rawBytes = await limitedDownload(url, 4 * 1024 ** 2);
+  let textValue: string;
+  try {
+    textValue = new TextDecoder('utf-8', { fatal: true }).decode(rawBytes);
+  } catch {
+    throw new PluginError('INVALID_UTF8', 'catalog');
+  }
+  const raw = strictJson(textValue),
+    result = catalogSchema.safeParse(raw);
+  if (!result.success)
+    throw new PluginError(
+      'INVALID_CATALOG',
+      result.error.issues
+        .slice(0, 8)
+        .map((issue) => `${issue.path.join('.') || '<root>'}: ${issue.message}`)
+        .join('; '),
+    );
+  const { signature, ...payload } = result.data;
   invariant(
     new Set(payload.plugins.map((p) => p.key)).size === payload.plugins.length,
     'DUPLICATE_CATALOG_PLUGIN',

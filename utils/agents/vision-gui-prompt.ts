@@ -46,11 +46,11 @@ ${SHARED_CREDENTIAL_RULES}
 - 默认执行通道＝vision_gui：点击、输入、拖拽、hover、滚动、快捷键一律以最新截图的相对坐标完成；小目标或不清晰的文字先 zoom 放大再定位；需要准确文字/控件状态先 read 补充。截图是判断页面状态与目标位置的首要参考。
 - 辅助通道的使用情形（仅当视觉操作无法完成时）：
   · 精确语义状态操作——勾选/展开/选项的幂等设置与表单值回读校验（browser_interact 的 set_checked / set_expanded / set_selected / fill）；
-  · 批量结构化取数——列表/表格/重复容器的字段抽取与分页正文（browser_observe / browser_dom_explore / browser_get_page_text / browser_page_exec）；
+  · 批量结构化取数——列表/表格/重复容器的字段抽取与分页正文（browser_observe / browser_dom_explore / browser_get_page_text / js_run）；
   · 执行已验证技能——技能正文规定的 XPath/文本定位路径；
   · 视觉通道连续两次未达预期——换 DOM 通道重试或说明阻塞。
 - 验收：优先 vision_gui(action="check", expect=...) 条件核验；纯数据结论可用 DOM 复核（browser_get_page_text / browser_observe）。
-- 纯读不消耗截图：vision_gui(action="read") 与 browser_observe / browser_get_page_text / browser_dom_explore / 标签页与窗口枚举等一样，不消耗也不刷新当前截图，结果直接回传、无新附图——继续用手中最新 screenshotId 即可；需要新画面时执行会改变页面的操作或主动 screenshot。browser_interact 与 browser_page_exec 会改页面，之后以自动新截图为准——辅助操作完成即回到视觉通道。
+- 纯读不消耗截图：vision_gui(action="read") 与 browser_observe / browser_get_page_text / browser_dom_explore / 标签页与窗口枚举等一样，不消耗也不刷新当前截图，结果直接回传、无新附图——继续用手中最新 screenshotId 即可；需要新画面时执行会改变页面的操作或主动 screenshot。browser_interact 与 js_run 会改页面，之后以自动新截图为准——辅助操作完成即回到视觉通道。
 - 单通道连续两次未达预期：换另一种通道重试或明确说明阻塞原因，禁止在原通道第三次原地重试。
 - 本会话未提供某 DOM 工具时，其职责由视觉观察（read/zoom/inspect/check）代偿。
 </dom-or-vision>

@@ -40,6 +40,7 @@
     <div
       v-else-if="!entry.clusterKey || entry.clusterVersion === undefined || isClusterOpen(entry.clusterKey, entry.clusterVersion)"
       class="message-part"
+      :data-part-index="entry.item.index"
       :class="{ 'cluster-member': entry.clusterKey }"
     >
       <!-- 文字部分（流式节流渲染，见 MarkdownText） -->
@@ -49,6 +50,14 @@
         :content="entry.item.part.content"
         :streaming="streaming"
         :workspace-chat-id="workspaceChatId"
+      />
+      <!-- 循环守卫停止注记（轮次 / 时长上限未确认继续）：独立终态卡片，
+           下方提供「继续 / 修改设置」；过期判定由应用层在点击时统一执行 -->
+      <GuardStopNotice
+        v-else-if="entry.item.part.type === 'notice' && entry.item.part.noticeAction === 'guard-stop' && entry.item.part.content"
+        :text="entry.item.part.content"
+        @continue="emit('guard-continue', messageId, entry.item.index)"
+        @open-settings="emit('guard-open-settings', entry.item.part.guardKind)"
       />
       <!-- 系统注记部分（守卫停止 / 截断说明等）：独立系统信息条容器 -->
       <div v-else-if="entry.item.part.type === 'notice' && entry.item.part.content" class="system-notice">
@@ -144,7 +153,7 @@
  */
 import { computed, inject, ref, type Ref } from 'vue';
 import { t } from '@/utils/i18n';
-import type { IndexedMessagePart } from '../../types/chat';
+import type { IndexedMessagePart, MessagePart } from '../../types/chat';
 import { formatDuration } from '../../utils/chat/duration';
 import {
   buildLivePartSegments,
@@ -154,8 +163,9 @@ import ToolCallItem from './ToolCallItem.vue';
 import CompactionItem from './CompactionItem.vue';
 import MarkdownText from './MarkdownText.vue';
 import MessageImagePart from './MessageImagePart.vue';
+import GuardStopNotice from './GuardStopNotice.vue';
 
-const workspaceChatId = inject<Ref<string | undefined>>('workspaceChatId');
+const workspaceChatId = inject<Ref<string | undefined> | undefined>('workspaceChatId', undefined);
 const props = withDefaults(
   defineProps<{
     parts: IndexedMessagePart[];
@@ -170,6 +180,10 @@ const emit = defineEmits<{
   'toggle-tool-call-expansion': [messageId: string, toolCallId: string];
   'toggle-reasoning-collapse': [messageId: string, partIndex: number];
   'toggle-compaction-collapse': [messageId: string, partIndex: number];
+  /** 守卫停止注记的「继续」（partIndex 定位 notice 片段的原始下标） */
+  'guard-continue': [messageId: string, partIndex: number];
+  /** 守卫停止注记的「修改设置」（guardKind 决定设置弹窗定位） */
+  'guard-open-settings': [guardKind: MessagePart['guardKind']];
 }>();
 
 /**

@@ -41,6 +41,7 @@
  * 运行：node tests/tools/run.mjs   （或 npm run test:tools）
  */
 
+import 'fake-indexeddb/auto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -199,6 +200,13 @@ const { dataRefStore } = await import('../../utils/data-ref-store');
 // ==================== 1. 注册契约 ====================
 
 registerAllTools();
+// 文档工具（document_tool）**只在 sidepanel 注册**（见 tools/index.ts 的说明：
+// 它的重依赖约 2.7MB，而 background 是 service worker 入口、Vite 强制内联
+// 动态 import，静态可达就会让 background 白背这份冷启动开销）。
+// 本测试在 Node 环境（无 DOM）跑，等价于 background 侧的注册集合——
+// 因此这里显式补上 sidepanel 侧的那一份，让下面的断言对齐
+// 「两上下文注册表的并集」，也就是工具的真实全集。
+await import('../../tools/document').then(({ registerDocumentTools }) => registerDocumentTools());
 
 {
   const tools = toolRegistry.getAll();
@@ -311,11 +319,20 @@ registerAllTools();
     'vision_gui', 'ocr', 'extract_data', 'ai_locate', 'browser_console', 'file_uploader', 'browser_get_page_html']) {
     check(toolRegistry.getTool(id)?.metadata.noVisionRecapture !== true, `工具 ${id} 保持保守重拍（未豁免）`);
   }
-  // 合并迁移防回潮：被并入 browser_navigation / browser_tabs 的旧工具名
+  // 合并迁移防回潮：被并入 browser_navigation / browser_tabs / browser_history_bookmarks
+  // / browser_resources / browser_downloads / browser_get_page_html 的旧工具名
   // 绝不得重新出现在注册表（旧名调用会绕过新参数矩阵并产生漂移）
   for (const id of ['browser_navigate', 'browser_go_back_or_forward', 'wait_page_load',
     'browser_get_all_tabs', 'browser_switch_tab', 'browser_close_tab', 'browser_close_tabs',
-    'browser_create_tab', 'browser_window']) {
+    'browser_create_tab', 'browser_window',
+    'quick_navigation', 'history_navigation', 'bookmark_navigation',
+    'browser_search_history', 'browser_search_bookmarks',
+    'browser_bookmark_create', 'browser_bookmark_delete',
+    'resource_sniffer', 'resource_downloader',
+    'start_download_interception', 'stop_download_interception',
+    'list_captured_files', 'get_captured_file_by_id', 'clear_captured_files',
+    'get_downloads_status', 'page-source',
+    'browser_scroll', 'browser_wait_for_element']) {
     check(toolRegistry.getTool(id) === undefined, `旧工具 ${id} 已删除（并入统一工具后不得回潮）`);
   }
   // 未声明字段的存在性防御：字段缺省（undefined）即为 false 语义
@@ -328,20 +345,27 @@ registerAllTools();
   check(NOTE_SYSTEM_PROMPT_SECTION.includes('选择口诀'), '笔记分区含无歧义选择口诀');
 }
 
-// ==================== 2b. 搜索工具契约（web_search 引擎 / platform_search 站点平台） ====================
+// ==================== 2b. 搜索工具契约（web_search 引擎 / platform_search 站点平台 / bilibili_search 专属） ====================
 
 {
-  const { WebSearchTool, PlatformSearchTool, SEARCH_ENGINE_IDS, SEARCH_PLATFORM_IDS, SEARCH_TARGETS } = await import('../../tools/search');
+  const { WebSearchTool, PlatformSearchTool, BilibiliSearchTool, SEARCH_ENGINE_IDS, SEARCH_PLATFORM_IDS, SEARCH_DEDICATED_IDS, SEARCH_TARGETS } = await import('../../tools/search');
   const tool = new WebSearchTool();
   const platformTool = new PlatformSearchTool();
+  const bilibiliTool = new BilibiliSearchTool();
 
   // —— 注册与目标面 ——
   check(toolRegistry.getTool('web_search') !== null, 'web_search 已注册');
   check(toolRegistry.getTool('platform_search') !== null, 'platform_search 已注册');
+  check(toolRegistry.getTool('bilibili_search') !== null, 'bilibili_search 已注册');
   eq(SEARCH_ENGINE_IDS.length, 2, '搜索引擎注册表共 2 个（bing / baidu）');
-  eq(SEARCH_PLATFORM_IDS.length, 7, '站点平台注册表共 7 个');
-  eq(SEARCH_ENGINE_IDS.length + SEARCH_PLATFORM_IDS.length, 9, '搜索目标合计 9 个（拆分后总量不变）');
-  for (const id of [...SEARCH_ENGINE_IDS, ...SEARCH_PLATFORM_IDS]) {
+  eq(SEARCH_PLATFORM_IDS.length, 6, '站点平台注册表共 6 个（Bilibili 已独立成专属工具）');
+  eq(SEARCH_DEDICATED_IDS.length, 1, '专属目标注册表共 1 个（bilibili）');
+  eq(SEARCH_ENGINE_IDS.length + SEARCH_PLATFORM_IDS.length + SEARCH_DEDICATED_IDS.length, 9, '搜索目标合计 9 个（拆分后总量不变）');
+  check(
+    !SEARCH_PLATFORM_IDS.includes('bilibili' as never),
+    'Bilibili 已从站点平台枚举中移除（platform_search 不再支持该平台）',
+  );
+  for (const id of [...SEARCH_ENGINE_IDS, ...SEARCH_PLATFORM_IDS, ...SEARCH_DEDICATED_IDS]) {
     const target = SEARCH_TARGETS[id];
     check(
       typeof target.buildSearchUrl('q') === 'string' && target.buildSearchUrl('q').includes(encodeURIComponent('q')),
@@ -353,14 +377,31 @@ registerAllTools();
       check(typeof target.extractor.func === 'function', `目标 ${id}: inline 通道有解析函数`);
     }
   }
-  // 两个工具的 schema 枚举各自对应自己的目标类别，互不串味
-  const engineProps = tool.openaiSchema.function.parameters?.properties as Record<string, { enum?: string[] }>;
-  const platformProps = platformTool.openaiSchema.function.parameters?.properties as Record<string, { enum?: string[] }>;
+  // 三个工具的 schema 各自对应自己的目标类别，互不串味
+  type SearchSchemaProperty = { enum?: string[]; description?: string };
+  const engineProps = tool.openaiSchema.function.parameters?.properties as Record<string, SearchSchemaProperty>;
+  const platformProps = platformTool.openaiSchema.function.parameters?.properties as Record<string, SearchSchemaProperty>;
+  const bilibiliProps = bilibiliTool.openaiSchema.function.parameters?.properties as Record<string, SearchSchemaProperty>;
   eq(engineProps.engine?.enum, [...SEARCH_ENGINE_IDS], 'web_search 的 engine 枚举 = 搜索引擎清单');
   eq(platformProps.platform?.enum, [...SEARCH_PLATFORM_IDS], 'platform_search 的 platform 枚举 = 站点平台清单');
   check(
+    !(platformProps.platform?.enum ?? []).includes('bilibili'),
+    'platform_search 的枚举不含 bilibili（B 站已独立成专属工具）',
+  );
+  check(
     engineProps.website === undefined && platformProps.engine === undefined,
-    '旧参数名 website 已下线，两个工具各用自己的参数名',
+    '旧参数名 website 已下线，三个工具各用自己的参数名',
+  );
+  // 专属工具：目标固定 → schema 不含目标参数，required 只有 query
+  check(
+    bilibiliProps.platform === undefined && bilibiliProps.engine === undefined,
+    'bilibili_search 的 schema 不含目标参数（目标固定，无需模型再选）',
+    Object.keys(bilibiliProps),
+  );
+  eq(
+    bilibiliTool.openaiSchema.function.parameters?.required,
+    ['query'],
+    'bilibili_search 的必填参数只有 query',
   );
   // 参数描述 = 基类枚举清单 + 子类选择指引（paramDescription 曾是死字段，
   // 选择指引没进 schema——此断言防止再次出现「写了但没接上」）
@@ -384,8 +425,18 @@ registerAllTools();
     (tool.openaiSchema.function.description ?? '').includes('platform_search'),
     'web_search 描述点明站点检索走 platform_search（分工不靠模型猜）',
   );
+  check(
+    (platformTool.openaiSchema.function.description ?? '').includes('bilibili_search'),
+    'platform_search 描述点明 B 站检索走 bilibili_search（分工不靠模型猜）',
+  );
+  check(
+    !(platformProps.platform?.description ?? '').includes('bilibili'),
+    'platform_search 的参数清单不含 bilibili（该平台已彻底移出该工具）',
+    platformProps.platform?.description,
+  );
   check(tool.metadata.noVisionRecapture !== true, 'web_search 未标记 noVisionRecapture（搜索改变页面，视觉循环须重拍）');
   check(platformTool.metadata.noVisionRecapture !== true, 'platform_search 未标记 noVisionRecapture（同上）');
+  check(bilibiliTool.metadata.noVisionRecapture !== true, 'bilibili_search 未标记 noVisionRecapture（同上）');
 
   // —— 参数防御（不触导航即返回错误） ——
   const badEngine = await tool.execute({ engine: 'google', query: 'x' });
@@ -394,6 +445,19 @@ registerAllTools();
   check(crossKind.success === false && /不支持的搜索引擎/.test(crossKind.error ?? ''), '引擎工具不接站点平台（跨类枚举被拒）', crossKind.error);
   const crossKind2 = await platformTool.execute({ platform: 'bing', query: 'x' });
   check(crossKind2.success === false && /不支持的站点平台/.test(crossKind2.error ?? '') && (crossKind2.error ?? '').includes('zhihu'), '站点工具不接搜索引擎（跨类枚举被拒）', crossKind2.error);
+  const platformRejectsBilibili = await platformTool.execute({ platform: 'bilibili', query: 'x' });
+  check(
+    platformRejectsBilibili.success === false && /不支持的站点平台/.test(platformRejectsBilibili.error ?? ''),
+    'platform_search 拒绝 bilibili 平台（已彻底移出该工具）',
+    platformRejectsBilibili.error,
+  );
+  // 专属工具：目标固定；若仍传了不一致的目标参数 → 明确报错（不静默忽略）
+  const dedicatedMismatch = await bilibiliTool.execute({ platform: 'zhihu', query: 'x' });
+  check(
+    dedicatedMismatch.success === false && /只支持 bilibili/.test(dedicatedMismatch.error ?? ''),
+    'bilibili_search 拒绝与固定目标不一致的目标参数',
+    dedicatedMismatch.error,
+  );
   const badQuery = await tool.execute({ engine: 'bing', query: '   ' });
   check(badQuery.success === false && /query 必填/.test(badQuery.error ?? ''), '空白 query：报错');
   const badShape = await tool.execute('not-an-object');
@@ -520,20 +584,20 @@ registerAllTools();
 // ==================== 2b2. 搜索工具执行细节（waitTime 生效 / 中止收敛 / 标签页回报 / 失败通道） ====================
 
 {
-  const { WebSearchTool, SEARCH_TARGETS, SEARCH_TARGET_IDS, SEARCH_ENGINE_IDS, SEARCH_PLATFORM_IDS } = await import('../../tools/search');
+  const { WebSearchTool, SEARCH_TARGETS, SEARCH_TARGET_IDS, SEARCH_ENGINE_IDS, SEARCH_PLATFORM_IDS, SEARCH_DEDICATED_IDS } = await import('../../tools/search');
   const tool = new WebSearchTool();
 
   // —— 注册表与 id 数组的一致性：新增目标若只登记进注册表而漏进数组，
   //    工具枚举取不到它 = 静默不可达（类型系统查不出，只能靠契约测试守住） ——
   eq(
-    [...SEARCH_ENGINE_IDS, ...SEARCH_PLATFORM_IDS].sort(),
+    [...SEARCH_ENGINE_IDS, ...SEARCH_PLATFORM_IDS, ...SEARCH_DEDICATED_IDS].sort(),
     Object.keys(SEARCH_TARGETS).sort(),
-    '两个 id 数组的并集与注册表键完全一致（新增目标不得漏登记）',
+    '三个 id 数组的并集与注册表键完全一致（新增目标不得漏登记）',
   );
   eq(
     [...SEARCH_TARGET_IDS],
-    [...SEARCH_ENGINE_IDS, ...SEARCH_PLATFORM_IDS],
-    'SEARCH_TARGET_IDS 与两个 id 数组的并集一致（派生常量不得漂移）',
+    [...SEARCH_ENGINE_IDS, ...SEARCH_PLATFORM_IDS, ...SEARCH_DEDICATED_IDS],
+    'SEARCH_TARGET_IDS 与三个 id 数组的并集一致（派生常量不得漂移）',
   );
 
   const chromeStub = (globalThis as Record<string, unknown>).chrome as Record<string, unknown>;
@@ -621,6 +685,28 @@ registerAllTools();
       '导航失败：data 保留 navigation 事实',
       navFail.data,
     );
+
+    // 6) 专属工具（bilibili_search）：目标固定 → 走 script 通道直达 B 站结果页
+    const { BilibiliSearchTool } = await import('../../tools/search');
+    const bilibiliTool = new BilibiliSearchTool();
+    let messageCalls = 0;
+    let createdUrl = '';
+    tabsStub.create = (async (props: { url?: string }) => {
+      createCalls += 1;
+      createdUrl = props.url ?? '';
+      return { id: createdTabId, url: props.url };
+    }) as typeof tabsStub.create;
+    tabsStub.sendMessage = (async () => {
+      messageCalls += 1;
+      return { status: 'success', data: [{ title: 'V1', link: 'https://b23.tv/BV1xx' }] };
+    }) as typeof tabsStub.sendMessage;
+    const bili = await bilibiliTool.execute({ query: 't', waitTime: 0 });
+    check(bili.success === true, 'bilibili_search：专属工具检索成功', bili);
+    check(createdUrl.includes('search.bilibili.com'), 'bilibili_search：导航到 B 站结果页', createdUrl);
+    check(messageCalls === 1, 'bilibili_search：走 script 通道（内容脚本响应一次）', messageCalls);
+    const biliData = bili.data as { platform?: string; results: { count: number } };
+    check(biliData.platform === 'bilibili', 'bilibili_search：回传目标即固定目标', biliData.platform);
+    check(biliData.results.count === 1, 'bilibili_search：解析出视频条目', biliData.results);
   } finally {
     Object.assign(tabsStub, originalTabs);
     scriptingStub.executeScript = originalExecuteScript;
@@ -913,30 +999,29 @@ registerAllTools();
   check(!tooBig.ok, '超过单条目上限被拒绝');
   if (!tooBig.ok) check(tooBig.reason.includes('超过暂存上限'), '超限错误可读', tooBig.reason);
 
-  // 合并：records + records 按序拼接
+  // 引用加载器（治理动作已上移工具层：refs → collectRowParts，产物为结果文件）
   await dataRefStore.remove('all');
   const b1 = await dataRefStore.save([{ id: 1 }], '页1');
   const b2 = await dataRefStore.save([{ id: 2 }], '页2');
   check(b1.ok && b2.ok, '两批数据保存成功');
   if (b1.ok && b2.ok) {
-    const merged = await dataRefStore.merge([b1.meta.id, b2.meta.id], '全部');
-    check(merged.ok, '合并成功');
-    if (merged.ok) {
-      eq(merged.meta.kind, 'records', '合并结果为 records');
-      eq(merged.meta.rowCount, 2, '合并行数为两批之和');
+    const collected = await dataRefStore.collectRowParts([b1.meta.id, b2.meta.id], '合并');
+    check(collected.ok, '引用加载成功');
+    if (collected.ok) {
+      eq(collected.parts.length, 2, '加载两个行数组');
+      eq(collected.sources.length, 2, '携带来源元数据（by 校验用）');
     }
-    const missing = await dataRefStore.merge(['zzzzzzzz']);
-    check(!missing.ok, '合并不存在的引用被拒绝');
+    const missing = await dataRefStore.collectRowParts(['zzzzzzzz'], '合并');
+    check(!missing.ok, '加载不存在的引用被拒绝');
     if (!missing.ok) check(missing.reason.includes('不存在或已过期'), '缺失引用错误可读', missing.reason);
   }
 
-  // 形态混用合并被拒绝
-  const r1 = await dataRefStore.save([{ a: 1 }]);
-  const r2 = await dataRefStore.save([[1, 2]]);
-  if (r1.ok && r2.ok) {
-    const mixed = await dataRefStore.merge([r1.meta.id, r2.meta.id]);
-    check(!mixed.ok, 'records 与 matrix 混合合并被拒绝');
-    if (!mixed.ok) check(mixed.reason.includes('形态不一致'), '混合合并错误可读', mixed.reason);
+  // 非数组批次（value 形态）不能作为行源
+  const scalarBatch = await dataRefStore.save({ total: 1 });
+  if (scalarBatch.ok) {
+    const notRows = await dataRefStore.collectRowParts([scalarBatch.meta.id], '合并');
+    check(!notRows.ok, '单值批次被行加载器拒绝');
+    if (!notRows.ok) check(notRows.reason.includes('不是数组数据'), '非数组错误可读', notRows.reason);
   }
 
   // 删除：单个 / 全部
@@ -2081,17 +2166,25 @@ await testTextAutomation(check, eq);
 
 // ==================== 汇总 ====================
 await import('./wait-navigation.test');
+await import('./history-bookmarks.test');
+await import('./downloads-resources.test');
 await import('./vision-gui.test');
 await import('./confirmation.test');
 await import('./vision-assistant.test');
 await import('./skill-runtime-mode.test');
+await import('./python-run-files.test');
+await import('./workspace-defenses.test');
 await import('./prompt-cache.test');
+await import('./api-error-retry.test');
 await import('./agent-i18n.test');
 await import('./agent-image.test');
 await import('./plan.test');
 await import('./vision-context-e2e.test');
 await import('./vision-capability-guard.test');
 await import('./xlsx-dataref.test');
+await import('./document-tool.test');
+await import('./document-e2e.test');
+await import('./crawl-and-deadline.test');
 await import('./upload-file.test');
 await import('./tool-execution-engine.test');
 await import('./tool-execution-contract.test');

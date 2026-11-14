@@ -42,27 +42,37 @@
  *     精确超时文案先于引擎兜底到达模型。
  */
 
-import { BaseBrowserTool } from '../base/browser-tool';
-import { ToolMetadata } from '../registry';
-import { OpenAITool } from '@/common/openai-types';
-import { ToolResult } from '@/common/tool-handler';
-import type { ToolExecutionContext } from '../registry';
-import { TOOL_NAMES, isRestrictedUrl } from '@/common/constants';
-import { cdpSession } from './cdp-session';
-import { CONFIRM_GUIDANCE, CONFIRM_PARAMETER_DESCRIPTION } from '../confirmation-policy';
+import { BaseBrowserTool } from "../base/browser-tool";
+import { ToolMetadata } from "../registry";
+import { OpenAITool } from "@/common/openai-types";
+import { ToolResult } from "@/common/tool-handler";
+import type { ToolExecutionContext } from "../registry";
+import { TOOL_NAMES, isRestrictedUrl } from "@/common/constants";
+import { cdpSession } from "./cdp-session";
+import {
+  pageConsoleEvaluate,
+  runPageScript,
+  type ExecStrategy,
+  type ExecWorld,
+  type EngineAttempt,
+} from "./page-script-runner";
+import {
+  CONFIRM_GUIDANCE,
+  CONFIRM_PARAMETER_DESCRIPTION,
+} from "../confirmation-policy";
 import {
   saveDataRefJson,
   getDataRef,
   listDataRefs,
   type DataRefMeta,
-} from '@/utils/data-ref-store';
-import { trimDanglingSurrogate } from '@/utils/text/truncate';
+} from "@/utils/data-ref-store";
+import { trimDanglingSurrogate } from "@/utils/text/truncate";
 import {
   PAGE_EXEC_DEFAULT_TIMEOUT_MS,
   PAGE_EXEC_MAX_TIMEOUT_MS,
   normalizePageExecTimeout,
   validatePageExecTimeout,
-} from '../common/page-exec-timeout';
+} from "../common/page-exec-timeout";
 /**
  * 数据通道统一阈值（字符）——三个用途共用同一数值：
  *   1. 单次响应可见数据正文的上限（超出即截为前缀预览）；
@@ -72,11 +82,6 @@ import {
 const DATA_CHARS_LIMIT = 2_000;
 /** 全量 JSON 捕获的字符上限（防跨进程消息通道被撑爆；亦为自动暂存的物理上限） */
 const MAX_CAPTURE_CHARS = 6_000_000;
-
-/** 执行策略 */
-type ExecStrategy = 'auto' | 'scripting' | 'cdp';
-/** 执行世界（auto = 优先 MAIN，失败后按策略回退） */
-type ExecWorld = 'MAIN' | 'ISOLATED' | 'auto';
 
 /**
  * 错误对象形状关键词（中英）：命中任一即强烈提示「这是错误响应而非业务数据」。
@@ -106,23 +111,37 @@ const ERROR_SHAPE_PREVIEW_CHARS = 120;
  */
 function detectHttpErrorShape(value: unknown): string | null {
   try {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return null;
     const record = value as Record<string, unknown>;
     const keys = Object.keys(record);
     if (keys.length === 0 || keys.length > 4) return null;
-    const message = typeof record.message === 'string' ? record.message.trim() : '';
-    const errorText = typeof record.error === 'string' ? record.error.trim() : '';
+    const message =
+      typeof record.message === "string" ? record.message.trim() : "";
+    const errorText =
+      typeof record.error === "string" ? record.error.trim() : "";
     if (!message && !errorText) return null;
-    const statusRaw = typeof record.status === 'number' ? record.status : typeof record.code === 'number' ? record.code : NaN;
-    const httpStatus = Number.isFinite(statusRaw) && statusRaw >= 400 && statusRaw < 600;
+    const statusRaw =
+      typeof record.status === "number"
+        ? record.status
+        : typeof record.code === "number"
+          ? record.code
+          : NaN;
+    const httpStatus =
+      Number.isFinite(statusRaw) && statusRaw >= 400 && statusRaw < 600;
     const keywordHit =
-      HTTP_ERROR_SHAPE_KEYWORDS.test(message) || HTTP_ERROR_SHAPE_KEYWORDS.test(errorText);
-    const documented = typeof record.documentation_url === 'string';
-    if (!(keywordHit || httpStatus || documented || keys.length === 1)) return null;
-    const preview = trimDanglingSurrogate(message || errorText, ERROR_SHAPE_PREVIEW_CHARS);
+      HTTP_ERROR_SHAPE_KEYWORDS.test(message) ||
+      HTTP_ERROR_SHAPE_KEYWORDS.test(errorText);
+    const documented = typeof record.documentation_url === "string";
+    if (!(keywordHit || httpStatus || documented || keys.length === 1))
+      return null;
+    const preview = trimDanglingSurrogate(
+      message || errorText,
+      ERROR_SHAPE_PREVIEW_CHARS,
+    );
     return (
-      `返回值疑似错误响应（字段: ${keys.join(', ')}）："${preview}"——` +
-      '脚本中的 fetch 可能收到了 4xx/5xx 而未检查 res.ok/status，请核对请求是否失败并处理，不要把错误体当业务数据使用'
+      `返回值疑似错误响应（字段: ${keys.join(", ")}）："${preview}"——` +
+      "脚本中的 fetch 可能收到了 4xx/5xx 而未检查 res.ok/status，请核对请求是否失败并处理，不要把错误体当业务数据使用"
     );
   } catch {
     // 检测器自身绝不允许影响工具主流程
@@ -175,28 +194,9 @@ interface PageExecParams {
   confirm?: boolean;
 }
 
-/** 单次引擎尝试的记录（可观测性：让模型了解降级原因） */
-interface EngineAttempt {
-  engine: 'scripting' | 'cdp';
-  world: 'MAIN' | 'ISOLATED';
-  ok: boolean;
-  note?: string;
-}
-
-/** 页面内求值函数的返回形态 */
-interface InPageEvalResult {
-  success: boolean;
-  safeFallback?: boolean;
-  value?: unknown;
-  type?: string;
-  error?: string;
-  stack?: string;
-  /** 全量 JSON 文本（未经截断净化，供暂存判定与暂存区落盘；捕获恒开） */
-  rawJson?: string;
-  /** 全量捕获失败的原因（序列化失败/超上限），不阻断正常返回 */
-  rawJsonError?: string;
-}
-
+/**
+ * 错误提示中 message/error 文本的预览长度上限（字符）
+ */
 /** 判断 URL 是否为扩展无法注入脚本的受限页面（统一委托 common/constants 的单一口径） */
 export function isRestrictedPageUrl(url: string | undefined): boolean {
   return isRestrictedUrl(url);
@@ -210,7 +210,7 @@ export function isRestrictedPageUrl(url: string | undefined): boolean {
 function stringifyJsonText(value: unknown): string | undefined {
   try {
     const text = JSON.stringify(value === undefined ? null : value);
-    return typeof text === 'string' ? text : undefined;
+    return typeof text === "string" ? text : undefined;
   } catch {
     return undefined;
   }
@@ -220,7 +220,7 @@ function stringifyJsonText(value: unknown): string | undefined {
 function stringifyArgPreview(value: unknown): string {
   try {
     const text = JSON.stringify(value);
-    if (typeof text === 'string') return text;
+    if (typeof text === "string") return text;
   } catch {
     // 循环引用等：走 String() 兜底
   }
@@ -234,7 +234,7 @@ function describeRefMeta(meta: {
   rowCount?: number;
   bytes: number;
 }): string {
-  const label = meta.label ? `「${meta.label}」` : '';
+  const label = meta.label ? `「${meta.label}」` : "";
   const rows =
     meta.rowCount !== undefined ? `${meta.rowCount} 行` : `${meta.bytes} 字节`;
   return `${meta.id}${label}（${rows}）`;
@@ -246,9 +246,9 @@ function describeRefMeta(meta: {
  */
 function buildDataRefGuide(
   meta: { id: string; rowCount?: number },
-  totalChars: number
+  totalChars: number,
 ): string {
-  const rows = meta.rowCount !== undefined ? `${meta.rowCount} 行、` : '';
+  const rows = meta.rowCount !== undefined ? `${meta.rowCount} 行、` : "";
   const shown = Math.min(totalChars, DATA_CHARS_LIMIT);
   return (
     `全量数据（${rows}${totalChars} 字符）已存入数据暂存区，引用 ID ${meta.id}（浏览器会话内有效、约 12 小时）；本响应 result 只是前 ${shown} 字符预览。` +
@@ -260,186 +260,34 @@ function buildDataRefGuide(
 }
 
 /**
- * 页面主世界内的求值函数（必须完全自包含：会作为参数被序列化进页面执行）
- *
- * 执行已构建的 async 函数表达式：
- * 1. 间接 eval 在页面全局作用域执行，保留表达式完成值；
- * 2. 返回 Promise 时等待 settle（带超时保护）；
- * 3. 返回值递归净化为可结构化克隆的安全形态（DOM 节点、函数、循环引用、
- *    超长字符串/数组均有界转换），保证跨进程回传不丢信息也不撑爆消息通道。
+
+/**
+ * 脚本执行内核的产出（不携带任何持久化策略）：
+ * 两条消费方各自决定结果去向——browser_page_exec 落数据暂存区（dataRef），
+ * js_run 落会话工作区结果文件（results/）。fullJson 已按通道口径统一捕获。
  */
-async function pageConsoleEvaluate(
-  codeStr: string,
-  timeoutMs: number,
-  awaitPromise: boolean,
-  captureJson: boolean,
-  captureLimit: number
-): Promise<InPageEvalResult> {
-  /** 单个字符串的最大回传长度 */
-  const MAX_STRING_LEN = 10_000;
-  /** 数组最大回传元素数 */
-  const MAX_ARRAY_LEN = 200;
-  /** 对象最大回传键数 */
-  const MAX_KEYS = 100;
-  /** 递归净化最大深度 */
-  const MAX_DEPTH = 6;
-
-  /** 递归净化任意返回值为可结构化克隆的安全形态 */
-  const sanitize = (
-    input: unknown,
-    depth: number,
-    seen: Set<unknown>
-  ): unknown => {
-    if (input === null) return null;
-    const t = typeof input;
-    if (t === 'number' || t === 'boolean') return input;
-    if (t === 'undefined') return 'undefined';
-    if (t === 'string') {
-      const str = input as string;
-      return str.length > MAX_STRING_LEN
-        ? `${str.slice(0, MAX_STRING_LEN)}…[truncated ${str.length - MAX_STRING_LEN} chars]`
-        : str;
+export type PageExecOutcome =
+  | {
+      ok: true;
+      tabId: number;
+      frameId: number;
+      url: string | undefined;
+      engine?: "scripting" | "cdp";
+      world?: "MAIN" | "ISOLATED";
+      /** 脚本返回值（净化后） */
+      value: unknown;
+      type: string | undefined;
+      durationMs: number;
+      outcome: "completed" | "dispatched";
+      attempts: EngineAttempt[];
+      /** 全量 JSON 文本（scripting=页面侧捕获；CDP=本地序列化；捕获失败为 undefined） */
+      fullJson?: string;
+      /** fullJson 缺失原因（捕获失败/无 JSON 形态/超限） */
+      captureNote?: string;
+      /** 返回值疑似 HTTP 错误对象的提示（仅提示，不改数据） */
+      errorShapeHint: string | null;
     }
-    if (t === 'bigint' || t === 'symbol' || t === 'function')
-      return String(input);
-    if (t !== 'object') return String(input);
-    if (depth >= MAX_DEPTH) return '[MaxDepth]';
-
-    const obj = input as object;
-    if (seen.has(obj)) return '[Circular]';
-    seen.add(obj);
-
-    try {
-      if (typeof Element !== 'undefined' && obj instanceof Element) {
-        const id = obj.id ? ` id="${obj.id}"` : '';
-        const cls =
-          typeof obj.className === 'string' && obj.className
-            ? ` class="${obj.className}"`
-            : '';
-        return `<${obj.tagName.toLowerCase()}${id}${cls}>`;
-      }
-      if (
-        typeof NodeList !== 'undefined' &&
-        (obj instanceof NodeList ||
-          (typeof HTMLCollection !== 'undefined' &&
-            obj instanceof HTMLCollection))
-      ) {
-        return `[${(obj as NodeList).length} element(s)]`;
-      }
-      if (obj instanceof Error) {
-        return `${obj.name}: ${obj.message}`;
-      }
-      if (Array.isArray(obj)) {
-        const items = obj
-          .slice(0, MAX_ARRAY_LEN)
-          .map((item) => sanitize(item, depth + 1, seen));
-        if (obj.length > MAX_ARRAY_LEN) {
-          items.push(`…[${obj.length - MAX_ARRAY_LEN} more items]`);
-        }
-        return items;
-      }
-      // 普通对象：遍历自有可枚举键
-      const out: Record<string, unknown> = {};
-      let count = 0;
-      for (const key of Object.keys(obj)) {
-        if (count >= MAX_KEYS) {
-          out['…'] = `[${Object.keys(obj).length - MAX_KEYS} more keys]`;
-          break;
-        }
-        try {
-          out[key] = sanitize(
-            (obj as Record<string, unknown>)[key],
-            depth + 1,
-            seen
-          );
-        } catch {
-          out[key] = '[unreadable]';
-        }
-        count++;
-      }
-      return out;
-    } catch {
-      return '[unserializable]';
-    } finally {
-      seen.delete(obj);
-    }
-  };
-
-  // Probe compilation permission before any user code runs. A CSP error thrown
-  // by the user's code itself must never trigger replay in another engine.
-  try {
-    (0, eval)('void 0');
-  } catch (error) {
-    return {
-      success: false,
-      safeFallback: true,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-  try {
-    // 间接 eval：在指定执行上下文运行已构建的函数表达式
-    const raw: unknown = (0, eval)(codeStr);
-
-    let value = raw;
-    if (awaitPromise) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        value = await Promise.race([
-          Promise.resolve(raw),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(
-              () =>
-                reject(
-                  new Error(
-                    '执行超时；代码可能仍在运行，先检查现状，不自动重试'
-                  )
-                ),
-              timeoutMs
-            );
-          }),
-        ]);
-      } finally {
-        if (timer) clearTimeout(timer);
-      }
-    }
-
-    // 全量 JSON 捕获（captureJson 恒为 true）：在页面侧对「未净化的原始值」做
-    // 一次全量 JSON 序列化——自动暂存判定、2000 字符预览截取都依赖数据真实长度。
-    // 净化值（value）仍有 200 元素/10k 字符等回传上限，只适合当结构化预览；
-    // 全量数据必须在页面侧序列化后单独带回，才不会在跨进程通道上被截断。
-    let rawJson: string | undefined;
-    let rawJsonError: string | undefined;
-    if (captureJson) {
-      try {
-        const text = JSON.stringify(value === undefined ? null : value);
-        if (typeof text !== 'string') {
-          rawJsonError = '返回值没有可用的 JSON 形态';
-        } else if (text.length > captureLimit) {
-          rawJsonError = `数据量 ${text.length} 字符超过单次暂存上限 ${captureLimit}——请在脚本内先筛选字段或限制条数后分批保存`;
-        } else {
-          rawJson = text;
-        }
-      } catch (captureError) {
-        rawJsonError = `返回值无法序列化为 JSON：${(captureError as Error)?.message || String(captureError)}（常见原因：循环引用）`;
-      }
-    }
-
-    return {
-      success: true,
-      value: sanitize(value, 0, new Set()),
-      type: typeof value,
-      ...(rawJson !== undefined ? { rawJson } : {}),
-      ...(rawJsonError !== undefined ? { rawJsonError } : {}),
-    };
-  } catch (error) {
-    const err = error as { message?: string; stack?: string };
-    return {
-      success: false,
-      error: err?.message ?? String(error),
-      ...(err?.stack ? { stack: err.stack } : {}),
-    } as InPageEvalResult;
-  }
-}
+  | { ok: false; error: string };
 
 /**
  * 统一页面执行引擎工具
@@ -454,21 +302,21 @@ export class PageExecTool extends BaseBrowserTool {
    */
   private activeTabId: number | null = null;
   /** 本次求值实际使用的通道（决定 kill 能否真正终止脚本） */
-  private activeEngine: 'scripting' | 'cdp' | null = null;
+  private activeEngine: "scripting" | "cdp" | null = null;
 
   metadata: ToolMetadata = {
     name: TOOL_NAMES.BROWSER.PAGE_EXEC,
     description:
-      '高权限页面脚本执行引擎：在当前页面执行任意 JavaScript，自动在受限 CSP 站点升级到 CDP 通道；' +
-      'timeout 默认 30s/上限 300s（只等结果不中断脚本，超时后结果丢弃、脚本可能仍在跑）；' +
-      '结果默认存入数据暂存区（saveResult=false 可让 ≤2000 字符的小结果跳过暂存），' +
-      '超 2000 字符只回传预览并附 dataRef 引用，支持 readRef 分页读取',
-    category: 'browser',
-    version: '1.3.0',
-    author: 'AgentNexus',
-    tags: ['browser', 'script', 'exec', 'rpa', 'cdp', 'chrome'],
-    displayName: '页面执行引擎',
-    permissions: ['scripting', 'debugger'],
+      "高权限页面脚本执行引擎：在当前页面执行任意 JavaScript，自动在受限 CSP 站点升级到 CDP 通道；" +
+      "timeout 默认 30s/上限 300s（只等结果不中断脚本，超时后结果丢弃、脚本可能仍在跑）；" +
+      "结果默认存入数据暂存区（saveResult=false 可让 ≤2000 字符的小结果跳过暂存），" +
+      "超 2000 字符只回传预览并附 dataRef 引用，支持 readRef 分页读取",
+    category: "browser",
+    version: "1.3.0",
+    author: "AgentNexus",
+    tags: ["browser", "script", "exec", "rpa", "cdp", "chrome"],
+    displayName: "页面执行引擎",
+    permissions: ["scripting", "debugger"],
     // 参数语义级人审门：本工具可执行任意 JS，脚本含资金/敏感操作时由模型
     // 显式 confirm=true 触发用户批准（code 不参与关键词扫描——抓取脚本里
     // 出现「提交/删除」等词属正常代码，扫描会大量误伤）
@@ -476,14 +324,14 @@ export class PageExecTool extends BaseBrowserTool {
   };
 
   openaiSchema: OpenAITool = {
-    type: 'function',
+    type: "function",
     function: {
       name: TOOL_NAMES.BROWSER.PAGE_EXEC,
       description:
-        '在指定页面/frame 执行 async JavaScript 函数体，用 return 返回精简对象或所需字段，不必 JSON.stringify。' +
-        '自动分层执行：普通代码走页面主世界注入；遇到严格 CSP 拒绝 eval 时自动升级 CDP 通道（无视页面 CSP）；' +
-        '只有用户代码尚未执行的权限探测失败才切换引擎；代码开始后不自动重放。CDP 失败明确报错。' +
-        '适用：普通观察不足时读取结构化数据/组件状态，或专用工具无法完成的必要操作；常规点击/填写优先 browser_interact。合并独立只读检查，写操作逐次执行并核对业务回执，不用长循环反复滚动/点击/提交。' +
+        "在指定页面/frame 执行 async JavaScript 函数体，用 return 返回精简对象或所需字段，不必 JSON.stringify。" +
+        "自动分层执行：普通代码走页面主世界注入；遇到严格 CSP 拒绝 eval 时自动升级 CDP 通道（无视页面 CSP）；" +
+        "只有用户代码尚未执行的权限探测失败才切换引擎；代码开始后不自动重放。CDP 失败明确报错。" +
+        "适用：普通观察不足时读取结构化数据/组件状态，或专用工具无法完成的必要操作；常规点击/填写优先 browser_interact。合并独立只读检查，写操作逐次执行并核对业务回执，不用长循环反复滚动/点击/提交。" +
         '默认 auto 通常足够；只有确需调试器通道时才指定 strategy="cdp"。读取 DOM 可按需使用 world="ISOLATED"，不能假定隔离世界能读页面全局变量。' +
         // 超时与执行语义（模型必须知道的四条）：
         //   1. timeout 只管「等结果」，默认/上限由 page-exec-timeout.ts 契约渲染；
@@ -491,105 +339,105 @@ export class PageExecTool extends BaseBrowserTool {
         //   3. 超时后唯一回收通道是脚本自己写页面全局（window）再发一次只读调用读取；
         //   4. 禁止盲目重放——先只读探针核对现状。
         `超时（必须理解）：timeout 默认 ${PAGE_EXEC_DEFAULT_TIMEOUT_MS}ms、上限 ${PAGE_EXEC_MAX_TIMEOUT_MS}ms，` +
-        '只约束「等待 return 结果」的时间，不中断脚本执行。' +
-        '超时返回的报错是「执行超时；代码可能仍在运行，先检查现状，不自动重试」——' +
-        '此时最终结果已被丢弃（没有可轮询的句柄、不会进暂存区），要拿迟到的输出，' +
-        '唯一办法是脚本设计时先把结果写入页面全局变量（如 window.__result__），' +
-        '超时后再调一次本工具以只读方式读回它。' +
-        '超时或不确定是否完成时，先发只读探针核对现状（读 window 全局/DOM），禁止直接重放写操作——' +
-        '重放可能造成重复提交等副作用。同步死循环会让页面主线程卡住，只能等引擎层兜底超时。' +
-        '数据输出契约：单次响应的数据正文最多 2000 字符——结果默认（saveResult 省略或 true）存入数据暂存区并携带 dataRef 引用，' +
-        '≤2000 字符时 result 同步全量返回，超长时只保留前 2000 字符预览（附 totalChars/resultTruncated 与行数/字段统计）；' +
-        'saveResult=false 仅当结果 ≤2000 字符时跳过暂存（超长结果仍会自动暂存，否则数据随截断丢失）。' +
-        '要查看暂存数据的其它片段：传 readRef=引用ID（此时不要传 code），用 offset/limit 分页读取，每页最多 2000 字符。' +
+        "只约束「等待 return 结果」的时间，不中断脚本执行。" +
+        "超时返回的报错是「执行超时；代码可能仍在运行，先检查现状，不自动重试」——" +
+        "此时最终结果已被丢弃（没有可轮询的句柄、不会进暂存区），要拿迟到的输出，" +
+        "唯一办法是脚本设计时先把结果写入页面全局变量（如 window.__result__），" +
+        "超时后再调一次本工具以只读方式读回它。" +
+        "超时或不确定是否完成时，先发只读探针核对现状（读 window 全局/DOM），禁止直接重放写操作——" +
+        "重放可能造成重复提交等副作用。同步死循环会让页面主线程卡住，只能等引擎层兜底超时。" +
+        "数据输出契约：单次响应的数据正文最多 2000 字符——结果默认（saveResult 省略或 true）存入数据暂存区并携带 dataRef 引用，" +
+        "≤2000 字符时 result 同步全量返回，超长时只保留前 2000 字符预览（附 totalChars/resultTruncated 与行数/字段统计）；" +
+        "saveResult=false 仅当结果 ≤2000 字符时跳过暂存（超长结果仍会自动暂存，否则数据随截断丢失）。" +
+        "要查看暂存数据的其它片段：传 readRef=引用ID（此时不要传 code），用 offset/limit 分页读取，每页最多 2000 字符。" +
         '批量抓取脚本 return 对象数组 [{...},{...}] 最佳（可直接 xlsx 导出），配 label 标注批次；多页批次先 data_ref_tool(action="merge") 合并再导出。' +
-        '执行语义：同一页面的多次调用共享同一全局作用域（像同一个控制台连续敲命令，window/DOM 状态跨调用保留），' +
-        '但每次调用的函数作用域相互独立、绝不并行发起；上一次超时残留的异步任务可能与新调用交错，跨调用传参用 $args 而非依赖残留全局。' +
+        "执行语义：同一页面的多次调用共享同一全局作用域（像同一个控制台连续敲命令，window/DOM 状态跨调用保留），" +
+        "但每次调用的函数作用域相互独立、绝不并行发起；上一次超时残留的异步任务可能与新调用交错，跨调用传参用 $args 而非依赖残留全局。" +
         CONFIRM_GUIDANCE,
       parameters: {
-        type: 'object',
+        type: "object",
         properties: {
           code: {
-            type: 'string',
+            type: "string",
             description:
-              '要执行的 JavaScript 代码（与 readRef 互斥）。代码统一为 async 函数体，必须用 return 返回结果，允许 await；' +
-              '不会因运行时错误或无结果自动重放；可用 $args 读取 args 参数数组。',
+              "要执行的 JavaScript 代码（与 readRef 互斥）。代码统一为 async 函数体，必须用 return 返回结果，允许 await；" +
+              "不会因运行时错误或无结果自动重放；可用 $args 读取 args 参数数组。",
           },
           args: {
-            type: 'array',
+            type: "array",
             description:
-              '可选参数数组，通过 async 函数体内的 $args 读取；默认空数组。',
+              "可选参数数组，通过 async 函数体内的 $args 读取；默认空数组。",
             items: {},
           },
           world: {
-            type: 'string',
-            enum: ['auto', 'MAIN', 'ISOLATED'],
+            type: "string",
+            enum: ["auto", "MAIN", "ISOLATED"],
             description:
-              '执行世界。MAIN=页面主世界（可访问 window 全局对象）；ISOLATED=隔离世界（DOM 可用、页面 JS 不可见）；auto=默认优先 MAIN',
-            default: 'auto',
+              "执行世界。MAIN=页面主世界（可访问 window 全局对象）；ISOLATED=隔离世界（DOM 可用、页面 JS 不可见）；auto=默认优先 MAIN",
+            default: "auto",
           },
           strategy: {
-            type: 'string',
-            enum: ['auto', 'cdp', 'scripting'],
+            type: "string",
+            enum: ["auto", "cdp", "scripting"],
             description:
-              '执行策略。auto=默认逐级升级；cdp=强制最高权限（无视 CSP，可访问页面 JS 状态，会短暂附加调试器）；scripting=只用注入通道不碰调试器',
-            default: 'auto',
+              "执行策略。auto=默认逐级升级；cdp=强制最高权限（无视 CSP，可访问页面 JS 状态，会短暂附加调试器）；scripting=只用注入通道不碰调试器",
+            default: "auto",
           },
           awaitPromise: {
-            type: 'boolean',
-            description: '是否等待返回的 Promise 完成（默认 true）',
+            type: "boolean",
+            description: "是否等待返回的 Promise 完成（默认 true）",
             default: true,
           },
           timeout: {
-            type: 'number',
+            type: "number",
             description:
               `超时时间（毫秒），默认 ${PAGE_EXEC_DEFAULT_TIMEOUT_MS}，上限 ${PAGE_EXEC_MAX_TIMEOUT_MS}；` +
-              '只限制「等待返回结果」的时长，超时后脚本可能仍在页面里继续运行',
+              "只限制「等待返回结果」的时长，超时后脚本可能仍在页面里继续运行",
             default: PAGE_EXEC_DEFAULT_TIMEOUT_MS,
           },
           frameId: {
-            type: 'number',
+            type: "number",
             description:
-              'Chrome FrameId，默认0；指定子 frame 只在该 frame 执行，不会静默回退主页面。严格 CSP 子 frame 请使用 ISOLATED 读 DOM。',
+              "Chrome FrameId，默认0；指定子 frame 只在该 frame 执行，不会静默回退主页面。严格 CSP 子 frame 请使用 ISOLATED 读 DOM。",
           },
           tabId: {
-            type: 'number',
-            description: '目标标签页 ID（可选，默认当前激活标签页）',
+            type: "number",
+            description: "目标标签页 ID（可选，默认当前激活标签页）",
           },
           saveResult: {
-            type: 'boolean',
+            type: "boolean",
             description:
-              '默认 true：全量结果存入数据暂存区并返回 dataRef（引用 ID，浏览器会话内约 12 小时有效），' +
+              "默认 true：全量结果存入数据暂存区并返回 dataRef（引用 ID，浏览器会话内约 12 小时有效），" +
               '便于后续 readRef 分页核对、data_ref_tool(info/merge) 管理与 xlsx_tool(action="create_from_data", sheets[].dataRef=该ID) 直接导出；' +
-              '显式 false 仅当结果 ≤2000 字符时跳过暂存（超长结果仍自动暂存防丢失）。批量抓取保持默认即可。',
+              "显式 false 仅当结果 ≤2000 字符时跳过暂存（超长结果仍自动暂存防丢失）。批量抓取保持默认即可。",
             default: true,
           },
           label: {
-            type: 'string',
+            type: "string",
             description:
               '暂存数据的语义标签（如「第1页-商品列表」），便于 data_ref_tool(action="list") 时辨识批次（自动暂存时同样生效）',
           },
           readRef: {
-            type: 'string',
+            type: "string",
             description:
-              '分页读取暂存批次（与 code 互斥：提供 readRef 时不执行脚本、不依赖标签页）。' +
-              '值为本工具执行响应返回的 dataRef（8 位 ID）。' +
-              '返回该批次全量 JSON 文本的字符切片 content，配合 offset（起始偏移）与 limit（本页字符数，≤2000）使用；' +
-              '响应含 totalChars/hasMore/nextOffset，把 nextOffset 作为下一次的 offset 即可续读',
+              "分页读取暂存批次（与 code 互斥：提供 readRef 时不执行脚本、不依赖标签页）。" +
+              "值为本工具执行响应返回的 dataRef（8 位 ID）。" +
+              "返回该批次全量 JSON 文本的字符切片 content，配合 offset（起始偏移）与 limit（本页字符数，≤2000）使用；" +
+              "响应含 totalChars/hasMore/nextOffset，把 nextOffset 作为下一次的 offset 即可续读",
           },
           offset: {
-            type: 'number',
+            type: "number",
             description:
-              'readRef 模式的起始字符偏移（默认 0，≥0 整数；越界自动收敛到末尾并返回空页，不报错）',
+              "readRef 模式的起始字符偏移（默认 0，≥0 整数；越界自动收敛到末尾并返回空页，不报错）",
             default: 0,
           },
           limit: {
-            type: 'number',
+            type: "number",
             description: `readRef 模式本页最多读取的字符数（默认 ${DATA_CHARS_LIMIT}，上限 ${DATA_CHARS_LIMIT}，超出自动按上限处理）`,
             default: DATA_CHARS_LIMIT,
           },
           confirm: {
-            type: 'boolean',
+            type: "boolean",
             description: CONFIRM_PARAMETER_DESCRIPTION,
             default: false,
           },
@@ -602,7 +450,10 @@ export class PageExecTool extends BaseBrowserTool {
     },
   };
 
-  async execute(args: PageExecParams, context?: ToolExecutionContext): Promise<ToolResult> {
+  async execute(
+    args: PageExecParams,
+    context?: ToolExecutionContext,
+  ): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     // 参数整体可能为 null/undefined（executeTool 对缺失参数直接透传）——归一后解构，
@@ -610,8 +461,8 @@ export class PageExecTool extends BaseBrowserTool {
     const {
       code,
       args: codeArgs,
-      world = 'auto',
-      strategy = 'auto',
+      world = "auto",
+      strategy = "auto",
       awaitPromise = true,
       timeout = PAGE_EXEC_DEFAULT_TIMEOUT_MS,
       tabId: requestedTabId,
@@ -622,12 +473,9 @@ export class PageExecTool extends BaseBrowserTool {
       offset,
       limit,
     } = args || ({} as PageExecParams);
-    if (
-      rawSaveResult !== undefined &&
-      typeof rawSaveResult !== 'boolean'
-    ) {
+    if (rawSaveResult !== undefined && typeof rawSaveResult !== "boolean") {
       return this.createErrorResponse(
-        `saveResult 必须是布尔值，实际收到 ${stringifyArgPreview(rawSaveResult)}`
+        `saveResult 必须是布尔值，实际收到 ${stringifyArgPreview(rawSaveResult)}`,
       );
     }
     // 默认 true 的语义经 rawSaveResult 直接表达（wantsStore 判定见暂存段）；
@@ -638,19 +486,19 @@ export class PageExecTool extends BaseBrowserTool {
     if (
       readRef !== undefined &&
       readRef !== null &&
-      typeof readRef !== 'string'
+      typeof readRef !== "string"
     ) {
       return this.createErrorResponse(
-        `readRef 必须是字符串（暂存批次 ID），实际收到 ${Array.isArray(readRef) ? 'array' : typeof readRef}`
+        `readRef 必须是字符串（暂存批次 ID），实际收到 ${Array.isArray(readRef) ? "array" : typeof readRef}`,
       );
     }
-    const refId = typeof readRef === 'string' ? readRef.trim() : '';
+    const refId = typeof readRef === "string" ? readRef.trim() : "";
     const hasOffset = offset !== undefined && offset !== null;
     const hasLimit = limit !== undefined && limit !== null;
     if (refId) {
-      if (typeof code === 'string' && code.trim()) {
+      if (typeof code === "string" && code.trim()) {
         return this.createErrorResponse(
-          'readRef 与 code 互斥：分页读取暂存批次时不要同时提供 code（readRef 模式不会执行脚本）'
+          "readRef 与 code 互斥：分页读取暂存批次时不要同时提供 code（readRef 模式不会执行脚本）",
         );
       }
       return this.handleRead(refId, offset, limit);
@@ -660,24 +508,163 @@ export class PageExecTool extends BaseBrowserTool {
     // 阻断正常执行得不偿失；仅留日志便于排查参数误用
     if (hasOffset || hasLimit) {
       this.log(
-        'offset/limit provided without readRef in exec mode, ignored',
-        'warn'
+        "offset/limit provided without readRef in exec mode, ignored",
+        "warn",
       );
     }
-    if (!code || typeof code !== 'string' || !code.trim()) {
+    if (!code || typeof code !== "string" || !code.trim()) {
       return this.createErrorResponse(
-        'Parameter [code] is required and must be a non-empty string（或提供 readRef 分页读取暂存批次）'
+        "Parameter [code] is required and must be a non-empty string（或提供 readRef 分页读取暂存批次）",
       );
     }
 
+    const outcome = await this.executeScript(
+      {
+        code,
+        args: codeArgs,
+        world,
+        strategy,
+        awaitPromise,
+        timeout,
+        tabId: requestedTabId,
+        frameId,
+      },
+      context,
+    );
+    if (!outcome.ok) return this.createErrorResponse(outcome.error);
+
+    try {
+      // ── 1. 暂存判定：saveResult 默认开启；显式 false 仅当全量 ≤ 阈值时跳过，
+      //       超长结果无论参数如何都强制暂存（否则数据随 2000 字符截断丢失）。
+      //       wantsStore（意图）与 shouldStore（可执行）分离：显式/默认要暂存
+      //       但捕获失败时，意图仍在——告警必须照发，不能静默吞掉。 ──
+      const overLimit =
+        outcome.fullJson !== undefined &&
+        outcome.fullJson.length > DATA_CHARS_LIMIT;
+      const wantsStore = rawSaveResult !== false || overLimit;
+      const shouldStore = wantsStore && outcome.fullJson !== undefined;
+      let storedMeta: DataRefMeta | undefined;
+      let storeNote: string | undefined;
+      if (shouldStore && outcome.fullJson !== undefined) {
+        const saved = await saveDataRefJson(outcome.fullJson, label);
+        if (saved.ok) storedMeta = saved.meta;
+        else storeNote = saved.reason;
+      }
+
+      // ── 2. 结果封装：数据正文恒不超过 DATA_CHARS_LIMIT 字符 ──
+      const payload: Record<string, unknown> = {
+        tabId: outcome.tabId,
+        frameId: outcome.frameId,
+        url: outcome.url,
+        engine: outcome.engine,
+        world: outcome.world,
+        result: outcome.value,
+        resultType: outcome.type ?? typeof outcome.value,
+        durationMs: outcome.durationMs,
+        outcome: outcome.outcome,
+        attempts: outcome.attempts,
+      };
+
+      if (storedMeta && outcome.fullJson !== undefined) {
+        // 已暂存：正文 = 全量 JSON 的前缀（不足 DATA_CHARS_LIMIT 则全部封装）
+        const totalChars = outcome.fullJson.length;
+        payload.result = outcome.fullJson.slice(0, DATA_CHARS_LIMIT);
+        payload.resultType = "json-preview";
+        payload.totalChars = totalChars;
+        if (totalChars > DATA_CHARS_LIMIT) payload.resultTruncated = true;
+        payload.dataRef = storedMeta;
+        // 三态：explicit=显式 true；default=省略（默认开启）；auto=显式 false 但超限强制
+        payload.dataRefTrigger =
+          rawSaveResult === true
+            ? "explicit"
+            : rawSaveResult === false
+              ? "auto"
+              : "default";
+        payload.dataRefGuide = buildDataRefGuide(storedMeta, totalChars);
+      } else {
+        // 未暂存：净化结构化值直接返回；序列化后仍超限时降级为 JSON 文本前缀——
+        // 覆盖「捕获失败的超大返回值」与「暂存失败但全量在手」两种情形，
+        // 保证任何路径下输出的 data 正文都有界
+        const structuredText = stringifyJsonText(outcome.value);
+        const source = outcome.fullJson ?? structuredText;
+        if (
+          structuredText !== undefined &&
+          structuredText.length > DATA_CHARS_LIMIT &&
+          source !== undefined
+        ) {
+          payload.result = source.slice(0, DATA_CHARS_LIMIT);
+          payload.resultType = "json-preview";
+          payload.totalChars = source.length;
+          if (source.length > DATA_CHARS_LIMIT) payload.resultTruncated = true;
+        }
+      }
+
+      // ── 3. 暂存失败必须让模型感知 ──
+      const warnings: string[] = [];
+      if (!storedMeta && wantsStore) {
+        // 显式要求暂存、或已判定超长却没存上（容量/序列化/捕获失败）
+        warnings.push(
+          `数据暂存失败：${storeNote ?? outcome.captureNote ?? "未知原因"}`,
+        );
+      } else if (
+        !storedMeta &&
+        outcome.captureNote &&
+        payload.resultTruncated === true
+      ) {
+        // 未显式要求暂存，但捕获失败且可见输出已触顶：数据大概率超限且无法自动暂存
+        warnings.push(`无法自动暂存数据：${outcome.captureNote}`);
+      }
+      if (outcome.errorShapeHint) warnings.push(outcome.errorShapeHint);
+      if (warnings.length > 0) payload.warnings = warnings;
+
+      const message =
+        storedMeta && outcome.fullJson !== undefined
+          ? `Script executed via ${outcome.engine} (${outcome.world} world); 全量 ${outcome.fullJson.length} 字符已暂存为 ${storedMeta.id}（响应含前 ${Math.min(outcome.fullJson.length, DATA_CHARS_LIMIT)} 字符预览）`
+          : `Script executed via ${outcome.engine} (${outcome.world} world)`;
+      return this.createSuccessResponse(payload, message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return this.createErrorResponse(`Script execution failed: ${message}`);
+    }
+  }
+
+  /**
+   * 执行内核：参数校验 → 标签页解析 → runPageScript → 全量 JSON 捕获。
+   * 不做任何结果持久化（暂存区/结果文件由调用方决定），失败以 {ok:false}
+   * 返回而非抛出；kill 记账（activeTabId/activeEngine）随执行生命周期维护。
+   */
+  async executeScript(
+    args: {
+      code: string;
+      args?: unknown[];
+      world?: ExecWorld;
+      strategy?: ExecStrategy;
+      awaitPromise?: boolean;
+      timeout?: number;
+      tabId?: number;
+      frameId?: number;
+    },
+    context?: ToolExecutionContext,
+  ): Promise<PageExecOutcome> {
+    const {
+      code,
+      args: codeArgs,
+      world = "auto",
+      strategy = "auto",
+      awaitPromise = true,
+      timeout = PAGE_EXEC_DEFAULT_TIMEOUT_MS,
+      tabId: requestedTabId,
+      frameId = 0,
+    } = args;
+
     if (
-      !['auto', 'MAIN', 'ISOLATED'].includes(world) ||
-      !['auto', 'cdp', 'scripting'].includes(strategy) ||
-      typeof awaitPromise !== 'boolean'
+      !["auto", "MAIN", "ISOLATED"].includes(world) ||
+      !["auto", "cdp", "scripting"].includes(strategy) ||
+      typeof awaitPromise !== "boolean"
     )
-      return this.createErrorResponse('world/strategy/awaitPromise 参数无效');
+      return { ok: false, error: "world/strategy/awaitPromise 参数无效" };
     const timeoutError = validatePageExecTimeout(timeout);
-    if (timeoutError) return this.createErrorResponse(timeoutError);
+    if (timeoutError) return { ok: false, error: timeoutError };
     const timeoutMs = normalizePageExecTimeout(timeout);
 
     try {
@@ -688,16 +675,17 @@ export class PageExecTool extends BaseBrowserTool {
         requestedTabId !== null &&
         (!Number.isInteger(requestedTabId) || requestedTabId < 0)
       ) {
-        return this.createErrorResponse(
-          `Parameter [tabId] must be a non-negative integer, received: ${String(requestedTabId)}`
-        );
+        return {
+          ok: false,
+          error: `Parameter [tabId] must be a non-negative integer, received: ${String(requestedTabId)}`,
+        };
       }
       const tab =
         requestedTabId !== undefined && requestedTabId !== null
           ? await chrome.tabs.get(requestedTabId)
           : (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
-      if (!tab || typeof tab.id !== 'number') {
-        return this.createErrorResponse('No active tab found');
+      if (!tab || typeof tab.id !== "number") {
+        return { ok: false, error: "No active tab found" };
       }
       const tabId = tab.id;
       // 记账本次求值的目标（kill 钩子据此终止页面里的脚本）
@@ -706,161 +694,88 @@ export class PageExecTool extends BaseBrowserTool {
 
       // 受限页面（chrome:// 等）无法注入/调试，提前给出可操作的提示
       if (isRestrictedPageUrl(tab.url)) {
-        return this.createErrorResponse(
-          `Current page is a restricted URL (${tab.url}) where script execution is not permitted. ` +
-            `Navigate to a normal web page first (e.g. call check_restricted_url).`
-        );
+        return {
+          ok: false,
+          error:
+            `Current page is a restricted URL (${tab.url}) where script execution is not permitted. ` +
+            `Navigate to a normal web page first (e.g. call check_restricted_url).`,
+        };
       }
 
       if (!Number.isSafeInteger(frameId) || frameId < 0)
-        return this.createErrorResponse('frameId 必须为非负整数');
+        return { ok: false, error: "frameId 必须为非负整数" };
       if (requestedTabId != null) context?.onTabTarget?.(tabId);
-      const expression = this.buildExpression(code, codeArgs);
       const startedAt = Date.now();
       const attempts: EngineAttempt[] = [];
-      // 全量 JSON 捕获恒开：自动暂存判定与 2000 字符预览都依赖数据的真实长度
-      // （净化值有 200 元素/10k 字符截断，无法据此判断是否超阈值）
-      const captureJson = true;
 
-      const run = await this.runWithStrategy(
+      const run = await runPageScript({
         tabId,
-        expression,
+        frameId,
+        code,
+        args: codeArgs,
         world,
         strategy,
         awaitPromise,
         timeoutMs,
+        captureLimit: MAX_CAPTURE_CHARS,
         attempts,
-        captureJson,
-        frameId
-      );
+        // 通道切换记账：kill 钩子据此决定能否真正终止（CDP 可终止，注入不可）
+        onEngineChange: (engine) => {
+          this.activeEngine = engine;
+        },
+      });
 
       const durationMs = Date.now() - startedAt;
 
-      if (run.ok) {
-        const warnings: string[] = [];
-
-        // ── 1. 全量 JSON 捕获（始终尝试）──
-        // scripting 通道：页面侧已捕获未净化的全量 JSON（页面→background 通道有 6M 字符上限）；
-        // CDP 通道：值已完整回到 background，在此序列化并施加同一上限，两条通道口径一致
-        let fullJson: string | undefined;
-        let captureNote: string | undefined;
-        if (run.engine === 'scripting') {
-          if (typeof run.rawJson === 'string') {
-            fullJson = run.rawJson;
-          } else {
-            captureNote = run.rawJsonError ?? '全量数据捕获失败（未知原因）';
-          }
-        } else {
-          const text = stringifyJsonText(run.value);
-          if (text === undefined) {
-            captureNote = '返回值没有可用的 JSON 形态';
-          } else if (text.length > MAX_CAPTURE_CHARS) {
-            captureNote = `数据量 ${text.length} 字符超过单次暂存上限 ${MAX_CAPTURE_CHARS}——请在脚本内先筛选字段或限制条数后分批保存`;
-          } else {
-            fullJson = text;
-          }
-        }
-
-        // ── 2. 暂存判定：saveResult 默认开启；显式 false 仅当全量 ≤ 阈值时跳过，
-        //       超长结果无论参数如何都强制暂存（否则数据随 2000 字符截断丢失）。
-        //       wantsStore（意图）与 shouldStore（可执行）分离：显式/默认要暂存
-        //       但捕获失败时，意图仍在——告警必须照发，不能静默吞掉。 ──
-        const overLimit =
-          fullJson !== undefined && fullJson.length > DATA_CHARS_LIMIT;
-        const wantsStore = rawSaveResult !== false || overLimit;
-        const shouldStore = wantsStore && fullJson !== undefined;
-        let storedMeta: DataRefMeta | undefined;
-        let storeNote: string | undefined;
-        if (shouldStore && fullJson !== undefined) {
-          const saved = await saveDataRefJson(fullJson, label);
-          if (saved.ok) storedMeta = saved.meta;
-          else storeNote = saved.reason;
-        }
-
-        // ── 3. 结果封装：数据正文恒不超过 DATA_CHARS_LIMIT 字符 ──
-        const payload: Record<string, unknown> = {
-          tabId,
-          frameId,
-          url: tab.url,
-          engine: run.engine,
-          world: run.world,
-          result: run.value,
-          resultType: run.type ?? typeof run.value,
-          durationMs,
-          outcome: awaitPromise ? 'completed' : 'dispatched',
-          attempts,
+      if (!run.ok) {
+        return {
+          ok: false,
+          error: `Script execution failed on all engines: ${run.error}`,
         };
-
-        if (storedMeta && fullJson !== undefined) {
-          // 已暂存：正文 = 全量 JSON 的前缀（不足 DATA_CHARS_LIMIT 则全部封装）
-          const totalChars = fullJson.length;
-          payload.result = fullJson.slice(0, DATA_CHARS_LIMIT);
-          payload.resultType = 'json-preview';
-          payload.totalChars = totalChars;
-          if (totalChars > DATA_CHARS_LIMIT) payload.resultTruncated = true;
-          payload.dataRef = storedMeta;
-          // 三态：explicit=显式 true；default=省略（默认开启）；auto=显式 false 但超限强制
-          payload.dataRefTrigger =
-            rawSaveResult === true
-              ? 'explicit'
-              : rawSaveResult === false
-                ? 'auto'
-                : 'default';
-          payload.dataRefGuide = buildDataRefGuide(storedMeta, totalChars);
-        } else {
-          // 未暂存：净化结构化值直接返回；序列化后仍超限时降级为 JSON 文本前缀——
-          // 覆盖「捕获失败的超大返回值」与「暂存失败但全量在手」两种情形，
-          // 保证任何路径下输出的 data 正文都有界
-          const structuredText = stringifyJsonText(run.value);
-          const source = fullJson ?? structuredText;
-          if (
-            structuredText !== undefined &&
-            structuredText.length > DATA_CHARS_LIMIT &&
-            source !== undefined
-          ) {
-            payload.result = source.slice(0, DATA_CHARS_LIMIT);
-            payload.resultType = 'json-preview';
-            payload.totalChars = source.length;
-            if (source.length > DATA_CHARS_LIMIT)
-              payload.resultTruncated = true;
-          }
-        }
-
-        // ── 4. 暂存失败必须让模型感知 ──
-        if (!storedMeta && wantsStore) {
-          // 显式要求暂存、或已判定超长却没存上（容量/序列化/捕获失败）
-          warnings.push(
-            `数据暂存失败：${storeNote ?? captureNote ?? '未知原因'}`
-          );
-        } else if (
-          !storedMeta &&
-          captureNote &&
-          payload.resultTruncated === true
-        ) {
-          // 未显式要求暂存，但捕获失败且可见输出已触顶：数据大概率超限且无法自动暂存
-          warnings.push(`无法自动暂存数据：${captureNote}`);
-        }
-
-        // ── 5. 返回值疑似错误对象（fetch 未检查 res.ok 的常见形态）──
-        // 仅提示不改动结果：数据原样封装，模型自行核实（见 detectHttpErrorShape 注释）
-        const errorShapeHint = detectHttpErrorShape(run.value);
-        if (errorShapeHint) warnings.push(errorShapeHint);
-        if (warnings.length > 0) payload.warnings = warnings;
-
-        const message =
-          storedMeta && fullJson !== undefined
-            ? `Script executed via ${run.engine} (${run.world} world); 全量 ${fullJson.length} 字符已暂存为 ${storedMeta.id}（响应含前 ${Math.min(fullJson.length, DATA_CHARS_LIMIT)} 字符预览）`
-            : `Script executed via ${run.engine} (${run.world} world)`;
-        return this.createSuccessResponse(payload, message);
       }
 
-      return this.createErrorResponse(
-        `Script execution failed on all engines: ${run.error}`
-      );
+      // ── 全量 JSON 捕获 ──
+      // scripting 通道：页面侧已捕获未净化的全量 JSON（页面→background 通道有 6M 字符上限）；
+      // CDP 通道：值已完整回到 background，在此序列化并施加同一上限，两条通道口径一致
+      let fullJson: string | undefined;
+      let captureNote: string | undefined;
+      if (run.engine === "scripting") {
+        if (typeof run.rawJson === "string") {
+          fullJson = run.rawJson;
+        } else {
+          captureNote = run.rawJsonError ?? "全量数据捕获失败（未知原因）";
+        }
+      } else {
+        const text = stringifyJsonText(run.value);
+        if (text === undefined) {
+          captureNote = "返回值没有可用的 JSON 形态";
+        } else if (text.length > MAX_CAPTURE_CHARS) {
+          captureNote = `数据量 ${text.length} 字符超过单次捕获上限 ${MAX_CAPTURE_CHARS}——请在脚本内先筛选字段或限制条数后分批保存`;
+        } else {
+          fullJson = text;
+        }
+      }
+
+      return {
+        ok: true,
+        tabId,
+        frameId,
+        url: tab.url,
+        engine: run.engine,
+        world: run.world,
+        value: run.value,
+        type: run.type,
+        durationMs,
+        outcome: awaitPromise ? "completed" : "dispatched",
+        attempts,
+        ...(fullJson !== undefined ? { fullJson } : {}),
+        ...(captureNote !== undefined ? { captureNote } : {}),
+        errorShapeHint: detectHttpErrorShape(run.value),
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // debugger 附加失败等同步错误直接透出原因，便于模型切换策略重试
-      return this.createErrorResponse(`Script execution failed: ${message}`);
+      return { ok: false, error: `Script execution failed: ${message}` };
     } finally {
       // 清除求值记账：脚本已结束（或从未开始），此后不应再有 kill 请求打到
       // 这个标签页——否则一次过期中断会误杀页面上的无关脚本
@@ -886,7 +801,7 @@ export class PageExecTool extends BaseBrowserTool {
   async kill(_args: unknown, _context?: ToolExecutionContext): Promise<void> {
     const tabId = this.activeTabId;
     const engine = this.activeEngine;
-    if (tabId === null || engine !== 'cdp') return;
+    if (tabId === null || engine !== "cdp") return;
     await cdpSession.terminateExecution(tabId);
   }
 
@@ -903,7 +818,7 @@ export class PageExecTool extends BaseBrowserTool {
   private async handleRead(
     refId: string,
     rawOffset: unknown,
-    rawLimit: unknown
+    rawLimit: unknown,
   ): Promise<ToolResult> {
     const notes: string[] = [];
 
@@ -911,14 +826,14 @@ export class PageExecTool extends BaseBrowserTool {
     let offset = 0;
     if (rawOffset !== undefined && rawOffset !== null) {
       const parsed =
-        typeof rawOffset === 'number'
+        typeof rawOffset === "number"
           ? rawOffset
-          : typeof rawOffset === 'string' && rawOffset.trim() !== ''
+          : typeof rawOffset === "string" && rawOffset.trim() !== ""
             ? Number(rawOffset)
             : NaN;
       if (!Number.isFinite(parsed) || parsed < 0) {
         return this.createErrorResponse(
-          `offset 必须是 ≥0 的数字（字符偏移），实际收到 ${stringifyArgPreview(rawOffset)}`
+          `offset 必须是 ≥0 的数字（字符偏移），实际收到 ${stringifyArgPreview(rawOffset)}`,
         );
       }
       offset = Math.floor(parsed);
@@ -928,21 +843,21 @@ export class PageExecTool extends BaseBrowserTool {
     let limit = DATA_CHARS_LIMIT;
     if (rawLimit !== undefined && rawLimit !== null) {
       const parsed =
-        typeof rawLimit === 'number'
+        typeof rawLimit === "number"
           ? rawLimit
-          : typeof rawLimit === 'string' && rawLimit.trim() !== ''
+          : typeof rawLimit === "string" && rawLimit.trim() !== ""
             ? Number(rawLimit)
             : NaN;
       if (!Number.isFinite(parsed) || parsed <= 0) {
         return this.createErrorResponse(
-          `limit 必须是 1..${DATA_CHARS_LIMIT} 的数字（本页字符数），实际收到 ${stringifyArgPreview(rawLimit)}`
+          `limit 必须是 1..${DATA_CHARS_LIMIT} 的数字（本页字符数），实际收到 ${stringifyArgPreview(rawLimit)}`,
         );
       }
       limit = Math.floor(parsed);
       if (limit < 1) limit = 1; // 0<x<1 向下取整为 0 后兜底为 1（parsed>0 已保证存在小数可能）
       if (limit > DATA_CHARS_LIMIT) {
         notes.push(
-          `limit=${limit} 超出单页上限，已按 ${DATA_CHARS_LIMIT} 处理`
+          `limit=${limit} 超出单页上限，已按 ${DATA_CHARS_LIMIT} 处理`,
         );
         limit = DATA_CHARS_LIMIT;
       }
@@ -953,10 +868,10 @@ export class PageExecTool extends BaseBrowserTool {
       const existing = await listDataRefs();
       const hint =
         existing.length > 0
-          ? `当前可用批次（最多列出 10 个）：\n${existing.slice(0, 10).map(describeRefMeta).join('\n')}`
-          : '暂存区为空（数据可能已随浏览器会话过期，请重新抓取）。';
+          ? `当前可用批次（最多列出 10 个）：\n${existing.slice(0, 10).map(describeRefMeta).join("\n")}`
+          : "暂存区为空（数据可能已随浏览器会话过期，请重新抓取）。";
       return this.createErrorResponse(
-        `readRef "${refId}" 不存在或已过期。${hint}`
+        `readRef "${refId}" 不存在或已过期。${hint}`,
       );
     }
 
@@ -964,7 +879,7 @@ export class PageExecTool extends BaseBrowserTool {
     const start = Math.min(offset, totalChars);
     if (offset > totalChars) {
       notes.push(
-        `offset=${offset} 超出数据末尾（共 ${totalChars} 字符），已收敛到末尾返回空页`
+        `offset=${offset} 超出数据末尾（共 ${totalChars} 字符），已收敛到末尾返回空页`,
       );
     }
     const content = entry.json.slice(start, start + limit);
@@ -986,257 +901,13 @@ export class PageExecTool extends BaseBrowserTool {
         ...(entry.cols !== undefined ? { cols: entry.cols } : {}),
         bytes: entry.bytes,
       },
-      ...(notes.length > 0 ? { note: notes.join('；') } : {}),
+      ...(notes.length > 0 ? { note: notes.join("；") } : {}),
     };
 
     const message =
-      `已读取 ${entry.id}${entry.label ? `「${entry.label}」` : ''} 的 [${start}, ${end}) 字符区间` +
-      `（共 ${totalChars} 字符，${hasMore ? `还剩 ${totalChars - end} 字符，用 nextOffset 续读` : '已到末尾'}）`;
+      `已读取 ${entry.id}${entry.label ? `「${entry.label}」` : ""} 的 [${start}, ${end}) 字符区间` +
+      `（共 ${totalChars} 字符，${hasMore ? `还剩 ${totalChars - end} 字符，用 nextOffset 续读` : "已到末尾"}）`;
     return this.createSuccessResponse(payload, message);
-  }
-
-  /** One execution contract: async function body, explicit return, optional $args array. */
-  private buildExpression(code: string, codeArgs?: unknown[]): string {
-    if (codeArgs !== undefined && !Array.isArray(codeArgs))
-      throw new Error('args 必须为数组');
-    const argsJson = JSON.stringify(codeArgs ?? [])
-      .replace(/\u2028/g, '\\u2028')
-      .replace(/\u2029/g, '\\u2029');
-    return '(async function($args){\n' + code + '\n})(' + argsJson + ')';
-  }
-
-  /** 按策略逐级执行，收集每次尝试记录 */
-  private async runWithStrategy(
-    tabId: number,
-    expression: string,
-    world: ExecWorld,
-    strategy: ExecStrategy,
-    awaitPromise: boolean,
-    timeoutMs: number,
-    attempts: EngineAttempt[],
-    captureJson: boolean,
-    frameId = 0
-  ): Promise<{
-    ok: boolean;
-    engine?: 'scripting' | 'cdp';
-    world?: 'MAIN' | 'ISOLATED';
-    value?: unknown;
-    type?: string;
-    error?: string;
-    rawJson?: string;
-    rawJsonError?: string;
-  }> {
-    // —— 策略：强制 CDP ——
-    if (strategy === 'cdp') {
-      return this.runCdp(
-        tabId,
-        expression,
-        awaitPromise,
-        timeoutMs,
-        attempts,
-        frameId
-      );
-    }
-
-    // —— 策略：scripting（或 auto 的注入阶段）——
-    const primaryWorld: 'MAIN' | 'ISOLATED' =
-      world === 'ISOLATED' ? 'ISOLATED' : 'MAIN';
-    const scriptingResult = await this.runScripting(
-      tabId,
-      expression,
-      primaryWorld,
-      awaitPromise,
-      timeoutMs,
-      attempts,
-      captureJson,
-      frameId
-    );
-
-    if (scriptingResult.ok) {
-      return scriptingResult;
-    }
-
-    // No-result/transport failures may follow side effects. Never replay automatically.
-    // 注入世界为 MAIN 且因 CSP 拒绝 eval 失败：
-    // - auto 策略升级到 CDP 重试（最高权限，无视页面 CSP）；
-    // - scripting 策略不碰调试器，直接回退到隔离世界（DOM 操作仍可用）。
-    const cspBlocked = scriptingResult.cspBlocked === true;
-    if (primaryWorld === 'MAIN' && cspBlocked) {
-      if (frameId !== 0)
-        return this.runScripting(
-          tabId,
-          expression,
-          'ISOLATED',
-          awaitPromise,
-          timeoutMs,
-          attempts,
-          captureJson,
-          frameId
-        );
-      if (strategy === 'auto') {
-        this.log(
-          'MAIN world eval blocked by page CSP, escalating to CDP channel',
-          'warn'
-        );
-        const cdpResult = await this.runCdp(
-          tabId,
-          expression,
-          awaitPromise,
-          timeoutMs,
-          attempts,
-          frameId
-        );
-        if (cdpResult.ok) {
-          return cdpResult;
-        }
-        return cdpResult; // Execution may have started; do not replay in another world.
-      }
-      this.log(
-        'MAIN world eval blocked by page CSP, falling back to ISOLATED world (scripting strategy)',
-        'warn'
-      );
-      return this.runScripting(
-        tabId,
-        expression,
-        'ISOLATED',
-        awaitPromise,
-        timeoutMs,
-        attempts,
-        captureJson,
-        frameId
-      );
-    }
-
-    return scriptingResult;
-  }
-
-  /** scripting 通道执行（chrome.scripting.executeScript） */
-  private async runScripting(
-    tabId: number,
-    expression: string,
-    world: 'MAIN' | 'ISOLATED',
-    awaitPromise: boolean,
-    timeoutMs: number,
-    attempts: EngineAttempt[],
-    captureJson: boolean,
-    frameId = 0
-  ): Promise<{
-    ok: boolean;
-    engine: 'scripting';
-    world: 'MAIN' | 'ISOLATED';
-    value?: unknown;
-    type?: string;
-    error?: string;
-    cspBlocked?: boolean;
-    rawJson?: string;
-    rawJsonError?: string;
-  }> {
-    try {
-      this.activeEngine = 'scripting';
-      const results = await chrome.scripting.executeScript({
-        target: { tabId, frameIds: [frameId] },
-        func: pageConsoleEvaluate,
-        args: [
-          expression,
-          timeoutMs,
-          awaitPromise,
-          captureJson,
-          MAX_CAPTURE_CHARS,
-        ],
-        world,
-      });
-
-      const payload = results?.[0]?.result as InPageEvalResult | undefined;
-      if (payload && payload.success) {
-        attempts.push({ engine: 'scripting', world, ok: true });
-        return {
-          ok: true,
-          engine: 'scripting',
-          world,
-          value: payload.value,
-          type: payload.type,
-          ...(payload.rawJson !== undefined
-            ? { rawJson: payload.rawJson }
-            : {}),
-          ...(payload.rawJsonError !== undefined
-            ? { rawJsonError: payload.rawJsonError }
-            : {}),
-        };
-      }
-
-      const errorMsg =
-        payload?.error ?? 'No result returned from injected script';
-      attempts.push({ engine: 'scripting', world, ok: false, note: errorMsg });
-      return {
-        ok: false,
-        engine: 'scripting',
-        world,
-        error: errorMsg,
-        cspBlocked: payload?.safeFallback === true,
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      attempts.push({ engine: 'scripting', world, ok: false, note: message });
-      return {
-        ok: false,
-        engine: 'scripting',
-        world,
-        error: message,
-        cspBlocked: false,
-      };
-    }
-  }
-
-  /** CDP 通道执行（chrome.debugger + Runtime.evaluate，无视页面 CSP） */
-  private async runCdp(
-    tabId: number,
-    expression: string,
-    awaitPromise: boolean,
-    timeoutMs: number,
-    attempts: EngineAttempt[],
-    frameId = 0
-  ): Promise<{
-    ok: boolean;
-    engine: 'cdp';
-    world: 'MAIN';
-    value?: unknown;
-    type?: string;
-    error?: string;
-  }> {
-    if (frameId !== 0)
-      return {
-        ok: false,
-        engine: 'cdp',
-        world: 'MAIN',
-        error:
-          '指定子 frame 不支持顶层 CDP 求值；请用 world=ISOLATED、strategy=scripting，或使用纯文本辅助功能工具。',
-      };
-    if (!cdpSession.isSupported()) {
-      const note = 'chrome.debugger 不可用（当前环境不支持）';
-      attempts.push({ engine: 'cdp', world: 'MAIN', ok: false, note });
-      return { ok: false, engine: 'cdp', world: 'MAIN', error: note };
-    }
-
-    this.activeEngine = 'cdp';
-    const result = await cdpSession.evaluate(tabId, expression, {
-      awaitPromise,
-      timeoutMs,
-    });
-
-    if (result.ok) {
-      attempts.push({ engine: 'cdp', world: 'MAIN', ok: true });
-      return {
-        ok: true,
-        engine: 'cdp',
-        world: 'MAIN',
-        value: result.value,
-        type: result.remoteType ?? typeof result.value,
-      };
-    }
-
-    const errorMsg = result.error ?? 'Unknown CDP error';
-    attempts.push({ engine: 'cdp', world: 'MAIN', ok: false, note: errorMsg });
-    return { ok: false, engine: 'cdp', world: 'MAIN', error: errorMsg };
   }
 }
 

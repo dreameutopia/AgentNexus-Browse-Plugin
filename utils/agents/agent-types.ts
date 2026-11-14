@@ -4,6 +4,7 @@ import {
   type Locale,
   type NonDefaultLocale,
 } from '../i18n/locales';
+import { isHiddenAgentScriptTool } from '../../tools/javascript/js-contract';
 import { VISION_GUI_TOOL_ID } from '../../tools/vision/gui-contract';
 import { isSkillToolId } from '../skills/skill-tool-contract';
 /**
@@ -146,8 +147,17 @@ export type PresetDisplayTexts = Record<NonDefaultLocale, AgentDisplayText>;
  *
  * 因此「每个预置智能体都必须提供全部非默认语言的文案」是编译期约束：
  * 新增预置忘了写英文 → 编译报错；新增语言忘了给预置补文案 → 同样编译报错。
+ *
+ * `available` 同样**必填**：每个预置智能体都要显式声明自己的发布闸门
+ * （true = 对外可见 / false = 底层禁用），漏声明即编译失败——
+ * 让「这个预置要不要对外露出」成为每个预置作者必须回答的问题，
+ * 而不是靠默认值默默决定。
  */
-export type PresetAgentConfig = AgentConfig & { display: PresetDisplayTexts };
+export type PresetAgentConfig = AgentConfig & {
+  display: PresetDisplayTexts;
+  /** 发布闸门：true = 对外可见；false = 底层禁用（管理中心与 @ 选择器都看不到） */
+  available: boolean;
+};
 
 /**
  * 智能体配置（预置与自定义共用的领域对象）。
@@ -174,7 +184,7 @@ export interface AgentConfig {
   tools: string[];
   /**
    * 关联技能引用列表（去重；元素为技能 id / 名称 / 模型标识，经
-   * skill-availability.resolveSkill 三态解析）。可选：未声明 = 仅靠工具映射
+   * skill-availability.getSkillById 三态解析）。可选：未声明 = 仅靠工具映射
    * 兜底决定可用技能。预置与自定义智能体均可声明。
    */
   skills?: string[];
@@ -186,6 +196,20 @@ export interface AgentConfig {
    * 但仍可在管理中心查看 / 编辑 / 重新启用。
    */
   enabled?: boolean;
+  /**
+   * 对外可用闸门（**预置智能体的底层禁用开关**；自定义智能体不使用）。
+   *
+   * 缺省 = 可用。`false` 时该预置智能体在**管理中心**与**输入框 @ 选择器**
+   * 中完全不可见——比用户级 enabled 更底层：用户级停用只是「不可被选中」，
+   * 管理中心仍看得到、也仍能重新启用；而本开关由产品侧在代码里决定，
+   * 用户没有任何入口把它打开，只能随版本放行。
+   *
+   * 与 enabled 正交且互不覆盖：
+   *   - enabled   = 运行态（用户可切换、可持久化、可跨上下文同步）；
+   *   - available = 发布态（代码声明、随版本发布）。
+   * 自定义智能体恒为可用（归一化时该字段不落库，用户无法自行声明）。
+   */
+  available?: boolean;
   /** 标签（多个；保序去重，用于选择器过滤与管理页检索） */
   tags: string[];
   /**
@@ -368,7 +392,7 @@ export function normalizeToolIds(value: unknown): string[] {
     if (result.length >= AGENT_TOOLS_MAX_COUNT) break;
     if (typeof raw === 'string' && raw.startsWith('ed25519:') && (raw.length > AGENT_TOOL_ID_MAX_CHARS || !/^ed25519:[a-z2-7]{52}\/[a-z][a-z0-9]*(?:-[a-z0-9]+)*\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(raw))) continue;
     const toolId = clampText(raw, AGENT_TOOL_ID_MAX_CHARS);
-    if (!toolId) continue;
+    if (!toolId || isHiddenAgentScriptTool(toolId)) continue;
     if (seen.has(toolId)) continue;
     seen.add(toolId);
     result.push(toolId);
@@ -547,6 +571,21 @@ export function compareAgents(a: AgentConfig, b: AgentConfig): number {
  */
 export function filterEnabledAgents(agents: readonly AgentConfig[]): AgentConfig[] {
   return agents.filter(agent => agent.enabled !== false);
+}
+
+/**
+ * 过滤出「对外可见」的智能体（available 不为 false）。
+ *
+ * 与 filterEnabledAgents 的分工（两个正交的轴，不可互相替代）：
+ *   - available = 发布态闸门（代码声明）：不可见的智能体在任何列表里都不出现
+ *     （管理中心同样看不到），用户无法把它打开；
+ *   - enabled   = 运行态开关（用户可切换）：停用的智能体仍留在管理中心，
+ *     只是不能被 @ 选中。
+ *
+ * 纯函数（无 I/O），供存储层在列表出口统一收口。
+ */
+export function filterAvailableAgents(agents: readonly AgentConfig[]): AgentConfig[] {
+  return agents.filter(agent => agent.available !== false);
 }
 
 /**

@@ -319,6 +319,20 @@ async function main() {
     'ollama: done 末行计数归一化（prompt_eval / eval / cached）'
   );
 
+  // done_reason 透传：num_predict 截断必须归一为 length（不可掩成 stop），
+  // 否则上层 finishReason 调试日志与截断注记在 Ollama 协议下永远看不到截断
+  const olTruncated = await replay(
+    ollama,
+    '{"message":{"role":"assistant","content":"partial answer"},"done":false}\n' +
+      '{"message":{"role":"assistant","content":""},"done":true,"done_reason":"length","eval_count":64}\n'
+  );
+  eq(olTruncated.finishReason, 'length', 'ollama: done_reason=length 透传（num_predict 截断）');
+  const olLegacy = await replay(
+    ollama,
+    '{"message":{"role":"assistant","content":"hi"},"done":true}\n'
+  );
+  eq(olLegacy.finishReason, 'stop', 'ollama: 缺 done_reason 的宽容网关兜底 stop');
+
   // ---------- Gemini ----------
   const g1 = await replay(gemini, geminiSSE);
   eq(g1.content, 'Hello from Gemini', 'gemini: 文本拼接');
@@ -1656,6 +1670,16 @@ async function main() {
       mergeUsageSafe(undefined, normalizeUsageFromBody('gemini', { usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 3, totalTokenCount: 10 } })),
       { inputTokens: 7, outputTokens: 3, totalTokens: 10, cachedInputTokens: 0 },
       'usage: 非流式 gemini 布局（cachedContentTokenCount 缺失 = 0 命中，仍属有效上报）'
+    );
+    eqUsage(
+      mergeUsageSafe(undefined, normalizeUsageFromBody('gemini', {
+        usageMetadata: {
+          promptTokenCount: 100, toolUsePromptTokenCount: 20, candidatesTokenCount: 5,
+          thoughtsTokenCount: 3, totalTokenCount: 128, cachedContentTokenCount: 64,
+        },
+      })),
+      { inputTokens: 120, outputTokens: 8, totalTokens: 128, cachedInputTokens: 64, reasoningTokens: 3 },
+      'usage: gemini 工具提示 token 计入输入侧（total 口径 = prompt + tool-use + thoughts + candidates）'
     );
     eqUsage(
       mergeUsageSafe(undefined, normalizeUsageFromBody('ollama', { prompt_eval_count: 5, eval_count: 6 })),

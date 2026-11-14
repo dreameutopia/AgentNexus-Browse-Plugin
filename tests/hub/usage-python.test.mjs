@@ -3,8 +3,9 @@
  *
  * 覆盖本轮迁移的关键契约：
  *   1. 导航：两个分区在管理中心左导航中是独立入口，侧边栏设置弹窗不再保留；
- *   2. 使用监控：指标卡 / 筛选栏 / 协议聚合 / 模型占比 / 请求明细 / 失败摘要
- *      全部渲染，且**实时订阅**——引擎推送新快照后视图立即刷新；
+ *   2. 使用监控：指标卡 / 筛选栏 / 协议聚合 / 模型占比 / 详细数据（维度切换
+ *      卡片） / 请求明细（状态标签） / 失败摘要，且**实时订阅**——
+ *      引擎推送新快照后视图立即刷新；
  *   3. Python 环境：运行时详情四宫格 / 包芯片 / 目录搜索 / 测试运行台渲染，
  *      且**跨上下文实时同步**——watchPyodideEnv 推送新状态后视图立即刷新；
  *   4. 危险操作不弹 window.confirm：删环境走 HubDialog 弹窗二次确认
@@ -42,6 +43,7 @@ function base() {
     ],
     recentRequests: [
       { at:1000, provider:'openai', model:'gpt-4.1', kind:'chat', outcome:'success', channelId:'ch-a', channelLabel:'OpenAI 官方', agentId:'调研助手', iteration:1, usage:{ inputTokens:100, outputTokens:20 } },
+      { at:2000, provider:'anthropic', model:'claude-sonnet-4.5', kind:'chat', outcome:'success', channelId:'ch-b', channelLabel:'Anthropic 官方', agentId:'', iteration:2, prefixChanged:false, usage:{ inputTokens:200, cachedInputTokens:150, outputTokens:40 } },
     ],
     schemaVersion:2, startedAt:100, updatedAt:200,
     totals: {
@@ -121,7 +123,7 @@ export const useLocale=()=>({locale:ref('zh-CN'),switchLocale:()=>{}});export co
         api.onResolve({ filter: /@\/utils\/skills\/skill-store$/ }, args => ({ path: 'skill-store-stub', namespace: 'skill-store' }));
         api.onLoad({ filter: /.*/, namespace: 'skill-store' }, () => ({
           contents: `export function getAllSkills(){ return []; }
-export function onSkillsChange(){ return () => {}; } export function resolveSkill(){ return null; }`,
+export function onSkillsChange(){ return () => {}; } export function getSkillById(){ return null; } export async function restoreCustomSkillsFromStorage(){} export async function setCustomSkill(){return {ok:false,reason:'invalid'};}`,
         }));
         // 用量统计引擎：固定快照 + 可推送
         // 注意 path 必须固定：esbuild 以「namespace + path」标识模块，
@@ -143,14 +145,14 @@ export const driverRegistry={ tryGet(id){ return LABELS[id]?{meta:{label:LABELS[
           contents: `export const PYODIDE_VERSION='0.28.3';
 export const PYODIDE_CORE_FILES=[{label:'python311.wasm',url:'https://x/python311.wasm',contentType:'application/wasm'}];
 export const PYODIDE_FEATURED_PACKAGES=['numpy','pandas'];
-export const DEFAULT_PYODIDE_ENV_STATE={status:'idle',pythonVersion:'',version:PYODIDE_VERSION,verifiedAt:0,packages:[],lastError:'',skillScriptsEnabled:false};
+export const DEFAULT_PYODIDE_ENV_STATE={status:'idle',pythonVersion:'',version:PYODIDE_VERSION,verifiedAt:0,packages:[],lastError:''};
 const listeners=new Set();
 let envState={status:'ready',pythonVersion:'3.14.0',version:PYODIDE_VERSION,verifiedAt:1000,
-  packages:[{name:'numpy',version:'2.3.1'}],lastError:'',skillScriptsEnabled:false};
+  packages:[{name:'numpy',version:'2.3.1'}],lastError:''};
 export async function getPyodideEnvState(){ return JSON.parse(JSON.stringify(envState)); }
 export async function updatePyodideEnvState(patch){ envState={...envState,...patch}; listeners.forEach(l=>l(JSON.parse(JSON.stringify(envState)))); return envState; }
-export async function setSkillScriptsEnabled(enabled){ if(enabled && envState.status!=='ready') throw new Error('Python runtime is not ready'); envState={...envState,skillScriptsEnabled:enabled}; listeners.forEach(l=>l(JSON.parse(JSON.stringify(envState)))); return envState; }
-export async function isSkillScriptSupportEnabled(){ return !!envState.skillScriptsEnabled; }
+export async function updatePyodideEnvIfCurrent(id, patch){ if(envState.environmentId===id) return updatePyodideEnvState(patch); }
+export async function beginPyodideSetup(){ return updatePyodideEnvState({status:'downloading',environmentId:'fixture-setup'}); }
 export function watchPyodideEnv(l){ listeners.add(l); return ()=>listeners.delete(l); }
 export async function ensurePyodideRuntime(){ return {}; }
 export async function verifyPyodideRuntime(){ return {pythonVersion:'3.14.0',implementation:'CPython',checksumOk:true}; }
@@ -158,7 +160,7 @@ export async function clearFiles(){ envState={...DEFAULT_PYODIDE_ENV_STATE}; }
 export async function purgePyodideEnvironment(){
   await clearFiles();
   await clearMicropipManifest();
-  await updatePyodideEnvState({status:'idle',pythonVersion:'',version:PYODIDE_VERSION,verifiedAt:0,packages:[],lastError:'',skillScriptsEnabled:false});
+  await updatePyodideEnvState({status:'idle',pythonVersion:'',version:PYODIDE_VERSION,verifiedAt:0,packages:[],lastError:''});
 }
 export async function downloadPyodideFile(){}
 export async function listFileMeta(){ return [{name:'python311.wasm',size:1048576}]; }
@@ -270,10 +272,10 @@ assert.ok(usageText.includes('统计起点'), '渲染统计起点');
 assert.ok(usageText.includes('总请求次数'), '渲染总请求次数卡片');
 assert.ok(usageText.includes('请求成功率'), '渲染成功率卡片');
 assert.ok(usageText.includes('总消耗 Token'), '渲染总 Token 卡片');
-assert.ok(usageText.includes('输入 Token 缓存占比'), '渲染缓存占比卡片');
+assert.ok(usageText.includes('Token 缓存命中率'), '渲染缓存命中率卡片');
 assert.ok(usageText.includes('按协议统计'), '渲染按协议聚合分组');
 assert.ok(usageText.includes('各模型 Token 消耗占比'), '渲染模型占比分组');
-assert.ok(usageText.includes('按渠道、模型和智能体查看缓存'), '渲染缓存诊断分组');
+assert.ok(usageText.includes('详细数据'), '渲染详细数据分组（原「按渠道、模型和智能体查看缓存」）');
 assert.ok(usageText.includes('请求明细'), '渲染请求明细分组');
 assert.ok(usageText.includes('最近失败原因'), '渲染最近失败分组');
 assert.ok(usageText.includes('OpenAI'), '渲染协议名（OpenAI）');
@@ -287,6 +289,26 @@ assert.ok(qa('.hub-usage__filters .hub-list-search').length === 1, '含模型/�
 assert.ok(qa('.hub-usage__filters .hub-select').length === 3, '含渠道 / 模型 / 智能体三个自绘下拉');
 assert.ok(qa('.hub-usage__filters .hub-seg').length === 1, '含排序分段控件');
 assert.equal(qa('.hub-usage select').length, 0, '不得出现原生 <select>');
+
+// 详细数据：维度切换（渠道 / 模型 / 智能体）+ 聚合卡片 + 限高滚动容器
+assert.equal(qa('.hub-usage__dimension').length, 1, '详细数据含维度切换分段控件');
+assert.equal(qa('.hub-usage__dimension .hub-seg__btn').length, 3, '维度切换含渠道 / 模型 / 智能体三项');
+assert.equal(qa('.hub-usage__detail-card').length, 2, '默认按渠道聚合为两张卡片');
+assert.equal(qa('.hub-usage__detail-scroll').length, 1, '详细数据容器限高可滚动');
+const agentDimBtn = qa('.hub-usage__dimension .hub-seg__btn')[2];
+agentDimBtn.click();
+await flush();
+const detailText = q('.hub-usage__detail-scroll')?.textContent ?? '';
+assert.ok(detailText.includes('调研助手'), '切到按智能体后卡片显示智能体名');
+assert.ok(detailText.includes('普通 / 其他请求'), '空智能体归入「其他请求」卡片');
+
+// 请求明细：结局 / 缓存状态渲染为标签（前缀稳定 → 「缓存命中」）
+assert.ok(qa('.hub-usage__scroll').length >= 2, '请求明细与失败原因均为限高滚动容器');
+const tagTexts = qa('.hub-usage__tag').map(el => el.textContent.trim());
+assert.ok(tagTexts.includes('首轮'), '首轮请求渲染标签');
+assert.ok(tagTexts.includes('缓存命中'), '前缀稳定请求渲染「缓存命中」标签');
+assert.ok(tagTexts.includes('成功'), '结局渲染为标签而非裸枚举值');
+assert.ok(!tagTexts.includes('success'), '不得出现裸英文枚举 outcome');
 
 // 筛选生效：文本搜索命中模型名
 const searchInput = q('.hub-usage__filters .hub-list-search');
@@ -309,17 +331,7 @@ assert.ok(q('.hub-usage__meta')?.textContent?.includes('最近更新'), '渲染�
 const pythonRoot = q('.hub-python');
 assert.ok(pythonRoot, 'Python 环境分区渲染');
 const pythonText = pythonRoot.textContent;
-const skillSwitch = () => q('input[role="switch"][aria-label="运行时 Skill 脚本支持"]');
-assert.equal(skillSwitch()?.checked, false, 'Skill 脚本默认关闭');
-const skillHelp = q('[aria-controls="python-skill-scripts-help"]');
-assert.equal(skillHelp.previousElementSibling, null, '问号位于设置标题左侧');
-skillHelp.click();
-await flush();
-assert.equal(skillHelp.getAttribute('aria-expanded'), 'true');
-assert.match(q('#python-skill-scripts-help').textContent, /恶意代码/);
-skillSwitch().click();
-await flush();
-assert.equal(skillSwitch()?.checked, true, '用户可以独立启用 Skill 脚本支持');
+assert.equal(q('[aria-controls="python-skill-scripts-help"]'), null, 'Skill 资源不再受 Python 开关门控');
 
 assert.ok(pythonText.includes('Python 环境'), '渲染标题「Python 环境」');
 assert.ok(pythonText.includes('BETA'), '渲染 BETA 徽标');
@@ -447,10 +459,8 @@ assert.deepEqual(api.__micropipSnapshot().packages, [], '确认删除后 micropi
 const pythonAfterRemove = q('.hub-python')?.textContent ?? '';
 assert.ok(pythonAfterRemove.includes('未安装'), '删除后状态回落「未安装」');
 assert.ok(!pythonAfterRemove.includes('已就绪'), '删除后不再展示就绪态');
-assert.equal(skillSwitch(), null, '卸载后隐藏脚本支持开关');
 api.__pushEnv({ status: 'ready' });
 await flush();
-assert.equal(skillSwitch()?.checked, false, '重新安装后仍默认关闭');
 
 // 静态契约：桩掩盖了真实删除实现，这里锁住真实编排的覆盖面——
 // UI 走单一入口、运行时层清 micropip 清单 + 丢单例、离屏宿主回收 Worker
@@ -458,7 +468,7 @@ const sectionSource = readFileSync(path.resolve('entrypoints/hub/python/PythonSe
 assert.ok(sectionSource.includes('purgePyodideEnvironment'), 'UI 删除流程走 purgePyodideEnvironment 单一入口');
 assert.ok(!/requestRemoveEnv|remove-env/.test(sectionSource), '行内 armed 删环境流程已移除');
 const runtimeSource = readFileSync(path.resolve('utils/pyodide/pyodide-runtime.ts'), 'utf8');
-assert.ok(/purgePyodideEnvironment\(\)[\s\S]*?clearMicropipManifest\(\)/.test(runtimeSource), '删除编排清空 micropip 复用清单');
+assert.ok(/purgePyodideEnvironment\(\)[\s\S]*?clearMicropipManifest\(true\)/.test(runtimeSource), '删除编排清空 micropip 复用清单并报告失败');
 assert.ok(runtimeSource.includes('resetPyodideRuntime'), '删除编排丢弃本页运行时单例');
 const hostSource = readFileSync(path.resolve('entrypoints/screen-share-offscreen/python-host.ts'), 'utf8');
 assert.ok(hostSource.includes('PYTHON_HOST_RESET'), '离屏宿主处理环境重置消息（回收 Worker）');
@@ -474,6 +484,13 @@ for (const [name, css] of [['usage-section.css', usageCss], ['python-section.css
     `${name} 不得残留蓝紫色`,
   );
 }
+// 使用监控布局契约：明细 / 失败限高滚动 + 宽屏并排 + 详细数据卡片网格
+assert.ok(
+  /\.hub-usage__scroll,\s*\.hub-usage__detail-scroll\s*\{[^}]*max-height/.test(usageCss),
+  '请求明细 / 失败 / 详细数据容器限高（超出滚动）',
+);
+assert.ok(usageCss.includes('.hub-usage__split'), '请求明细与失败原因宽屏左右并排布局');
+assert.ok(usageCss.includes('.hub-usage__detail-grid'), '详细数据为一行多卡的网格布局');
 
 // 侧边栏设置弹窗不再保留这两个分区
 const settingsModal = readFileSync(path.resolve('entrypoints/sidepanel/components/modals/SettingsModal.vue'), 'utf8');

@@ -16,6 +16,8 @@
  */
 
 /** 默认等待上限（毫秒）——与 browser_navigation 各导航 action 的 timeout 默认值同源 */
+import { abortable, abortableDelay, withTimeBudget } from '@/utils/shared/abort';
+
 export const PAGE_LOAD_DEFAULT_TIMEOUT_MS = 30_000;
 /**
  * 等待类 timeout 的合法上限（毫秒）。
@@ -35,6 +37,7 @@ export const WAIT_INTERVAL_MIN_MS = 50;
 export const WAIT_INTERVAL_MAX_MS = 10_000;
 
 export interface TabReadyOptions {
+  signal?: AbortSignal;
   /** 等待上限（毫秒，默认 PAGE_LOAD_DEFAULT_TIMEOUT_MS） */
   timeoutMs?: number;
   /** 轮询间隔（毫秒，默认 PAGE_LOAD_DEFAULT_POLL_MS） */
@@ -67,9 +70,10 @@ export type TabReadyOutcome =
  * 等待指定标签页达到就绪状态（可被调用方传入的超时/间隔约束的有界等待）。
  * 纯轮询 chrome.tabs + 可失败的 readyState 探测，不写任何页面状态。
  */
-export async function waitForTabReady(
+async function pollTabReady(
   tabId: number,
   options: TabReadyOptions = {},
+  progress: { status?: string; consecutive?: number } = {},
 ): Promise<TabReadyOutcome> {
   const timeoutMs = options.timeoutMs ?? PAGE_LOAD_DEFAULT_TIMEOUT_MS;
   const pollIntervalMs = options.pollIntervalMs ?? PAGE_LOAD_DEFAULT_POLL_MS;
@@ -79,27 +83,30 @@ export async function waitForTabReady(
   let lastStatus: string | undefined;
 
   while (Date.now() - startedAt < timeoutMs) {
+    options.signal?.throwIfAborted();
     // 空值防御：真实 chrome.tabs.get 对缺失 id 会 reject，但实现不依赖该行为——
     // 解析出 undefined（桩/异常实现）同样按「标签页已关闭」收口，绝不裸读 .status
     let tab: chrome.tabs.Tab | undefined;
     try {
-      tab = await chrome.tabs.get(tabId);
+      tab = await abortable(chrome.tabs.get(tabId), options.signal);
     } catch {
+      options.signal?.throwIfAborted();
       tab = undefined;
     }
     if (!tab) {
       return { ready: false, reason: 'closed', elapsedMs: Date.now() - startedAt, status: lastStatus };
     }
     lastStatus = tab.status;
+    progress.status = lastStatus;
 
     if (tab.status === 'complete') {
       let ready: boolean;
       let confirmed = false;
       try {
-        const probe = await chrome.scripting.executeScript({
+        const probe = await abortable(chrome.scripting.executeScript({
           target: { tabId },
           func: () => document.readyState,
-        });
+        }), options.signal);
         const state = probe?.[0]?.result;
         if (typeof state === 'string') {
           // 探测成功：只有明确知道未就绪才继续等待
@@ -110,6 +117,7 @@ export async function waitForTabReady(
           ready = true;
         }
       } catch {
+        options.signal?.throwIfAborted();
         // 探测被拒绝（受限页）：退化为只看 tab.status
         ready = true;
       }
@@ -138,9 +146,10 @@ export async function waitForTabReady(
 
     // 有界睡眠：轮询间隔只取剩余预算内的值——timeout 短于间隔时不得多睡一个
     // 间隔（否则 50ms 预算 + 10s 间隔会实等 10s，超时语义失效）
+    progress.consecutive = consecutive;
     const remainingMs = timeoutMs - (Date.now() - startedAt);
     if (remainingMs <= 0) break;
-    await new Promise(resolve => setTimeout(resolve, Math.min(pollIntervalMs, remainingMs)));
+    await abortableDelay(Math.min(pollIntervalMs, remainingMs), options.signal);
   }
 
   return {
@@ -150,4 +159,21 @@ export async function waitForTabReady(
     status: lastStatus,
     consecutive,
   };
+}
+
+/** Include stalled browser API calls in the readiness budget, with cancellation taking precedence. */
+export async function waitForTabReady(tabId: number, options: TabReadyOptions = {}): Promise<TabReadyOutcome> {
+  options.signal?.throwIfAborted();
+  const timeoutMs = options.timeoutMs ?? PAGE_LOAD_DEFAULT_TIMEOUT_MS;
+  const pollIntervalMs = options.pollIntervalMs ?? PAGE_LOAD_DEFAULT_POLL_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 2_147_483_647 || !Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) throw new RangeError('Invalid page readiness timeout or polling interval');
+  if (!timeoutMs) return { ready: false, reason: 'timeout', elapsedMs: 0 };
+  const startedAt = Date.now();
+  const progress: { status?: string; consecutive?: number } = {};
+  try { return await withTimeBudget(timeoutMs, signal => pollTabReady(tabId, { ...options, signal }, progress), options.signal); }
+  catch (error) {
+    options.signal?.throwIfAborted();
+    if (error instanceof DOMException && error.name === 'TimeoutError') return { ready: false, reason: 'timeout', elapsedMs: Date.now() - startedAt, ...progress };
+    throw error;
+  }
 }

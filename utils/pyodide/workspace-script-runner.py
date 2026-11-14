@@ -1,6 +1,7 @@
 import ast
 import importlib.metadata
 import importlib.util
+import importlib
 import io
 import json
 import os
@@ -24,9 +25,16 @@ class WorkspaceScript:
         self.root = Path.cwd().resolve()
         self.entry = self.inside(self.root / request["path"])
         self.parts = Path(request["path"]).parts
-        self.project = self.inside(self.root.joinpath(*self.parts[:3])) if (
-            len(self.parts) >= 4 and self.parts[0] == "skills"
-        ) else self.root
+        self.project = self.root
+        # Find copied Skill roots by their manifest, never by a storage directory convention.
+        for directory in self.entry.parents:
+            if not directory.is_relative_to(self.root):
+                break
+            if (directory / "SKILL.md").is_file():
+                self.project = self.inside(directory)
+                break
+        if "cwd" in request:
+            self.project = self.inside(self.root / request["cwd"])
         self.cwd = self.inside(self.root / request["cwd"]) if "cwd" in request else self.project
         if not self.cwd.is_dir():
             raise NotADirectoryError("Script cwd does not exist: " + request.get("cwd", "."))
@@ -298,7 +306,21 @@ class WorkspaceScript:
         chdir, environ = os.chdir, os.environ
         old_cwd, old_argv, old_path, old_stdin = Path.cwd(), sys.argv, sys.path, sys.stdin
         previous_env = dict(environ)
+        previous_bytecode = sys.dont_write_bytecode
+        def clear_workspace_modules():
+            # Keep installed dependencies warm, but never retain a previous revision of a project module.
+            for name, module in list(sys.modules.items()):
+                try:
+                    values = vars(module)
+                    paths = [values.get("__file__"), *values.get("__path__", ())]
+                    if any(isinstance(path, str) and Path(path).resolve().is_relative_to(self.root) for path in paths):
+                        sys.modules.pop(name, None)
+                except (TypeError, ValueError, OSError):
+                    continue
+            importlib.invalidate_caches()
         try:
+            clear_workspace_modules()
+            sys.dont_write_bytecode = True
             chdir(self.cwd)
             sys.path = [str(self.inside(path)) for path in self.search] + old_path
             sys.argv = [str(self.entry), *self.request["argv"]]
@@ -322,6 +344,8 @@ class WorkspaceScript:
                     "Import names can differ from distribution names; inspect the manifest before installing."
                 ) from error
         finally:
+            clear_workspace_modules()
+            sys.dont_write_bytecode = previous_bytecode
             sys.argv, sys.path, sys.stdin = old_argv, old_path, old_stdin
             os.environ = environ
             environ.clear()

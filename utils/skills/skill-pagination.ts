@@ -3,8 +3,8 @@
  *
  * 背景：多文件技能落地后，SKILL.md 正文与资源文件都可能远超单次注入的合理
  * 体量（Agent Skills 规范建议正文 < 5000 token，参考文件「按需加载」）。
- * 本模块把任意文本按 token 预算切成确定性的页，供 load_skill（正文）与
- * read_skill_file（资源文件）共用——两条读取路径的页码口径完全一致。
+ * 本模块把任意文本按 token 预算切成确定性的页，供 skill_tool(action="load")（正文）与
+ * skill_tool(action="read")（资源文件）共用——两条读取路径的页码口径完全一致。
  *
  * 口径与唯一实现：
  *   - token 计量复用 utils/ai/token-estimate 的启发式（CJK ≈ 1 token/字、
@@ -26,7 +26,7 @@ import {
 } from '@/entrypoints/sidepanel/utils/ai/token-estimate';
 
 /**
- * 单次读取的 token 预算（load_skill 正文页与 read_skill_file 文件页共用）。
+ * 单次读取的 token 预算（skill_tool(action="load") 正文页与 skill_tool(action="read") 文件页共用）。
  * 3000 对齐 Agent Skills 规范「SKILL.md 正文建议 < 5000 token」的量级，
  * 给指令装配的其余段（优先级约定 / 资源清单 / 环境说明）留出头寸。
  */

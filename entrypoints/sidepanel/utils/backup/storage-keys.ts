@@ -22,10 +22,10 @@ import type { StorageCategoryId } from './types';
 // 漏的那处会表现为「统计缺数」且无任何报错。
 import { LEARN_DRAFT_STORAGE_KEY } from '@/utils/learn/learn-types';
 
-/** chrome.storage.local：自定义技能数组（utils/skills/skill-store） */
-export const SKILLS_STORAGE_KEY = 'agentNexusCustomSkills';
-/** chrome.storage.local + localStorage：预置技能启停覆盖（utils/skills/skill-store） */
-export const SKILL_TOGGLES_STORAGE_KEY = 'agentNexusSkillPresetToggles';
+import { SKILLS_STORAGE_KEY, SKILL_TOGGLES_STORAGE_KEY } from '@/utils/skills/skill-storage';
+export { SKILLS_STORAGE_KEY, SKILL_TOGGLES_STORAGE_KEY, SKILLS_REVISION_KEY } from '@/utils/skills/skill-storage';
+/** Skill lifecycle state and explicit user reminder preference. */
+export const SKILL_LIFECYCLE_KEYS = ['agentNexusAgentSkillLinks', 'agentNexusManagedPluginSkills', 'agentNexusManagedPluginSkills:packages', 'agentNexusSkillCaptureHidden'] as const;
 /** chrome.storage.local + localStorage：自定义智能体数组（utils/agents/agent-store） */
 export const AGENTS_STORAGE_KEY = 'agentNexusCustomAgents';
 /** chrome.storage.local + localStorage：会话任务计划载荷（utils/plan/plan-store） */
@@ -70,13 +70,11 @@ export const MISC_CHROME_KEYS: readonly string[] = [
 export const MISC_LOCAL_KEYS: readonly string[] = [NOTES_THEME_STORAGE_KEY];
 
 /**
- * 技能 / 智能体的 localStorage 同步缓存键（与 chrome 键同名）。
+ * 智能体 / 计划的 localStorage 同步缓存键（与 chrome 键同名）。
  * 恢复时双写：chrome 为权威源，localStorage 为同步读缓存——只写一侧会在
  * 「chrome 被清但 localStorage 尚存」的恢复路径上留下新旧不一致。
  */
 export const LOCAL_MIRROR_KEYS: readonly string[] = [
-  SKILLS_STORAGE_KEY,
-  SKILL_TOGGLES_STORAGE_KEY,
   AGENTS_STORAGE_KEY,
   PLANS_STORAGE_KEY,
 ];
@@ -98,6 +96,7 @@ export const CHROME_KEY_CATEGORY: Readonly<Record<string, StorageCategoryId>> = 
   // —— 技能 ——
   [SKILLS_STORAGE_KEY]: 'skills',
   [SKILL_TOGGLES_STORAGE_KEY]: 'skills',
+  ...Object.fromEntries(SKILL_LIFECYCLE_KEYS.map(key => [key, 'skills' as const])),
   // —— 智能体 ——
   [AGENTS_STORAGE_KEY]: 'agents',
   // —— 会话计划 ——

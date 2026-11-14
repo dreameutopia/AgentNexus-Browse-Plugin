@@ -560,6 +560,7 @@
  * 采样参数（temperature / maxTokens）与流式开关已移除——统一取用户全局 API 配置，流式恒开。
  * 写入经 utils/agents/agent-store（chrome.storage 权威源），跨上下文实时同步到 sidepanel。
  */
+import { replaceAgentSkillLinks } from '@/utils/agents/agent-skill-links';
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { t, type MessageKey } from '@/utils/i18n';
 // 智能体头像展示（图片或 emoji，无背景色）：预置 / 自定义 / 导入三类智能体共用
@@ -608,7 +609,7 @@ import { VISION_GUI_TOOL_ID } from '@/tools/vision/gui-contract';
 // 工具元数据（完整名称 / 介绍 / 输入参数）：按需加载，管理页主 bundle 不含工具实现
 import { loadToolDefinitions } from '@/utils/tools/tool-metadata';
 import type { ToolDefinition } from '@/entrypoints/sidepanel/components/tool/types';
-import { getAllSkills, onSkillsChange, resolveSkill, type SkillRecord } from '@/utils/skills/skill-store';
+import { getAllSkills, onSkillsChange, getSkillById, type SkillRecord } from '@/utils/skills/skill-store';
 import { findDuplicateSkillNames } from '@/utils/skills/skill-types';
 import {
   getPyodideEnvState,
@@ -636,10 +637,8 @@ const toolGroups: ReadonlyArray<ToolGroupMeta> = [
   { id: 'domInteract', nameKey: 'hub.groupDomInteract', descKey: 'hub.groupDomInteractDesc' },
   { id: 'tabsWindows', nameKey: 'hub.groupTabsWindows', descKey: 'hub.groupTabsWindowsDesc' },
   { id: 'scripting', nameKey: 'hub.groupScripting', descKey: 'hub.groupScriptingDesc' },
-  { id: 'navigation', nameKey: 'hub.groupNavigation', descKey: 'hub.groupNavigationDesc' },
   { id: 'bookmarkHistory', nameKey: 'hub.groupBookmarkHistory', descKey: 'hub.groupBookmarkHistoryDesc' },
   { id: 'resource', nameKey: 'hub.groupResource', descKey: 'hub.groupResourceDesc' },
-  { id: 'resourceCapture', nameKey: 'hub.groupResourceCapture', descKey: 'hub.groupResourceCaptureDesc' },
   { id: 'files', nameKey: 'hub.groupFiles', descKey: 'hub.groupFilesDesc' },
   { id: 'data', nameKey: 'hub.groupData', descKey: 'hub.groupDataDesc' },
   { id: 'networkTools', nameKey: 'hub.groupNetworkTools', descKey: 'hub.groupNetworkToolsDesc' },
@@ -840,8 +839,7 @@ const filteredSkills = computed(() => {
     const haystack = [
       skillOptionLabel(skill),
       skill.description,
-      skill.plugin?.displayName ?? '',
-      skill.plugin?.publisher ?? '',
+      skill.origin?.pluginKey ?? '',
       ...skill.tags,
     ]
       .join(' ')
@@ -974,8 +972,8 @@ async function openSkillDetail(skill: SkillRecord): Promise<void> {
       { label: t('hub.detailSkillTags'), value: skill.tags.length ? skill.tags.join('、') : '—' },
       {
         label: t('hub.detailSkillSource'),
-        value: skill.plugin
-          ? `${skill.plugin.displayName} ${skill.plugin.version} · ${skill.plugin.publisher}`
+        value: skill.origin
+          ? `${skill.origin.pluginKey} ${skill.origin.version}`
           : t('hub.custom'),
       },
     ],
@@ -1009,6 +1007,8 @@ const form = reactive({
   skills: [] as string[],
   /** 头像（图片或 emoji）；未选择时为 undefined，由 UI 回退默认 emoji */
   avatar: undefined as AgentConfig['avatar'],
+  /** 富组件等运行能力；编辑器不直接暴露，编辑/复制插件智能体时原样保留 */
+  capabilities: undefined as AgentConfig['capabilities'],
   visionEnabled: false,
 });
 
@@ -1159,6 +1159,7 @@ function resetForm(): void {
   selectedToolIds.value = [];
   form.skills = [];
   form.avatar = undefined;
+  form.capabilities = undefined;
   form.visionEnabled = false;
   errorMessage.value = '';
   showLimitHint.value = false;
@@ -1194,6 +1195,7 @@ function copyPluginAgent(agent: AgentConfig): void {
   // 工具经归一化带入（扁平集合去重 + 剔除 vision_gui 残留；组状态由勾选集合派生）
   selectedToolIds.value = sanitizeAgentTools(agent.tools);
   form.skills = [...(agent.skills ?? [])]; form.category = agent.category; form.avatar = agent.avatar;
+  form.capabilities = agent.capabilities ? structuredClone(agent.capabilities) : undefined;
   // 视觉操作声明随复制带入（与 startEdit 同口径）：否则复制视觉智能体会静默
   // 丢掉开关——新不变量下 vision_gui 由开关驱动，丢开关等于丢能力
   form.visionEnabled = !!agent.vision;
@@ -1211,11 +1213,11 @@ function startEdit(agent: AgentConfig): void {
   // 并剔除 vision_gui 历史残留（该工具仅经「视觉操作」开关注入，见 sanitizeAgentTools）
   selectedToolIds.value = sanitizeAgentTools(agent.tools);
   // 关联技能引用 → id 归一：v1 数据可能以名称 / 模型标识持久化，编辑时统一经
-  // resolveSkill（与运行时可用性解析同口径）转为当前记录 id，保证「勾选可见的」
+  // getSkillById（与运行时可用性解析同口径）转为当前记录 id，保证「勾选可见的」
   // 与「保存后生效的」完全一致，消除不可见关联的歧义；解析不到的悬挂引用
   // 保留失效引用：只修改其它字段时，不能静默删除插件配置。
   form.skills = [...(agent.skills ?? [])].reduce<string[]>((ids, ref) => {
-    const resolved = resolveSkill(ref);
+    const resolved = getSkillById(ref);
     if (!resolved) {
       console.warn(`[AgentManager] 智能体 "${agent.name}" 关联的技能引用 "${ref}" 暂不可用，编辑表单保留该引用`);
       if (!ids.includes(ref)) ids.push(ref);
@@ -1227,6 +1229,9 @@ function startEdit(agent: AgentConfig): void {
   form.visionEnabled = !!agent.vision;
   // 头像回填：图片（含历史预置图片与上传的 data URL）或 emoji 形态原样保留
   form.avatar = agent.avatar;
+  form.capabilities = agent.capabilities
+    ? structuredClone(agent.capabilities)
+    : undefined;
   // 非内置分类（历史自定义分类）归入「自定义创建」态并回填名称，
   // 让选择器显示原分类名而不是空白项
   const category = agent.category || '';
@@ -1332,7 +1337,7 @@ function writeErrorText(result: Extract<AgentWriteResult, { ok: false }>): strin
   }
 }
 
-function save(): void {
+async function save(): Promise<void> {
   // 保存前校验：未通过 → 高亮全部未填的必填项、给出提示并滚动到首个问题项，
   // 不进入写入流程（补全后高亮随计算属性自动消除）
   attempted.value = true;
@@ -1380,6 +1385,9 @@ function save(): void {
         }
       : {}),
     ...(avatar ? { avatar } : {}),
+    ...(form.capabilities
+      ? { capabilities: structuredClone(form.capabilities) }
+      : {}),
   };
 
   // 名称冲突与重命名原子性均在存储层执行（单一事实源，UI 不再自建一套冲突判定）：
@@ -1391,6 +1399,8 @@ function save(): void {
     errorMessage.value = writeErrorText(result);
     return;
   }
+  try { await replaceAgentSkillLinks(result.agent.id, config.skills ?? []); }
+  catch (error) { errorMessage.value = String(error); return; }
   cancelEdit();
 }
 </script>

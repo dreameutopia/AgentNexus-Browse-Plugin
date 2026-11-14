@@ -95,6 +95,15 @@ await until(
 assert(mount.textContent?.includes('1.0.0'));
 assert(mount.textContent?.includes('Your studio'));
 const plugin = getPluginSnapshot().packages[0];
+// 操作日志：成功安装后打开日志标签应能看到结构化记录
+const operationsTab = [
+  ...mount.querySelectorAll<HTMLButtonElement>('.pc-tab'),
+].find((button) => /操作日志|Activity/.test(button.textContent ?? ''));
+assert(operationsTab, 'operations tab should be present');
+operationsTab.click();
+await until(() => !!mount.querySelector('.pc-op'));
+assert(/成功|Success/.test(mount.querySelector('.pc-op')?.textContent ?? ''));
+assert(mount.querySelector('.pc-op__plugin')?.textContent?.includes('plugin-example'));
 // 发现页结构：主搜索区仅一个输入 + 一个按钮（官方目录本地过滤，无密钥输入）；
 // 自定义目录源（URL + 公钥）折叠在 details 内，不占主流程
 const searchArea = mount.querySelector('.pc-discover__search')!;
@@ -144,7 +153,7 @@ assert.equal(selected.value[0], plugin.tools[0].ref);
 pickerApp.unmount();
 
 // —— 自动更新检查：打开插件中心即标出「可更新」徽章与更新按钮 ——
-const { sha256 } = await import('../../utils/plugins/package');
+const { sha256 } = await import('../../utils/plugins/codec');
 const originalFetch = globalThis.fetch,
   realNow = Date.now,
   fixtureDigest = await sha256(bytes);

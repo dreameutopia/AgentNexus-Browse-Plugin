@@ -8,6 +8,8 @@
  */
 
 import { CORE_INTERACT_TOOL_IDS } from '@/tools/interact/interact-prompt';
+import { SKILL_TOOL_ID } from '@/utils/skills/skill-tool-contract';
+import { JS_RUN_TOOL_ID, isHiddenAgentScriptTool } from '@/tools/javascript/js-contract';
 import { PLAN_TOOL_ID } from '@/tools/plan/plan-prompt';
 import { NOTE_TOOL_ID } from '@/tools/note/note-prompt';
 import { READ_FILE_TOOL_ID } from '@/tools/upload-file/upload-file-prompt';
@@ -30,7 +32,6 @@ export type ToolScenario =
   | 'siteValidateVision'
   | 'resource'
   | 'files'
-  | 'navigation'
   | 'data'
   // hub 自定义智能体新增工具组（仅在此处登记，供管理页勾选）
   | 'pageRead'
@@ -39,7 +40,6 @@ export type ToolScenario =
   | 'scripting'
   | 'bookmarkHistory'
   | 'webSearch'
-  | 'resourceCapture'
   | 'visionTools'
   | 'networkTools'
   | 'python'
@@ -78,6 +78,8 @@ export const CORE_SESSION_TOOL_IDS: readonly string[] = [
   PLAN_TOOL_ID,
   NOTE_TOOL_ID,
   READ_FILE_TOOL_ID,
+  JS_RUN_TOOL_ID,
+  SKILL_TOOL_ID,
 ];
 
 /** 基础浏览器操作（同时作为未知场景的防御性回退；不含无条件注入的核心工具） */
@@ -87,7 +89,6 @@ const BASIC_BROWSER_TOOLS = [
   'browser_navigation',
   'browser_get_page_info',
   'browser_tabs',
-  'browser_page_exec',
   // 通用网页搜索（engine 枚举：bing / baidu）：导航 + 解析一步完成
   'web_search',
 ] as const;
@@ -99,7 +100,8 @@ const WEB_SEARCH_TOOL_IDS = ['web_search'] as const;
 
 /**
  * 站点平台搜索工具（platform 枚举：知乎 / GitHub / CSDN / MOOC / 小红书 /
- * 知网 / Bilibili）——与通用网页搜索共用执行链路，按「站点内检索」单列。
+ * 知网）——与通用网页搜索共用执行链路，按「站点内检索」单列。
+ * Bilibili 不在此列：B 站检索由专属工具 bilibili_search 承载。
  */
 const PLATFORM_SEARCH_TOOL_IDS = ['platform_search'] as const;
 
@@ -107,16 +109,23 @@ const PLATFORM_SEARCH_TOOL_IDS = ['platform_search'] as const;
  * 搜索工具组（hub 自定义智能体用）：通用网页检索 + 站点平台检索。
  * 原「扩展搜索平台 / 结果抓取 / 集成搜索」三组 27 个平台专属工具已合并于此；
  * 2026-11-10 起按语义拆为两个工具（web_search / platform_search），
+ * 2026-11-11 再把 Bilibili 独立成专属工具（bilibili_search）；
  * hub 编辑页仍以「搜索」一组呈现，避免组内再分细粒度勾选。
+ * 专属的 bilibili_search 不进本组——它是 Bilibili 搜索助手的专属工具，
+ * 不是通用检索能力的一部分。
  */
 const SEARCH_GROUP_TOOL_IDS = [...WEB_SEARCH_TOOL_IDS, ...PLATFORM_SEARCH_TOOL_IDS] as const;
 
-/** Bilibili 专用（检索走 platform_search 的 platform="bilibili"，视频页导航走浏览器工具） */
+/**
+ * Bilibili 专用（检索走专属工具 bilibili_search，视频页导航走浏览器工具）。
+ * 不携带 platform_search：B 站检索已从通用站点枚举中独立出来，
+ * 避免通用工具背上不属于它的平台清单。
+ */
 const BILIBILI_TOOLS = [
   'bilibili_subtitle_tool',
   'bilibili_jump_tool',
   'browser_navigation',
-  'platform_search',
+  'bilibili_search',
 ] as const;
 
 /**
@@ -139,12 +148,11 @@ const AUTOMATION_TOOLS = [
   'browser_navigation',
   'browser_get_page_info',
   // 通用网页搜索（engine 枚举：bing / baidu，自带导航）
+  // ——刻意不带 platform_search：通用助手的检索面是「通用网页」，
+  //   站点内检索是特定场景（Deep Search / 数据采集）的专用能力
   'web_search',
-  // 站点平台搜索（platform 枚举：知乎 / GitHub / CSDN 等，自带导航）
-  'platform_search',
   'generic_wait',
   // 懒加载/无限滚动页面：getter 采样前先滚动触发渲染，再重新采集
-  'browser_page_exec',
 ] as const;
 
 /**
@@ -201,7 +209,6 @@ const SITE_LEARN_DOM_TOOLS = [
   'web_search',
   'generic_wait',
   // 懒加载/无限滚动页面：getter 采样前先滚动触发渲染，再重新采集
-  'browser_page_exec',
 ] as const;
 
 /** 网站学习·文本目标 × 文本策略：纯文本探索，无截图循环 */
@@ -258,10 +265,11 @@ export function getSiteValidateScenario(targetMode: 'text' | 'vision'): ToolScen
 }
 
 /**
- * 数据批量采集（文本通用助手全套 + 数据引用通道）：
- * 脚本抓取（page_exec saveResult）→ 暂存批次（data_ref_tool）→ xlsx 直接导出，
- * 大批量数据全程不经过模型上下文；DOM 结构明确时可用 browser_extract_data，
- * 已知 JSON 接口用 browser_network_request 直连。
+ * 数据批量采集（文本通用助手全套 + 数据治理通道）：
+ * 脚本抓取（js_run run/crawl 结果自动落 results/ 结果文件）→ 治理（data_ref_tool
+ * merge/dedupe/project，产物同为结果文件）→ xlsx dataFiles 直接导出，
+ * 大批量数据全程不经过模型上下文；
+ * DOM 结构明确时可用 browser_extract_data，已知 JSON 接口用 browser_network_request 直连。
  * 无限滚动分页靠 browser_interact(action="scroll")触发加载后重采。
  */
 const DATA_HARVEST_TOOLS = [
@@ -273,27 +281,30 @@ const DATA_HARVEST_TOOLS = [
   'xlsx_tool',
 ] as const;
 
-/** 资源嗅探与下载（媒体资源嗅探 + 网络捕获 + 资源落盘） */
+/**
+ * 资源与下载（hub 自定义智能体工具组）
+ * —— browser_resources：页面资源嗅探/下载 + 下载拦截与副本捕获（一个工具八个 action）
+ * —— browser_network_capture：被动网络观察（start/read/stop，文本响应正文入 dataRef）
+ * —— browser_downloads：浏览器下载管理器（查询/取消/暂停/恢复/清除历史/定位/打开）
+ */
 const RESOURCE_GROUP_TOOLS = [
-  'resource_sniffer',
+  'browser_resources',
   'browser_network_capture',
-  'resource_downloader',
+  'browser_downloads',
 ] as const;
 
-/** 下载与文件上传（查询下载状态 + 本地文件上传） */
+/** 下载与文件上传（本地文件上传；下载管理走「资源与下载」组） */
 const FILES_GROUP_TOOLS = [
-  'get_downloads_status',
   'file_upload_getter',
   'file_uploader',
 ] as const;
 
-/** 导航增强（快捷/历史/书签导航与检索） */
-const NAVIGATION_GROUP_TOOLS = [
-  'quick_navigation',
-  'history_navigation',
-  'bookmark_navigation',
-  'browser_search_bookmarks',
-  'browser_search_history',
+/**
+ * 历史与书签（统一工具 browser_history_bookmarks：检索 / 打开 / 增删改 /
+ * 最近访问 / 最常访问 / 文件夹结构 / 清理历史，九 action 一个工具）
+ */
+const BOOKMARK_HISTORY_GROUP_TOOLS = [
+  'browser_history_bookmarks',
 ] as const;
 
 /** 数据处理（结构化抽取 + 表格 + 引用暂存 + 压缩 + 图表渲染） */
@@ -305,14 +316,15 @@ const DATA_GROUP_TOOLS = [
   'mermaid_renderer',
 ] as const;
 
-/** 页面深度读取（HTML / 元数据 / 指定区域抓取；
+/** 页面深度读取（HTML 源码 / 可见纯文本 / 页面与标签页元信息；
  *  结构化正文读取 browser_get_page_text 已升级为核心能力无条件注入
  *  （结构化 Markdown + url 直读 + 超长分页），不再占用工具组位；
- *  browser_get_element_info 已下线（由 browser_observe 取代） */
+ *  browser_get_element_info 已下线（由 browser_observe 取代）；
+ *  page-source 已并入 browser_get_page_html（format/includeIframes 现已真正生效） */
 const PAGE_READ_GROUP_TOOLS = [
   'browser_get_page_html',
   'browser_get_page_info',
-  'page-source',
+  'browser_vector_search',
 ] as const;
 
 /** DOM 元素交互（文本观察、结构探索、节点交互与等待；
@@ -322,7 +334,7 @@ const DOM_INTERACT_GROUP_TOOLS = [
   'browser_observe',
   'browser_dom_explore',
   'browser_interact',
-  'browser_wait_for_element',
+  'browser_page_ops',
 ] as const;
 
 /** 标签页与窗口（统一枚举/切换/创建/关闭/窗口树，单工具五 action） */
@@ -333,20 +345,8 @@ const TABS_WINDOWS_GROUP_TOOLS = [
 /** 页面脚本执行（注入 JS、向注入脚本发消息、页面级高权限执行/抽取/清理） */
 const SCRIPTING_GROUP_TOOLS = [
   'browser_send_command_to_inject_script',
-  'browser_page_exec',
   'browser_extract_data',
   'browser_clean_page',
-] as const;
-
-/** 书签与历史（书签增删查 + 历史检索 + 快捷/历史/书签导航） */
-const BOOKMARK_HISTORY_GROUP_TOOLS = [
-  'browser_bookmark_create',
-  'browser_bookmark_delete',
-  'browser_search_bookmarks',
-  'browser_search_history',
-  'quick_navigation',
-  'history_navigation',
-  'bookmark_navigation',
 ] as const;
 
 /**
@@ -354,15 +354,6 @@ const BOOKMARK_HISTORY_GROUP_TOOLS = [
  * 直接引用 SEARCH_GROUP_TOOL_IDS，杜绝两份同值清单漂移。
  */
 const SEARCH_GROUP_TOOLS = [...SEARCH_GROUP_TOOL_IDS];
-
-/** 下载拦截与文件捕获（开启/停止拦截 + 已捕获文件列表/详情/清理） */
-const RESOURCE_CAPTURE_GROUP_TOOLS = [
-  'start_download_interception',
-  'stop_download_interception',
-  'list_captured_files',
-  'get_captured_file_by_id',
-  'clear_captured_files',
-] as const;
 
 /**
  * 视觉辅助工具组（hub 自定义智能体可勾选面）：截图与 OCR。
@@ -438,13 +429,12 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
     'browser_observe',
     'browser_interact',
     'browser_dom_explore',
-    'browser_page_exec',
   ],
 
   /** 文本通用助手：通用网页自动化 */
   automation: [...AUTOMATION_TOOLS],
 
-  /** 数据采集助手：批量数据采集与导出（脚本抓取 → dataRef 暂存 → xlsx 直出） */
+  /** 数据采集助手：批量数据采集与导出（脚本抓取 → results/ 结果文件 → xlsx 直出） */
   dataHarvest: [...DATA_HARVEST_TOOLS],
 
   /** 资源嗅探与下载（hub 自定义智能体工具组） */
@@ -452,9 +442,6 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
 
   /** 下载与文件上传（hub 自定义智能体工具组） */
   files: [...FILES_GROUP_TOOLS],
-
-  /** 导航增强（hub 自定义智能体工具组） */
-  navigation: [...NAVIGATION_GROUP_TOOLS],
 
   /** 数据处理（hub 自定义智能体工具组） */
   data: [...DATA_GROUP_TOOLS],
@@ -477,9 +464,6 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
   /** 搜索工具组（hub 自定义智能体工具组；通用网页检索 + 站点平台检索） */
   webSearch: [...SEARCH_GROUP_TOOLS],
 
-  /** 下载拦截与文件捕获（hub 自定义智能体工具组） */
-  resourceCapture: [...RESOURCE_CAPTURE_GROUP_TOOLS],
-
   /** 视觉坐标操作（hub 自定义智能体工具组；仅截图/OCR——vision_gui 由「视觉操作」开关注入） */
   visionTools: [...VISION_TOOLS_GROUP],
 
@@ -500,7 +484,7 @@ export function getPresetToolIds(
   getAvailableToolIds?: () => string[],
 ): string[] {
   if (scenario === 'all') {
-    return getAvailableToolIds?.() ?? [];
+    return (getAvailableToolIds?.() ?? []).filter(id => !isHiddenAgentScriptTool(id));
   }
   // 防御：JS 调用方传入未注册的场景键时回退基础浏览器工具，而非抛错中断装配
   return SCENARIO_PRESETS[scenario] ?? [...BASIC_BROWSER_TOOLS];

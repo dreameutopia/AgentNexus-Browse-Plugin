@@ -164,11 +164,19 @@ const retryButton = card.querySelector('.api-error-retry-btn');
 assert.ok(retryButton, '卡片应有重试按钮');
 assert.ok(retryButton.textContent.includes(t('sidepanel.chat.apiErrorRetry')), '重试按钮文案走 i18n');
 let retryCalls = 0;
-setApiErrorRetryHandler(() => {
+let retryTarget;
+const partHost = document.createElement('div');
+partHost.dataset.partIndex = '4';
+host.dataset.messageId = 'message-with-error';
+host.appendChild(partHost);
+partHost.appendChild(card);
+setApiErrorRetryHandler(target => {
   retryCalls++;
+  retryTarget = target;
 });
 retryButton.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
 assert.equal(retryCalls, 1, '点击重试应调用一次应用层回调');
+assert.deepEqual(retryTarget, { messageId: 'message-with-error', partIndex: 4, errorIndex: 0 });
 setApiErrorRetryHandler(null);
 retryButton.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
 assert.equal(retryCalls, 1, '注销回调后点击重试不得再触发');
@@ -206,3 +214,8 @@ assert.deepEqual(
 
 console.log('[chat-ui] API 错误卡片「请求模型」浮层回归测试通过。');
 dom.window.close();
+
+const continuedHost = document.createElement('div');
+continuedHost.innerHTML = markdownRenderer.renderMessage('partial<api-error kind="error"><summary>first</summary></api-error><api-error kind="error"><summary>second</summary></api-error>## Continued heading');
+assert.equal(continuedHost.querySelectorAll('.api-error-card').length, 2, 'repeated failures remain independent cards');
+assert.equal(continuedHost.querySelector('h2')?.textContent, 'Continued heading', 'retry output retains Markdown block structure');

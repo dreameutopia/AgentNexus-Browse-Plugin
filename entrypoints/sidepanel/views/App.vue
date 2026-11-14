@@ -50,6 +50,9 @@
       @toggle-reasoning-content-collapse="toggleReasoningContentCollapse"
       @toggle-compaction-collapse="toggleCompactionCollapse"
       @feedback-change="handleFeedbackChange"
+      @create-skill="createSkillFromPractice"
+      @guard-continue="handleGuardContinue"
+      @guard-open-settings="handleGuardOpenSettings"
     />
 
     <!-- 底部输入区域 -->
@@ -680,6 +683,7 @@
     <SettingsModal
       :visible="showSettingsModal"
       :initial-section="settingsInitialSection"
+      :focus-target="settingsFocusTarget"
       @close="handleSettingsClose"
       @saved="handleApiConfigSaved"
     />
@@ -812,6 +816,8 @@ import {
 } from '../utils/channels';
 // 端点活性问题的展示层映射（结构化事实 → 可读文案；随语言切换自动跟随）
 import { livenessIssueText } from '../utils/ui/liveness-message';
+// 系统注入上下文的激活网页查询（与引擎侧同口径；失败返回 null 不阻断发送）
+import { queryActivePageInfo } from '../utils/system-context';
 // 核心引擎层：会话由引擎驱动，App 层只负责事件渲染与前置交互；
 // 智能体/技能的读取一律经引擎门面，不直连底层存储
 import {
@@ -878,7 +884,13 @@ import {
 } from '../utils/chat/vision-capability-guard';
 import { dismissPendingInteracts } from '../composables/use-interact';
 import { toApiErrorBlock } from '../utils/stream/errors';
-import { setApiErrorRetryHandler } from '../utils/chat/api-error-retry';
+import {
+  API_ERROR_CONTINUE_EXPIRED,
+  API_ERROR_RETRY_EXPIRED,
+  type ApiErrorRetryRequest,
+  type GuardContinueRequest,
+} from '../utils/chat/retry-state';
+import { setApiErrorRetryHandler, type ApiErrorRetryTarget } from '../utils/chat/api-error-retry';
 // 直播消息的片段流装配（占位建立 / 占位转真实消息 / 截图按序入流）：
 // 单一事实源，规则见 utils/chat/live-parts
 import {
@@ -1333,6 +1345,8 @@ const handleConversationEvent = (event: ConversationEvent): void => {
         timestamp: event.record.createdAt,
         parts: [{ type: 'text', content: event.record.content }],
         toolCalls: [],
+        // 自动续跑的隐藏用户轮：参与模型上下文与时效判定，但不渲染用户气泡
+        ...(event.record.synthetic ? { isIgnore: true } : {}),
         // 用户上传图片以引用形态随消息展示（可查看 / 放大 / 下载）。
         // 展示口径走 userVisibleImageRefs（只含用户上传）——引擎随后注入的
         // vision 首截图引用不在此列，避免同一截图在用户气泡与助手「查看屏幕」双显
@@ -1349,6 +1363,7 @@ const handleConversationEvent = (event: ConversationEvent): void => {
       // 学习/验证直接驱动引擎，不经过 sendMessage。响应态以统一事件为准，
       // 由运行终态回调结束，避免流式内容被提前当作已完成消息折叠并显示反馈按钮。
       isAiResponding.value = true;
+      pendingUiRefresh.delete(event.messageId);
       messages.value = messages.value.filter(message => message.id !== event.messageId);
       // 直播消息登记（ChatMessageList 按 id 精确判定直播态，见 liveAssistantMessageId）
       liveAssistantMessageId.value = event.messageId;
@@ -1381,8 +1396,11 @@ const handleConversationEvent = (event: ConversationEvent): void => {
         isThinking: true,
         ...(started.imageRefs.length > 0 ? { imageRefs: started.imageRefs } : {}),
       };
-      runningAssistantMessages.set(event.messageId, thinking);
-      messages.value.push(thinking);
+      const live: RunningAssistantMessage = event.record
+        ? { ...recordToUiMessage(event.record), parts: event.record.parts, toolCalls: event.record.toolCalls, isThinking: false, durationMs: undefined }
+        : thinking;
+      runningAssistantMessages.set(event.messageId, live);
+      messages.value.push(live);
       break;
     }
     case 'message-image': {
@@ -1459,10 +1477,19 @@ const handleConversationEvent = (event: ConversationEvent): void => {
     }
     case 'notice': {
       // 系统注记（守卫停止说明 / 截断注记）：并入当前助手消息的片段流，
-      // 以独立系统信息条渲染（notice 类型片段）；终态覆盖时引擎记录已含同片段
+      // 以独立系统信息条渲染（notice 类型片段）；终态覆盖时引擎记录已含同片段。
+      // 正文必须同步追加（与引擎 appendNotice 双写一致）：否则 rAF 快照会把
+      // 「片段有注记、正文没有」的旧内容覆盖到终态消息上，破坏继续/重试的
+      // 「注记是正文结尾」判定。
       const uiMessage = runningAssistantMessages.get(event.messageId);
       if (!uiMessage) break;
-      uiMessage.parts.push({ type: 'notice', content: event.text });
+      uiMessage.parts.push({
+        type: 'notice',
+        content: event.text,
+        ...(event.noticeAction ? { noticeAction: event.noticeAction } : {}),
+        ...(event.guardKind ? { guardKind: event.guardKind } : {}),
+      });
+      uiMessage.content = uiMessage.content ? `${uiMessage.content}\n\n${event.text}` : event.text;
       refreshUiMessage(event.messageId);
       break;
     }
@@ -1545,6 +1572,10 @@ const handleConversationEvent = (event: ConversationEvent): void => {
           : {}),
       };
       const index = messages.value.findIndex(msg => msg.id === record.id);
+      // 终态以引擎记录为准：丢弃此前 rAF 排队的直播快照，否则它会在下一帧
+      // 用「不含终态注记正文」的旧快照覆盖归还态消息，造成片段与正文不一致
+      // （守卫继续/API 重试的时效判定都会因此误判失效）。
+      pendingUiRefresh.delete(record.id);
       if (index === -1) messages.value.push(finalMessage);
       else messages.value.splice(index, 1, finalMessage);
       runningAssistantMessages.delete(record.id);
@@ -1700,10 +1731,12 @@ const handleConversationEvent = (event: ConversationEvent): void => {
  */
 const recordMetaOf = (
   record: ChatMessageRecord,
-): Pick<ExtendedChatMessage, 'durationMs' | 'feedback'> => ({
+): Pick<ExtendedChatMessage, 'durationMs' | 'feedback' | 'toolRounds' | 'completionStatus'> => ({
   ...(typeof record.usage?.durationMs === 'number'
     ? { durationMs: record.usage.durationMs }
     : {}),
+  toolRounds: record.usage?.toolRounds,
+  completionStatus: record.status,
   ...(record.feedback ? { feedback: record.feedback } : {}),
 });
 
@@ -1744,6 +1777,9 @@ const recordToUiMessage = (
     parts: record.parts,
     toolCalls: record.toolCalls,
     reasoning_content: record.reasoning,
+    // 自动续跑的隐藏用户轮：保留在消息列表中（时效判定需要它占位），
+    // 但渲染层按 isIgnore 跳过用户气泡
+    ...(record.synthetic ? { isIgnore: true } : {}),
     // 执行时长与反馈随记录还原：耗时展示 / 赞踩状态跨重启持久（缺失 = 旧记录，隐藏展示）
     ...recordMetaOf(record),
     ...(visibleImageRefs.length > 0 ? { imageRefs: visibleImageRefs } : {}),
@@ -2224,11 +2260,17 @@ const apiBlockerHint = computed(() => livenessIssueText(modelRegistry.blockerIss
 const showSettingsModal = ref(false);
 // 设置弹窗打开时定位到的分区（语音「去配置」直达 ASR 页；Deep Search 警告直达已登录网站页，关闭后复位）
 const settingsInitialSection = ref<'channels' | 'advanced' | 'asr' | 'websites'>('channels');
+/**
+ * 设置弹窗内的精确聚焦目标（守卫停止注记「修改设置」→ 高级参数里的轮次上限）。
+ * null = 只切分区不聚焦；一次性使用，弹窗关闭即复位。
+ */
+const settingsFocusTarget = ref<'maxIterations' | null>(null);
 
 /** 关闭设置弹窗并复位初始分区 */
 const handleSettingsClose = () => {
   showSettingsModal.value = false;
   settingsInitialSection.value = 'channels';
+  settingsFocusTarget.value = null;
   // 学习态模型候选的刷新已由 modelRegistry.subscribe 统一负责
   //（配置变更时自动刷新 configuring / confirming 两个阶段），此处无需重复处理
 };
@@ -3267,7 +3309,7 @@ const loadHistorySessionData = async (chatId: string) => {
     // 展示用解析结果的当前名称，保证标签与最新命名一致
     const boundAgent = agentEngine.resolveRef(meta.agentId, meta.agentName);
     selectedAgent.value = boundAgent ? (boundAgent.plugin ? boundAgent.id : boundAgent.name) : '';
-    // 技能回显：历史会话可能存技能 id（v2）或技能名（v1），统一经 resolveSkill
+    // 技能回显：历史会话可能存技能 id（v2）或技能名（v1），统一经 getSkillById
     // 三态解析为当前记录，取其 id 存入选中态（停用/已删除的静默剔除）；
     // 并按当前智能体的关联集合过滤（回显口径与面板可选口径一致：未关联的
     // 技能不回显，旧会话在新规则下不制造悬挂选中）；同一技能的多形态引用
@@ -3403,7 +3445,6 @@ const refreshContextUsage = async (options: { force?: boolean } = {}): Promise<v
     const usage = measureContextUsage({
       systemPrompt: runtime.systemPrompt,
       toolIds: runtime.advertisedToolIds ?? runtime.toolIds,
-      skillMode: runtime.skillMode,
       // 合成激活轮同样是「下一次发送将占用的预算」的一部分：
       // 预选技能的 load_skill 正文随会话注入，漏计会让环上数字系统性偏低
       messages: [...runtime.initialContext, ...runtime.activationContext],
@@ -3811,7 +3852,54 @@ const cleanupAssistantMessages = (messageList: ExtendedChatMessage[]): ExtendedC
 // AI对话相关函数（薄壳：前置交互 + runtime 装配 + 引擎驱动，循环细节见 core/conversation）
 // 本轮 LLM 用户消息的构造与计量统一使用 core 导出的 composeLlmUserMessage（与引擎逐字同源）
 // 实际流程体；对外入口 sendMessage 另加在途锁包装（见下方定义）
-const sendMessageInner = async (beginGlow: () => void) => {
+/** Present preparation failures through the same retryable transcript row. */
+const reportSendError = async (error: unknown, retry?: ApiErrorRetryRequest): Promise<void> => {
+  if (retry && activeChatId.value !== retry.chatId) return;
+  const errorBlock = toApiErrorBlock(error);
+  if (retry) {
+    try {
+      const records = await transcriptEngine.loadSessionRecords(retry.chatId);
+      if (activeChatId.value !== retry.chatId) return;
+      const record = structuredClone(records.at(-1));
+      if (record?.id === retry.messageId && record.role === 'assistant' &&
+          record.content === retry.content && record.status === 'error' &&
+          isResumeTailCurrent(retry.messageId, record.parts.length - 1, retry.content)) {
+        record.content += '\n\n' + errorBlock;
+        record.parts.push({ type: 'text', content: errorBlock });
+        record.status = 'error';
+        record.error = errorBlock;
+        await transcriptEngine.flush(record);
+        if (activeChatId.value !== retry.chatId) return;
+        pendingUiRefresh.delete(record.id);
+        const index = messages.value.findIndex(message => message.id === record.id);
+        if (index !== -1) messages.value.splice(index, 1, recordToUiMessage(record));
+        return;
+      }
+      await showAlert(t('sidepanel.chat.apiErrorRetryExpired'));
+      return;
+    } catch (persistenceError) {
+      console.warn('[Retry] 无法保存准备阶段异常:', persistenceError);
+    }
+  }
+  if (retry && activeChatId.value !== retry.chatId) return;
+  messages.value.push({
+    id: 'send_err_' + crypto.randomUUID(), role: 'assistant', content: errorBlock,
+    timestamp: Date.now(), parts: [{ type: 'text', content: errorBlock }], toolCalls: [],
+  });
+  showChatMode.value = true;
+};
+
+const sendMessageInner = async (
+  beginGlow: () => void,
+  retry?: ApiErrorRetryRequest,
+  guardContinue?: GuardContinueRequest,
+  capture?: { text: string; chatId: string },
+) => {
+    // 恢复类入口（API 错误重试 / 守卫停止继续）共用同一套「不触碰草稿」语义：
+    // 用户当前输入、附件与引用一律不读取、不清空、不恢复。
+    const isResume = !!retry || !!guardContinue;
+    if (capture && capture.chatId !== activeChatId.value) return;
+    const submittedText = capture?.text ?? userInput.value;
     console.log(`[SendMessage] 入口触发, isAiResponding=${isAiResponding.value}, input="${userInput.value.trim().substring(0, 50)}", msgCount=${messages.value.length}`);
 
     // 停止进行中（同步中止）：必须等上一轮真正停下（工具已强制中断、中断结果
@@ -3820,6 +3908,23 @@ const sendMessageInner = async (beginGlow: () => void) => {
     if (isStopping.value) {
       console.info('[SendMessage] 上一轮正在停止，排队等待其真正结束');
       await waitForStopSettled();
+    }
+    if (capture && capture.chatId !== activeChatId.value) return;
+
+    // 继续入口的二次闸门：等待停止结束期间用户可能已产生新输出或切换会话。
+    // 与点击时同源判定，确保「中断后无任何新操作」这一前提始终成立。
+    if (guardContinue) {
+      if (
+        activeChatId.value !== guardContinue.chatId ||
+        !isGuardContinueCurrent(
+          guardContinue.messageId,
+          guardContinue.partIndex,
+          guardContinue.expectedNotice,
+        )
+      ) {
+        await showAlert(t('sidepanel.chat.guardContinueExpired'));
+        return;
+      }
     }
 
     // 前置检查：是否已有可用模型（渠道 + 模型齐全）
@@ -3832,7 +3937,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
     // 附件解析在途（含等待用户确认弹窗）时忽略发送：此刻附件列表尚不稳定，
     // 快照会漏掉正在确认的文件（其将在确认后残留为下一轮草稿），且弹窗期间
     // 输入框仍可回车触发发送——统一在此收敛
-    if (attachmentManager.isAdding.value) {
+    if (!isResume && !capture && attachmentManager.isAdding.value) {
       console.warn(`[SendMessage] 附件解析进行中，忽略本次发送`);
       pushSystemNotice(t('sidepanel.attachments.busyParsing'));
       return;
@@ -3840,7 +3945,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
 
     // 空输入拦截：用户正文、附件、已确认引用、历史消息四者皆无 → 无可发内容。
     // 已确认引用计入：「只引用一段网页原文、不另写文字」本身是一条完整请求。
-    if (!userInput.value.trim() && pendingAttachments.value.length === 0 && !confirmedQuote.value && messages.value.length === 0) {
+    if (!submittedText.trim() && pendingAttachments.value.length === 0 && !confirmedQuote.value && messages.value.length === 0) {
       console.warn(`[SendMessage] 输入为空且无历史消息, 跳过`);
       return;
     }
@@ -3852,7 +3957,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
     // 前往设置」），选择放行即表示接受「带图请求会被拒绝」的后果；此处的
     // 提示只覆盖「未经该确认路径」的带图情形（如历史会话恢复的附件、
     // 切换模型后残留的附件），保证后果始终可见，但不重复阻断用户已决断的操作。
-    const hasImageAttachment = pendingAttachments.value.some(att => att.kind === 'image');
+    const hasImageAttachment = !isResume && !capture && pendingAttachments.value.some(att => att.kind === 'image');
     if (hasImageAttachment && !(activeOption.value?.vision ?? false)) {
       console.warn(
         `[SendMessage] 当前模型 ${activeChatModel.value || '(未配置)'} 无视觉能力，本次请求携带图片附件（继续发送，由服务端裁决）`,
@@ -3872,7 +3977,8 @@ const sendMessageInner = async (beginGlow: () => void) => {
     }
 
     // 输入长度限制：单条消息最长 20K 字符（超长粘贴会瞬间占满上下文预算）
-    const inputLength = userInput.value.length;
+    // 恢复类入口不读取用户草稿；继续轮使用固定指令，长度恒安全。
+    const inputLength = retry ? 0 : guardContinue ? t('sidepanel.chat.guardContinuePrompt').length : submittedText.length;
     if (inputLength > MAX_USER_INPUT_CHARS) {
       console.warn(`[SendMessage] 输入超长（${inputLength} 字符），拒绝发送`);
       pushSystemNotice(
@@ -3882,13 +3988,13 @@ const sendMessageInner = async (beginGlow: () => void) => {
     }
 
     beginGlow();
-    messages.value = cleanupAssistantMessages(messages.value as ExtendedChatMessage[]);
+    if (!retry) messages.value = cleanupAssistantMessages(messages.value as ExtendedChatMessage[]);
 
     // --- 1. 默认智能体兜底：新会话首条消息且用户未选智能体时自动选中默认智能体 ---
     // 默认智能体可在设置「高级设置 → 默认智能体」配置（缺省文本通用助手）；
     // 必须先于会话创建与 runtime 装配：选中结果既要写入会话元信息（供后续会话切换回显），
     // 也要进入本次请求的 systemPrompt 与工具集。用户显式选择过则绝不覆盖。
-    if (!activeChatId.value && !selectedAgent.value.trim()) {
+    if (!isResume && !activeChatId.value && !selectedAgent.value.trim()) {
       const defaultAgent = agentEngine.getDefaultSessionAgent();
       if (defaultAgent) {
         selectedAgent.value = defaultAgent.name;
@@ -3915,11 +4021,12 @@ const sendMessageInner = async (beginGlow: () => void) => {
     // 同时让 systemPrompt 补充段在写会话元信息时就位，一次落库
     const agentConfig = selectedAgent.value ? agentEngine.get(selectedAgent.value) : null;
     const extraToolIds: string[] = [];
-    let systemPromptSuffix = '';
+    let systemPromptSuffix = isResume ? activeSystemPromptSuffix.value : '';
 
     if (agentConfig?.id === 'deep-search') {
-      // 已开启站点读共享单例（与设置弹窗「已登录网站」分区同一份状态）
-      if (enabledWebsites.value.length === 0) {
+      // 已开启站点读共享单例（与设置弹窗「已登录网站」分区同一份状态）。
+      // 恢复类入口（重试 / 继续）直接沿用既有会话配置，不再弹前置警告中断流程。
+      if (!isResume && enabledWebsites.value.length === 0) {
         showDeepSearchWarning.value = true;
         return;
       }
@@ -3928,41 +4035,43 @@ const sendMessageInner = async (beginGlow: () => void) => {
       // 站点清单显式并入后缀：预设提示词要求「platform 只在 <supplementary-context>
       // 列出的已开启站点中选择」——此前清单只写进笔记正文，模型必须先读笔记才能
       // 知道可用平台，属传递断链；此处补齐（笔记正文保留清单供用户查看）
-      try {
-        console.log('Deep Search智能体：自动触发 note_tool 创建工作笔记');
-        // 经工具执行引擎执行：笔记存储是跨会话共享的写入目标，与后台会话里
-        // 正在跑的工具并发写入会交错。这里是「发送前装配」发起的调用，不进
-        // 模型上下文（不是模型给出的 tool_call），故以临时轮次排队执行。
-        // 会话 id：此刻尚未创建会话时退化为空串（note_tool 不感知会话）。
-        const noteChatId = activeChatId.value || '';
-        const noteOutcome = await toolExecutionEngine.runSolo({
-          chatId: noteChatId,
-          call: {
-            callId: `deep_search_note_${Date.now().toString(36)}`,
-            toolName: 'note_tool',
-            rawArgs: {
-              action: 'create',
-              title: `Deep Search - ${new Date().toLocaleString()}`,
-              content: `用户查询: ${userInput.value}\n\n搜索时间: ${new Date().toLocaleString()}\n\n已开启的搜索站点: ${enabledWebsites.value.map(site => site.name).join('、')}\n\n---\n\n`,
+      if (!isResume) {
+        try {
+          console.log('Deep Search智能体：自动触发 note_tool 创建工作笔记');
+          // 经工具执行引擎执行：笔记存储是跨会话共享的写入目标，与后台会话里
+          // 正在跑的工具并发写入会交错。这里是「发送前装配」发起的调用，不进
+          // 模型上下文（不是模型给出的 tool_call），故以临时轮次排队执行。
+          // 会话 id：此刻尚未创建会话时退化为空串（note_tool 不感知会话）。
+          const noteChatId = activeChatId.value || '';
+          const noteOutcome = await toolExecutionEngine.runSolo({
+            chatId: noteChatId,
+            call: {
+              callId: `deep_search_note_${Date.now().toString(36)}`,
+              toolName: 'note_tool',
+              rawArgs: {
+                action: 'create',
+                title: `Deep Search - ${new Date().toLocaleString()}`,
+                content: `用户查询: ${submittedText}\n\n搜索时间: ${new Date().toLocaleString()}\n\n已开启的搜索站点: ${enabledWebsites.value.map(site => site.name).join('、')}\n\n---\n\n`,
+              },
             },
-          },
-          timeoutMs: 30_000,
-          execute: (call, ctx) =>
-            openaiToolsConverter.executeTool(call.toolName, call.rawArgs, {
-              chatId: noteChatId,
-              signal: ctx.signal,
-            }),
-        });
-        const createNoteResult = noteOutcome.result;
-        if (noteOutcome.status === 'success' && createNoteResult && !createNoteResult.isError) {
-          const noteInfo = firstTextContent(createNoteResult.content) || '';
-          const enabledSiteLine = `已开启的搜索站点（platform_search 的 platform 只能从中选择）：${enabledWebsites.value.map(site => site.platform).join('、')}`;
-          systemPromptSuffix = noteInfo ? `${noteInfo}\n${enabledSiteLine}` : enabledSiteLine;
-        } else {
-          console.error('note_tool 创建笔记失败:', noteOutcome.error ?? createNoteResult);
+            timeoutMs: 30_000,
+            execute: (call, ctx) =>
+              openaiToolsConverter.executeTool(call.toolName, call.rawArgs, {
+                chatId: noteChatId,
+                signal: ctx.signal,
+              }),
+          });
+          const createNoteResult = noteOutcome.result;
+          if (noteOutcome.status === 'success' && createNoteResult && !createNoteResult.isError) {
+            const noteInfo = firstTextContent(createNoteResult.content) || '';
+            const enabledSiteLine = `已开启的搜索站点（platform_search 的 platform 只能从中选择）：${enabledWebsites.value.map(site => site.platform).join('、')}`;
+            systemPromptSuffix = noteInfo ? `${noteInfo}\n${enabledSiteLine}` : enabledSiteLine;
+          } else {
+            console.error('note_tool 创建笔记失败:', noteOutcome.error ?? createNoteResult);
+          }
+        } catch (error) {
+          console.error('自动触发 note_tool 失败:', error);
         }
-      } catch (error) {
-        console.error('自动触发 note_tool 失败:', error);
       }
 
       // 按已开启网站动态追加站点工具（单一事实来源：config/deep-search-sites 注册表，
@@ -3974,8 +4083,12 @@ const sendMessageInner = async (beginGlow: () => void) => {
     // DB 故障兜底：IndexedDB 不可用（隐私模式/配额/损坏）时以可读错误落入对话流，
     // 而不是让未处理的 Promise 拒绝静默丢失本次发送
     let effective: EffectiveContext;
+    if (capture && capture.chatId !== activeChatId.value) return;
     const preparingChatId = activeChatId.value;
-    const preparingDraft = { text: userInput.value, attachments: [...pendingAttachments.value] };
+    const preparingDraft = {
+      text: isResume ? '' : submittedText,
+      attachments: isResume || capture ? [] : [...pendingAttachments.value],
+    };
     let runChatId = preparingChatId;
     try {
       if (!preparingChatId) {
@@ -3989,7 +4102,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
         });
         runChatId = session.chatId;
         if (activeChatId.value !== preparingChatId) {
-          restoreSendDraft(runChatId, preparingDraft.text, preparingDraft.attachments);
+          if (!isResume && !capture) restoreSendDraft(runChatId, preparingDraft.text, preparingDraft.attachments);
           pushSystemNotice(t('sidepanel.chat.sessionSwitchedDraftSaved'));
           return;
         }
@@ -4009,7 +4122,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
       // 有效上下文 = 压缩摘要 + 压缩点之后的记录（用户面转录仍为全量）+ systemPrompt 补充段
       effective = await transcriptEngine.getEffectiveContext(runChatId);
       if (activeChatId.value !== runChatId) {
-        restoreSendDraft(runChatId, preparingDraft.text, preparingDraft.attachments);
+        if (!isResume && !capture) restoreSendDraft(runChatId, preparingDraft.text, preparingDraft.attachments);
         pushSystemNotice(t('sidepanel.chat.sessionSwitchedDraftSaved'));
         return;
       }
@@ -4023,25 +4136,43 @@ const sendMessageInner = async (beginGlow: () => void) => {
         activeSystemPromptSuffix.value = effective.systemPromptSuffix || systemPromptSuffix;
       }
       storeEffectiveContext(runChatId, effective);
+      if (retry) {
+        const lastRecord = effective.records.at(-1);
+        if (lastRecord?.id !== retry.messageId || lastRecord.status !== 'error' || lastRecord.content !== retry.content) {
+          await showAlert(t('sidepanel.chat.apiErrorRetryExpired'));
+          return;
+        }
+      }
+      // 继续入口的**落库层**校验：等待/压缩/装配期间可能已有新记录落库，
+      // 与引擎运行开始时的复核同构，先把明显失效的请求挡在用户消息入档之前。
+      if (guardContinue) {
+        const lastRecord = effective.records.at(-1);
+        const parts = lastRecord?.parts ?? [];
+        const noticePart = parts[guardContinue.partIndex];
+        if (
+          lastRecord?.id !== guardContinue.messageId ||
+          lastRecord.role !== 'assistant' ||
+          lastRecord.status !== 'done' ||
+          guardContinue.partIndex !== parts.length - 1 ||
+          noticePart?.type !== 'notice' ||
+          noticePart.noticeAction !== 'guard-stop' ||
+          (noticePart.content ?? '') !== guardContinue.expectedNotice ||
+          !lastRecord.content.trimEnd().endsWith(guardContinue.expectedNotice)
+        ) {
+          await showAlert(t('sidepanel.chat.guardContinueExpired'));
+          return;
+        }
+      }
     } catch (sessionError) {
       console.error('[SendMessage] 会话存取失败:', sessionError);
       if (runChatId && activeChatId.value !== runChatId) {
-        restoreSendDraft(runChatId, preparingDraft.text, preparingDraft.attachments);
+        if (!isResume && !capture) restoreSendDraft(runChatId, preparingDraft.text, preparingDraft.attachments);
         pushSystemNotice(t('sidepanel.chat.sessionSwitchedDraftSaved'));
         return;
       }
       // 结构化错误卡片（分类徽章 + 完整原始信息 + 一键复制报告）：
       // 与运行期错误的呈现协议完全一致，用户自查与提交 issue 的体验统一
-      const errorBlock = toApiErrorBlock(sessionError);
-      messages.value.push({
-        id: `session_err_${Date.now()}`,
-        role: 'assistant',
-        content: errorBlock,
-        timestamp: Date.now(),
-        parts: [{ type: 'text', content: errorBlock }],
-        toolCalls: [],
-      });
-      showChatMode.value = true;
+      await reportSendError(sessionError, retry);
       return;
     }
 
@@ -4053,9 +4184,15 @@ const sendMessageInner = async (beginGlow: () => void) => {
     showSkillSelector.value = false;
     showChatMode.value = true;
 
-    // 快照本轮输入与附件后即刻清空输入区（发送失败时按原样恢复，见装配 catch）
-    const currentInput = userInput.value;
-    const currentAttachments: ChatAttachment[] = [...pendingAttachments.value];
+    // 快照本轮输入与附件后即刻清空输入区（发送失败时按原样恢复，见装配 catch）。
+    // 恢复类入口（重试 / 继续）不读取、不清空用户草稿：继续轮使用固定指令，
+    // 用户正在编辑的内容必须原样保留。
+    const currentInput = guardContinue
+      ? t('sidepanel.chat.guardContinuePrompt')
+      : retry
+        ? ''
+        : submittedText;
+    const currentAttachments: ChatAttachment[] = isResume || capture ? [] : [...pendingAttachments.value];
     const selectedModel = activeModelRef.value;
     const selectedThreshold = activeOption.value?.contextThreshold ?? CONTEXT_THRESHOLD_DEFAULT;
     const selectedAgentName = selectedAgent.value || null;
@@ -4064,10 +4201,12 @@ const sendMessageInner = async (beginGlow: () => void) => {
     // 模型面 <page_quote> 信封（进本轮用户消息）+ 用户面引用块（随消息落库，
     // 气泡据此渲染）。原文不进输入框。快照后即清空（与输入/附件同口径）：
     // 发送失败时按原样恢复（restoreQuote）。
-    const currentQuote = confirmedQuote.value ?? undefined;
-    userInput.value = '';
-    attachmentManager.clearAttachments();
-    confirmedQuote.value = null;
+    const currentQuote = isResume || capture ? undefined : confirmedQuote.value ?? undefined;
+    if (!isResume && !capture) {
+      userInput.value = '';
+      attachmentManager.clearAttachments();
+      confirmedQuote.value = null;
+    }
 
     /** 发送失败时把已确认引用放回引用条（与输入/附件的回填同口径）。
      *  发送在途期间用户若已主动「取消引用」，不回填——用户的后续决断优先。 */
@@ -4089,7 +4228,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
 
     console.log(`[SendMessage] 进入主流程, input="${currentInput.substring(0, 50)}", 文本附件 ${textAttachmentBlocks.length} 个, 图片附件 ${currentUserImages.length} 张`);
 
-    if (messageTextarea.value) {
+    if (!isResume && !capture && messageTextarea.value) {
         messageTextarea.value.style.height = 'auto';
     }
 
@@ -4170,7 +4309,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
     try {
       runtime = await registerFilesAndBuildRuntime();
     } catch (error) {
-      restoreSendDraft(runChatId, currentInput, currentAttachments);
+      if (!isResume && !capture) restoreSendDraft(runChatId, currentInput, currentAttachments);
       restoreQuote();
       if (activeChatId.value !== runChatId) {
         console.warn('[SendMessage] 上一个会话装配失败:', error);
@@ -4180,25 +4319,68 @@ const sendMessageInner = async (beginGlow: () => void) => {
       throw error;
     }
     if (activeChatId.value !== runChatId) {
-      restoreSendDraft(runChatId, currentInput, currentAttachments);
+      if (!isResume && !capture) restoreSendDraft(runChatId, currentInput, currentAttachments);
       restoreQuote();
       pushSystemNotice(t('sidepanel.chat.sessionSwitchedDraftSaved'));
       return;
     }
 
+    // 继续必须以「点击瞬间」的最新应用设置为准（用户可能刚在设置里调大/调小
+    // 轮次上限）。runtimeBuilder.build 每次都会读 appSettingsStore；这里再
+    // 显式对齐一次，防止未来引入 runtime 缓存/快照后静默沿用旧预算。
+    if (guardContinue) {
+      const liveMaxIterations = appSettingsStore.get().maxIterations;
+      if (Number.isFinite(liveMaxIterations) && liveMaxIterations > 0) {
+        runtime.limits = { ...runtime.limits, maxIterations: liveMaxIterations };
+      }
+    }
+
+    if (retry) {
+      const last = messages.value.at(-1);
+      if (
+        activeChatId.value !== retry.chatId ||
+        !isResumeTailCurrent(retry.messageId, (last?.parts?.length ?? 0) - 1, retry.content)
+      ) {
+        await showAlert(t('sidepanel.chat.apiErrorRetryExpired'));
+        return;
+      }
+      runtime.retryTarget = { messageId: retry.messageId, content: retry.content };
+    }
+    if (guardContinue) {
+      if (
+        activeChatId.value !== guardContinue.chatId ||
+        !isGuardContinueCurrent(
+          guardContinue.messageId,
+          guardContinue.partIndex,
+          guardContinue.expectedNotice,
+        )
+      ) {
+        await showAlert(t('sidepanel.chat.guardContinueExpired'));
+        return;
+      }
+      runtime.hiddenUserInput = true;
+      runtime.guardContinueTarget = {
+        messageId: guardContinue.messageId,
+        partIndex: guardContinue.partIndex,
+        expectedNotice: guardContinue.expectedNotice,
+      };
+    }
+
     // --- 6. 上下文用量测量（全量口径）；发送前压缩由后台统一执行 ---
-    // 本轮用户消息按真实请求口径计量（正文 + <upload_file> 信封 + 系统时间戳
-    // + 图片体积，与引擎构造的 LLM 消息逐字同源，图片按固定 token 计量）
+    // 本轮用户消息按真实请求口径计量（正文 + <upload_file> 信封 + 系统注入
+    // 上下文 <system_context> + 图片体积，与引擎构造的 LLM 消息逐字同源，
+    // 图片按固定 token 计量）；激活网页取发送时刻标签页，与引擎侧各自取值
+    //（时间戳本就逐调用取当前时刻，允许亚秒级差异）
+    const activePage = await queryActivePageInfo();
     const measureCurrent = () =>
       measureContextUsage({
         systemPrompt: runtime.systemPrompt,
         toolIds: runtime.advertisedToolIds ?? runtime.toolIds,
-        skillMode: runtime.skillMode,
         messages: [
           // 与引擎组装顺序逐字同源：初始上下文 → 本轮用户消息 → 合成激活轮
           ...runtime.initialContext,
           ...(runtime.userInput || runtime.attachmentPrompt || runtime.pageQuotePrompt || runtime.userImages.length > 0
-            ? [composeLlmUserMessage(runtime.userInput, runtime.attachmentPrompt, runtime.userImages, runtime.pageQuotePrompt)]
+            ? [composeLlmUserMessage(runtime.userInput, runtime.attachmentPrompt, runtime.userImages, runtime.pageQuotePrompt, false, activePage)]
             : []),
           ...runtime.activationContext,
         ],
@@ -4216,6 +4398,8 @@ const sendMessageInner = async (beginGlow: () => void) => {
         runtime.attachmentPrompt,
         runtime.userImages,
         runtime.pageQuotePrompt,
+        false,
+        activePage,
       );
       const messageTokens = estimateMessageTokens(currentUserMessage);
       const systemTokens = estimateTextTokens(runtime.systemPrompt);
@@ -4225,7 +4409,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
         console.warn(
           `[SendMessage] 本轮消息体积 ${messageTokens} token 超过可用预算 ${availableBudget} token（阈值−systemPrompt），阻断发送`,
         );
-        restoreSendDraft(runChatId, currentInput, currentAttachments);
+        if (!isResume && !capture) restoreSendDraft(runChatId, currentInput, currentAttachments);
         restoreQuote();
         await showAlert(
           t('sidepanel.attachments.messageExceedsContext', {
@@ -4251,7 +4435,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
     /** 预运行阶段（用户消息尚未入档）被停止的善后：恢复输入附件并给出可读提示 */
     const settlePreRunStop = (): void => {
       // 输入框为空才回填原输入：用户在间隙里已敲了新内容时，以他们正在编辑的内容为准
-      restoreSendDraft(runChatId, currentInput, currentAttachments);
+      if (!isResume && !capture) restoreSendDraft(runChatId, currentInput, currentAttachments);
       restoreQuote();
       // 会话已切换时通知不落入新会话视图（被停止的是旧会话的发送流程，
       // 与引擎事件流的 chatId 守卫同语义）
@@ -4300,6 +4484,16 @@ const sendMessageInner = async (beginGlow: () => void) => {
         if (summary.contextUsage) contextUsage.value = summary.contextUsage;
         console.log(`[SendMessage] 会话运行结束: status=${summary.status}, 轮数=${summary.iterations}, 耗时=${summary.durationMs}ms, 压缩=${summary.compactions}次`);
       } catch (engineError) {
+        if (engineError instanceof Error && engineError.message === API_ERROR_RETRY_EXPIRED) {
+          await showAlert(t('sidepanel.chat.apiErrorRetryExpired'));
+          return;
+        }
+        // 引擎复核发现继续目标已过期（等待期间已有新输出落库）：不落任何记录，
+        // 仅给出与重试失效同口径的提示
+        if (engineError instanceof Error && engineError.message === API_ERROR_CONTINUE_EXPIRED) {
+          await showAlert(t('sidepanel.chat.guardContinueExpired'));
+          return;
+        }
         // 用户停止在引擎内已按 aborted 语义收尾并经事件流呈现（不抛出到此）；
         // 到达此处的中止伴随异常只可能是引擎准备阶段抛出（用户消息可能已入档）——
         // 按停止语义善后而非错误卡片，且不恢复输入（避免与已入档消息重复）
@@ -4310,15 +4504,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
         // 防御：引擎级异常（并发冲突/空输入校验等通常已被上游拦截，到达此处属非典型失败）
         // 以结构化错误卡片落入对话流（与运行期错误呈现协议一致），避免未处理的 Promise 拒绝
         console.error('[SendMessage] 会话引擎异常:', engineError);
-        const errorBlock = toApiErrorBlock(engineError);
-        messages.value.push({
-          id: `engine_err_${Date.now()}`,
-          role: 'assistant',
-          content: errorBlock,
-          timestamp: Date.now(),
-          parts: [{ type: 'text', content: errorBlock }],
-          toolCalls: [],
-        });
+        await reportSendError(engineError, retry);
       }
     } catch (preRunError) {
       // 预运行兜底：压缩 / 装配段之外未预料的异常若伴随用户停止，按停止善后；
@@ -4357,7 +4543,7 @@ const sendMessageInner = async (beginGlow: () => void) => {
  * 在途锁保证同一时刻最多一次发送流程；后续轮次由引擎自身的 ChatBusyError 兜底。
  */
 const sendInFlight = ref(false);
-const sendMessage = async () => {
+const executeSend = async (retry?: ApiErrorRetryRequest, guardContinue?: GuardContinueRequest, capture?: { text: string; chatId: string }) => {
   if (sendInFlight.value) {
     console.warn('[SendMessage] 已有发送流程在途，忽略本次触发');
     return;
@@ -4365,27 +4551,33 @@ const sendMessage = async () => {
   sendInFlight.value = true;
   let endPreparingGlow: (() => void) | undefined;
   try {
-    await sendMessageInner(() => { endPreparingGlow = conversationEngine.beginPreparingGlow(); });
+    await sendMessageInner(
+      () => { endPreparingGlow = conversationEngine.beginPreparingGlow(); },
+      retry,
+      guardContinue,
+      capture,
+    );
   } catch (error) {
     // 兜底呈现：主流程内的分段异常（会话存取 / 压缩 / 引擎驱动）各有针对性
     // catch，到达此处的是装配、测量等未分段异常（如智能体被并发删除、
     // 模型配置残缺触发的 runtime 装配抛错）——以结构化错误卡片落入对话流
     // （完整原始信息 + 一键复制报告），而不是变成无用户反馈的未处理 Promise 拒绝
     console.error('[SendMessage] 发送流程异常:', error);
-    const errorBlock = toApiErrorBlock(error);
-    messages.value.push({
-      id: `send_err_${Date.now()}`,
-      role: 'assistant',
-      content: errorBlock,
-      timestamp: Date.now(),
-      parts: [{ type: 'text', content: errorBlock }],
-      toolCalls: [],
-    });
-    showChatMode.value = true;
+    await reportSendError(error, retry);
   } finally {
     endPreparingGlow?.();
     sendInFlight.value = false;
   }
+};
+
+// UI callbacks accept no retry payload (Vue may pass a DOM event).
+const sendMessage = async () => executeSend();
+const createSkillFromPractice = async (request: { messageId: string; extra: string }) => {
+  const chatId = activeChatId.value;
+  if (!chatId || isAiResponding.value || sendInFlight.value || !messages.value.some(message => message.id === request.messageId && message.role === 'assistant')) return;
+  const extra = request.extra.trim().slice(0, 3000);
+  const text = t('sidepanel.chat.skillCaptureUserMessage') + (extra ? '\n\n' + t('sidepanel.chat.skillCaptureExtraPrefix') + '\n' + extra : '');
+  await executeSend(undefined, undefined, { chatId, text });
 };
 
 // 绑定语音录制 composable 的 sendMessage 回调
@@ -4394,45 +4586,162 @@ voiceRecordingDeps.sendMessage = sendMessage;
 voiceAssistantDeps.sendMessage = sendMessage;
 
 /**
- * API 错误卡片「重试」回调（渲染层委托见 utils/chat/api-error-retry.ts）。
+ * 统一恢复时效判定（API 错误重试 / 守卫停止继续共用）。
  *
- * 错误卡片经 v-html 注入，无法走 Vue 事件；渲染层只转发点击，重试语义在此收敛：
- * 重试 = 以当前输入重走发送流程——失败后输入框通常为空，即引擎的「空输入续跑」
- * （runtime.initialContext 非空时 run 不抛 EmptyRunInputError，也不重复入档
- * 用户消息），模型以失败前的完整历史继续会话（finalize 已写入失败状态说明，
- * 模型据此接续或重答）。输入框有残留草稿时（装配失败已还原的场景），
- * 重试等价于重新发送该草稿。消息列表恒为当前会话视图，可见卡片必属当前
- * 会话上下文，无需逐卡定位归属。
+ * 只有同时满足以下条件才允许恢复：
+ *  1. 目标消息仍是当前时间线的最后一条（任何后续用户消息、模型输出或系统
+ *     注记都会使其失效——隐藏的自动续跑轮同样在 messages 中占位）；
+ *  2. 目标消息是助手消息（流式占位不会被误判为可恢复）；
+ *  3. 目标片段是 parts 的最后一段（后补任何片段即失效）；
+ *  4. expectedText 恰好是消息正文的结尾（正文追加任何输出即失效）。
+ *
+ * 这里只做纯 UI 视图判定；引擎在运行开始时还会按最新落库记录复核一次。
  */
-const retryFromErrorCard = (): void => {
-  if (isAiResponding.value || sendInFlight.value) {
-    pushSystemNotice(t('sidepanel.chat.apiErrorRetryBusy'));
+const isResumeTailCurrent = (messageId: string, partIndex: number, expectedText: string): boolean => {
+  if (!messageId || partIndex < 0 || !expectedText) return false;
+  const last = messages.value.at(-1);
+  if (!last || last.id !== messageId || last.role !== 'assistant') return false;
+  const parts = last.parts ?? [];
+  if (partIndex >= parts.length || partIndex !== parts.length - 1) return false;
+  const content = typeof last.content === 'string' ? last.content : '';
+  // 正文若确实包含期望文本，则它之后不允许再有内容；若正文因历史快照/展示
+  // 归一而缺失该文本，则退回片段层判定（片段是结构化的唯一数据源），
+  // 不能因为展示层与记录层的短暂不一致而误判失效。
+  const at = content.lastIndexOf(expectedText);
+  if (at === -1) return true;
+  return content.slice(at + expectedText.length).trim() === '';
+};
+
+/**
+ * 守卫停止注记的继续资格：必须精确定位到末尾那段可交互 notice。
+ *
+ * 与重试共享「目标仍是最后一条、之后无任何输出」的语义，但对**展示层**
+ * 的漂移更宽容：
+ *  - 片段下标因展示过滤（空文本/思考剥离）漂移时，回退为按内容查找；
+ *  - 注记之后允许图片 / 压缩等非对话输出片段（迟到截图、压缩状态），
+ *    但任何正文、推理、工具调用或新系统注记都视为新的后续输出并失效。
+ */
+const isGuardContinueCurrent = (
+  messageId: string,
+  partIndex: number,
+  expectedNotice: string,
+): boolean => {
+  const last = messages.value.at(-1);
+  if (!last || last.id !== messageId || last.role !== 'assistant' || last.isSystemNotice) return false;
+  const parts = last.parts ?? [];
+  const matches = (part: MessagePart | undefined): boolean =>
+    part?.type === 'notice' &&
+    part.noticeAction === 'guard-stop' &&
+    (part.content ?? '') === expectedNotice;
+  let index = partIndex;
+  if (!matches(parts[index])) index = parts.findIndex(part => matches(part));
+  if (index < 0) return false;
+  const hasLaterOutput = parts.slice(index + 1).some(part => {
+    if (part.type === 'text' || part.type === 'reasoning') return !!(part.content ?? '').trim();
+    return part.type === 'tool' || part.type === 'notice';
+  });
+  if (hasLaterOutput) return false;
+  const content = typeof last.content === 'string' ? last.content : '';
+  const at = content.lastIndexOf(expectedNotice);
+  // 正文若记录了注记，则其后不允许再有输出；未记录时以片段结构为准
+  return at === -1 || content.slice(at + expectedNotice.length).trim() === '';
+};
+
+const retryFromErrorCard = async (target: ApiErrorRetryTarget): Promise<void> => {
+  const last = messages.value.at(-1);
+  const parts = last?.parts?.filter(part => part.content?.trim() || part.type !== 'text') ?? [];
+  const tail = parts.at(-1);
+  const content = typeof last?.content === 'string' ? last.content : '';
+  const errors = [...(tail?.content ?? content).matchAll(/<api-error\b[^>]*>[\s\S]*?<\/api-error>/g)];
+  const latestError = errors.at(-1)?.[0] ?? '';
+  if (!target.messageId || !latestError ||
+      target.errorIndex !== errors.length - 1 ||
+      !isResumeTailCurrent(target.messageId, target.partIndex, latestError) ||
+      (tail && (tail.type !== 'text' || !tail.content?.trimEnd().endsWith(latestError)))) {
+    await showAlert(t('sidepanel.chat.apiErrorRetryExpired'));
+    return;
+  }
+  if (isAiResponding.value || sendInFlight.value || isStopping.value) {
+    await showAlert(t('sidepanel.chat.apiErrorRetryBusy'));
     return;
   }
   if (activeSessionIsLearn) {
-    // 学习/验证会话由 use-learn-session 直接驱动引擎（不经过 sendMessage，
-    // 见其注释），普通发送会破坏学习状态机；失败恢复走学习流程自己的入口
-    pushSystemNotice(t('sidepanel.chat.apiErrorRetryLearnBlocked'));
+    await showAlert(t('sidepanel.chat.apiErrorRetryLearnBlocked'));
     return;
   }
-  if (!modelRegistry.configured) {
-    showSettingsModal.value = true;
+  if (!activeChatId.value || !messages.value.some(message => message.role === 'user')) {
+    await showAlert(t('sidepanel.chat.apiErrorRetryNoContext'));
+    return;
+  }
+  await executeSend({ chatId: activeChatId.value, messageId: target.messageId, content });
+};
+setApiErrorRetryHandler(retryFromErrorCard);
+
+/**
+ * 守卫停止注记的「继续」：与重试完全同构的入口守卫。
+ *
+ * 通过后原样复用发送主流程，只把用户轮替换为隐藏的「继续」指令；任何新
+ * 输出、在途运行、学习态或空上下文都在这里被友好拒绝。
+ */
+const handleGuardContinue = async (messageId: string, partIndex: number): Promise<void> => {
+  const last = messages.value.at(-1);
+  const parts = last?.parts ?? [];
+  const isGuardNotice = (part: MessagePart | undefined): boolean =>
+    part?.type === 'notice' && part.noticeAction === 'guard-stop' && !!part.content;
+  // 优先信任点击时携带的原始下标；若因展示层过滤发生漂移，回退到消息内
+  // 最后一段守卫注记（同一助手消息最多一条，防御历史脏数据）。后续请求
+  // 一律携带**解析后的真实下标**，保证落库层/引擎层定位一致。
+  const clicked = parts[partIndex];
+  let resolvedIndex = isGuardNotice(clicked) ? partIndex : -1;
+  if (resolvedIndex < 0) {
+    for (let i = parts.length - 1; i >= 0; i -= 1) {
+      if (isGuardNotice(parts[i])) {
+        resolvedIndex = i;
+        break;
+      }
+    }
+  }
+  const expectedNotice = resolvedIndex >= 0 ? (parts[resolvedIndex].content ?? '') : '';
+  if (!expectedNotice || !isGuardContinueCurrent(messageId, resolvedIndex, expectedNotice)) {
+    await showAlert(t('sidepanel.chat.guardContinueExpired'));
     return;
   }
   if (
-    !userInput.value.trim() &&
-    (!activeChatId.value || !messages.value.some(message => message.role === 'user'))
+    isAiResponding.value ||
+    sendInFlight.value ||
+    isStopping.value ||
+    (!!activeChatId.value && conversationEngine.isRunning(activeChatId.value))
   ) {
-    // 空输入续跑的前提是会话里有已入档的用户消息：引擎每次运行都先入档
-    // 用户消息再创建助手记录，视图里没有用户消息 ⟺ 没有任何可继续的历史
-    // （如会话建立后、首条消息入档前即失败的空会话）。此时续跑只会让引擎
-    // 抛 EmptyRunInputError 再叠一张错误卡——引导正常输入即可
-    pushSystemNotice(t('sidepanel.chat.apiErrorRetryNoContext'));
+    await showAlert(t('sidepanel.chat.guardContinueBusy'));
     return;
   }
-  void sendMessage();
+  if (activeSessionIsLearn) {
+    await showAlert(t('sidepanel.chat.guardContinueLearnBlocked'));
+    return;
+  }
+  if (!activeChatId.value || !messages.value.some(message => message.role === 'user' && !message.isIgnore)) {
+    await showAlert(t('sidepanel.chat.guardContinueNoContext'));
+    return;
+  }
+  await executeSend(undefined, {
+    chatId: activeChatId.value,
+    messageId,
+    partIndex: resolvedIndex,
+    expectedNotice,
+  });
 };
-setApiErrorRetryHandler(retryFromErrorCard);
+
+/**
+ * 守卫停止注记的「修改设置」：直达高级参数并聚焦轮次上限。
+ *
+ * 时长上限当前不暴露为用户配置项，因此只定位分区；轮次上限则精确聚焦
+ * 对应输入，避免用户在长表单里自行寻找。
+ */
+const handleGuardOpenSettings = (guardKind: MessagePart['guardKind']): void => {
+  settingsInitialSection.value = 'advanced';
+  settingsFocusTarget.value = guardKind === 'max-iterations' ? 'maxIterations' : null;
+  showSettingsModal.value = true;
+};
 
 // 工具调用展开/收起功能
 // 双写策略：列表项（messages.value 中的副本，立即生效）+ 运行源对象
@@ -4634,6 +4943,7 @@ const unsubscribeModelRegistry = modelRegistry.subscribe(() => {
   }
 });
 onUnmounted(() => {
+  setApiErrorRetryHandler(null);
   conversationEngine.detach();
   window.removeEventListener('beforeunload', detachConversationView);
   unsubscribeAgentEngine();

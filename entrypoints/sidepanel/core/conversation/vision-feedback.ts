@@ -68,6 +68,7 @@ const FOREGROUND_OPENING_TOOLS = new Set(['browser_get_page_text']);
  * 落回第 4 条保守重拍。参数解析失败（argsKnown=false）同样保守重拍。
  */
 const PURE_READ_ACTIONS: Readonly<Record<string, readonly string[]>> = {
+  js_run: ['create', 'edit', 'delete', 'read', 'list'],
   browser_tabs: ['list', 'windows'],
   browser_navigation: ['wait'],
 };

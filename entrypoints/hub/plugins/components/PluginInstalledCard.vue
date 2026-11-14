@@ -37,11 +37,21 @@
       }}
     </p>
 
+    <!-- 隔离/阻塞诊断：原文原因与错误码，便于用户定位是哪个环节失败 -->
+    <details
+      v-if="plugin.quarantined || plugin.blocked"
+      class="pc-card__diagnostics"
+    >
+      <summary>{{ t('hub.plugins.diagnostics') }}</summary>
+      <pre>{{ plugin.quarantined || plugin.blocked }}</pre>
+    </details>
+
     <div class="pc-card__actions">
       <button
         type="button"
         class="hub-btn"
-        :disabled="busy"
+        :disabled="busy || (!plugin.enabled && !!plugin.quarantined)"
+        :title="!plugin.enabled && plugin.quarantined ? plugin.quarantined : undefined"
         @click="toggle(plugin)"
       >
         <Power :size="13" aria-hidden="true" />
@@ -201,3 +211,22 @@ const sourceText = computed(() =>
     : t('hub.plugins.sourceLocal'),
 );
 </script>
+
+<style scoped>
+.pc-card__diagnostics {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.pc-card__diagnostics summary {
+  cursor: pointer;
+}
+.pc-card__diagnostics pre {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+}
+</style>

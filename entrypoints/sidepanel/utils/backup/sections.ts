@@ -37,7 +37,9 @@ import {
   MISC_LOCAL_KEYS,
   PLANS_STORAGE_KEY,
   SKILLS_STORAGE_KEY,
+  SKILLS_REVISION_KEY,
   SKILL_TOGGLES_STORAGE_KEY,
+  SKILL_LIFECYCLE_KEYS,
   USAGE_METRICS_STORAGE_KEY,
 } from './storage-keys';
 import type { BackupAreaLike } from './ports';
@@ -227,9 +229,10 @@ async function applyKeyValueSection(
 /** 技能记录的结构校验（StoredSkill：id/name/files 等必需字段） */
 function isValidStoredSkill(value: unknown): boolean {
   if (!isRecord(value)) return false;
-  if (typeof value.id !== 'string' || !value.id) return false;
+  if (typeof value.id !== 'string' || !/^[1-9][0-9]*$/.test(value.id) || !Number.isSafeInteger(Number(value.id)) || Number(value.id) <= 1000) return false;
+  if (typeof value.identityKey !== 'string' || !value.identityKey || value.identityKey.length > 2048 || !Number.isSafeInteger(value.updatedAt) || (value.updatedAt as number) < 0) return false;
   if (typeof value.name !== 'string' || !value.name) return false;
-  if (!isRecord(value.files)) return false;
+  if (!isRecord(value.files) || typeof value.files['SKILL.md'] !== 'string') return false;
   return true;
 }
 
@@ -238,6 +241,7 @@ function isSkillsPayload(value: unknown): value is SkillsPayload {
   if (!Array.isArray(value.custom)) return false;
   if (!value.custom.every(isValidStoredSkill)) return false;
   if (!isRecord(value.toggles)) return false;
+  if (value.lifecycle !== undefined && (!isRecord(value.lifecycle) || Object.keys(value.lifecycle).some(key => !SKILL_LIFECYCLE_KEYS.includes(key as typeof SKILL_LIFECYCLE_KEYS[number])))) return false;
   return Object.values(value.toggles).every(item => typeof item === 'boolean');
 }
 
@@ -245,55 +249,35 @@ export function createSkillsHandler(deps: SectionDeps): SectionHandler {
   return {
     id: 'skills',
     async collect(): Promise<unknown | null> {
-      const chrome = await deps.area.get([SKILLS_STORAGE_KEY, SKILL_TOGGLES_STORAGE_KEY]);
+      const chrome = await deps.area.get([SKILLS_STORAGE_KEY, SKILL_TOGGLES_STORAGE_KEY, ...SKILL_LIFECYCLE_KEYS]);
       const chromeSkills = chrome?.[SKILLS_STORAGE_KEY];
       const chromeToggles = chrome?.[SKILL_TOGGLES_STORAGE_KEY];
 
-      // chrome 为权威源；**为空时回落 localStorage 镜像**——技能存储是先写
-      // localStorage 再异步写 chrome 的，chrome 写失败时镜像才是较新的一份，
-      // 直接采信空的 chrome 会丢掉用户的自定义技能。
-      const localSkills = parseJson(readLocal(deps, SKILLS_STORAGE_KEY));
-      const localToggles = parseJson(readLocal(deps, SKILL_TOGGLES_STORAGE_KEY));
-
-      const custom =
-        Array.isArray(chromeSkills) && chromeSkills.length
-          ? chromeSkills
-          : Array.isArray(localSkills) && localSkills.length
-            ? localSkills
-            : Array.isArray(chromeSkills)
-              ? chromeSkills
-              : [];
-      const toggles =
-        isRecord(chromeToggles) && Object.keys(chromeToggles).length
-          ? chromeToggles
-          : isRecord(localToggles) && Object.keys(localToggles).length
-            ? localToggles
-            : isRecord(chromeToggles)
-              ? chromeToggles
-              : {};
-
-      if (!custom.length && !Object.keys(toggles).length) return null;
-      return { custom, toggles: toggles as Record<string, boolean> } satisfies SkillsPayload;
+      const custom = Array.isArray(chromeSkills) ? chromeSkills : [];
+      const toggles = isRecord(chromeToggles) ? chromeToggles : {};
+      const lifecycle = Object.fromEntries(SKILL_LIFECYCLE_KEYS.filter(key => chrome[key] !== undefined).map(key => [key, chrome[key]]));
+      if (!custom.length && !Object.keys(toggles).length && !Object.keys(lifecycle).length) return null;
+      return { custom, toggles: toggles as Record<string, boolean>, ...(Object.keys(lifecycle).length ? { lifecycle } : {}) } satisfies SkillsPayload;
     },
     validate(data: unknown): boolean {
       return isSkillsPayload(data);
     },
     async apply(data: unknown, strategy: BackupStrategy): Promise<ApplyOutcome> {
       if (!isSkillsPayload(data)) throw new Error('技能分区数据非法');
-      return applyKeyValueSection(
-        deps,
-        {
-          chromeKey: SKILLS_STORAGE_KEY,
-          localKeys: [SKILLS_STORAGE_KEY],
-          chromeValue: () => data.custom,
-          localValues: () => ({ [SKILLS_STORAGE_KEY]: JSON.stringify(data.custom) }),
-          hasLocalData: (chromeValue, localValues) =>
-            (Array.isArray(chromeValue) && chromeValue.length > 0) ||
-            Object.keys(localValues).length > 0,
-        },
-        data,
-        strategy,
-      );
+      const keys = [SKILLS_STORAGE_KEY, SKILLS_REVISION_KEY, SKILL_TOGGLES_STORAGE_KEY, ...SKILL_LIFECYCLE_KEYS];
+      const previous = await deps.area.get(keys);
+      const hasCurrent = (Array.isArray(previous[SKILLS_STORAGE_KEY]) && previous[SKILLS_STORAGE_KEY].length > 0) || (isRecord(previous[SKILL_TOGGLES_STORAGE_KEY]) && Object.keys(previous[SKILL_TOGGLES_STORAGE_KEY]).length > 0) || SKILL_LIFECYCLE_KEYS.some(key => previous[key] !== undefined);
+      if (strategy === 'fill' && hasCurrent) return {skipped:true,reason:'already-configured'};
+      const rollback = async () => {
+        const restore = Object.fromEntries(keys.filter(key => previous[key] !== undefined).map(key => [key,previous[key]]));
+        if (Object.keys(restore).length) await deps.area.set(restore);
+        await deps.area.remove(keys.filter(key => previous[key] === undefined));
+      };
+      try {
+        // One Chrome storage write commits Skill records, toggles and lifecycle state together.
+        await deps.area.set({ [SKILLS_STORAGE_KEY]: data.custom, [SKILLS_REVISION_KEY]: crypto.randomUUID(), [SKILL_TOGGLES_STORAGE_KEY]: data.toggles, ...Object.fromEntries(SKILL_LIFECYCLE_KEYS.map(key => [key, data.lifecycle?.[key] ?? (key.endsWith(':packages') ? [] : key === 'agentNexusSkillCaptureHidden' ? false : {})])) });
+      } catch(error) { await rollback(); throw error; }
+      return {rollback};
     },
   };
 }

@@ -47,7 +47,9 @@ function makeSendStream(output: string | (() => string), requests: { messages: C
 const model: any = { provider: "openai", model: "compaction-test" };
 /** CJK ≈ 1 token/字：按 token 数直接造体量 */
 const big = (tokens: number) => "中".repeat(tokens);
-const WRAPPED = "<summary>\n<task>目标</task>\n<pending>无</pending>\n</summary>";
+const WRAPPED =
+  "<summary>\n<task>目标</task>\n<constraints>约束</constraints>\n<key-facts>关键事实</key-facts>\n" +
+  "<progress>进度</progress>\n<errors>错误</errors>\n<pending>无</pending>\n</summary>";
 
 // ──── 1. 提示词契约 ────
 {

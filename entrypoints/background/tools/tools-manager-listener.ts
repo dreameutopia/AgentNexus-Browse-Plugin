@@ -2,6 +2,8 @@
  * 工具管理器监听器 - 处理来自侧边栏和其他页面的工具调用请求
  */
 
+import { JS_RUN_TOOL_ID } from '@/tools/javascript/js-contract';
+import type { ToolExecutionContext } from '@/tools/registry';
 import { handleCallTool } from '.';
 import { createErrorResponse } from '@/common/tool-handler';
 import { ERROR_MESSAGES } from '@/common/constants';
@@ -77,7 +79,7 @@ export const initToolsManagerListener = () => {
     const params = message;
 
     // 移除type字段，避免传递给工具
-    const { type, __visionRequestId, __pageTargetRequestId, ...toolParams } = params;
+    const { type, __visionRequestId, __pageTargetRequestId, __scriptContext, ...toolParams } = params;
     const onTabTarget = typeof __pageTargetRequestId === 'string' && __pageTargetRequestId.length === 36 &&
       sender.id === chrome.runtime.id && sender.url === chrome.runtime.getURL('sidepanel.html')
       ? (tabId: number) => {
@@ -86,6 +88,16 @@ export const initToolsManagerListener = () => {
           }).catch(() => undefined);
         }
       : undefined;
+
+    // Script context is supplied only by an extension UI, never by page parameters.
+    const scriptContext: ToolExecutionContext = messageType === JS_RUN_TOOL_ID && sender.id === chrome.runtime.id && !sender.tab &&
+      typeof sender.url === 'string' && sender.url.startsWith(chrome.runtime.getURL('')) &&
+      __scriptContext && typeof __scriptContext === 'object'
+      ? {
+          ...(typeof __scriptContext.chatId === 'string' && __scriptContext.chatId.length <= 255 ? { chatId: __scriptContext.chatId } : {}),
+          ...(__scriptContext.toolPolicy === 'vision-assistant' ? { toolPolicy: 'vision-assistant' } : {}),
+          ...(__scriptContext.toolApproved === true ? { toolApproved: true } : {}),
+        } : {};
 
     // 处理工具调用
     (async () => {
@@ -100,6 +112,7 @@ export const initToolsManagerListener = () => {
             name: messageType,
             args: toolParams,
             context: {
+              ...scriptContext,
               ...(typeof __visionRequestId === 'string' && __visionRequestId.length <= 128 ? { requestId: __visionRequestId } : {}),
               ...(onTabTarget ? { onTabTarget } : {}),
             },

@@ -11,6 +11,19 @@ import { presetSkillIdFromName } from '@/utils/skills/skill-types';
 
 export const deepSearchConfig: PresetAgentConfig = {
   id: 'deep-search',
+  /**
+   * 发布闸门：false = 底层禁用。
+   *
+   * 当前处于**底层禁用**状态：管理中心与输入框 @ 选择器都看不到本智能体，
+   * 用户无法从任何入口新建一个 Deep Search 会话。底层禁用与用户级停用
+   * （管理中心的启用开关）不同——后者只让智能体不被 @ 选中，管理中心仍可见、
+   * 仍可重新启用；本闸门由代码决定，只能随版本放行。
+   *
+   * 存量会话不受影响：已绑定本智能体的历史会话仍可继续使用（按 id 解析，
+   * 站点工具仍按已开启站点动态注入），站点检索能力与提示词一字未删——
+   * 放行时把这里改回 true 即可。
+   */
+  available: false,
   name: 'Deep Search专家',
   description: '深度搜索与调研专家：在已开启站点上完成快速检索与多来源深度调研，全程以笔记沉淀事实、见解与精准来源',
   category: 'search',
@@ -59,7 +72,7 @@ export const deepSearchConfig: PresetAgentConfig = {
 - browser_observe：文本化观察页面（控件/按钮/输入框/结构/无障碍树）——先观察再动手，判断页面形态与登录墙。
 - browser_interact：滚动 / 点击 / 填充——结果页需滚动加载、翻页、展开折叠内容时使用；遇登录墙/验证码不硬闯：记录放弃原因换来源。
 - browser_dom_explore：从任一元素出发探索 parent/children/siblings/**similar**（相似元素组 + 自动生成选择器 + 实测匹配数）——批量同类条目（列表/表格行/卡片）用它定位结构与规律。
-- browser_page_exec：页面内执行 JS 提取数据（返回超 2000 字符自动入 dataRef，readRef 分页读取）。用于：dom_explore 确认结构后的批量抽取、SPA 滚动加载的全量收集、页面内数据计算。需要确认后才执行——只写提取脚本，不做任何改页面状态的写操作。
+- js_run：按全局脚本规范复用已保存的只读提取脚本，用于结构确认后的批量抽取、SPA 列表收集及数据计算；本调研场景禁止改变页面状态。
 工作笔记（你的外部记忆，操作与通用纪律见 <note-workspace-guidelines>，此处只约定调研场景的配合方式）：
 - note_tool(action="append")（高频）：按 <note-discipline> 结构向笔记追加事实、见解与来源（需带 noteId）。
 - note_tool(action="get")：阶段门双回读与收尾全量回读（见 <phased-workflow>）。
@@ -122,7 +135,7 @@ e) 过门后的下一阶段开工前做一次**双回读**（抗压缩锚点，�
 - 抗压缩三锚点：长调研中历史上下文可能被自动压缩（过程细节会丢）——①笔记（知识证据，IndexedDB 持久）②计划（执行状态，plan-store 持久）③阶段边界双回读（plan read + note get，见 <phased-workflow>）。发现上下文变薄（记不清某结论来自哪里 / 忘记进度）时，立即双回读重建，不凭模糊印象继续，更不臆造。
 - 工作笔记的 noteId 优先取 <supplementary-context> 注入值（发送装配已自动建笔记并回填）；未注入或遗忘时按全局 noteId 纪律用 list 找回，禁止臆造。
 - 检索入口只有两个：web_search（通用网页，engine 枚举）与 platform_search（站点平台，platform 只在已开启站点中选择）；严禁用 browser_navigation(action="open") 做通用浏览或访问未经搜索确认的地址。
-- browser_page_exec 只做只读提取（querySelector/提取/计算），禁止改 DOM、禁止提交表单、禁止触发写操作；需要交互翻页时优先 browser_interact。该工具执行前需用户确认——被拒绝时不反复重试，降级用 browser_dom_explore（相似元素定位）+ browser_get_page_text（可见文本）组合达成同样目标。
+- js_run 只做只读提取（querySelector/提取/计算），禁止改 DOM、禁止提交表单、禁止触发写操作；需要交互翻页时优先 browser_interact。该工具执行前需用户确认——被拒绝时不反复重试，降级用 browser_dom_explore（相似元素定位）+ browser_get_page_text（可见文本）组合达成同样目标。
 - 轮次经济：note_tool 与 plan_tool 调用尽量与下一个检索/导航合并在同一次回复里发出（引擎按轮计数，深度调研的轮次预算有限）；两个检索工具例外——它们禁止与任何工具同轮并发。
 - 遇登录墙/验证码/付费墙：记录"该来源不可读"并换来源，不臆测内容、不尝试绕过。
 - 止损纪律：同一子问题连续 2 次检索无相关结果就换视角或换平台，不死磕；不为「看起来应该存在」的信息无限搜索——耗尽预算即交付已验证部分。

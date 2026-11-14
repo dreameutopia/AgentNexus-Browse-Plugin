@@ -13,8 +13,8 @@
  *     browser_observe(view=element) 深查属性、browser_interact 操作、或
  *     本工具继续探索（如对重复容器 children 展开字段结构）；
  *   - similar 附带生成选择器与实测匹配数——模型可把它直接写进
- *     browser_page_exec 的抓取脚本（querySelectorAll 批量抽取），配合
- *     saveResult 默认暂存 → data_ref_tool 合并 → xlsx_tool 导出。
+ *     js_run 的抓取脚本（querySelectorAll 批量抽取），结果自动落
+ *     results/ 结果文件 → data_ref_tool 治理 → xlsx_tool(dataFiles) 导出。
  *
  * 分页契约（children/siblings/similar）：与 browser_observe 同构——首次
  * 调用从 page=1 采集并冻结为 snapshotId 快照，续读传 snapshotId + page
@@ -118,11 +118,11 @@ export class DomExploreTool extends BaseBrowserTool {
         'parent=祖先链逐层摘要（附同构兄弟数，用于识别「重复卡片容器」在哪一层）；' +
         'children=子元素列表（depth 展开 1..3 层，用于确认卡片内字段布局）；' +
         'siblings=同父兄弟全列（对比同级差异）；' +
-        'similar=相似元素发现（自动识别重复容器组并逐容器等位匹配，附可直接用于 browser_page_exec 抓取脚本的生成选择器与实测匹配数）。' +
+        'similar=相似元素发现（自动识别重复容器组并逐容器等位匹配，附可直接用于 js_run 抓取脚本的生成选择器与实测匹配数）。' +
         '种子 elementId + frameId 原样复制自 browser_observe 枚举结果（或本工具此前返回的新引用）；返回的所有元素都注册进同一引用体系，' +
         '可继续 browser_observe(view=element) 深查、browser_interact 操作、本工具递归探索。' +
         'children/siblings/similar 分页：首次 page=1 生成 snapshotId，续读传 snapshotId + page（取 nextPage）；改变条件或页面变化后重新采集。' +
-        '典型链路：observe 找到一个商品标题 → similar 得到全部同类元素与选择器 → children(重复容器) 确认字段 → browser_page_exec 用选择器批量抓取（saveResult 默认暂存）→ xlsx_tool 导出。' +
+        '典型链路：observe 找到一个商品标题 → similar 得到全部同类元素与选择器 → children(重复容器) 确认字段 → js_run 用选择器批量抓取（结果自动落 results/ 结果文件）→ xlsx_tool(dataFiles) 导出。' +
         '多 frame 页面：引用只在其所属 frame 有效，其它 frame 需重新 observe 后各自探索。',
       parameters: {
         type: 'object',
@@ -449,14 +449,14 @@ export class DomExploreTool extends BaseBrowserTool {
         payload.pattern = snapshot.pattern;
         payload.hint =
           (snapshot.pattern?.combinedSelector
-            ? `批量抓取：browser_page_exec 里 document.querySelectorAll('${snapshot.pattern.combinedSelector}')（实测匹配 ${snapshot.pattern.selectorMatchCount ?? '?'} 个；匹配数与容器数 ${snapshot.pattern.containerCount} 明显不符时按容器遍历更稳）。`
+            ? `批量抓取：js_run 里 document.querySelectorAll('${snapshot.pattern.combinedSelector}')（实测匹配 ${snapshot.pattern.selectorMatchCount ?? '?'} 个；匹配数与容器数 ${snapshot.pattern.containerCount} 明显不符时按容器遍历更稳）。`
             : '') +
           (snapshot.pattern?.mode === 'descendant' && snapshot.pattern?.containerElementId
             ? `字段布局：对本页任一元素所在容器执行 browser_dom_explore(action="children", elementId="${snapshot.pattern.containerElementId}", frameId=${frameId}, depth=2)。`
             : '') +
           `单元素深查 browser_observe(view="element")；操作 browser_interact；续读传 snapshotId + page（nextPage=${page < totalPages ? page + 1 : 'null'} 即结束）。`;
       } else if (action === 'children') {
-        payload.hint = `字段提取：对代表性子元素 browser_observe(view="element") 查属性/XPath；批量抽取在 browser_page_exec 中以种子为容器 querySelectorAll 遍历。续读传 snapshotId + page。`;
+        payload.hint = `字段提取：对代表性子元素 browser_observe(view="element") 查属性/XPath；批量抽取在 js_run 中以种子为容器 querySelectorAll 遍历。续读传 snapshotId + page。`;
       } else {
         payload.hint = `同级对比后：相似元素用 action="similar"（附生成选择器）；子结构用 action="children"。续读传 snapshotId + page。`;
       }

@@ -1,3 +1,4 @@
+import 'fake-indexeddb/auto';
 /** Real outbox + learning state machine + Hub/SkillManager templates, with browser/model ports. */
 import { readFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';

@@ -1,10 +1,6 @@
 /** Shared browser/CLI verification and editor schemas. Never fork package validation rules. */
-export {
-  verifyPackage,
-  base32,
-  sha256,
-  toBase64,
-} from '../utils/plugins/package';
+export { verifyPackage } from '../utils/plugins/package';
+export { base32, sha256, toBase64 } from '../utils/plugins/codec';
 export {
   manifestSchema,
   toolSchema,

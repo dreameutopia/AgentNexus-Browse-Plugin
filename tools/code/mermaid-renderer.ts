@@ -1,7 +1,7 @@
 /**
  * Mermaid 渲染工具
  *
- * 将 Mermaid 图表源码渲染为 PNG 并保存到浏览器下载目录。
+ * 将 Mermaid 图表源码渲染为 PNG 并保存到当前会话工作区 outputs/。
  *
  * ==================== 架构（v2 重写） ====================
  *
@@ -18,7 +18,7 @@
  *     → 确保离屏页存在（chrome.offscreen，BLOBS reason）
  *     → chrome.runtime.sendMessage 发送源码
  *     → 离屏页用内置打包的 mermaid（非 CDN）渲染 SVG → PNG dataURL
- *     → chrome.downloads 保存。离屏宿主也服务 Python 执行与屏幕共享。
+ *     → 会话工作区保存。离屏宿主也服务 Python 执行与屏幕共享。
  *
  * ==================== 错误处理契约 ====================
  *
@@ -26,11 +26,14 @@
  * grep/上报定位：MERMAID_EMPTY_CODE / MERMAID_CODE_TOO_LONG /
  * MERMAID_RENDER_TIMEOUT /
  * MERMAID_PARSE_ERROR / MERMAID_EMPTY_SVG / MERMAID_SIZE_LIMIT /
- * MERMAID_CONVERT_ERROR / MERMAID_INTERNAL_ERROR / MERMAID_DOWNLOAD_FAILED。
+ * MERMAID_CONVERT_ERROR / MERMAID_INTERNAL_ERROR。
  */
 
+import { fetchArtifactBlob } from '@/utils/python-workspace/artifact-fetch';
+import { saveWorkspaceOutput } from '@/utils/python-workspace/store';
+import { requireWorkspaceChatId } from '@/utils/python-workspace/artifact-contract';
 import { BaseTool } from '../base-tool';
-import { ToolMetadata } from '../registry';
+import { ToolMetadata, type ToolExecutionContext } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
 import { ensureOffscreenHost } from '@/utils/offscreen-host';
@@ -85,7 +88,7 @@ export class MermaidRendererTool extends BaseTool {
     function: {
       name: 'mermaid_renderer',
       description:
-        '渲染Mermaid图表代码为高清PNG图片并保存到浏览器下载文件夹。源码语法错误时会返回带行号的可读解析错误。支持 flowchart/sequence/gantt/class/state/er/pie/mindmap 等全部 Mermaid 图表类型。',
+        '渲染Mermaid图表代码为高清PNG图片并保存到当前会话工作区 outputs/，返回统一文件卡片标记。源码语法错误时会返回带行号的可读解析错误。支持 flowchart/sequence/gantt/class/state/er/pie/mindmap 等全部 Mermaid 图表类型。',
       parameters: {
         type: 'object',
         properties: {
@@ -109,7 +112,7 @@ export class MermaidRendererTool extends BaseTool {
    */
   private renderQueue: Promise<unknown> = Promise.resolve();
 
-  async execute(params: { mermaidCode?: unknown; filename?: unknown }): Promise<ToolResult> {
+  async execute(params: { mermaidCode?: unknown; filename?: unknown }, context?: ToolExecutionContext): Promise<ToolResult> {
     const previous = this.renderQueue;
     let release!: () => void;
     this.renderQueue = new Promise<void>(resolve => {
@@ -118,17 +121,17 @@ export class MermaidRendererTool extends BaseTool {
     // 前序调用无论成败都放行本次（失败不阻塞后续渲染）
     await previous.catch(() => undefined);
     try {
-      return await this.executeSerialized(params);
+      return await this.executeSerialized(params, context);
     } finally {
       release();
     }
   }
 
-  /** 串行执行体：输入校验 → 离屏渲染 → 下载保存 */
+  /** 串行执行体：输入校验 → 离屏渲染 → 工作区保存 */
   private async executeSerialized(params: {
     mermaidCode?: unknown;
     filename?: unknown;
-  }): Promise<ToolResult> {
+  }, context?: ToolExecutionContext): Promise<ToolResult> {
     try {
       // ── 1. 输入校验（防御性：类型与长度双查，LLM 参数不可信）──
       const code = typeof params.mermaidCode === 'string' ? params.mermaidCode : '';
@@ -148,6 +151,8 @@ export class MermaidRendererTool extends BaseTool {
         typeof params.filename === 'string' && params.filename.trim() ? params.filename : 'mermaid-diagram';
       const filename = sanitizeFilename(rawFilename);
 
+      const chatId = requireWorkspaceChatId(context?.chatId);
+      context?.signal?.throwIfAborted();
       await ensureOffscreenHost();
       const response = await this.requestRender(code);
 
@@ -165,22 +170,8 @@ export class MermaidRendererTool extends BaseTool {
         );
       }
 
-      // ── 4. 下载保存 ──
-      try {
-        await chrome.downloads.download({
-          url: response.dataUrl,
-          filename: `${filename}.png`,
-          saveAs: false,
-          conflictAction: 'uniquify',
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return this.buildError(
-          'MERMAID_DOWNLOAD_FAILED',
-          `图片已生成（${response.width}×${response.height}px）但保存失败：${message}`,
-          '可重试一次；若浏览器处于无痕/下载受限模式请先解除限制',
-        );
-      }
+      const blob = await fetchArtifactBlob(response.dataUrl, context?.signal);
+      const file = await saveWorkspaceOutput(chatId, 'outputs/' + filename + '.png', blob, context?.signal);
 
       this.log(`渲染成功: ${filename}.png (${response.width}x${response.height}px, ${response.durationMs}ms)`);
 
@@ -192,10 +183,12 @@ export class MermaidRendererTool extends BaseTool {
             type: 'text',
             text:
               `✅ Mermaid 图表渲染成功！\n` +
-              `文件已保存为: ${filename}.png（${response.width}×${response.height}px，耗时 ${response.durationMs}ms）\n\n` +
+              `已保存到会话工作区: ${file.path}（${response.width}×${response.height}px，耗时 ${response.durationMs}ms）\n${file.marker}\n\n` +
               `渲染的代码：\n\`\`\`mermaid\n${code}\n\`\`\``
           }
         ],
+        primary: 'content',
+        data: { file, files: [file], width: response.width, height: response.height },
         isError: false
       };
     } catch (error) {

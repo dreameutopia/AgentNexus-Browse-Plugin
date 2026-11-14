@@ -21,7 +21,7 @@
  *   - similar：相似元素发现——从种子向上找最近「重复容器组」（同标签且
  *     class Jaccard ≥ 0.5 的兄弟 ≥ 2），返回每个容器内与种子等位/最相似的
  *     元素；种子本身是重复项时直接返回同构兄弟组。附带可直接用于
- *     browser_page_exec 批量抓取的生成选择器与实测匹配数。
+ *     js_run 批量抓取的生成选择器与实测匹配数。
  *
  * 防御性约定：所有遍历有界（层数/节点数/容器数上限），超限置 truncated 并
  * 说明收窄方式；任何错误以 { error } 返回，绝不抛出中断宿主。
@@ -651,8 +651,8 @@ export function elementExplorePayload(
         ? `${hiddenSkipped} 个隐藏匹配被过滤；需要模板/隐藏节点时传 visibleOnly=false。`
         : '') +
       (pattern.combinedSelector
-        ? `生成选择器实测匹配 ${pattern.selectorMatchCount ?? '?'} 个、容器组 ${totalContainers} 个——匹配数明显偏大说明选择器过宽（按容器遍历更稳）；偏小或为 0 常见于 Shadow DOM 结构（选择器不跨 shadow，需在 browser_page_exec 中逐 host 读 shadowRoot 后查询）。`
-        : '结构无稳定公共 class，未生成选择器——可在 browser_page_exec 中按 tag+class 交集过滤，或对代表容器逐个 children 探索。'),
+        ? `生成选择器实测匹配 ${pattern.selectorMatchCount ?? '?'} 个、容器组 ${totalContainers} 个——匹配数明显偏大说明选择器过宽（按容器遍历更稳）；偏小或为 0 常见于 Shadow DOM 结构（选择器不跨 shadow，需在 js_run 中逐 host 读 shadowRoot 后查询）。`
+        : '结构无稳定公共 class，未生成选择器——可在 js_run 中按 tag+class 交集过滤，或对代表容器逐个 children 探索。'),
   };
 }
 

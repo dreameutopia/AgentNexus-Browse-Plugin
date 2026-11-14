@@ -100,6 +100,22 @@ const PAYLOAD_RATIO_LIMIT = 0.9;
 const SUMMARY_SIZE_WARN_RATIO = 0.2;
 
 /**
+ * 摘要必须包含的分区（与 compaction-prompts 的 PARTITION_TEMPLATE 同源）。
+ *
+ * 六个分区承载压缩后的全部可续跑依据：目标 / 约束 / 关键事实 / 进度 /
+ * 错误经验 / 待办。缺任一分区 = 该维度记忆直接丢失，因此摘要落地前
+ * 逐个校验（见 assertSummaryStructure）。
+ */
+const REQUIRED_SUMMARY_PARTITIONS = [
+  'task',
+  'constraints',
+  'key-facts',
+  'progress',
+  'errors',
+  'pending',
+] as const;
+
+/**
  * 分段摘要的请求次数上限（防线一的请求预算）。
  *
  * 触顶后的收敛：不再直接失败，而是转入**截断兜底**（最后一次请求，按
@@ -292,11 +308,85 @@ export class ContextCompactor {
     budget.calls += 1;
     const rawSummary = await this.requestSummary(input, systemPrompt, userPayload, payloadContent);
     const summary = ensureSummaryWrapped(rawSummary);
+    const missing = this.missingSummaryPartitions(summary);
+    if (missing.length > 0) {
+      // 结构不合规的摘要**不直接采用**：分区缺失意味着对应维度的记忆直接
+      // 丢失（缺 <pending> 就是待办丢失、缺 <key-facts> 就是批次 ID 丢失）。
+      // 但也**不直接失败**：摘要模型偶尔会漏写分区，一次失败就放弃压缩
+      // 会让上下文无限增长——那比一份不完美的摘要更糟。折中：再要一次
+      // （带明确的缺失清单），仍不合规则**接受并在注入时标注**，
+      // 让模型知道哪些维度没有可靠记忆（由 plan_tool read / list 兜底）。
+      const repaired = await this.repairSummary(input, systemPrompt, userPayload, payloadContent, missing, budget);
+      if (repaired) return repaired;
+    }
     return {
       summary,
       originalTokens: totalTokens,
       summaryTokens: estimateTextTokens(summary),
     };
+  }
+
+  /**
+   * 结构不合规时的**一次定向修复**：把缺失的分区名明确告知摘要模型再要一次。
+   *
+   * 为什么只修一次：修复是额外的模型往返（实测单次压缩已需 ~139 秒），
+   * 连续修复说明模型与契约不合，再要也未必对——那属于提示词/模型侧问题，
+   * 应在冷却后由下一轮重试，而不是在此无限循环。
+   */
+  private async repairSummary(
+    input: CompactionInput,
+    systemPrompt: string,
+    userPayload: string,
+    payloadContent: Exclude<ChatMessage['content'], string>,
+    missing: readonly string[],
+    budget: { calls: number },
+  ): Promise<{ summary: string; originalTokens: number; summaryTokens: number } | null> {
+    if (budget.calls >= MAX_SEGMENT_REQUESTS) return null;
+    budget.calls += 1;
+    const hint =
+      `\n\n【结构补正】上一次摘要缺少以下分区：${missing.join('、')}。` +
+      '请**重新输出完整摘要**，六个分区必须全部存在（内容为空的分区写"无"）：' +
+      `${REQUIRED_SUMMARY_PARTITIONS.join('、')}。只输出 <summary> 元素。`;
+    try {
+      const raw = await this.requestSummary(
+        input,
+        systemPrompt,
+        userPayload + hint,
+        payloadContent.length > 1
+          ? payloadContent
+          : ([{ type: 'text', text: userPayload + hint }] as Exclude<ChatMessage['content'], string>),
+      );
+      const summary = ensureSummaryWrapped(raw);
+      const stillMissing = this.missingSummaryPartitions(summary);
+      if (stillMissing.length > 0) {
+        console.warn(
+          `[ContextCompactor] 摘要结构补正后仍缺少分区：${stillMissing.join('、')}——` +
+            '采用不完整摘要并在注入时标注缺失维度',
+        );
+      }
+      return {
+        summary,
+        originalTokens: 0,
+        summaryTokens: estimateTextTokens(summary),
+      };
+    } catch (error) {
+      console.warn('[ContextCompactor] 摘要结构补正请求失败：', error);
+      return null;
+    }
+  }
+
+  /**
+   * 摘要结构校验：六个分区必须齐全。
+   *
+   * 为什么校验（而不是"模型写了就收"）：分区缺失意味着**对应维度的记忆
+   * 直接丢了**——缺 <pending> 就是待办丢失，缺 <key-facts> 就是关键事实
+   * （含批次 ID）丢失，缺 <task> 就是目标丢失。这些是压缩后继续推进的
+   * 全部依据，丢了之后模型只能凭残缺的上下文重建，等于压缩白做。
+   */
+  private missingSummaryPartitions(summary: string): string[] {
+    return REQUIRED_SUMMARY_PARTITIONS.filter(
+      partition => !new RegExp(`<${partition}>[\\s\\S]*?</${partition}>`).test(summary),
+    );
   }
 
   /**
@@ -440,6 +530,15 @@ export class ContextCompactor {
 
     const rawSummary = await this.requestSummary(input, systemPrompt, userPayload, payloadContent);
     const summary = ensureSummaryWrapped(rawSummary);
+    const missing = this.missingSummaryPartitions(summary);
+    if (missing.length > 0) {
+      // 截断兜底路径已无预算再修一次：采用不完整摘要，但在注入时标注缺失维度，
+      // 让模型知道哪些记忆不可靠（由 plan_tool read / data_ref list 兜底）。
+      console.warn(
+        `[ContextCompactor] 截断兜底摘要缺少分区：${missing.join('、')}——` +
+          '采用不完整摘要并在注入时标注缺失维度',
+      );
+    }
     return {
       summary,
       originalTokens: totalTokens,
@@ -457,7 +556,12 @@ export class ContextCompactor {
    *   2. plan_tool 回读引导——计划执行状态不在摘要内，需要进度先 read，
    *      以读取结果为权威（与 plan-prompt 的「以读到的为准」同一口径），
    *      随摘要自动拼接、无需调用方另行注入；
-   *   3. 防御性补包：历史存储的旧版摘要可能没有 <summary> 包裹，注入前自愈。
+   *   3. **暂存区形态核验引导**——摘要是模型写的**转述**，批次结构可能被
+   *      概括得比真实结构更简单；引用批次前先 list/info 核对真实形态，
+   *      否则模型会基于错误结构做投影或导出（实测：摘要说批次"含 base 与
+   *      skuPrices"，模型据此推断 extract 能取到 base，实际取不到，
+   *      于是把 15 个页面全部重抓了一遍）。核对成本是一次 list 调用，
+   *      远低于重抓。
    */
   buildSummaryMessage(summary: string, compactedAt: number, compactedMessages?: number): ChatMessage {
     const date = new Date(compactedAt);
@@ -475,7 +579,8 @@ export class ContextCompactor {
         `<conversation-memory>\n` +
         `以下是对本会话先前对话的压缩摘要（压缩于 ${timestamp}${scope}）。` +
         `这是当前任务目标的权威记忆；摘要之后的消息是压缩后新增的对话，两者冲突时以之后的消息为准。\n` +
-        `任务计划（plan_tool）的执行状态不在本摘要内：需要剩余步骤或各项状态时，先调用 plan_tool read，以读取结果为权威，不要凭摘要推断计划进度。\n\n` +
+        `任务计划（plan_tool）的执行状态不在本摘要内：需要剩余步骤或各项状态时，先调用 plan_tool read，以读取结果为权威，不要凭摘要推断计划进度。\n` +
+        `数据批次（dataRef）与结果文件（results/…json）在摘要里可能只保留了名字与大致结构：**引用前先核对真实形态**——refs 用 data_ref_tool(action="list"/"info")、结果文件用 data_ref_tool(action="info", file=路径) 或 js_run(action="read", path=路径, index=1)（字段名、嵌套关系、行数），再决定怎么投影/导出——摘要的转述不能替代实测形态。\n\n` +
         `${ensureSummaryWrapped(body)}\n` +
         `</conversation-memory>`,
     };

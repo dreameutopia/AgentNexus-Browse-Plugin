@@ -1,3 +1,4 @@
+import { JS_RUN_TOOL_ID } from '@/tools/javascript/js-contract';
 import { SKILL_TOOL_ID } from '@/utils/skills/skill-tool-contract';
 
 /** Capability ceiling for the built-in guide, including skills and extra tools.
@@ -10,7 +11,7 @@ import { SKILL_TOOL_ID } from '@/utils/skills/skill-tool-contract';
  * 因此列入白名单——但观察者边界下沉到 action 级（VISION_ASSISTANT_GUI_ACTIONS），
  * 由会话引擎在执行前拒绝手势类 action（见 conversation-engine 执行闸门）。 */
 export const VISION_ASSISTANT_TOOLS = [
-  'screenshot', 'vision_gui', 'generic_wait',
+  'screenshot', 'vision_gui', 'generic_wait', JS_RUN_TOOL_ID,
   'browser_get_page_text', 'interact', 'plan_tool', 'note_tool', 'read_file', SKILL_TOOL_ID,
 ] as const;
 

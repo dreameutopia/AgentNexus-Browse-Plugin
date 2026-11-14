@@ -16,7 +16,6 @@ export async function runWorkspaceScript(
   request: PythonScriptRequest,
   loadImports: (source: string) => Promise<void>,
   signal?: AbortSignal,
-  withPublicIndex?: <T>(install: () => Promise<T>) => Promise<T>,
 ): Promise<void> {
   const globals = pyodide.toPy(new Map([['request_json', JSON.stringify(request)]]));
   try {
@@ -58,9 +57,8 @@ export async function runWorkspaceScript(
       }))];
       if (matching.length && request.dependencyMode === 'catalog') await pyodide.loadPackage(matching);
       signal?.throwIfAborted();
-      const prepare = () => pyodide.runPythonAsync('await runner.prepare_dependencies(requirements)', { globals });
-      if (request.dependencyMode === 'pypi' && withPublicIndex) await withPublicIndex(prepare);
-      else await prepare();
+      // 运行期网络已放开：pypi 解析直接执行（声明式依赖的审批门在工具/宿主层）
+      await pyodide.runPythonAsync('await runner.prepare_dependencies(requirements)', { globals });
     }
     signal?.throwIfAborted();
     await pyodide.runPythonAsync('runner.run()', { globals });

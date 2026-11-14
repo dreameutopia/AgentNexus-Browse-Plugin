@@ -9,7 +9,6 @@ import { aiLocateTool } from './ai-locate-tool';
 import { aiActionTool } from './ai-action-tool';
 import { extractDataTool } from './extract-data-tool';
 import { formFillerTool } from './form-filler';
-import { DownloadsStatusGetterTool } from './downloads-status-getter';
 import { restrictedUrlCheckerTool } from './restricted-url-checker';
 import { xiaozhiConfigTool } from './xiaozhi-config-tool';
 
@@ -35,9 +34,6 @@ export function registerAutomationTools() {
   // 注册表单填充工具
   toolRegistry.register(formFillerTool);
   
-  // 注册下载状态获取工具
-  toolRegistry.register(new DownloadsStatusGetterTool());
-  
   // 注册受限URL检查工具
   toolRegistry.register(restrictedUrlCheckerTool);
   
@@ -49,5 +45,4 @@ export function registerAutomationTools() {
 export { FileUploadGetterTool } from './file-upload-getter';
 export { xiaozhiConfigTool, XiaozhiConfigTool } from './xiaozhi-config-tool';
 export { FileUploaderTool } from './file-uploader';
-export { DownloadsStatusGetterTool } from './downloads-status-getter';
 export { restrictedUrlCheckerTool, RestrictedUrlCheckerTool } from './restricted-url-checker';

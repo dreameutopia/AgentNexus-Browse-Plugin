@@ -11,16 +11,19 @@ tools/
 ├── index.ts                 # 主入口文件，工具注册中心
 ├── base-tool.ts            # 基础工具抽象类
 ├── search/                 # 搜索工具类别
-│   ├── index.ts            # 注册 web_search / platform_search
-│   ├── search-targets.ts   # 搜索目标注册表（引擎 bing/baidu + 站点平台 7 个）
-│   ├── search-tool-base.ts # 两个搜索工具共用的执行链路（导航 + 解析）
+│   ├── index.ts            # 注册 web_search / platform_search / bilibili_search
+│   ├── search-targets.ts   # 搜索目标注册表（引擎 + 站点平台 + 专属目标）
+│   ├── search-tool-base.ts # 三个搜索工具共用的执行链路（导航 + 解析）
 │   ├── web-search-tool.ts  # 通用网页检索（engine 枚举）
-│   └── platform-search-tool.ts # 站点平台检索（platform 枚举）
-├── navigation/             # 导航工具类别
-│   ├── index.ts
-│   ├── quick-navigation.ts
-│   ├── bookmark-navigation.ts
-│   └── history-navigation.ts
+│   ├── platform-search-tool.ts # 通用站点平台检索（platform 枚举）
+│   └── bilibili-search-tool.ts # Bilibili 站内视频检索（目标固定）
+├── browser/                 # 浏览器工具类别（导航 / 标签页 / 页面读取 / 交互 / 下载与资源）
+│   ├── navigation.ts        # 统一导航（open/refresh/back/forward/wait）
+│   ├── tab-management.ts    # 统一标签页与窗口（list/switch/close/create/windows）
+│   ├── history-bookmarks.ts # 历史与书签统一入口（九 action）
+│   ├── downloads.ts         # 浏览器下载管理器（七 action）
+│   ├── resources.ts         # 页面资源与下载捕获（八 action）
+│   └── page-info-tool.ts    # 结构化正文 / 页面源码 / 页面元信息
 ├── automation/             # 自动化工具类别
 │   ├── index.ts
 │   ├── form-filler.ts
@@ -43,7 +46,7 @@ tools/
 
 ### 使用现有工具
 
-浏览器导航只在**现有窗口**内进行：`browser_navigation({action:"open", url})` 默认新标签页，`newTab:false` 使用当前标签页，同 URL 标签可复用；历史前进后退与加载等待同属该工具（`action` 为 `back` / `forward` / `refresh` / `wait`）。`newWindow` 已从导航及快捷／书签／历史导航接口删除，导航没有新建窗口兜底；没有现成窗口时返回错误，标签创建始终显式绑定现有 windowId。
+浏览器导航只在**现有窗口**内进行：`browser_navigation({action:"open", url})` 默认新标签页，`newTab:false` 使用当前标签页，同 URL 标签可复用；历史前进后退与加载等待同属该工具（`action` 为 `back` / `forward` / `refresh` / `wait`）。`newWindow` 已从导航接口删除，导航没有新建窗口兜底；没有现成窗口时返回错误，标签创建始终显式绑定现有 windowId。
 
 `generic_wait({waitSeconds})` 接受非负有限秒数，超过 600 自动按 600 秒执行，支持中止；视觉循环在工具完成后另强制间隔 3 秒再自动截图。等待仅表示时间经过，完成状态仍需重新观察。
 
@@ -65,10 +68,16 @@ const result2 = await toolRegistry.executeTool('web_search', {
   newTab: true
 });
 
-// 站点平台检索走另一个工具（platform 枚举）
+// 站点平台检索走另一个工具（platform 枚举：知乎 / GitHub / CSDN / MOOC / 小红书 / 知网）
 const result3 = await toolRegistry.executeTool('platform_search', {
   platform: 'zhihu',
   query: 'TypeScript 最佳实践'
+});
+
+// Bilibili 站内视频检索是专属工具：目标固定，schema 里没有目标参数
+const result4 = await toolRegistry.executeTool('bilibili_search', {
+  query: 'TypeScript 教程',
+  waitTime: 5000
 });
 ```
 
@@ -87,7 +96,7 @@ const searchSchema = toolRegistry.getTool('web_search')?.openaiSchema;
 ### 1. 选择合适的基类
 
 - `BaseTool`（`tools/base-tool.ts`）: 通用工具基类
-- `BaseSearchTool`（`tools/search/search-tool-base.ts`）: 搜索类工具基类——`web_search` 与 `platform_search` 共用同一执行链路（导航 → 等待 → 解析 → Markdown 表），子类只声明差异面
+- `BaseSearchTool`（`tools/search/search-tool-base.ts`）: 搜索类工具基类——`web_search` / `platform_search` / `bilibili_search` 共用同一执行链路（导航 → 等待 → 解析 → Markdown 表），子类只声明差异面
 - `BaseNavigationTool`（`tools/base-tool.ts`）: 导航类工具基类
 
 ### 2. 实现工具类
@@ -157,13 +166,33 @@ export { MyCustomSearchTool };
 - **GitHubSearchTool**: GitHub代码仓库搜索
 - **StackOverflowSearchTool**: Stack Overflow编程问题搜索
 
-### 导航工具 (Navigation Tools)
+### 历史与书签工具 (History & Bookmark Tools)
 
-用于页面导航和快速访问:
+浏览历史与书签已合并为单一工具 `browser_history_bookmarks`（九 action）：
 
-- **QuickNavigationTool**: 快速导航到常用网站
-- **BookmarkNavigationTool**: 搜索并导航到书签
-- **HistoryNavigationTool**: 搜索并导航到浏览历史
+- **search**: 检索历史与书签（source=history/bookmark/both，同 URL 合并；支持时间窗与排序）
+- **open**: 打开某条历史或书签（url 或 id，复用 browser_navigation 的导航语义）
+- **create / update / delete**: 书签的增、改（含移动到别的文件夹）、删
+- **clear**: 清理浏览历史（不可逆，需用户批准；必须显式给时间窗或 all=true）
+- **recent / top**: 最近访问的页面、最常访问站点榜
+- **folders**: 书签文件夹结构（配合 update 的 parentId 移动书签）
+
+### 下载与资源工具 (Downloads & Resources)
+
+所有可交付文件统一先保存在当前会话工作区 `outputs/`，返回 `WorkspaceArtifact`（`path/name/marker`，可附 `sizeBytes/mime`），通过 `<workspace-file path="outputs/..." />` 渲染下载卡片。工作区不依赖 Python，按 chatId 隔离、按需创建并随会话备份/删除。全局规范唯一来源是 `utils/python-workspace/workspace-prompt.ts`，由 runtime-builder 无条件注入。新文件生产者必须使用 `saveWorkspaceOutput`，不得绕过它写入全局文件库；Python 的事务提交继续由运行时管理。
+
+资源来源库、会话产物和浏览器下载队列各有用途：
+
+- **browser_resources**（八 action）：页面资源与下载捕获
+  - `sniff` / `list` / `download`：嗅探当前页可下载资源、按 id 获取并保存到当前会话 outputs/
+  - `fetch`：按 URL 获取文件到当前会话 outputs/（无需先嗅探；受网络访问权限与工作区配额限制）
+  - `intercept` / `captured` / `export`：下载拦截开关、扩展私有副本库、副本复制到当前会话 outputs/
+  - `status`：拦截器与副本库总体状态
+- 默认由用户点击文件卡片下载。`xlsx_tool(autoDownload=true)` 和 `browser_resources(openAfterDownload=true)` 可额外发起浏览器下载；额外下载失败保留工作区产物并返回警告。历史 `[file:ID|文件名]` 仅保留读取兼容，不迁移无会话归属的旧文件。
+- **browser_downloads**（七 action）：浏览器下载管理器（chrome.downloads）
+  - `list` 查询历史与进行中任务；`cancel` / `pause` / `resume` 控制下载
+  - `erase` 清除历史记录（不动磁盘文件）；`show` 定位文件；`open` 打开文件
+- **browser_get_page_html**：页面 HTML 源码或可见纯文本（format 真正生效、含 iframe、带长度上限）
 
 ### 自动化工具 (Automation Tools)
 
@@ -209,10 +238,10 @@ const workflowResult = await toolRegistry.executeTool('workflow_automation', {
 ### 批量操作
 
 ```typescript
-// 两个搜索工具：web_search（通用网页，engine 枚举 bing/baidu）与
-// platform_search（站点平台，platform 枚举 zhihu/csdn/github/…）——一次调用
-// 都完成导航 + 结果解析。
-// 注意：两者都自带页面导航（等同 browser_navigation 的 open action），并发调用会互相争抢
+// 三个搜索工具：web_search（通用网页，engine 枚举 bing/baidu）、
+// platform_search（站点平台，platform 枚举 zhihu/csdn/github/…）与
+// bilibili_search（B 站视频检索，目标固定）——一次调用都完成导航 + 结果解析。
+// 注意：三者都自带页面导航（等同 browser_navigation 的 open action），并发调用会互相争抢
 // 活动标签页——多次搜索必须逐个串行执行，禁止 Promise.all 并发。
 const searchQuery = 'React Hooks';
 
@@ -240,9 +269,10 @@ if (pageInfo.content[0]?.text.includes('github.com')) {
     query: 'typescript'
   });
 } else {
-  // 其他页面，导航到GitHub
-  await toolRegistry.executeTool('quick_navigation', {
-    site: 'github'
+  // 其他页面，导航到GitHub（直接给地址即可，无需查表）
+  await toolRegistry.executeTool('browser_navigation', {
+    action: 'open',
+    url: 'https://github.com'
   });
 }
 ```
@@ -345,3 +375,5 @@ const result = await toolRegistry.getTool('browser_navigation')?.execute({ actio
 ## 📄 许可证
 
 MIT License - 详见 LICENSE 文件
+
+会话 JavaScript 统一使用全局默认 `js_run`：先 create 保存 `scripts/*.js`，再 run 传相对路径与 JSON `args`（脚本通过 `$args` 读取）。文本编辑与 Python 共用引擎，支持精确/显式缩进匹配、原子 `edits` 及可选 SHA-256 冲突检查。原内联页面执行工具实现保持不变，仅供 backend；两个脚本入口均不出现在智能体工具组中。

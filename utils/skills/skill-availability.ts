@@ -4,7 +4,7 @@
  * 产出的是**装配期的可用技能清单**——system prompt 的 <available-skills> 发现
  * 清单（L1）由它决定；输入框「/」卡片不受此约束，那里只展示当前智能体
  * **显式关联**的启用技能（见 resolveAgentLinkedSkills），因为预选技能经
- * 合成 load_skill 轮注入、不依赖发现清单。
+ * 合成 skill_tool(action="load") 轮注入、不依赖发现清单。
  *
  * **不变量（本文件的根本职责）：清单里的技能，其声明的全部工具必然可执行。**
  * 三个判定来源（取并集，按技能 id 去重）统一过「承载校验」：
@@ -19,18 +19,18 @@
  * （包含而非相交），否则不进清单。理由（曾真实发生的事故根因）：清单技能的
  * allowedTools 会被 runtime-builder 并入 advertisedToolIds——模型在工具目录里
  * 看得见这些工具的 schema，但它们不在可执行集（runtime.toolIds）里，跳过
- * load_skill 直接调用即被引擎以 TOOL_NOT_ALLOWED 拒绝（「看得见调不了」死链；
+ * skill_tool(action="load") 直接调用即被引擎以 TOOL_NOT_ALLOWED 拒绝（「看得见调不了」死链；
  * 典型案例：web-research-report 携带的 note_tool 曾在多个智能体下复现）。
  * 历史上该校验只作用于自定义技能，预置技能经映射兜底绕过——统一后此类
  * 错位从装配源头杜绝：advertisedToolIds ⊆ toolIds 恒成立。
  *
  * 用户显式指定不受此限：发送时预选的技能（skillNames）走 buildActivationRound
- * 合成 load_skill 轮，其 allowedTools 由 activation.toolIds 并入会话工具集
+ * 合成 skill_tool(action="load") 轮，其 allowedTools 由 activation.toolIds 并入会话工具集
  * （runtime-builder），从第一轮起就可执行——预选是用户对本次任务的明确授权，
  * 与「发现清单只展示可自洽承载的技能」不冲突。
  *
  * 解析与过滤约定：
- *   - 引用（ref）经 resolveSkill 三态解析（id / 模型标识 / 名称），
+ *   - 引用（ref）经 getSkillById 精确解析（十进制 ID），
  *     兼容旧数据（v1 以名称关联）与跨设备导入（名称一致即命中）；
  *   - 不存在或已停用的引用静默忽略（技能可能被用户删除/停用，
  *     挂死引用不应让智能体装配失败）；
@@ -39,7 +39,7 @@
  */
 
 import type { SkillRecord } from './skill-types';
-import { resolveSkill, getEnabledSkills } from './skill-store';
+import { getSkillById, getEnabledSkills } from './skill-store';
 import { getMappedSkillRefs } from './tool-skill-mapping';
 import { isSkillToolId } from './skill-tool-contract';
 
@@ -48,7 +48,7 @@ import { isSkillToolId } from './skill-tool-contract';
  *
  * 规则与 computeAvailableSkills 的通道 1 一致（三态解析 / 停用剔除 /
  * 按 id 去重 / 保持声明顺序），但**不施加承载校验、不做映射兜底**：
- * 预选技能经合成 load_skill 轮注入，其 allowedTools 由激活轮并入会话
+ * 预选技能经合成 skill_tool(action="load") 轮注入，其 allowedTools 由激活轮并入会话
  * 工具集（见文件头「用户显式指定不受此限」），卡片回答「能选什么」
  * 而不是「发现清单里有什么」。
  *
@@ -63,7 +63,7 @@ export function resolveAgentLinkedSkills(
   const result: SkillRecord[] = [];
   for (const ref of agentSkillRefs) {
     if (typeof ref !== 'string' || !ref.trim()) continue;
-    const skill = resolveSkill(ref);
+    const skill = getSkillById(ref);
     if (!skill || !skill.enabled || seen.has(skill.id)) continue;
     seen.add(skill.id);
     result.push(skill);
@@ -74,7 +74,7 @@ export function resolveAgentLinkedSkills(
 /**
  * 计算给定上下文的可用技能列表（三通道统一承载校验，见文件头不变量）。
  *
- * @param agentSkillRefs 智能体显式关联的技能引用（id / 名称 / 模型标识；可为 undefined）
+ * @param agentSkillRefs 智能体显式关联的技能引用（十进制 ID；可为 undefined）
  * @param toolIds 当前会话工具集（核心工具 ∪ 智能体工具 ∪ 会话附加工具，
  *                口径见 runtime-builder 的 CORE_SESSION_TOOL_IDS）
  * @returns 可用、启用且全部 allowedTools 可承载的技能记录（按 id 去重，显式关联优先）
@@ -100,7 +100,7 @@ export function computeAvailableSkills(
 
   const pushRef = (ref: string): void => {
     if (typeof ref !== 'string' || !ref.trim()) return;
-    pushSkill(resolveSkill(ref));
+    pushSkill(getSkillById(ref));
   };
 
   // 1. 显式关联（用户意图优先，保持声明顺序）

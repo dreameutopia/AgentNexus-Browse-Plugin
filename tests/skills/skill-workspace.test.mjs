@@ -18,7 +18,7 @@ await build({
       export { encodeSkillBytes } from './utils/skills/skill-resources';
       export { parsePythonScriptRequest } from './utils/pyodide/python-script-request';
       export { runWorkspaceScript } from './utils/pyodide/python-script';
-      export { createScriptNetwork } from './utils/pyodide/python-worker-globals';
+      export { pythonWorkerGlobals } from './utils/pyodide/python-worker-globals';
     `,
     resolveDir: process.cwd(),
   },
@@ -39,9 +39,8 @@ await build({
   }],
 });
 const { chatDatabase, withPythonWorkspace, readWorkspaceOutput, copySkillToWorkspace, encodeSkillBytes,
-  parsePythonScriptRequest, runWorkspaceScript, createScriptNetwork } = await import(pathToFileURL(outfile).href);
-const network = createScriptNetwork();
-const py = await loadPyodide({ jsglobals: network.globals });
+  parsePythonScriptRequest, runWorkspaceScript, pythonWorkerGlobals } = await import(pathToFileURL(outfile).href);
+const py = await loadPyodide({ jsglobals: pythonWorkerGlobals() });
 
 try {
   for (const chatId of ['chat_a', 'chat_b']) {
@@ -56,7 +55,7 @@ try {
   });
 
   const skill = {
-    id: 'ed25519:publisher/plugin/skill', name: 'fixture',
+    id: '1001', name: 'fixture',
     files: {
       'SKILL.md': '# Fixture',
       'scripts/helper.py': 'value = "local import"',
@@ -86,17 +85,29 @@ try {
   const subset = await copySkillToWorkspace('chat_a', skill, ['scripts/report.py', 'scripts']);
   assert.equal(subset.files.length, 3, 'Overlapping selectors deduplicate');
   const copied = await copySkillToWorkspace('chat_a', skill, ['.']);
-  assert.equal(copied.workspacePath, subset.workspacePath);
+  assert.equal(subset.workspacePath, '.');
+  assert.equal(copied.workspacePath, skill.id);
   assert.ok(copied.files.includes(copied.workspacePath + '/assets/fixture.bin'));
   const beforeRetry = (await chatDatabase.readWorkspace('chat_a')).revision;
-  assert.deepEqual(await copySkillToWorkspace('chat_a', skill, ['.']), copied);
-  assert.equal((await chatDatabase.readWorkspace('chat_a')).revision, beforeRetry);
+  const repeated = await copySkillToWorkspace('chat_a', skill, ['.']);
+  assert.equal(repeated.workspacePath, skill.id + '/copy-2');
+  assert.notEqual((await chatDatabase.readWorkspace('chat_a')).revision, beforeRetry);
   await assert.rejects(copySkillToWorkspace('chat_a', skill, ['scripts', '../outputs']), /skill-relative/);
-  await assert.rejects(copySkillToWorkspace('chat_a', skill, ['assets/missing']), /not found/);
+  await assert.rejects(copySkillToWorkspace('chat_a', skill, ['assets/missing']), /does not exist/);
+  const beforeDeniedCommit = (await chatDatabase.readWorkspace('chat_a')).revision;
+  await assert.rejects(copySkillToWorkspace('chat_a', skill, ['.'], undefined, async () => {
+    throw new Error('Authorization revoked at commit');
+  }), /Authorization revoked at commit/);
+  assert.equal((await chatDatabase.readWorkspace('chat_a')).revision, beforeDeniedCommit);
+  await assert.rejects(withPythonWorkspace(py.FS, 'chat_a', async () => {
+    py.runPython('from pathlib import Path\nPath("outputs/revoked.txt").touch()');
+    return { ok: true };
+  }, undefined, async () => { throw new Error('Environment changed at commit'); }), /Environment changed at commit/);
+  assert.equal(await readWorkspaceOutput('chat_a', 'outputs/revoked.txt'), null);
   await assert.rejects(copySkillToWorkspace('deleted_chat', skill, ['.']), /no longer exists/);
   assert.equal(await chatDatabase.readWorkspace('chat_b'), undefined);
   const request = parsePythonScriptRequest({
-    path: copied.workspacePath + '/scripts/report.py', argv: ['hello world', '$literal'],
+    path: copied.workspacePath + '/scripts/report.py', cwd: copied.workspacePath, argv: ['hello world', '$literal'],
     env: { REPORT_FORMAT: 'text' }, stdin: 'from stdin\n',
   });
   assert.throws(() => parsePythonScriptRequest({ path: '../outside.py' }), /workspace-relative/);
@@ -120,9 +131,22 @@ try {
     return { ok: true };
   });
   assert.equal(await (await readWorkspaceOutput('chat_a', 'outputs/skill.txt')).text(), 'from stdin / local import');
+  // Reusing the interpreter must observe edited local helpers, even with identical byte length.
+  await run('chat_a', `Path('cache-helper.py').write_text('from pathlib import Path\\nimport cached_helper\\nPath("outputs/cache.txt").write_text(cached_helper.value)\\n')
+Path('cached_helper.py').write_text('value = "first"\\n')`);
+  const cacheRequest = parsePythonScriptRequest({ path: 'cache-helper.py' });
+  const runCache = () => withPythonWorkspace(py.FS, 'chat_a', async () => {
+    await runWorkspaceScript(py, cacheRequest, async () => {});
+    return { ok: true };
+  });
+  await runCache();
+  await run('chat_a', `Path('cached_helper.py').write_text('value = "other"\\n')`);
+  await runCache();
+  assert.equal(await (await readWorkspaceOutput('chat_a', 'outputs/cache.txt')).text(), 'other');
+  assert.ok(!(await chatDatabase.readWorkspace('chat_a')).entries.some(entry => entry.path.includes('__pycache__')));
   await withPythonWorkspace(py.FS, 'chat_a', async () => {
     const script = parsePythonScriptRequest({
-      path: copied.workspacePath + '/src/report_package/__main__.py', module: 'report_package',
+      path: copied.workspacePath + '/src/report_package/__main__.py', cwd: copied.workspacePath, module: 'report_package',
     });
     await runWorkspaceScript(py, script, () => assert.fail('Package imports must stay local'));
     await assert.rejects(runWorkspaceScript(py, { ...script, module: 'other_package' }, async () => {}), /do not refer/);
@@ -133,10 +157,6 @@ try {
     return { ok: true };
   }), /Script exited with status 17/);
   assert.equal(await readWorkspaceOutput('chat_a', 'outputs/should-not-exist'), null);
-  await assert.rejects(network.globals.fetch('https://pypi.org/simple/'), /unavailable/);
-  await assert.rejects(network.withPublicIndex(() => network.globals.fetch('https://example.org/')), /unavailable/);
-  await assert.rejects(network.withPublicIndex(() => network.globals.fetch('https://pypi.org/simple/', { method: 'POST' })), /unavailable/);
-  await assert.rejects(network.globals.fetch('https://pypi.org/simple/'), /unavailable/);
   await run('chat_a', `Path(${JSON.stringify(copied.workspacePath + '/assets/fixture.bin')}).write_bytes(b'edited')`);
   await copySkillToWorkspace('chat_a', skill, ['assets']);
   await run('chat_a', `assert Path(${JSON.stringify(copied.workspacePath + '/assets/fixture.bin')}).read_bytes() == b'edited'`);
@@ -150,8 +170,9 @@ root = Path(${JSON.stringify(copied.workspacePath)})
 (root / 'assets').write_text('occupied')
 `);
   const conflict = (await chatDatabase.readWorkspace('chat_a')).revision;
-  await assert.rejects(copySkillToWorkspace('chat_a', skill, ['assets']), /parent/i);
-  assert.equal((await chatDatabase.readWorkspace('chat_a')).revision, conflict);
+  const fallback = await copySkillToWorkspace('chat_a', skill, ['assets']);
+  assert.notEqual(fallback.workspacePath, copied.workspacePath);
+  assert.notEqual((await chatDatabase.readWorkspace('chat_a')).revision, conflict);
 
   // This optional probe downloads wheels. Keep the regular suite deterministic and offline.
   if (process.env.AGENTNEXUS_TEST_SKILL_NETWORK === '1') {
@@ -164,7 +185,7 @@ root = Path(${JSON.stringify(copied.workspacePath)})
         'agentnexus_fixture-1.0.dist-info/WHEEL,,\nagentnexus_fixture-1.0.dist-info/RECORD,,\n'),
     });
     const dependencySkill = await copySkillToWorkspace('chat_b', {
-      id: 'deps',
+      id: '1002',
       files: {
         'SKILL.md': '# Dependencies',
         'test.py': 'from agentnexus_fixture import answer\nassert answer == 42',
@@ -174,20 +195,20 @@ root = Path(${JSON.stringify(copied.workspacePath)})
     }, ['.']);
     const runWithDependencies = options => withPythonWorkspace(py.FS, 'chat_b', async () => {
       const request = parsePythonScriptRequest(options);
-      await runWorkspaceScript(py, request, source => py.loadPackagesFromImports(source), undefined, network.withPublicIndex);
+      await runWorkspaceScript(py, request, source => py.loadPackagesFromImports(source));
       return { ok: true };
     });
     const { workspacePath } = dependencySkill;
     await runWithDependencies({
-      path: workspacePath + '/test.py',
-      wheels: [workspacePath + '/wheels/本地 wheel/agentnexus_fixture-1.0-py3-none-any.whl'],
+      path: workspacePath === '.' ? 'test.py' : workspacePath + '/test.py',
+      wheels: [(workspacePath === '.' ? '' : workspacePath + '/') + 'wheels/本地 wheel/agentnexus_fixture-1.0-py3-none-any.whl'],
       requirements: ['agentnexus-fixture==1.0'],
     });
     await assert.rejects(runWithDependencies({
       path: workspacePath + '/test.py', requirements: ['agentnexus-fixture==3.0'],
     }), /Unsatisfied dependencies/);
     await runWithDependencies({
-      path: workspacePath + '/remote.py', dependencyMode: 'pypi', requirements: ['snowballstemmer==2.2.0'],
+      path: workspacePath === '.' ? 'remote.py' : workspacePath + '/remote.py', dependencyMode: 'pypi', requirements: ['snowballstemmer==2.2.0'],
     });
     console.log('Compatible workspace wheel and public PyPI dependency installed successfully');
   }

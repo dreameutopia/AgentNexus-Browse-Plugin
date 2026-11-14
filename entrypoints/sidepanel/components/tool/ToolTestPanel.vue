@@ -48,7 +48,7 @@
 
     <!-- 下载测试区域（仅在自动化分类且特定工具显示） -->
     <DownloadTestSection
-      v-if="activeCategory === 'automation' && tool?.name === 'get_downloads_status'"
+      v-if="tool?.name === 'browser_downloads'"
       :download-test-info="downloadTestInfo"
       @trigger-download="$emit('triggerDownload')"
       @refresh-downloads="$emit('refreshDownloads')"

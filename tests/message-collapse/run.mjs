@@ -527,7 +527,9 @@ const MessageItem = (await compileComponent(
   assert.ok(downBtn, '操作栏含踩按钮');
   assert.equal(downBtn.nextElementSibling, toggle, '开关紧贴踩按钮右侧');
   const actions = container.querySelectorAll('.message-actions .message-action-btn');
-  assert.equal(actions.length, 4, '收起态四个按钮（复制 / 赞 / 踩 / 展开开关）');
+  assert.equal(actions.length, 5, '收起态五个按钮（复制 / Skill / 赞 / 踩 / 展开开关）');
+  assert.equal(actions[1].getAttribute('aria-label'),'sidepanel.chat.skillCaptureCreate','Skill 紧贴复制按钮右侧');
+  assert.ok(actions[1].querySelector('svg path'),'Skill 入口使用 SVG 图标');
   const copyBtn = actions[0];
 
   // 复制按钮：只复制末段正文（最后一段文本），不含思考 / 工具 / 中间文本
@@ -600,7 +602,7 @@ const MessageItem = (await compileComponent(
     const bar = mounted.container.querySelector('.message-actions');
     assert.ok(bar, `${label}同样出现操作栏`);
     const buttons = mounted.container.querySelectorAll('.message-actions .message-action-btn');
-    assert.equal(buttons.length, 4, `${label}操作栏按钮齐全（复制 / 赞 / 踩 / 展开开关）`);
+    assert.equal(buttons.length, 5, `${label}操作栏按钮齐全（复制 / Skill / 赞 / 踩 / 展开开关）`);
     assert.ok(!buttons[0].disabled, `${label}复制按钮可用`);
     mounted.unmount();
   }
@@ -636,7 +638,7 @@ const MessageItem = (await compileComponent(
     });
     assert.deepEqual(mounted.errors, []);
     const buttons = mounted.container.querySelectorAll('.message-actions .message-action-btn');
-    assert.equal(buttons.length, 3, '空消息只留复制 / 赞 / 踩（无轨迹可展开，开关不出现）');
+    assert.equal(buttons.length, 4, '空消息保留复制 / Skill / 赞 / 踩（无轨迹可展开，开关不出现）');
     assert.ok(buttons[0].disabled, '空消息的复制按钮禁用');
     assert.equal(mounted.container.querySelectorAll('.is-debug').length, 0, '空消息没有可调试的轨迹，调试按钮不出现');
     mounted.unmount();

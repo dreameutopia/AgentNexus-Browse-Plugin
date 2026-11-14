@@ -22,17 +22,11 @@ import { pageExecTool } from './page-exec-tool';
 import { pageExtractDataTool } from './page-extract-tool';
 import { pageCleanTool } from './page-clean-tool';
 import { domExploreTool } from './dom-explore-tool';
-import { historyTool } from './history';
-import {
-  bookmarkSearchTool,
-  bookmarkAddTool,
-  bookmarkDeleteTool
-} from './bookmark';
+import { browserHistoryBookmarksTool } from './history-bookmarks';
+import { browserDownloadsTool } from './downloads';
+import { browserResourcesTool } from './resources';
 import { browserTabsTool } from './tab-management';
-import {
-  scrollTool,
-  waitForElementTool
-} from './page-operations';
+import { browserPageOpsTool } from './page-ops';
 
 // 创建浏览器工具实例
 function createBrowserTools() {
@@ -63,17 +57,15 @@ function createBrowserTools() {
     pageCleanTool,
     domExploreTool,
 
-    // History tool
-    historyTool,
+    // 历史与书签统一工具（检索/打开/增删改/最近/最常访问/文件夹结构）
+    browserHistoryBookmarksTool,
 
-    // Bookmark tools
-    bookmarkSearchTool,
-    bookmarkAddTool,
-    bookmarkDeleteTool,
+    // 下载与资源工具（浏览器下载管理器 + 页面资源嗅探/下载/拦截捕获）
+    browserDownloadsTool,
+    browserResourcesTool,
 
-    // Page operation tools
-    scrollTool,
-    waitForElementTool,
+    // 轻量页面操作（按屏滚动 / 等待元素出现，无需 DOM 引用）
+    browserPageOpsTool,
   ];
 }
 
@@ -101,12 +93,16 @@ export * from './network';
 export * from './content';
 export * from './script';
 export * from './page-exec-tool';
+export * from './page-script-runner';
+export * from './crawl-runner';
+export * from './challenge-detect';
 export * from './page-extract-tool';
 export * from './page-clean-tool';
 export * from './dom-explore-tool';
 export * from './cdp-session';
-export * from './history';
-export * from './bookmark';
+export * from './history-bookmarks';
+export * from './downloads';
+export * from './resources';
 export * from './tab-management';
 export * from './page-load';
-export * from './page-operations';
+export * from './page-ops';

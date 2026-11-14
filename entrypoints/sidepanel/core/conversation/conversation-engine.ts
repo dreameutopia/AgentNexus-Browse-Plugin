@@ -33,7 +33,6 @@ import { strictToolArguments } from '../../utils/stream/adapters/unified-normali
 import { trimDanglingSurrogate } from '../../utils/ai/token-estimate';
 import { openaiToolsConverter } from '../../utils/tools/openai-tools-converter';
 import { isSkillToolId, SKILL_TOOL_ID } from '@/utils/skills/skill-tool-contract';
-import { isSkillScriptSupportEnabled } from '@/utils/pyodide/pyodide-env';
 /**
  * 工具执行引擎（单一事实源）：所有工具的执行都经由它——
  * 强制串行、强制中断、有界执行、轮次完整性（结果写入上下文前校验轮次仍有效）。
@@ -46,7 +45,7 @@ import {
   type ToolCallPlan,
 } from '../tools/tool-execution-engine';
 import { appSettingsStore } from '../../utils/channels/app-settings';
-import { appendSystemTimestamp } from '../../utils/system-time';
+import { appendSystemContext, queryActivePageInfo, type ActivePageInfo } from '../../utils/system-context';
 import { composeUserMessageBody } from '../../utils/chat/llm-message-body';
 import { t } from '@/utils/i18n/core';
 import type { ToolExecutionContext } from '@/tools/registry';
@@ -58,6 +57,7 @@ import { isCompactionSummaryMessage } from '../context/summary-message';
 import { contextCompactor } from '../context/compactor';
 import { measureContextUsage, COMPACTION_RETRY_ROUND_GAP, COMPACTION_RUNTIME_RATIO } from '../context/context-meter';
 import { imageStore } from '../images/image-store';
+import { API_ERROR_CONTINUE_EXPIRED, API_ERROR_RETRY_EXPIRED } from '../../utils/chat/retry-state';
 import { toApiErrorBlock } from '../../utils/stream/errors';
 import { INTERACTIVE_TOOL_NAMES } from '@/tools/interact/interact-prompt';
 import { ensurePlansHydrated, getPlan } from '@/utils/plan/plan-store';
@@ -65,6 +65,7 @@ import { buildPlanReminder, needsPlanReminder } from './plan-reminder';
 import { planRuntimeCompaction } from './compaction-boundary';
 import { toolRegistry } from '@/tools/registry';
 import { skillEngine } from '../registry/skill-engine';
+import { JS_RUN_TOOL_ID, BACKEND_PAGE_EXEC_TOOL_ID } from '@/tools/javascript/js-contract';
 import { filterVisionAssistantTools, isVisionAssistantTool, VISION_ASSISTANT_GUI_ACTIONS } from '@/utils/agents/vision-assistant-policy';
 import { needsVisionRefresh, takeVisionToolImage, withoutVisionImage, VISION_TOOL_SETTLE_DELAY_MS, type VisionToolImage } from './vision-feedback';
 import { ViewportImageDeduplicator } from './viewport-image-dedup';
@@ -202,6 +203,7 @@ interface RunHandle {
   record: ChatMessageRecord;
   snapshotTimer: ReturnType<typeof globalThis.setInterval> | null;
   toolCallCount: number;
+  toolRoundCount?: number;
   /** An explicit screenshot in the same tool batch cannot bypass the 3s gap. */
   captureGapPending?: boolean;
   /**
@@ -225,8 +227,9 @@ interface RunHandle {
    * 失去窗口保护（见 context-meter 的常量说明）；成功后复位为 null。
    */
   compactionFailedAt: number | null;
-  /** 运行内动态扩容的工具 ID（load_skill 激活技能后，把该技能预授权工具并入后续请求） */
+  /** 运行内动态扩容的工具 ID（skill_tool(action="load") 激活技能后，把该技能预授权工具并入后续请求） */
   dynamicToolIds: Set<string>;
+  loadedSkillIds?: Set<string>;
   pluginOwners?: Set<string>;
   pluginBindings?: ConversationRuntime['pluginBindings'];
   /**
@@ -270,7 +273,7 @@ interface ToolBatchOutcome {
  * 插件工具）一律保守重拍。提取为模块级常量供三处调用点共用，杜绝口径漂移。
  */
 const PAGE_TOOL_CATEGORIES = new Set([
-  'browser', 'vision', 'automation', 'navigation', 'search', 'bilibili', 'excalidraw', 'resource',
+  'browser', 'vision', 'automation', 'search', 'bilibili', 'excalidraw', 'resource',
 ]);
 
 const visionNoRecapture = (name: string): boolean | undefined =>
@@ -306,7 +309,11 @@ const TOOL_APPROVAL_PREVIEW_MAX_CHARS = 400;
  * 组装发给模型的本轮用户消息（引擎运行与发送前上下文计量共用，保证逐字同源）：
  *   - 转录可见正文（runtime.userInput，含附件摘要标记）+ 网页引用信封
  *     （<page_quote>：来源 URL + 页面标题 + 选区原文）+ <upload_file> 信封
- *     （文件元信息 + 第 1 页预览，全文在会话文件库由 read_file 分页续读）+ 系统时间戳；
+ *     （文件元信息 + 第 1 页预览，全文在会话文件库由 read_file 分页续读）
+ *     + 系统注入上下文（<system_context source="auto_injected">：时间时区
+ *     <current_time> + 当前激活网页 <active_page>，见 utils/system-context.ts）；
+ *   - activePage 由调用方经 queryActivePageInfo 获取后传入（引擎侧与计量侧
+ *     各自取发送时刻的标签页，时间戳本就逐调用取当前时刻，允许亚秒级差异）；
  *   - images 非空时输出多模态数组（text 在前、图片按传入顺序排列），
  *     引擎侧传入「用户上传图片 + vision 截图」，计量侧传入用户上传图片
  *     （vision 截图在运行期产生，预估不含它，实际请求后由引擎测量回填）。
@@ -317,11 +324,12 @@ export function composeLlmUserMessage(
   images: readonly string[],
   pageQuotePrompt = '',
   highDetailLastImage = false,
+  activePage: ActivePageInfo | null = null,
 ): ChatMessage {
   // 正文拼装顺序：用户输入 → 引用信封 → 附件信封（单一事实源见
   // utils/chat/llm-message-body.ts；无引用信封时与既有实现逐字一致）。
   const body = composeUserMessageBody(userInput, pageQuotePrompt, attachmentPrompt);
-  const llmText = appendSystemTimestamp(body);
+  const llmText = appendSystemContext(body, { activePage });
   if (images.length === 0) {
     return { role: 'user', content: llmText };
   }
@@ -436,9 +444,51 @@ export class ConversationEngine {
     const abortController = new AbortController();
     this.pendingAborts.set(runtime.chatId, abortController);
 
-    let record: ChatMessageRecord;
+    let record!: ChatMessageRecord;
     let handle: RunHandle;
     try {
+      if (runtime.retryTarget) {
+        const records = await transcriptEngine.loadSessionRecords(runtime.chatId);
+        const last = records.at(-1);
+        if (!last || last.id !== runtime.retryTarget.messageId || last.role !== 'assistant' ||
+            last.status !== 'error' || last.content !== runtime.retryTarget.content ||
+            runtime.userInput || runtime.userImages.length || runtime.attachmentPrompt || runtime.pageQuotePrompt) {
+          throw new Error(API_ERROR_RETRY_EXPIRED);
+        }
+        record = structuredClone(last);
+        record.status = 'streaming';
+        delete record.error;
+        delete record.feedback;
+      }
+
+      // 守卫停止后的「继续」：与重试同构的**落库复核**——应用层点击时已按
+      // 当前消息列表校验一次，这里再按最新落库记录校验一次，闭合「校验与
+      // 入档之间用户又产生新输出」的竞态窗口。任何一项不满足即拒绝。
+      if (runtime.guardContinueTarget) {
+        if (runtime.retryTarget) throw new Error(API_ERROR_CONTINUE_EXPIRED);
+        const target = runtime.guardContinueTarget;
+        const records = await transcriptEngine.loadSessionRecords(runtime.chatId);
+        const last = records.at(-1);
+        const parts = last?.parts ?? [];
+        const part = parts[target.partIndex];
+        const canContinue =
+          !!last &&
+          last.id === target.messageId &&
+          last.role === 'assistant' &&
+          last.status === 'done' &&
+          target.partIndex === parts.length - 1 &&
+          part?.type === 'notice' &&
+          part.noticeAction === 'guard-stop' &&
+          part.content === target.expectedNotice &&
+          typeof last.content === 'string' &&
+          last.content.trimEnd().endsWith(target.expectedNotice) &&
+          !!runtime.userInput.trim() &&
+          runtime.userImages.length === 0 &&
+          !runtime.attachmentPrompt &&
+          !runtime.pageQuotePrompt;
+        if (!canContinue) throw new Error(API_ERROR_CONTINUE_EXPIRED);
+      }
+
       // ── 1. 用户消息入档（vision：先截图，多模态进运行历史；图片本体入库为
       //        内容哈希引用，data URL 仅存在于运行期） ──
       let userHistoryMessage: ChatMessage | null = null;
@@ -463,6 +513,10 @@ export class ConversationEngine {
           runtime.userInput,
           userImageRefs,
           runtime.pageQuote,
+          // 守卫停止后的「继续」是自动续跑的隐藏轮：转录照常落库（模型上下文
+          // 可见），UI 侧按 synthetic 标记不渲染为用户气泡，消息列表仍以它
+          // 为「新内容」推进时效判定
+          { synthetic: runtime.hiddenUserInput === true },
         );
         emit({ type: 'user-message', chatId: runtime.chatId, record });
 
@@ -486,9 +540,10 @@ export class ConversationEngine {
             viewportDedup.remember(initialScreenshotRef);
           }
         }
-        // 转录（用户可见）存原始输入；附件全文与系统时间戳只拼进发给模型的
-        // 这条用户消息——构造收敛到 composeLlmUserMessage（与发送前计量同源），
-        // systemPrompt 因此保持逐轮稳定，可命中上下文缓存
+        // 转录（用户可见）存原始输入；附件全文与系统注入上下文（时间时区 +
+        // 当前激活网页）只拼进发给模型的这条用户消息——构造收敛到
+        // composeLlmUserMessage（与发送前计量同源），systemPrompt 因此保持
+        // 逐轮稳定，可命中上下文缓存
         //
         // 图片装配口径：用户上传图恒附（用户素材，语义独立）；视口首截图在
         // 「模型已持有同一像素证据」时不再附图（判重为真 → 只带描述文本）。
@@ -497,6 +552,9 @@ export class ConversationEngine {
           ...runtime.userImages,
           ...(visionImage && !initialImageDuplicated ? [visionImage.image] : []),
         ];
+        // 激活网页取运行时刻的标签页（发送 → 引擎启动间隙可能已切页）；
+        // queryActivePageInfo 任何失败都返回 null，不阻断发送
+        const activePage = await queryActivePageInfo();
         userHistoryMessage = composeLlmUserMessage(
           runtime.userInput + (visionImage ? `\n${visionImage.description}${initialImageDuplicated ? '\n(The viewport is pixel-identical to a screenshot already in this conversation; the image is not repeated here. The screenshotId above is the valid one for GUI actions.)' : ''}` : runtime.vision ? '\nCurrent viewport screenshot unavailable. Call screenshot to recover; do not use attachment images or old screenshot IDs for GUI coordinates.' : ''),
           runtime.attachmentPrompt,
@@ -504,13 +562,14 @@ export class ConversationEngine {
           runtime.pageQuotePrompt,
           // 末位高细节：仅当视口截图真的附在末尾时才有意义（用户上传图恒为 auto）
           !!visionImage && !initialImageDuplicated,
+          activePage,
         );
         record.modelMessages = await storeProtocolMessages([userHistoryMessage]);
         await transcriptEngine.flush(record);
       }
 
       // ── 2. 助手记录占位 + 快照定时器 ──
-      record = await transcriptEngine.createAssistantRecord(runtime.chatId);
+      if (!runtime.retryTarget) record = await transcriptEngine.createAssistantRecord(runtime.chatId);
       // 发送前压缩（后台 worker 在引擎运行前完成）的结果种子进消息时间线：
       // 压缩发生在本轮一切内容之前，片段置于流最前；UI 侧经 pre-run 事件
       // 缓冲在 assistant-start 时种子同一数据，双写两侧由同一来源收敛
@@ -524,14 +583,16 @@ export class ConversationEngine {
       const activationContext = structuredClone(runtime.activationContext);
       const activationIds = new Map<string, string>();
       for (const message of activationContext) for (const call of message.tool_calls ?? []) {
-        const id = `${record.id}_${activationIds.size}`;
+        const id = `${record.id}_${record.modelMessages?.length ?? 0}_${activationIds.size}`;
         activationIds.set(call.id, id);
         call.id = id;
       }
       for (const message of activationContext) if (message.tool_call_id && activationIds.has(message.tool_call_id)) {
         message.tool_call_id = activationIds.get(message.tool_call_id);
       }
-      record.modelMessages = await storeProtocolMessages(activationContext);
+      const storedActivation = await storeProtocolMessages(activationContext);
+      record.modelMessages = [...(record.modelMessages ?? []), ...storedActivation];
+      if (record.modelContext) record.modelContext.push(...storedActivation);
       // vision 首截图引用挂接到助手消息：立即落库保证运行中断/重载后图片不丢；
       // 模型侧由 modelMessages 保留原始图片位置；UI 引用与时间线各司其职：
       //   - imageRefs：引用集合（byImageRef 索引据此计数，删除引擎按它回收）；
@@ -566,15 +627,17 @@ export class ConversationEngine {
         runUserMessage: userHistoryMessage,
         record,
         snapshotTimer: null,
-        toolCallCount: 0,
+        toolCallCount: record.usage?.toolCalls ?? 0,
+        toolRoundCount: record.usage?.toolRounds ?? 0,
         // 模型上下文同图去重：首截图是模型当前持有的唯一视口证据
         viewportDedup,
         emit,
         lastUsage: null,
         compactions: 0,
         compactionFailedAt: null,
-        // 运行内动态扩容的工具 ID（load_skill 激活技能后注入其预授权工具）
+        // 运行内动态扩容的工具 ID（skill_tool(action="load") 激活技能后注入其预授权工具）
         dynamicToolIds: new Set<string>(),
+        loadedSkillIds: new Set((runtime.activationContext ?? []).flatMap(message => (message.tool_calls ?? []).flatMap(call => { try { const args = JSON.parse(call.function.arguments); return args.action === 'load' && typeof args.skill_id === 'string' ? [args.skill_id] : []; } catch { return []; } }))),
         pluginOwners: new Set(runtime.pluginOwners ?? []),
         pluginBindings: runtime.pluginBindings,
         consecutiveFailedRounds: 0,
@@ -586,7 +649,7 @@ export class ConversationEngine {
       handle.snapshotTimer = globalThis.setInterval(() => {
         void transcriptEngine.flush(handle.record);
       }, SNAPSHOT_INTERVAL_MS);
-      emit({ type: 'assistant-start', chatId: runtime.chatId, messageId: record.id });
+      emit({ type: 'assistant-start', chatId: runtime.chatId, messageId: record.id, ...(runtime.retryTarget ? { record: structuredClone(record) } : {}) });
     } catch (setupError) {
       // 准备失败：清理登记后原样抛出，由调用方以可读错误呈现（此时无助手记录可承载）
       this.pendingAborts.delete(runtime.chatId);
@@ -600,7 +663,12 @@ export class ConversationEngine {
     // totalIterations：本次运行累计轮数（写入用量统计，不因守卫重置而丢失）
     let guardIterations = 0;
     let totalIterations = 0;
-    let stopNote: string | null = null;
+    /** 终态注记（含可交互元数据）：循环内只累积，第 4 段统一追加 */
+    let stopNote: {
+      text: string;
+      noticeAction?: 'guard-stop';
+      guardKind?: GuardKind;
+    } | null = null;
     // 时长守卫基准与运行起点分离：确认继续时仅重置守卫基准，不污染 usage 时长统计
     let guardStartMs = startedAt;
     // 终态累积：循环内不提前 return，统一走第 4 段单出口收尾
@@ -645,7 +713,23 @@ export class ConversationEngine {
               })
             : false;
           if (!proceed) {
-            stopNote = t('sidepanel.app.userStopped');
+            // 停止注记带可交互元数据：渲染层据此在注记下方提供「继续 / 修改设置」。
+            // 文案按实际触发的守卫类型区分，用户不必反推是哪一种上限。
+            stopNote = {
+              text:
+                limitKind === 'max-iterations'
+                  ? t('sidepanel.chat.guardStoppedIterations', {
+                      count: runtime.limits.maxIterations,
+                    })
+                  : t('sidepanel.chat.guardStoppedDuration', {
+                      minutes: Math.max(1, Math.round(runtime.limits.maxDurationMs / 60000)),
+                    }),
+              // 学习流程自行管理预算与恢复入口（resetBudgetOnContinue），
+              // 不在这里额外提供「继续 / 修改设置」，避免双入口歧义
+              ...(!options.resetBudgetOnContinue
+                ? { noticeAction: 'guard-stop' as const, guardKind: limitKind }
+                : {}),
+            };
             shouldContinue = false;
             break;
           }
@@ -666,7 +750,7 @@ export class ConversationEngine {
           break;
         }
 
-        // ── 会话工具集：运行时基础集 + load_skill 动态扩容（去重保序） ──
+        // ── 会话工具集：运行时基础集 + skill_tool(action="load") 动态扩容（去重保序） ──
         const mergedToolIds = handle.dynamicToolIds.size > 0
           ? [...new Set([...runtime.toolIds, ...handle.dynamicToolIds])]
           : runtime.toolIds;
@@ -675,7 +759,7 @@ export class ConversationEngine {
           ? filterVisionAssistantTools(advertised) : advertised;
         const toolSchemas = handle.toolSchemas ??= new Map();
         for (const schema of openaiToolsConverter.getToolsByIds(
-          sessionToolIds.filter(id => !toolSchemas.has(id)), { skillMode: runtime.skillMode },
+          sessionToolIds.filter(id => !toolSchemas.has(id)),
         )) {
           toolSchemas.set(schema.function.name, structuredClone(schema));
         }
@@ -828,13 +912,25 @@ export class ConversationEngine {
           if (!finishReason && !contentText) {
             throw new Error('模型返回空响应（未收到终止事件与任何内容），连接可能被服务端异常关闭');
           }
+          // 调试日志：无工具调用的收尾打印 finishReason，观察是否被输出上限截断。
+          // 各协议截断语义已由适配器归一为 'length'（OpenAI finish_reason=length /
+          // Ollama done_reason=length / Claude stop_reason=max_tokens /
+          // Gemini finishReason=MAX_TOKENS / Responses incomplete max_output_tokens）；
+          // 其余未知值原样透传，便于发现网关的非标终止原因
+          console.log('[ConversationEngine] AI 输出结束（无工具调用）', {
+            finishReason,
+            truncatedByLimit: finishReason === 'length',
+            provider: runtime.model.provider,
+            model: runtime.model.model,
+            contentLength: contentText.length,
+          });
           await this.appendModelMessages(handle, [finalMessage]);
           handle.roundText = '';
           // length：输出被提供商上限截断——内容有效但不完整，以显式注记收尾。
           // 带 tool_calls 的 length 不在此列：参数 JSON 大概率同样被截断，
           // 由 parseToolArguments 以可读错误回传模型自纠（可控类）。
           if (finishReason === 'length') {
-            stopNote = t('sidepanel.chat.responseTruncated');
+            stopNote = { text: t('sidepanel.chat.responseTruncated') };
           }
           shouldContinue = false;
           break;
@@ -895,7 +991,7 @@ export class ConversationEngine {
         // 语义为 'done'（任务完成）而非错误：runStatus 保持默认值，stopNote
         // 追加一条可读说明，让历史里能看到「因提交而结束」而不是戛然而止
         if (handle.stopAfterRound) {
-          stopNote = t('sidepanel.terminalTool.stopped');
+          stopNote = { text: t('sidepanel.terminalTool.stopped') };
           shouldContinue = false;
           break;
         }
@@ -925,9 +1021,11 @@ export class ConversationEngine {
                 })
               : false;
             if (!proceed) {
-              stopNote = t('sidepanel.chat.toolFailuresStopped', {
-                count: handle.consecutiveFailedRounds,
-              });
+              stopNote = {
+                text: t('sidepanel.chat.toolFailuresStopped', {
+                  count: handle.consecutiveFailedRounds,
+                }),
+              };
               shouldContinue = false;
               break;
             }
@@ -1073,7 +1171,7 @@ export class ConversationEngine {
    *   1. 运行时压缩后的尾部 = 最后一轮工具调用（assistant.tool_calls 开头）；
    *      适配器把压缩消息并入顶级 system 后，wire 首条即这条 assistant；
    *   2. 空输入续跑（用户只发空消息继续）：历史 = 合成激活轮
-   *      （assistant.load_skill + 其结果）同样以 assistant 开头。
+   *      （assistant.skill_tool(action="load") + 其结果）同样以 assistant 开头。
    *
    * Gemini 明确要求 contents 首条为 user（否则 400），Anthropic 对首条角色
    * 亦有同类约束——两者都会让整个请求被拒。护栏在**模型面**补一条合成
@@ -1316,15 +1414,26 @@ export class ConversationEngine {
    * - content 同步追加纯文本：保持「content = 完整拼接文本」的转录语义，
    *   模型面上下文（context-engine 读 content）依旧能感知本轮的终止原因。
    */
-  private appendNotice(handle: RunHandle, text: string): void {
+  private appendNotice(
+    handle: RunHandle,
+    notice: { text: string; noticeAction?: 'guard-stop'; guardKind?: GuardKind },
+  ): void {
+    const text = notice.text;
     if (!text) return;
-    handle.record.parts.push({ type: 'notice', content: text });
+    handle.record.parts.push({
+      type: 'notice',
+      content: text,
+      ...(notice.noticeAction ? { noticeAction: notice.noticeAction } : {}),
+      ...(notice.guardKind ? { guardKind: notice.guardKind } : {}),
+    });
     handle.record.content += `\n\n${text}`;
     handle.emit({
       type: 'notice',
       chatId: handle.record.chatId,
       messageId: handle.record.id,
       text,
+      ...(notice.noticeAction ? { noticeAction: notice.noticeAction } : {}),
+      ...(notice.guardKind ? { guardKind: notice.guardKind } : {}),
     });
   }
 
@@ -1373,6 +1482,7 @@ export class ConversationEngine {
   ): Promise<ToolBatchOutcome> {
     // 轮次 id：本批工具调用的身份标识，按 chatId 缓存于引擎。
     // 结果写入模型上下文前必须校验它仍是该会话的当前轮次。
+    if (toolCalls.length) handle.toolRoundCount = (handle.toolRoundCount ?? 0) + 1;
     const roundId = toolExecutionEngine.beginRound(runtime.chatId);
     try {
       const plans: ToolCallPlan[] = toolCalls.map((toolCall, index) => ({
@@ -1381,6 +1491,11 @@ export class ConversationEngine {
         // 保证消息构造（含协议消息拼装）永不因属性缺失二次抛错
         toolName: typeof toolCall?.function?.name === 'string' ? toolCall.function.name : '',
         rawArgs: toolCall?.function?.arguments,
+        // 零成本状态工具豁免运行时长上限（工具语义在 metadata，判定在此落地——
+        // 引擎只认布尔标记，不认识任何具体工具）
+        zeroCostStateTool:
+          toolRegistry.getTool(typeof toolCall?.function?.name === 'string' ? toolCall.function.name : '')
+            ?.metadata.zeroCostStateTool === true,
       }));
 
       const batch = await toolExecutionEngine.runBatch({
@@ -1444,7 +1559,7 @@ export class ConversationEngine {
    *     上界 = max(统一上界, 等待秒数 + 5s)；
    *   - 交互类工具：等待真实用户答复，窗口由「交互超时」设置决定，
    *     上界 = max(统一上界, 交互超时)；
-   *   - browser_page_exec：工具契约的 timeout 上限 300s 必须真实可达——
+   *   - js_run：工具契约的 timeout 上限 300s 必须真实可达——
    *     用户把统一上界调到 1 分钟时，引擎若仍按统一上界掐断，工具说明里的
    *     300s 就是谎言；上界 = max(统一上界, 本次 timeout + 缓冲)，
    *     且地板恒为 300s + 缓冲（契约见 tools/common/page-exec-timeout.ts）。
@@ -1466,7 +1581,7 @@ export class ConversationEngine {
       // 悄悄砍半。统一上界仍然兜底（交互超时更短时以它为准）。
       return Math.max(base, appSettingsStore.getInteractTimeoutMinutes() * 60_000);
     }
-    if (plan.toolName === TOOL_NAMES.BROWSER.PAGE_EXEC) {
+    if (plan.toolName === JS_RUN_TOOL_ID) {
       try {
         return pageExecEngineTimeout(parseToolArguments(plan.rawArgs), base);
       } catch {
@@ -1502,7 +1617,7 @@ export class ConversationEngine {
     }
     // Never trust a provider to call only advertised tools. Capability limits
     // apply before parsing, approval, skill loading, or any side effect.
-    if ((!runtime.toolIds.includes(toolName) && !handle.dynamicToolIds.has(toolName)) ||
+    if (toolName === BACKEND_PAGE_EXEC_TOOL_ID || (!runtime.toolIds.includes(toolName) && !handle.dynamicToolIds.has(toolName)) ||
         (runtime.toolPolicy === 'vision-assistant' && !isVisionAssistantTool(toolName)) ||
         (runtime.pluginToolCeiling && !runtime.pluginToolCeiling.includes(toolName))) {
       return createErrorResponse(
@@ -1521,20 +1636,16 @@ export class ConversationEngine {
     // ── 审批门：声明 requiresApproval 的工具先经用户放行（缺省拒绝，安全侧）──
     // 拒绝（或无审批通道）不走执行，直接以「可控失败」回传模型——
     // 模型可向用户说明意图并换路径，与工具错误的两级模型完全一致
-    if (runtime.pluginToolCeiling && toolName === SKILL_TOOL_ID) {
-      const ref = (args as { skill_name?: string })?.skill_name;
+    if (runtime.pluginToolCeiling && toolName === SKILL_TOOL_ID && (args as { action?: string })?.action === 'load' && !['4', '5'].includes((args as { skill_id?: string })?.skill_id ?? '')) {
+      const ref = (args as { skill_id?: string })?.skill_id;
       const skill = typeof ref === 'string' ? skillEngine.get(ref) : undefined;
       invariant(skill?.enabled && skill.allowedTools.every(id => isSkillToolId(id) || runtime.pluginToolCeiling!.includes(id)), 'SKILL_NOT_ALLOWED');
     }
-    if (runtime.toolPolicy === 'vision-assistant' && toolName === SKILL_TOOL_ID) {
-      const ref = (args as { skill_name?: unknown })?.skill_name;
+    if (runtime.toolPolicy === 'vision-assistant' && toolName === SKILL_TOOL_ID && (args as { action?: string })?.action === 'load' && !['4', '5'].includes((args as { skill_id?: string })?.skill_id ?? '')) {
+      const ref = (args as { skill_id?: unknown })?.skill_id;
       const skill = typeof ref === 'string' ? skillEngine.get(ref) : undefined;
       if (!skill || !skill.enabled || !skill.allowedTools.every(id => isSkillToolId(id) || isVisionAssistantTool(id)))
         throw new Error('SKILL_NOT_ALLOWED: 该技能不存在、未启用或需要代操作工具；请切换合适的执行智能体。');
-    }
-    if (toolName === 'python_run' && (args as { scriptPath?: unknown } | null)?.scriptPath !== undefined &&
-        (runtime.skillMode !== 'workspace' || !await isSkillScriptSupportEnabled())) {
-      return createErrorResponse('[PY_SKILL_SCRIPTS_DISABLED] 当前会话未启用脚本模式。开启设置后请发起新一轮对话。');
     }
     if (runtime.toolPolicy === 'vision-assistant' && toolName === 'browser_get_page_text' &&
         (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length > 0))
@@ -1542,6 +1653,8 @@ export class ConversationEngine {
     // 观察者边界：视觉助手经白名单持有 vision_gui，但只开放只读观察 action——
     // 手势类 action 在参数解析后、审批与执行前一律拒绝（fail-closed：action
     // 缺失或畸形同样拒绝，因为它们本就不可能是允许的观察 action）
+    if (runtime.toolPolicy === 'vision-assistant' && toolName === JS_RUN_TOOL_ID && (args as { action?: unknown })?.action === 'run')
+      return createErrorResponse('TOOL_NOT_ALLOWED: 视觉助手不能执行页面脚本；js_run 仅开放会话文件操作与读取。');
     if (runtime.toolPolicy === 'vision-assistant' && toolName === 'vision_gui') {
       const action = args && typeof args === 'object' && !Array.isArray(args)
         ? (args as { action?: unknown }).action : undefined;
@@ -1578,7 +1691,7 @@ export class ConversationEngine {
     const explicitTab = (args as { tabId?: unknown } | null)?.tabId;
     const category = toolRegistry.getTool(toolName)?.metadata.category;
     const followsForeground = !Number.isInteger(explicitTab) &&
-      (toolName.startsWith('browser_') || toolName === 'page-source' ||
+      ((toolName === JS_RUN_TOOL_ID && ['run', 'crawl'].includes(String((args as { action?: unknown })?.action))) || toolName.startsWith('browser_') ||
         (category !== undefined && PAGE_TOOL_CATEGORIES.has(category)));
     const reportTarget = options.beginPageOperation?.(followsForeground);
     let executing = true;
@@ -1587,9 +1700,10 @@ export class ConversationEngine {
         runtime.toolPolicy === 'vision-assistant' && toolName === 'screenshot' ? { mode: 'observe' } : args,
         {
           chatId: runtime.chatId,
-          skillResourceIds: runtime.skillResourceIds,
+          agentId: runtime.agentId,
+          loadedSkillIds: [...(handle.loadedSkillIds ?? [])],
+          toolPolicy: runtime.toolPolicy,
           availableSkillIds: runtime.availableSkillIds,
-          skillMode: runtime.skillMode,
           toolApproved: needsApproval,
           signal: ctx.signal,
           pluginBindings: runtime.pluginBindings,
@@ -1674,7 +1788,7 @@ export class ConversationEngine {
         error: failureReason,
         executionTimeMs,
       });
-      // load_skill 成功后：把该技能的预授权工具并入本会话后续请求，
+      // skill_tool(action="load") 成功后：把该技能的预授权工具并入本会话后续请求，
       // 使 L1 发现（未预先选择技能）的调用路径同样具备技能配套工具
       if (success && toolName === SKILL_TOOL_ID && outcome.result &&
           (safeParseToolArguments(plan?.rawArgs) as { action?: unknown } | null)?.action === 'load') {
@@ -1808,9 +1922,9 @@ export class ConversationEngine {
   }
 
   /**
-   * load_skill 成功后的动态工具扩容：把技能声明的 allowedTools 并入运行内工具集。
+   * skill_tool(action="load") 成功后的动态工具扩容：把技能声明的 allowedTools 并入运行内工具集。
    * 防御性收敛在注入源头一次完成：
-   *   - 会话中途被停用的技能不再扩容（正文虽已由 load_skill 返回，但停用
+   *   - 会话中途被停用的技能不再扩容（正文虽已由 skill_tool(action="load") 返回，但停用
    *     意味着用户撤销了对该技能的授权，其预授权工具不应继续进入后续请求）；
    *   - 未注册的工具 ID（拼错 / 已下线工具的残留声明）在此剔除并告警一次，
    *     避免请求侧 getToolsByIds 在后续每轮循环对同一批未知 ID 重复告警。
@@ -1819,7 +1933,9 @@ export class ConversationEngine {
     const loadedName = result?.data?.skill;
     if (typeof loadedName !== 'string' || !loadedName) return;
     const skill = skillEngine.get(loadedName);
-    if (!skill || !skill.enabled || skill.allowedTools.length === 0) return;
+    if (!skill || !skill.enabled) return;
+    (handle.loadedSkillIds ??= new Set()).add(skill.id);
+    if (skill.allowedTools.length === 0) return;
     if (isPluginRef(skill.id)) (handle.pluginOwners ??= new Set()).add(ownerOf(skill.id));
     const known: string[] = [];
     const unknown: string[] = [];
@@ -1827,7 +1943,7 @@ export class ConversationEngine {
       if (typeof raw !== 'string') continue;
       const toolId = raw.trim();
       if (!toolId || isSkillToolId(toolId) || (runtime.advertisedToolIds && !runtime.advertisedToolIds.includes(toolId))) continue;
-      if (runtime.toolPolicy === 'vision-assistant' && !isVisionAssistantTool(toolId)) continue;
+      if (toolId === BACKEND_PAGE_EXEC_TOOL_ID || (runtime.toolPolicy === 'vision-assistant' && !isVisionAssistantTool(toolId))) continue;
       if (runtime.pluginToolCeiling && !runtime.pluginToolCeiling.includes(toolId)) continue;
       if (toolRegistry.getTool(toolId)) known.push(toolId);
       else unknown.push(toolId);
@@ -2145,9 +2261,10 @@ export class ConversationEngine {
     // 不在此收起会让历史重载后的推理片段保持全展开
     collapseReasoningParts(handle.record);
     handle.record.usage = {
-      iterations,
-      durationMs: Date.now() - handle.startedAt,
+      iterations: (handle.record.usage?.iterations ?? 0) + iterations,
+      durationMs: (handle.record.usage?.durationMs ?? 0) + Date.now() - handle.startedAt,
       toolCalls: handle.toolCallCount,
+      toolRounds: handle.toolRoundCount ?? 0,
     };
     // await 落库：保证 run() resolve 前终态记录已持久化，
     // 避免用户立即发送下一条消息时 priorRecords 读不到本轮结果

@@ -11,6 +11,7 @@ import { startPluginClient } from '@/utils/plugins/client';
  *   - 本文件            → 查询 API、配置构建、统计（对外入口不变）
  */
 
+import { BACKEND_PAGE_EXEC_TOOL_ID } from '@/tools/javascript/js-contract';
 import { toolRegistry, type ToolSchemaOptions } from '@/tools/registry';
 import { registerAllTools } from '@/tools';
 import { requiresConfirmApproval } from '@/tools/confirm-guard';
@@ -43,6 +44,10 @@ if (!_sidepanelToolsRegistered && typeof globalThis.document !== 'undefined') {
   _sidepanelToolsRegistered = true;
   try {
     registerAllTools();
+    // 注意：文档工具（document_tool）**不在此注册**——它由 sidepanel/main.ts
+    // 单独注册（见 utils/tools/document-tools-registration.ts）。原因：这里的
+    // 模块同时被 background 复用，静态引入文档工具会把它的重依赖
+    // （docx/katex/markdown-it/highlight.js 约 2.7MB）拖进 background 主包。
     console.log('[OpenAIToolsConverter] sidepanel 工具注册完成');
   } catch (e) {
     console.warn('[OpenAIToolsConverter] 工具注册失败，将仅使用遗留工具:', e);
@@ -59,6 +64,7 @@ export class OpenAIToolsConverter {
     const tools: OpenAITool[] = [];
 
     for (const toolId of toolIds) {
+      if (toolId === BACKEND_PAGE_EXEC_TOOL_ID) continue;
       const registered = toolRegistry.getTool(toolId);
       if (registered) {
         tools.push(registered.getSchema?.(options) ?? registered.openaiSchema);
@@ -109,14 +115,14 @@ export class OpenAIToolsConverter {
    * 获取所有可用的工具定义
    */
   static getAllTools(): OpenAITool[] {
-    return toolRegistry.getAllTools().map(t => t.openaiSchema);
+    return this.getToolsByIds(toolRegistry.getToolIds());
   }
 
   /**
    * 获取所有可用的工具 ID 列表
    */
   static getAvailableToolIds(): string[] {
-    return toolRegistry.getToolIds();
+    return toolRegistry.getToolIds().filter(id => id !== BACKEND_PAGE_EXEC_TOOL_ID);
   }
 
   /**
@@ -124,7 +130,7 @@ export class OpenAIToolsConverter {
    */
   static getToolsByCategory(category?: string): OpenAITool[] {
     if (!category) return this.getAllTools();
-    return (toolRegistry.getByCategory(category) || []).map(t => t.openaiSchema);
+    return this.getToolsByIds((toolRegistry.getByCategory(category) || []).map(t => t.name));
   }
 
   // ──── 工具预设 ────

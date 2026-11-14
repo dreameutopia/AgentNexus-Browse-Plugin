@@ -17,6 +17,7 @@ import {
   normalizeToolIds,
   setAgentConfig,
   removeAgentConfig,
+  isAgentAvailable,
   isPresetAgent,
   onAgentsChange,
   type AgentCategoryGroup,
@@ -89,6 +90,15 @@ class AgentEngine {
   }
 
   /**
+   * 该智能体是否对外可见（发布态闸门）。
+   * 底层禁用的预置智能体在管理中心与 @ 选择器中都看不到，
+   * 也不会被选为新会话默认智能体。
+   */
+  isAvailable(agentId: string): boolean {
+    return isAgentAvailable(agentId);
+  }
+
+  /**
    * 按「ID 优先、名称兜底」解析引用到的智能体。
    * 会话元信息同时记录 id 与 name：智能体改名后 id 不变，
    * 优先按 id 让历史会话继续回显正确的智能体，而不是静默退化为无智能体。
@@ -115,24 +125,31 @@ class AgentEngine {
    * 优先取应用设置 defaultAgentId（高级设置可配，缺省 Auto-Action）；
    * 配置的 id 未命中（极端：智能体被删除）时依次回落预置 ID → 预置名称
    * 「文本通用助手」（防御存储键名历史变更）→ null（调用方按「无智能体」降级，不报错）。
+   *
+   * 底层禁用（available === false）的预置**不作为默认智能体**：
+   * 用户既看不到它、也选不了它，静默把它设为默认会让会话在用户看不见的
+   * 智能体上运行——宁可无智能体运行，也不给用户一个看不见的默认项。
    */
   getDefaultSessionAgent(): AgentConfig | null {
     const configuredId = appSettingsStore.get().defaultAgentId || DEFAULT_SESSION_AGENT_ID;
     const configured = this.getById(configuredId);
-    if (configured) return configured;
+    if (configured && isAgentAvailable(configured.id)) return configured;
+    if (configured) {
+      console.warn('[AgentEngine] 配置的默认智能体已被底层禁用（available=false），已跳过');
+    }
     if (configuredId !== DEFAULT_SESSION_AGENT_ID) {
       const fallback = this.getById(DEFAULT_SESSION_AGENT_ID);
-      if (fallback) {
+      if (fallback && isAgentAvailable(fallback.id)) {
         console.warn('[AgentEngine] 配置的默认智能体不存在，已回落预置默认（Auto-Action）');
         return fallback;
       }
     }
     const byName = this.get('文本通用助手');
-    if (byName) {
+    if (byName && isAgentAvailable(byName.id)) {
       console.warn('[AgentEngine] 默认智能体 ID 未命中，已按名称回落解析');
       return byName;
     }
-    console.warn('[AgentEngine] 默认智能体不存在（ID 与名称均未命中），本次以无智能体模式运行');
+    console.warn('[AgentEngine] 默认智能体不存在或已被底层禁用（ID 与名称均未命中可用项），本次以无智能体模式运行');
     return null;
   }
 

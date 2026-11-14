@@ -1,6 +1,7 @@
 <template>
   <div
     :class="['message', message.role]"
+    :data-message-id="message.id"
     :data-streaming="isLive ? '1' : undefined"
   >
     <div class="message-wrapper">
@@ -62,6 +63,8 @@
           @toggle-tool-call-expansion="forwardToolToggle"
           @toggle-reasoning-collapse="forwardReasoningToggle"
           @toggle-compaction-collapse="forwardCompactionToggle"
+          @guard-continue="forwardGuardContinue"
+          @guard-open-settings="forwardGuardOpenSettings"
         />
       </template>
 
@@ -139,6 +142,8 @@
                 @toggle-tool-call-expansion="forwardToolToggle"
                 @toggle-reasoning-collapse="forwardReasoningToggle"
                 @toggle-compaction-collapse="forwardCompactionToggle"
+                @guard-continue="forwardGuardContinue"
+                @guard-open-settings="forwardGuardOpenSettings"
               />
             </div>
           </div>
@@ -152,6 +157,8 @@
           @toggle-tool-call-expansion="forwardToolToggle"
           @toggle-reasoning-collapse="forwardReasoningToggle"
           @toggle-compaction-collapse="forwardCompactionToggle"
+          @guard-continue="forwardGuardContinue"
+          @guard-open-settings="forwardGuardOpenSettings"
         />
         <!-- 正文之后的终态注记（守卫停止 / 截断说明等 notice）：恒保持可见，
              不被前奏折叠遮蔽；中止前的过程残留已随规则并入前奏折叠 -->
@@ -162,6 +169,8 @@
           @toggle-tool-call-expansion="forwardToolToggle"
           @toggle-reasoning-collapse="forwardReasoningToggle"
           @toggle-compaction-collapse="forwardCompactionToggle"
+          @guard-continue="forwardGuardContinue"
+          @guard-open-settings="forwardGuardOpenSettings"
         />
       </template>
 
@@ -257,6 +266,9 @@
           <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" fill="currentColor"/>
           </svg>
+        </button>
+        <button type="button" class="message-action-btn" :title="t('sidepanel.chat.skillCaptureCreate')" :aria-label="t('sidepanel.chat.skillCaptureCreate')" @click="message.id && emit('create-skill', message.id)">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 3h13v7M4 3v18h11M7 7h6M7 11h5m6 2v8m-4-4h8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
         <button
           type="button"
@@ -363,12 +375,17 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  'create-skill': [messageId: string];
   'toggle-tool-call-expansion': [messageId: string, toolCallId: string];
   'toggle-reasoning-collapse': [messageId: string, partIndex: number];
   'toggle-reasoning-content-collapse': [messageId: string];
   'toggle-compaction-collapse': [messageId: string, partIndex: number];
   /** 反馈变更（赞/踩；null = 清除）：本组件不直改 props，由 App 落库后回写列表 */
   'feedback-change': [messageId: string, feedback: MessageFeedback | null];
+  /** 守卫停止注记的「继续」：点击后由 App 统一做时效判定并续跑 */
+  'guard-continue': [messageId: string, partIndex: number];
+  /** 守卫停止注记的「修改设置」：由 App 打开设置弹窗并定位 */
+  'guard-open-settings': [guardKind: MessagePart['guardKind']];
 }>();
 
 const renderMessage = (content: string) => markdownRenderer.renderMessage(content);
@@ -629,6 +646,12 @@ const forwardReasoningToggle = (messageId: string, partIndex: number) => {
 };
 const forwardCompactionToggle = (messageId: string, partIndex: number) => {
   emit('toggle-compaction-collapse', messageId, partIndex);
+};
+const forwardGuardContinue = (messageId: string, partIndex: number) => {
+  emit('guard-continue', messageId, partIndex);
+};
+const forwardGuardOpenSettings = (guardKind: MessagePart['guardKind']) => {
+  emit('guard-open-settings', guardKind);
 };
 
 // ==================== 关联笔记卡片（note_tool 结果提取） ====================

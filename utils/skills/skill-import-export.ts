@@ -18,6 +18,7 @@
 
 import { zipSync, strToU8 } from 'fflate';
 import { readBoundedZip } from '@/utils/shared/bounded-zip';
+import { isWorkspaceName } from '@/utils/python-workspace/paths';
 import {
   SKILL_IMPORT_MAX_FILES,
   SKILL_IMPORT_MAX_FILE_CHARS,
@@ -31,7 +32,7 @@ import {
 } from './skill-types';
 import { parseFrontmatter, normalizeSkillName } from './frontmatter-parser';
 import { setCustomSkill } from './skill-store';
-import { decodeSkillBytes, decodeSkillText, encodeSkillBytes, isSkillResourcePath } from './skill-resources';
+import { decodeSkillBytes, decodeSkillText, encodeSkillBytes, isSkillResourcePath, validateSkillBinaries, validateSkillFolders } from './skill-resources';
 
 // ──── 解析 ────
 
@@ -96,18 +97,11 @@ export interface SkillImportReport {
   droppedFiles: Array<{ path: string; reason: 'file-too-large' }>;
 }
 
-/** Normalize legacy separators and leading './' without changing literal filenames. */
+/** ZIP directory suffixes are structural; file paths otherwise remain literal and strict. */
 function sanitizeEntryPath(path: string): string | null {
-  let cleaned = path.replace(/\\/g, '/').replace(/^\.\/+/, '');
-  if (!cleaned || cleaned.startsWith('/')) return null;
-  const segments: string[] = [];
-  for (const segment of cleaned.split('/')) {
-    if (segment === '' || segment === '.') continue;
-    if (segment === '..') return null;
-    segments.push(segment);
-  }
-  cleaned = segments.join('/');
-  return isSkillResourcePath(cleaned) ? cleaned : null;
+  const cleaned = path.endsWith('/') ? path.slice(0, -1) : path;
+  const slash = cleaned.indexOf('/');
+  return isSkillResourcePath(cleaned) || slash > 0 && isWorkspaceName(cleaned.slice(0, slash)) && isSkillResourcePath(cleaned.slice(slash + 1)) ? cleaned : null;
 }
 
 /** 忽略版本控制和 macOS 元数据，保留实际技能资源（包括点文件和嵌套归档）。 */
@@ -354,21 +348,11 @@ export function parseSkillMdText(text: string, fallbackName: string): {
   return { candidate: { name, files, bytes: sumSkillFilesBytes(files) } };
 }
 
-/**
- * 把候选列表批量写入存储。
- *
- * 不做名称去重 / 重命名：同名技能是常态，落库名与原名恒等，冲突只可能发生在
- * id 层——由存储层在非保留区间内随机取号 + 写前占用确认解决，既有技能
- * （含预置同名）永远不会被覆盖或改名。
- *
- * 注意：本函数只写内存表并排队持久化；写入方（导入 UI）在调用后必须
- * await flushSkillStoreWrites() 确认落盘，失败时用 snapshotCustomSkills /
- * rollbackCustomSkills 回滚，保证「列表所见 = 持久层所存」。
- */
-export function commitImportCandidates(candidates: readonly SkillImportCandidate[]): SkillImportReport {
+/** Import each candidate with its own durable numeric identity and await persistence; failures never overwrite existing Skills. */
+export async function commitImportCandidates(candidates: readonly SkillImportCandidate[]): Promise<SkillImportReport> {
   const report: SkillImportReport = { imported: [], skipped: [], droppedFiles: [] };
   for (const candidate of candidates) {
-    const result = setCustomSkill({
+    const result = await setCustomSkill({
       name: candidate.name, files: candidate.files, resourceBytes: candidate.resourceBytes, folders: candidate.folders,
     });
     if (!result.ok) {
@@ -386,7 +370,7 @@ export function commitImportCandidates(candidates: readonly SkillImportCandidate
 // ──── 导入入口 ────
 
 /** 导入单个 SKILL.md 文本 */
-export function importSkillFromMdText(text: string, fallbackName: string): SkillImportReport {
+export async function importSkillFromMdText(text: string, fallbackName: string): Promise<SkillImportReport> {
   const { candidate, skip } = parseSkillMdText(text, fallbackName);
   if (!candidate) {
     return { imported: [], skipped: skip ? [skip] : [], droppedFiles: [] };
@@ -410,13 +394,14 @@ export interface SkillExportPayload {
  *
  * 显式目录使用 ZIP 目录条目保存。
  */
-export function exportSkillToZip(skill: SkillRecord): SkillExportPayload {
+export function exportSkillToZip(skill: Pick<SkillRecord, 'name' | 'files' | 'resourceBytes' | 'folders'> & Partial<Pick<SkillRecord, 'tags' | 'description' | 'category' | 'body'>>): SkillExportPayload {
+  if (!isWorkspaceName(skill.name) || typeof skill.files?.['SKILL.md'] !== 'string') throw new Error('Cannot export an invalid Skill without SKILL.md');
+  validateSkillBinaries(skill.resourceBytes, skill.files);
+  validateSkillFolders(skill.folders, skill.files, skill.resourceBytes);
   const zipEntries: Record<string, Uint8Array> = {};
   for (const [path, content] of Object.entries(skill.files)) {
-    // 防御：写出路径做同样的清洗（存储层理论不会塞入非法键）
-    const safePath = sanitizeEntryPath(`${skill.name}/${path}`);
-    if (!safePath) continue;
-    zipEntries[safePath] = strToU8(content);
+    if (!isWorkspaceName(skill.name) || !isSkillResourcePath(path)) throw new Error('Invalid exported Skill resource: ' + path);
+    zipEntries[`${skill.name}/${path}`] = strToU8(content);
   }
   for (const [path, content] of Object.entries(skill.resourceBytes ?? {})) {
     if (!isSkillResourcePath(path) || Object.hasOwn(skill.files, path)) throw new Error('Invalid binary resource: ' + path);
@@ -425,18 +410,11 @@ export function exportSkillToZip(skill: SkillRecord): SkillExportPayload {
   for (const path of skill.folders ?? []) {
     if (isSkillResourcePath(path)) zipEntries[skill.name + '/' + path + '/'] = new Uint8Array();
   }
-  // 存储数据异常（无 SKILL.md）时兜底写入口文件，保证导出物永远可再导入
-  if (!zipEntries[`${skill.name}/SKILL.md`]) {
-    const tagLine = skill.tags.length > 0 ? `tags: ${skill.tags.join(' ')}\n` : '';
-    zipEntries[`${skill.name}/SKILL.md`] = strToU8(
-      `---\nname: ${skill.name}\ndescription: ${skill.description}\ncategory: ${skill.category}\n${tagLine}---\n\n${skill.body}`,
-    );
-  }
   return { filename: `${skill.name}.zip`, bytes: zipSync(zipEntries) };
 }
 
 /** 触发浏览器下载（hub / sidepanel 页面环境） */
-export function downloadSkillZip(skill: SkillRecord): boolean {
+export function downloadSkillZip(skill: Parameters<typeof exportSkillToZip>[0]): boolean {
   try {
     const { filename, bytes } = exportSkillToZip(skill);
     const blob = new Blob([bytes as BlobPart], { type: 'application/zip' });
@@ -444,11 +422,11 @@ export function downloadSkillZip(skill: SkillRecord): boolean {
     const anchor = document.createElement('a');
     anchor.href = url;
     anchor.download = filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    // 释放 object URL：延迟到下一轮事件循环，避免个别浏览器下载尚未开始即回收
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    try { document.body.appendChild(anchor); anchor.click(); }
+    finally {
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    }
     return true;
   } catch (error) {
     console.warn(`[SkillImportExport] 导出技能 "${skill.name}" 失败:`, error);

@@ -25,8 +25,10 @@
  *     计费口径：总输入 = input + cache_read + cache_creation；缓存命中 = cache_read。
  *   - Google Gemini：每 chunk usageMetadata，末 chunk 完整：
  *     { promptTokenCount（含缓存部分）, candidatesTokenCount（不含思考）,
- *       thoughtsTokenCount, totalTokenCount, cachedContentTokenCount }。
- *     输出总量 = candidates + thoughts（totalTokenCount 同口径）。
+ *       thoughtsTokenCount, toolUsePromptTokenCount, totalTokenCount,
+ *       cachedContentTokenCount }。
+ *     总输入 = promptTokenCount + toolUsePromptTokenCount（工具提示 token 计入
+ *     totalTokenCount 却不计入 promptTokenCount）；输出总量 = candidates + thoughts。
  *   - Ollama /api/chat（流式）：done=true 的末行携带
  *     { prompt_eval_count, eval_count, prompt_eval_cached_count（新版缓存命中） }。
  *   - OpenAI Responses（流式）：response.completed 事件 response.usage =
@@ -168,12 +170,16 @@ export function normalizeGeminiUsage(meta: any): Partial<TokenUsage> {
   if (!meta || typeof meta !== 'object') return {};
   const result: Partial<TokenUsage> = {};
   const prompt = countAt(meta, 'promptTokenCount');
+  const toolUsePrompt = countAt(meta, 'toolUsePromptTokenCount');
   const candidates = countAt(meta, 'candidatesTokenCount');
   const thoughts = countAt(meta, 'thoughtsTokenCount');
   const total = countAt(meta, 'totalTokenCount');
 
   if (prompt !== undefined) {
-    result.inputTokens = prompt;
+    // 官方 total 口径 = promptTokenCount + toolUsePromptTokenCount + thoughts + candidates：
+    // 工具提示 token 计入 totalTokenCount 却不计入 promptTokenCount，
+    // 不并入输入侧就会少算总输入（缓存命中率的分母随之偏小、命中率虚高）。
+    result.inputTokens = prompt + (toolUsePrompt ?? 0);
     // Gemini 只要有 usageMetadata 就具备缓存上报能力（cachedContentTokenCount 缺失 = 0 命中）
     result.cachedInputTokens = countAt(meta, 'cachedContentTokenCount') ?? 0;
   }

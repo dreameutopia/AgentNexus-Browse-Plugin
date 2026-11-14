@@ -269,7 +269,7 @@ export const useLocale=()=>({locale:ref('zh-CN'),switchLocale:()=>{}});export co
         api.onResolve({ filter: /@\/utils\/skills\/skill-store$/ }, () => ({ path: 'skill-store-stub', namespace: 'skill-store' }));
         api.onLoad({ filter: /.*/, namespace: 'skill-store' }, () => ({
           contents: `export function getAllSkills(){ return []; }
-export function onSkillsChange(){ return () => {}; } export function resolveSkill(){ return null; }`,
+export function onSkillsChange(){ return () => {}; } export function getSkillById(){ return null; } export async function restoreCustomSkillsFromStorage(){} export async function setCustomSkill(){return {ok:false,reason:'invalid'};}`,
         }));
         // 用量统计引擎：固定空快照（本测试不覆盖使用监控）
         api.onResolve({ filter: /usage-metrics-engine$/ }, () => ({ path: 'usage-engine-stub', namespace: 'usage-engine' }));

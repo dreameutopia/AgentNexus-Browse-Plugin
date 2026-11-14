@@ -88,6 +88,13 @@ export interface ToolCallPlan {
    * 而引擎的职责是「执行与结算」，不该掺入协议层的参数容错。
    */
   rawArgs?: unknown;
+  /**
+   * 零成本状态工具：不受运行时长上限拦截（见 registry 的准入语义）。
+   *
+   * 由会话引擎依据工具 metadata 判定后填入——引擎本身不认识任何具体
+   * 工具，只认这一个布尔标记，因此工具语义与执行策略依然解耦。
+   */
+  zeroCostStateTool?: boolean;
 }
 
 /** 单次调用的执行上下文（注入工具实现） */
@@ -813,8 +820,14 @@ export class ToolExecutionEngine {
     if (batch.interrupted || !this.roundAlive(batch.chatId, batch.roundId)) {
       return this.makeOutcome(batch.roundId, call, 'interrupted', TOOL_INTERRUPTED_BY_USER, 0);
     }
-    // 运行时长上限：排队期间已超预算 → 未开始执行
-    if (batch.deadlineMs !== undefined && Date.now() > batch.deadlineMs) {
+    // 运行时长上限：排队期间已超预算 → 未开始执行。
+    // 零成本状态工具（计划/笔记等毫秒级会话内写入）豁免：截断它们会让模型
+    // 无法记录已完成步骤，计划状态与真实进度脱节（见 registry 的准入语义）。
+    if (
+      batch.deadlineMs !== undefined &&
+      Date.now() > batch.deadlineMs &&
+      !call.zeroCostStateTool
+    ) {
       return this.makeOutcome(
         batch.roundId,
         call,

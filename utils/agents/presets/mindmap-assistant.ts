@@ -8,6 +8,8 @@ import { getPresetToolIds } from '@/utils/tools/tool-presets';
 
 export const mindmapAssistantConfig: PresetAgentConfig = {
   id: 'MindMap-Assistant',
+  // 发布闸门：false = 底层禁用（管理中心与输入框 @ 选择器都看不到）
+  available: true,
   name: '思维导图助手',
   description: '在 Excalidraw 上绘制思维导图与结构图',
   category: 'content',

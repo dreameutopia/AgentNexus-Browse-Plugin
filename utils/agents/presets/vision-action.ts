@@ -3,6 +3,8 @@ import { getPresetToolIds } from '@/utils/tools/tool-presets';
 import { ELEMENT_INTERACTION_SOP } from '../element-interaction-sop';
 export const visionActionConfig: PresetAgentConfig = {
   id: 'Vision-Action', name: '视觉通用助手', category: 'vision',
+  // 发布闸门：false = 底层禁用（管理中心与输入框 @ 选择器都看不到）
+  available: true,
   description: '看着屏幕截图替你点击、输入、拖拽完成操作：按钮认不出、界面花哨、远程桌面或画布类操作用它',
   tags: ['看图操作', '点击输入', '拖拽流程'],
   display: {

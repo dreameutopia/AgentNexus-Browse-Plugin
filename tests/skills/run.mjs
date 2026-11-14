@@ -85,6 +85,14 @@ const importMetaGlobShim = {
 try {
   await esbuild.build({
     entryPoints: [path.join(here, 'skills.test.ts')],
+    banner: { js: `import 'fake-indexeddb/auto';
+const storageData = Object.create(null), storageListeners = new Set();
+globalThis.chrome = { storage: { local: {
+  get: async (keys) => { const names = typeof keys === 'string' ? [keys] : Array.isArray(keys) ? keys : Object.keys(storageData); return structuredClone(Object.fromEntries(names.filter(key => key in storageData).map(key => [key, storageData[key]]))); },
+  set: async (input) => { const changes = {}; for (const [key,value] of Object.entries(input)) { changes[key] = {oldValue:storageData[key],newValue:structuredClone(value)}; storageData[key] = structuredClone(value); } storageListeners.forEach(fn=>fn(changes,'local')); },
+  remove: async (keys) => { for (const key of [keys].flat()) delete storageData[key]; }
+}, onChanged: {addListener: fn => storageListeners.add(fn),removeListener: fn=>storageListeners.delete(fn)}}, runtime: {getURL: path=>path} };
+` },
     bundle: true,
     platform: 'node',
     format: 'esm',

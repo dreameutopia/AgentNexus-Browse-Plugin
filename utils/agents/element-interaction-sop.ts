@@ -11,7 +11,8 @@ DOM click/fill 后检查业务反馈。原生 keys/type 后读取返回的 focus
 not_dispatched 表示交互未派发，按错误修正参数或前置条件；unknown/超时可能已部分生效，先核对业务回执，禁止盲目重复发送、提交、追加。STALE_ELEMENT / STALE_SNAPSHOT / FOCUS_CHANGED：重采并核对现状；WRONG_TAB：按已记录的来源 tabId 切回或在当前页重采。一次调用一个有依赖的操作，按键异常释放由工具处理。
 动作前绑定目标业务对象，动作后有界等待并核对对应结果；页面load、临时disabled、消息列表顶部都不能单独证明业务成功或服务端去重。批量操作按稳定业务ID逐条记录成功/失败/未知、边加载边处理；学习/验证样本数与用户实际执行数量分开，达到授权范围或业务终止条件即停止，不先加载全量再开始。选择与范围只有新证据或用户要求变化时才重新决策。
 虚拟表格只渲染部分行列，coverage.complete=false 不等于全表；滚动指定容器后重采，不能把 DOM 行号当业务记录 ID。辅助功能不保证暴露未加载数据。无关页面变化不重新排序旧快照，新增数据必须新采集。
-数据源：已确认且有权限的 API/导出优先用于批量数据。重复列表（商品卡片/评论/表格行）先 browser_observe 找到任一项，再用 browser_dom_explore 理解结构：action="parent" 找重复容器层（同构兄弟 ≥2 即疑似）、action="similar" 拿全部同类元素与生成选择器、action="children" 确认字段布局；生成的选择器直接写进 browser_page_exec 抓取脚本，其返回的新引用同样可用于 observe 节点详情与 interact 操作。browser_page_exec 代码是 async 函数体，用 return 输出结果（对象数组最佳，可直接 xlsx 导出）；抓取结果默认暂存为 dataRef 引用；可指定 FrameId（子 frame 严格 CSP 可尝试 world=ISOLATED,strategy=scripting 读 DOM，不能假定可读主世界状态）。
+数据源：已确认且有权限的 API/导出优先用于批量数据。重复列表（商品卡片/评论/表格行）先 browser_observe 找到任一项，再用 browser_dom_explore 理解结构：action="parent" 找重复容器层（同构兄弟 ≥2 即疑似）、action="similar" 拿全部同类元素与生成选择器、action="children" 确认字段布局；生成的选择器直接写进 js_run 抓取脚本，其返回的新引用同样可用于 observe 节点详情与 interact 操作。js_run 的脚本文件、传参、执行及结果文件规范见全局 workspace-scripting 分区。
 同一目标最多连续过滤3次，再换观察视图、容器滚动或脚本探测。结果不足时明确说明未覆盖区域，不能把空 DOM、截图不可用或接口拒绝解释为文档没有内容。目标与权限仍不可确认则停止对应操作并说明卡点。
+多页重复取数用 js_run(action="crawl")：同一段脚本要跑多个已知页面时（详情页逐个抓、多站点同字段对比），一次调用给出 targets 列表即可——工具驱动导航与就绪等待、页面间随机停顿、同源串行，逐目标隔离失败并给出账本。不要自己写循环反复导航：既把脚本与导航拆成多轮往返，又让某页失败中断整批。已知目标地址变更（站点改了链接结构）或内容是软 404（URL 正常但内容是错误页）时，用 expectUrlIncludes / expectTextIncludes 声明预期，工具据此判定漂移而不是把空数据当成功。
 技能保存可重新执行的 regex/XPath、语义、工作表/记录识别和恢复规则；禁止持久化运行期 ElementId、AX 引用、snapshotId、captureId 或固定 FrameId。
 </text-interaction-sop>`;

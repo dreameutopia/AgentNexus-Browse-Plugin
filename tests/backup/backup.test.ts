@@ -146,7 +146,8 @@ function makeDeps(area = new MemoryArea(), local = new MemoryLocalStore()): Sect
 }
 
 const sampleSkill = {
-  id: 'demo-skill',
+  id: '1001',
+  identityKey: 'custom:backup-fixture',
   name: 'demo',
   description: '演示技能',
   files: { 'SKILL.md': '# demo' },
@@ -291,7 +292,7 @@ async function testSectionHandlers(): Promise<void> {
   const chromeValue = await deps.area.get([SKILLS_STORAGE_KEY]);
   eq((chromeValue[SKILLS_STORAGE_KEY] as unknown[]).length, 1, 'replace 后 chrome 写入技能');
   const localValue = deps.localStore.getItem(SKILLS_STORAGE_KEY);
-  check(!!localValue && localValue.includes('demo-skill'), 'replace 后 localStorage 镜像同步');
+  eq(localValue, null, 'Skill 仅写入权威存储，不创建重复镜像');
 
   // apply(fill) → 本机已有数据 → 跳过
   const fillOutcome = await skills.apply(collected, 'fill');
@@ -500,6 +501,19 @@ async function testStorageStats(): Promise<void> {
   eq(failed.conversationMedia.mediaBytes, -1, '对话媒体统计失败报为 -1');
 }
 
+async function testSkillLifecycleBackup(): Promise<void> {
+  const area=new MemoryArea(), local=new MemoryLocalStore(), handler=createDataSectionHandlers({area,localStore:local}).find(item=>item.id==='skills')!;
+  const lifecycle={agentNexusAgentSkillLinks:{default:['1001']},agentNexusManagedPluginSkills:{ref:{id:'1001',acceptedDigest:'one',pending:{digest:'two'}}},'agentNexusManagedPluginSkills:packages':['plugin'],agentNexusSkillCaptureHidden:true};
+  const data={custom:[{...sampleSkill,id:'1001'}],toggles:{'3':false},lifecycle};
+  check(handler.validate(data),'Skill lifecycle backup validates');
+  const result=await handler.apply(data,'replace');
+  eq(await handler.collect(),data,'Skill lifecycle, pending approvals and hidden preference round trip');
+  eq((await area.get([SKILL_TOGGLES_STORAGE_KEY]))[SKILL_TOGGLES_STORAGE_KEY],{'3':false},'Restore preserves builtin toggles');
+  if ('rollback' in result) await result.rollback?.();
+  eq(await handler.collect(),null,'Rollback removes all lifecycle state atomically');
+  check(!handler.validate({...data,lifecycle:{unknown:'bad'}}),'Unknown lifecycle backup keys rejected');
+}
+
 // ==================== 主流程 ====================
 
 async function main(): Promise<void> {
@@ -507,6 +521,7 @@ async function main(): Promise<void> {
   await testSectionHandlers();
   await testOrchestrator();
   await testStorageStats();
+  await testSkillLifecycleBackup();
 
   console.log(`\n[backup] 通过 ${passed} 项`);
   if (failures.length) {

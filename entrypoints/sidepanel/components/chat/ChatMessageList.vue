@@ -16,9 +16,13 @@
           @toggle-reasoning-content-collapse="forwardReasoningContentToggle"
           @toggle-compaction-collapse="forwardCompactionToggle"
           @feedback-change="forwardFeedbackChange"
+          @guard-continue="forwardGuardContinue"
+          @guard-open-settings="forwardGuardOpenSettings"
+          @create-skill="openSkillCapture"
         />
       </div>
 
+      <SkillCapturePrompt ref="skillCapturePrompt" :visible="captureState.eligible" :message-id="captureState.messageId" :scope-key="(chatId ?? '') + ':' + captureState.scope" :disabled="isAiResponding" @create="emit('create-skill', $event)" />
       <!-- AI回答时的加载动画 -->
       <div v-if="isAiResponding" class="ai-responding-indicator">
         <div class="typing-dots">
@@ -34,11 +38,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, ref, toRef, watch } from 'vue';
 import { t } from '@/utils/i18n';
-import type { ExtendedChatMessage, MessageFeedback } from '../../types/chat';
+import type { ExtendedChatMessage, MessageFeedback, MessagePart } from '../../types/chat';
 import { installDiagramRenderer, processDiagrams } from '../../utils/chat/diagram-renderer';
 import { installChartRenderer, processCharts } from '../../utils/chat/chart-renderer';
 import { installAgentImageRenderer, processAgentImages } from '../../utils/chat/agent-image-renderer';
 import MessageItem from './MessageItem.vue';
+import SkillCapturePrompt from './SkillCapturePrompt.vue';
+import { skillCaptureState } from '../../utils/chat/skill-capture';
 import './chat-message-list.css';
 
 const props = defineProps<{
@@ -55,6 +61,9 @@ const props = defineProps<{
   liveMessageId?: string | null;
 }>();
 provide('workspaceChatId', toRef(props, 'chatId'));
+const skillCapturePrompt = ref<InstanceType<typeof SkillCapturePrompt> | null>(null);
+const captureState = computed(() => skillCaptureState(props.messages, props.isAiResponding));
+const openSkillCapture = (messageId: string) => { if (!props.isAiResponding) skillCapturePrompt.value?.open(messageId); };
 
 const messagesContainer = ref<HTMLElement | null>(null);
 
@@ -271,6 +280,7 @@ watch(
 
 // 事件契约（与 App.vue 模板绑定一一对应）；forward* 转发自 MessageItem 子组件
 const emit = defineEmits<{
+  'create-skill': [request: { messageId: string; extra: string }];
   'toggle-tool-call-expansion': [messageId: string, toolCallId: string];
   'toggle-reasoning-collapse': [messageId: string, partIndex: number];
   'toggle-reasoning-content-collapse': [messageId: string];
@@ -278,6 +288,10 @@ const emit = defineEmits<{
   'toggle-compaction-collapse': [messageId: string, partIndex: number];
   /** 模型消息反馈（赞/踩；null = 清除），由 App 落库并回写列表 */
   'feedback-change': [messageId: string, feedback: MessageFeedback | null];
+  /** 守卫停止注记的「继续」：App 统一做时效判定后自动续跑 */
+  'guard-continue': [messageId: string, partIndex: number];
+  /** 守卫停止注记的「修改设置」：App 打开设置弹窗并定位 */
+  'guard-open-settings': [guardKind: MessagePart['guardKind']];
 }>();
 
 const forwardToolToggle = (messageId: string, toolCallId: string) => {
@@ -294,6 +308,12 @@ const forwardCompactionToggle = (messageId: string, partIndex: number) => {
 };
 const forwardFeedbackChange = (messageId: string, feedback: MessageFeedback | null) => {
   emit('feedback-change', messageId, feedback);
+};
+const forwardGuardContinue = (messageId: string, partIndex: number) => {
+  emit('guard-continue', messageId, partIndex);
+};
+const forwardGuardOpenSettings = (guardKind: MessagePart['guardKind']) => {
+  emit('guard-open-settings', guardKind);
 };
 
 /**

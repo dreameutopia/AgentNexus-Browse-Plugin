@@ -494,7 +494,9 @@ export class MarkdownRenderer {
       const apiErrorBlocks: string[] = [];
       rendered = rendered.replace(/<api-error\b[^>]*>[\s\S]*?<\/api-error>/g, block => {
         apiErrorBlocks.push(block);
-        return `ANAPIERR${apiErrorBlocks.length - 1}END${suffix}`;
+        // Error cards are block elements, including when a retry starts immediately
+        // with a heading/list and the model does not emit a leading newline.
+        return `\n\nANAPIERR${apiErrorBlocks.length - 1}END${suffix}\n\n`;
       });
 
       // ── 2. 摘出 <think> 推理段（含未闭合情形）──
@@ -526,7 +528,7 @@ export class MarkdownRenderer {
       if (enableMarkdown) {
         rendered = this.md.render(rendered, { workspaceChatId: options.workspaceChatId });
       } else {
-        rendered = renderPlainFileCards(escapeHtml(rendered));
+        rendered = renderPlainFileCards(rendered, options.workspaceChatId);
       }
 
       // ── 6. 回填 LaTeX 公式（KaTeX 产物为可信 HTML）──

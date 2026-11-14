@@ -48,9 +48,9 @@ export function parseFrontmatter(raw: string): ParsedFrontmatter {
     let value = line.slice(colon + 1).trim();
     // 去掉成对的单/双引号与行内注释（# 前需有空格才视为注释，避免误伤 URL 锚点）。
     // 双引号值支持最小反转义（\" → "，\\ → \），与保存端 composeSkillMd 的包裹规则往返一致
-    if (/^".*$/.test(value)) {
+    if (/^".*"$/.test(value)) {
       value = value.slice(1, -1).replace(/\\(["\\])/g, '$1');
-    } else if (/^'.*$/.test(value)) {
+    } else if (/^'.*'$/.test(value)) {
       value = value.slice(1, -1);
     } else {
       const commentMatch = value.match(/\s#/);
@@ -67,6 +67,24 @@ export function parseFrontmatter(raw: string): ParsedFrontmatter {
   }
 
   return { data, body: lines.slice(endIndex + 1).join('\n') };
+}
+
+/** Update scalar metadata while preserving unknown header fields and the exact body bytes. */
+export function updateSkillFrontmatter(source: string, values: Record<string, string>, body?: string): string {
+  const header = /^(?:\uFEFF)?---[ \t]*\r?\n([\s\S]*?)^(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/m.exec(source);
+  if (!header || header.index !== 0) throw new Error('SKILL.md must contain a closed frontmatter header');
+  const eol = header[0].includes('\r\n') ? '\r\n' : '\n';
+  const keys = new Set(Object.keys(values));
+  const lines = header[1].split(/\r?\n/).filter(line => {
+    const field = /^([a-z][a-z-]*):/i.exec(line);
+    return !field || !keys.has(field[1].toLowerCase());
+  });
+  while (lines.at(-1) === '') lines.pop();
+  for (const [key, value] of Object.entries(values)) {
+    if (!/^[a-z][a-z-]*$/.test(key) || /[\r\n\0]/.test(value) || /[\uD800-\uDFFF]/u.test(value)) throw new Error('Invalid Skill metadata: ' + key);
+    lines.push(key + ': "' + value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"');
+  }
+  return ['---', ...lines, '---', ''].join(eol) + (body ?? source.slice(header[0].length));
 }
 
 /**

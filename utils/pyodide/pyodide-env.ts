@@ -22,7 +22,7 @@ export interface PyodideInstalledPackage {
 
 export interface PyodideEnvState {
   status: PyodideEnvStatus;
-  skillScriptsEnabled: boolean;
+  environmentId: string;
   /** 就绪时的 pyodide 版本（与打包的 npm 版本一致） */
   version: string;
   /** 就绪时的 CPython 版本（核验时从解释器读取，如 "3.14.0"） */
@@ -37,7 +37,7 @@ export interface PyodideEnvState {
 
 export const DEFAULT_PYODIDE_ENV_STATE: PyodideEnvState = {
   status: 'idle',
-  skillScriptsEnabled: false,
+  environmentId: 'legacy',
   version: PYODIDE_VERSION,
   pythonVersion: '',
   verifiedAt: 0,
@@ -62,18 +62,34 @@ async function readState(): Promise<PyodideEnvState> {
 
 function normalizeState(raw: unknown): PyodideEnvState {
   const state = raw && typeof raw === 'object' ? raw as Partial<PyodideEnvState> : {};
+  const status = state.status === 'ready' || state.status === 'downloading' || state.status === 'error'
+    ? state.status : 'idle';
   return {
     ...DEFAULT_PYODIDE_ENV_STATE,
     ...state,
-    skillScriptsEnabled: state.status === 'ready' && state.skillScriptsEnabled === true,
-    packages: Array.isArray(state.packages) ? state.packages : [],
+    status,
+    environmentId: validId(state.environmentId) ? state.environmentId : 'legacy',
+    packages: Array.isArray(state.packages) ? state.packages.filter(pkg =>
+      pkg && typeof pkg.name === 'string' && typeof pkg.version === 'string' && Number.isFinite(pkg.installedAt)) : [],
   };
 }
 
-async function withEnvLock<T>(operation: () => Promise<T>): Promise<T> {
-  return typeof navigator !== 'undefined' && navigator.locks
-    ? navigator.locks.request(PYODIDE_ENV_STORAGE_KEY, operation)
-    : operation();
+function validId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z0-9-]{1,64}$/i.test(value);
+}
+
+let localQueue: Promise<unknown> = Promise.resolve();
+export async function withPyodideEnvLock<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
+  if (typeof navigator !== 'undefined' && navigator.locks) {
+    return navigator.locks.request(PYODIDE_ENV_STORAGE_KEY, { signal }, operation);
+  }
+  const pending = localQueue.then(() => {
+    signal?.throwIfAborted();
+    return operation();
+  });
+  localQueue = pending.catch(() => undefined);
+  return pending;
 }
 
 async function writeState(state: PyodideEnvState): Promise<PyodideEnvState> {
@@ -84,50 +100,45 @@ async function writeState(state: PyodideEnvState): Promise<PyodideEnvState> {
 
 /** 全量写入状态 */
 export async function setPyodideEnvState(state: PyodideEnvState): Promise<void> {
-  await withEnvLock(() => writeState(state));
+  await withPyodideEnvLock(() => writeState(state));
 }
 
 /** 局部更新（基于最新值合并，避免并发覆盖） */
 export async function updatePyodideEnvState(patch: Partial<PyodideEnvState>): Promise<PyodideEnvState> {
-  return withEnvLock(async () => writeState({ ...await readState(), ...patch }));
+  return withPyodideEnvLock(async () => writeState({ ...await readState(), ...patch }));
 }
 
-export function setSkillScriptsEnabled(enabled: boolean): Promise<PyodideEnvState> {
-  return withEnvLock(async () => {
+/** Ignore late verification results after another context removes or replaces the runtime. */
+export function updatePyodideEnvIfCurrent(
+  environmentId: string,
+  patch: Partial<PyodideEnvState> | ((current: PyodideEnvState) => Partial<PyodideEnvState>),
+): Promise<PyodideEnvState | undefined> {
+  return withPyodideEnvLock(async () => {
     const current = await readState();
-    if (enabled && current.status !== 'ready') throw new Error('Python runtime is not ready');
-    return writeState({ ...current, skillScriptsEnabled: enabled });
+    if (current.environmentId !== environmentId) return undefined;
+    const changes = typeof patch === 'function' ? patch(current) : patch;
+    return Object.keys(changes).length ? writeState({ ...current, ...changes }) : current;
+  });
+}
+
+export function beginPyodideSetup(): Promise<PyodideEnvState> {
+  return withPyodideEnvLock(async () => {
+    const current = await readState();
+    if (current.status === 'ready') {
+      throw new Error('Python runtime is already installed in another context');
+    }
+    return writeState({
+      ...current, environmentId: crypto.randomUUID(), status: 'downloading', lastError: '',
+    });
   });
 }
 
 /** Publish revocation before deleting files, and serialize the cleanup against setup and toggles. */
 export async function resetPyodideEnvState(cleanup: () => Promise<void>): Promise<void> {
-  await withEnvLock(async () => {
-    await writeState(DEFAULT_PYODIDE_ENV_STATE);
+  await withPyodideEnvLock(async () => {
+    await writeState({ ...DEFAULT_PYODIDE_ENV_STATE, environmentId: crypto.randomUUID() });
     await cleanup();
   });
-}
-
-export async function isSkillScriptSupportEnabled(): Promise<boolean> {
-  return (await getPyodideEnvState()).skillScriptsEnabled;
-}
-
-/** Guard a workspace mutation during the gap between authorization and its IndexedDB commit. */
-export async function withSkillScriptSupport<T>(
-  signal: AbortSignal | undefined,
-  operation: (signal: AbortSignal) => Promise<T>,
-): Promise<T> {
-  const revoked = new AbortController();
-  const deny = () => revoked.abort(new Error('Skill script support was disabled'));
-  const unwatch = watchPyodideEnv(state => { if (!state.skillScriptsEnabled) deny(); });
-  const combined = signal ? AbortSignal.any([signal, revoked.signal]) : revoked.signal;
-  try {
-    if (!await isSkillScriptSupportEnabled()) deny();
-    combined.throwIfAborted();
-    return await operation(combined);
-  } finally {
-    unwatch();
-  }
 }
 
 /**

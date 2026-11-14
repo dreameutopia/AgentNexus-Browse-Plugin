@@ -388,9 +388,11 @@ class TranscriptEngine {
     content: string,
     imageRefs: readonly string[] = [],
     pageQuote?: PageQuote,
+    options?: { synthetic?: boolean },
   ): Promise<ChatMessageRecord> {
     const seq = await this.nextSeq(chatId);
     const now = Date.now();
+    const synthetic = options?.synthetic === true;
     const record: ChatMessageRecord = {
       id: generateId('msg'),
       chatId,
@@ -401,6 +403,7 @@ class TranscriptEngine {
       reasoning: '',
       toolCalls: [],
       status: 'done',
+      ...(synthetic ? { synthetic: true } : {}),
       ...(imageRefs.length > 0 ? { imageRefs: [...imageRefs] } : {}),
       // 恒写入（空上传 = 空数组）：与旧记录的 undefined 区分，UI 侧据此
       // 只把用户上传展示为气泡底部图片；vision 首截图等引擎注入的引用
@@ -421,8 +424,9 @@ class TranscriptEngine {
     try {
       const session = await chatDatabase.getSession(chatId);
       // 引用独存的首条消息（正文为空）以引用原文作标题素材——否则新会话只能
-      // 停在默认标题上，历史里认不出这是哪次对话
-      const titleSource = content.trim() || pageQuote?.text.trim() || '';
+      // 停在默认标题上，历史里认不出这是哪次对话。
+      // 自动续跑的隐藏轮（synthetic）不参与标题：它只是流程指令，不是用户开题。
+      const titleSource = synthetic ? '' : content.trim() || pageQuote?.text.trim() || '';
       const shouldAutoTitle = session?.title === DEFAULT_TITLE && titleSource.length > 0;
       if (shouldAutoTitle) {
         await this.patchSessionMeta(chatId, { title: titleSource.slice(0, AUTO_TITLE_MAX) });
@@ -481,8 +485,9 @@ class TranscriptEngine {
         return;
       }
       // 预览只在消息进入终态时刷新：流式过程中的半截文本不代表会话最后一条内容。
-      // 引用独存的用户消息（正文为空）以引用原文作预览——否则历史抽屉会看到一条空白
-      if (record.status !== 'streaming') {
+      // 引用独存的用户消息（正文为空）以引用原文作预览——否则历史抽屉会看到一条空白。
+      // 自动续跑的隐藏轮同理不刷新预览：否则列表摘要会被「继续」覆盖。
+      if (record.status !== 'streaming' && record.synthetic !== true) {
         const preview = record.content.trim() || record.pageQuote?.text.trim() || record.error || '';
         await this.patchSessionMeta(record.chatId, {
           lastMessagePreview: chatPreviewOf(preview),

@@ -1,3 +1,8 @@
+// 文档工具（document_tool）先注册：它**只**在 sidepanel 注册（不随
+// openai-tools-converter 进入 background 的共享模块图），因此必须在此
+// 显式导入——放在 App.vue 之前，保证任何工具查询发生时它已在注册表内。
+import './utils/tools/document-tools-registration';
+
 import { createApp } from 'vue';
 import './styles/global.css';
 import App from './views/App.vue';

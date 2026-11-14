@@ -14,7 +14,7 @@
  * 两侧逐字同源——计量口径与真实请求口径分叉会让预算判断失真。
  */
 
-/** 拼装本轮用户消息正文（不含系统时间戳、不含多模态图片段） */
+/** 拼装本轮用户消息正文（不含系统注入上下文 <system_context>、不含多模态图片段） */
 export function composeUserMessageBody(
   userInput: string,
   pageQuotePrompt = '',

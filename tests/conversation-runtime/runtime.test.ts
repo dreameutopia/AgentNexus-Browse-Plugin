@@ -497,6 +497,15 @@ assert.equal(
   false,
   "Stop during pre-run compaction must prevent any conversation request",
 );
+let retryPreCompactions = 0;
+(globalThis as any).compactInput = async () => { retryPreCompactions++; throw new Error('retry must compact inside the engine'); };
+const retryTask = compactReopened.run({ ...compactRuntime, chatId: 'retry-compact', userInput: '',
+  retryTarget: { messageId: 'failed-record', content: 'partial error' } }).catch(() => undefined);
+for (let n = 0; n < 5; n++) await tick();
+assert.equal(retryPreCompactions, 0, 'pre-run compaction must not advance past the record being resumed');
+assert.equal(runs.has('retry-compact'), true);
+await compactReopened.abortAndWait('retry-compact');
+await retryTask;
 compactReopened.detach();
 
 // Fail before dispatch when an older loaded worker has no runtime receiver.

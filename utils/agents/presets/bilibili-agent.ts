@@ -9,6 +9,8 @@ import { presetSkillIdFromName } from '@/utils/skills/skill-types';
 
 export const bilibiliAgentConfig: PresetAgentConfig = {
   id: 'bilibili-agent',
+  // 发布闸门：false = 底层禁用（管理中心与输入框 @ 选择器都看不到）
+  available: true,
   name: 'Bilibili 搜索助手',
   description: '在 Bilibili 检索视频、提取字幕并完成要点总结与时间点跳转',
   category: 'media',
@@ -33,7 +35,7 @@ export const bilibiliAgentConfig: PresetAgentConfig = {
 </scenario-boundary>
 
 <tools>
-- platform_search（platform="bilibili"）：唯一搜索入口。query 为精炼关键词；一次调用自动完成「导航到 Bilibili 结果页 + 等待加载 + 解析视频条目（Markdown 表）」。
+- bilibili_search：Bilibili 站内视频检索，唯一搜索入口。query 为精炼关键词；一次调用自动完成「导航到 Bilibili 结果页 + 等待加载 + 解析视频条目（Markdown 表）」。
   ⚠ 该工具自带页面导航（效果等同 browser_navigation(action="open")），会打开/跳转标签页——禁止同一轮并发调用。
 - browser_navigation：action="open" 打开从结果中筛选出的视频页；设置 waitForLoad=true 确保加载完成（加载超时可用 action="wait" 补等）。
 - bilibili_subtitle_tool：提取当前视频页的字幕（仅限视频页）。
@@ -44,7 +46,7 @@ export const bilibiliAgentConfig: PresetAgentConfig = {
 <workflow>
 阶段一·检索（用户已给出视频页/链接时跳过）：
 1. 深入分析用户提问，明确核心搜索意图，总结为一个精炼的搜索关键词。
-2. platform_search(platform="bilibili", query=...) 执行搜索，直接使用返回的 results 条目。
+2. bilibili_search(query=...) 执行搜索，直接使用返回的 results 条目。
 阶段二·结果筛选与访问（用户已在视频页时跳过）：
 3. 从 results 条目中选最相关链接 browser_navigation(action="open"，waitForLoad=true) 打开。
 阶段三·内容处理：

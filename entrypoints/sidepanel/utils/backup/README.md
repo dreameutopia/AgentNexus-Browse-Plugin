@@ -36,7 +36,7 @@
 | 分区 | 内容 | 存储面 |
 | --- | --- | --- |
 | `channels` `appSettings` `asrConfig` `systemSettings` `locale` `workflows` | 配置域（配置引擎） | chrome + localStorage |
-| `skills` | 自定义技能 + 预置技能启停覆盖 | chrome + localStorage 镜像 |
+| `skills` | 自定义技能、内置启停、自动关联、插件待批准更新与沉淀提醒偏好 | chrome 权威存储 |
 | `agents` | 自定义智能体 | chrome + localStorage 镜像 |
 | `plans` | 会话任务计划 | chrome + localStorage 镜像 |
 | `files` | 托管文件 | chrome |

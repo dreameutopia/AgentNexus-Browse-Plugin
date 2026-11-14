@@ -10,6 +10,7 @@
  * tools-manager-listener 已能根据工具名自动路由到 toolRegistry 对应工具。
  */
 
+import { JS_RUN_TOOL_ID } from '@/tools/javascript/js-contract';
 import { toolRegistry, type ToolExecutionContext } from '@/tools/registry';
 import { ToolResult, createErrorResponse } from '@/common/tool-handler';
 import { PAGE_TOOL_TARGET_MESSAGE } from '../../../core/conversation/runtime-protocol';
@@ -24,8 +25,7 @@ export type { ToolExecutionContext } from '@/tools/registry';
  *
  * @param toolName  工具名称
  * @param parameters 工具参数
- * @param context 执行上下文（透传给工具本体；background 转发路径不携带——
- *   background 工具与会话无关，避免污染消息协议）
+ * @param context 执行上下文（透传给工具本体；js_run 的 background 转发通过独立受信封套携带会话信息；不混入工具参数）
  * @returns 执行结果
  */
 export async function executeTool(
@@ -80,7 +80,7 @@ export async function executeTool(
   //    凡已注册工具名（browser_navigation、browser_tabs 等）都由注册表兜底
   //    自动命中，不再需要为每个工具维护单独的 case 分支或白名单。
   try {
-    const cancellableGui = toolName === 'browser_interact' || toolName === 'screenshot' || toolName.startsWith('vision_');
+    const cancellableGui = toolName === JS_RUN_TOOL_ID || toolName === 'browser_interact' || toolName === 'screenshot' || toolName.startsWith('vision_');
     const requestId = cancellableGui && context?.signal ? crypto.randomUUID() : undefined;
     const targetRequestId = context?.onTabTarget && typeof document !== 'undefined' ? crypto.randomUUID() : undefined;
     const onTarget = (message: { type?: string; requestId?: string; tabId?: number }, sender: chrome.runtime.MessageSender) => {
@@ -101,6 +101,7 @@ export async function executeTool(
     try {
       response = await chrome.runtime.sendMessage({
         ...(parameters ?? {}), type: toolName,
+        ...(toolName === JS_RUN_TOOL_ID ? { __scriptContext: { chatId: context?.chatId, toolPolicy: context?.toolPolicy, toolApproved: context?.toolApproved } } : {}),
         ...(requestId ? { __visionRequestId: requestId } : {}),
         ...(targetRequestId ? { __pageTargetRequestId: targetRequestId } : {}),
       });

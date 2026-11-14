@@ -1,55 +1,111 @@
 import { PY_ERR_TIMEOUT, PY_ERR_WORKSPACE, PY_ERR_WORKSPACE_RUNTIME } from '@/utils/pyodide/pyodide-runtime';
-import { PYODIDE_MAX_CODE_LENGTH, PYTHON_RUN_MAX_TIMEOUT_MS } from '@/utils/pyodide/pyodide-config';
+import { PYTHON_RUN_MAX_TIMEOUT_MS } from '@/utils/pyodide/pyodide-config';
 import {
-  isPythonHostResult, PYTHON_HOST_CANCEL, PYTHON_HOST_RESET, PYTHON_HOST_RUN,
-  PYTHON_HOST_SKILL_REVOKED, PYTHON_HOST_SKILL_STATUS,
-  type PythonHostResult, type PythonHostRun, type PythonWorkerResult, type PythonWorkerRun,
+  isMicropipPackage, isPythonHostResult, PYTHON_HOST_CANCEL, PYTHON_HOST_RESET, PYTHON_HOST_RUN,
+  PYTHON_HOST_ENV_STATUS,
+  type PythonHostPolicyResult, type PythonHostResult, type PythonHostRun, type PythonWorkerResult, type PythonWorkerRun,
 } from '@/utils/pyodide/python-host-protocol';
 import { chatDatabase } from '../sidepanel/core/context/chat-database';
-import { workspaceOutputPaths } from '@/utils/python-workspace/paths';
+import { workspaceOutputPaths, type WorkspaceSnapshot } from '@/utils/python-workspace/paths';
 import { saveWorkspace, withWorkspaceLock } from '@/utils/python-workspace/store';
 import PythonWorker from './python-worker?worker';
 import { parsePythonScriptRequest } from '@/utils/pyodide/python-script-request';
-import { readMicropipManifest } from '@/utils/pyodide/pyodide-micropip';
+import { withPyodideEnvLock } from '@/utils/pyodide/pyodide-env';
+import { errorDetails } from '@/utils/shared/error-details';
 
 const MAX_JOBS = 16;
 const WORKER_IDLE_MS = 60_000;
 const CANCELLED = '[PY_EXEC_CANCELLED] Python execution was cancelled';
 let worker: Worker | undefined;
 let workerChatId: string | undefined;
+let workerEnvironmentId: string | undefined;
 let idleTimer: ReturnType<typeof setTimeout> | undefined;
 let queue: Promise<unknown> = Promise.resolve();
-const jobs = new Map<string, AbortController>();
-const scriptJobs = new Set<AbortController>();
-const SCRIPT_DISABLED = '[PY_SKILL_SCRIPTS_DISABLED] Skill script support is disabled or the Python runtime is unavailable';
-async function isSkillScriptSupportEnabled(): Promise<boolean> {
+const jobs = new Map<string, { controller: AbortController; environmentId: string }>();
+// Cancellation can arrive before the run message on a separate runtime channel.
+const cancelled = new Map<string, number>();
+const ENV_CHANGED = '[PY_ENV_NOT_READY] Python environment changed. Start a new run after installation.';
+
+/**
+ * 环境活性校验：宿主（offscreen）没有 storage 访问权，经后台应答确认
+ * environmentId 仍是当前环境且状态就绪，并顺带取回复用清单（网络已放开，
+ * 所有运行统一恢复）。授权语义不存在——技能授权只在 skill_tool 复制环节。
+ */
+async function assertCurrentPolicy(request: PythonHostRun, signal: AbortSignal): Promise<PythonHostPolicyResult> {
+  let result: PythonHostPolicyResult | undefined;
   try {
-    return await chrome.runtime.sendMessage({ type: PYTHON_HOST_SKILL_STATUS }) === true;
+    result = await chrome.runtime.sendMessage({
+      type: PYTHON_HOST_ENV_STATUS,
+      environmentId: request.state.environmentId,
+    });
   } catch {
-    return false;
+    throw new Error('[PY_CONTEXT_NOT_SUPPORTED] Could not verify the Python environment');
   }
+  signal.throwIfAborted();
+  if (result?.allowed !== true) throw new Error(ENV_CHANGED);
+  return result;
 }
-/** 环境删除请求到达但仍有任务在途：全部收尾后立即回收 Worker（不等 60s 空闲） */
-let resetPending = false;
 
 function releaseWorker(): void {
   worker?.terminate();
   worker = undefined;
   workerChatId = undefined;
-  resetPending = false;
+  workerEnvironmentId = undefined;
   clearTimeout(idleTimer);
 }
 
 function errorText(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error)).slice(0, 8000);
+  return errorDetails(error, 8000);
+}
+
+/**
+ * 运行请求的具名校验：任何一条不满足都以 [PY_INVALID_REQUEST] + 具体原因
+ * 应答（替代过去不可诊断的整块拒绝，契约偏斜时一眼定位到字段）。
+ */
+function invalidRequestReason(message: unknown): string | undefined {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return 'request must be an object';
+  const request = message as Partial<PythonHostRun> & Record<string, unknown>;
+  if (typeof request.id !== 'string' || !request.id || request.id.length > 128) {
+    return 'id must be a nonempty string of at most 128 characters';
+  }
+  if (jobs.has(request.id)) return 'duplicate request id';
+  if (typeof request.chatId !== 'string' || !request.chatId || request.chatId.length > 255) {
+    return 'chatId must be a nonempty string of at most 255 characters (all runs are workspace-bound)';
+  }
+  if (Object.keys(request).some(key => !['type', 'id', 'chatId', 'script', 'scriptDependencyApproved', 'timeoutMs', 'state'].includes(key))) return 'request contains unknown fields';
+  if (request.scriptDependencyApproved !== undefined && request.scriptDependencyApproved !== true) return 'scriptDependencyApproved must be true when present';
+  if (!request.script || typeof request.script !== 'object' || Array.isArray(request.script)) {
+    return 'script is required';
+  }
+  const state = request.state as PythonHostRun['state'] | undefined;
+  if (state?.status !== 'ready') return 'state.status must be "ready"';
+  if (!Array.isArray(state.packages)) return 'state.packages must be an array';
+  if (typeof state.environmentId !== 'string' || !/^[a-z0-9-]{1,64}$/i.test(state.environmentId)) {
+    return 'state.environmentId is missing or malformed';
+  }
+  if (!state.packages.every(pkg => typeof pkg?.name === 'string' && pkg.name.length <= 128)) {
+    return 'state.packages entries are malformed';
+  }
+  const timeoutMs = request.timeoutMs;
+  if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs) || timeoutMs < 1_000 ||
+      timeoutMs > PYTHON_RUN_MAX_TIMEOUT_MS) {
+    return `timeoutMs must be a finite number between 1000 and ${PYTHON_RUN_MAX_TIMEOUT_MS}`;
+  }
+  return undefined;
 }
 
 function dispatch(input: PythonWorkerRun, signal: AbortSignal): Promise<PythonWorkerResult> {
   signal.throwIfAborted();
   clearTimeout(idleTimer);
-  if (worker && (workerChatId !== input.chatId || input.script)) releaseWorker();
+  // 温复用：同一会话 + 同一环境共享 Worker（解释器级状态跨运行残留与历史
+  // 内联行为一致；工作区 MEMFS 每次运行独立挂载不受影响）。仅在会话/环境
+  // 切换或运行时被判定损坏时回收。
+  if (worker && (workerChatId !== input.chatId || workerEnvironmentId !== input.state.environmentId)) {
+    releaseWorker();
+  }
   const target = worker ??= new PythonWorker();
   workerChatId = input.chatId;
+  workerEnvironmentId = input.state.environmentId;
 
   return new Promise<PythonWorkerResult>((resolve, reject) => {
     const channel = new MessageChannel();
@@ -73,7 +129,8 @@ function dispatch(input: PythonWorkerRun, signal: AbortSignal): Promise<PythonWo
         fail(new Error('Python worker returned an invalid response'));
         return;
       }
-      cleanup(!!input.script || ('error' in result && result.error.startsWith(`[${PY_ERR_WORKSPACE_RUNTIME}]`)));
+      // 工作区运行时损坏（挂载/清理失败）必须整机回收，防脏状态污染后续运行
+      cleanup('error' in result && result.error.startsWith(`[${PY_ERR_WORKSPACE_RUNTIME}]`));
       resolve(result);
     };
     target.onerror = event => {
@@ -90,87 +147,94 @@ function dispatch(input: PythonWorkerRun, signal: AbortSignal): Promise<PythonWo
 }
 
 async function run(request: PythonHostRun, signal: AbortSignal): Promise<PythonHostResult> {
-  const { code, script, chatId, timeoutMs, state } = request;
-  // 读取 micropip 复用清单传给 worker（worker 无 chrome 访问权）。
-  // 脚本模式不传：脚本有独立依赖通道（requirements/wheels/pypi 授权），且其 fetch 受限。
-  // 读取永不抛错（失败回退空清单 = 本次不恢复，不阻断执行）。
-  const micropipManifest = script ? undefined : await readMicropipManifest();
-  const input: PythonWorkerRun = { code, script, chatId, timeoutMs, state, micropipManifest };
-  if (chatId === undefined) {
-    const result = await dispatch(input, signal);
-    return 'error' in result ? { error: result.error } : { outcome: result.outcome };
-  }
+  const { script, chatId, timeoutMs, state } = request;
+  const input: PythonWorkerRun = { script, chatId, timeoutMs, state };
+  const runAuthorized = async (snapshot?: WorkspaceSnapshot) => {
+    const policy = await assertCurrentPolicy(request, signal);
+    // 策略应答跨消息边界：清单逐条形态校验后再入 worker（畸形条目静默丢弃，
+    // 绝不让坏数据进入恢复流程）
+    const manifest = Array.isArray(policy.micropipManifest)
+      ? policy.micropipManifest.filter(isMicropipPackage)
+      : [];
+    return dispatch({ ...input, snapshot, micropipManifest: manifest.length ? manifest : undefined }, signal);
+  };
   try {
     return await withWorkspaceLock(chatId, async () => {
-      if (script && !await isSkillScriptSupportEnabled()) return { error: SCRIPT_DISABLED };
       const snapshot = await chatDatabase.readWorkspace(chatId, signal);
-      const result = await dispatch({ ...input, snapshot }, signal);
-      if ('error' in result) return { error: result.error };
-      if (result.outcome.ok && !script?.preflight) {
-        if (script && !await isSkillScriptSupportEnabled()) return { error: SCRIPT_DISABLED };
-        if (!Array.isArray(result.entries)) throw new Error('Python did not return a workspace snapshot');
-        await saveWorkspace(chatId, snapshot?.revision, result.entries, signal);
-        result.outcome.workspaceOutputs = workspaceOutputPaths(result.entries);
+      const result = await runAuthorized(snapshot);
+      if ('error' in result) {
+        await assertCurrentPolicy(request, signal);
+        return { error: result.error };
+      }
+      if (result.outcome.ok && !script.preflight) {
+        const entries = result.entries;
+        if (!Array.isArray(entries)) throw new Error('Python did not return a workspace snapshot');
+        await withPyodideEnvLock(async () => {
+          await assertCurrentPolicy(request, signal);
+          await saveWorkspace(chatId, snapshot?.revision, entries, signal);
+        }, signal);
+        result.outcome.workspaceOutputs = workspaceOutputPaths(entries);
+      } else {
+        await assertCurrentPolicy(request, signal);
       }
       return { outcome: result.outcome };
     }, signal);
   } catch (error) {
     if (signal.aborted) throw signal.reason;
-    return { error: `[${PY_ERR_WORKSPACE}] ${errorText(error)}` };
+    const message = errorText(error);
+    return { error: /^\[PY_[A-Z_]+\]/.test(message) ? message : `[${PY_ERR_WORKSPACE}] ${message}` };
   }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
-  if (sender.id !== chrome.runtime.id) return false;
-  // The management hub is an extension page and can itself be open in a tab.
-  if (sender.tab && (message?.type !== PYTHON_HOST_RESET ||
-      !sender.url?.startsWith(chrome.runtime.getURL('')))) return false;
-  if (message?.type === PYTHON_HOST_SKILL_REVOKED) {
-    for (const job of scriptJobs) job.abort(new Error(SCRIPT_DISABLED));
-    respond(true);
-    return false;
-  }
-  // 环境删除广播：立即回收空闲 Worker；有任务在途则等全部收尾后回收
-  // （不打断在途执行——环境状态已回落 idle，新请求会在下方校验处被拒）
+  if (sender.id !== chrome.runtime.id || sender.tab) return false;
   if (message?.type === PYTHON_HOST_RESET) {
-    if (jobs.size > 0) resetPending = true;
-    else releaseWorker();
+    if (typeof message.environmentId !== 'string') return false;
+    for (const job of jobs.values()) {
+      if (job.environmentId === message.environmentId) job.controller.abort(new Error(ENV_CHANGED));
+    }
+    if (workerEnvironmentId === message.environmentId) releaseWorker();
     respond(true);
     return false;
   }
   if (typeof message?.id !== 'string' || !message.id || message.id.length > 128) return false;
   if (message.type === PYTHON_HOST_CANCEL) {
-    jobs.get(message.id)?.abort(new Error(CANCELLED));
+    const job = jobs.get(message.id);
+    if (job) job.controller.abort(new Error(CANCELLED));
+    else {
+      for (const [id, expires] of cancelled) if (expires <= Date.now()) cancelled.delete(id);
+      if (cancelled.size >= 128) cancelled.delete(cancelled.keys().next().value!);
+      cancelled.set(message.id, Date.now() + 60_000);
+    }
     respond(true);
     return false;
   }
   if (message.type !== PYTHON_HOST_RUN) return false;
-  const request: PythonHostRun = { ...message };
-  if (jobs.has(request.id) || typeof request.code !== 'string' ||
-      (request.script === undefined ? !request.code.trim() : !!request.code || !request.chatId) ||
-      request.code.length > PYODIDE_MAX_CODE_LENGTH ||
-      (request.chatId !== undefined && (typeof request.chatId !== 'string' || !request.chatId || request.chatId.length > 255)) ||
-      request.state?.status !== 'ready' || !Array.isArray(request.state.packages) ||
-      !request.state.packages.every(pkg => typeof pkg?.name === 'string' && pkg.name.length <= 128) ||
-      !Number.isFinite(request.timeoutMs) || request.timeoutMs < 1_000 || request.timeoutMs > PYTHON_RUN_MAX_TIMEOUT_MS) {
-    respond({ error: 'Invalid Python execution request' });
+  const cancellationExpires = cancelled.get(message.id);
+  cancelled.delete(message.id);
+  if (cancellationExpires && cancellationExpires > Date.now()) { respond({ error: CANCELLED }); return false; }
+  const reason = invalidRequestReason(message);
+  if (reason) {
+    respond({ error: `[PY_INVALID_REQUEST] ${reason}` });
     return false;
   }
-  if (request.script !== undefined) {
-    try {
-      request.script = parsePythonScriptRequest(request.script);
-    } catch (error) {
-      respond({ error: '[PY_INVALID_SCRIPT] ' + errorText(error) });
-      return false;
-    }
+  const request: PythonHostRun = { ...message };
+  try {
+    request.script = parsePythonScriptRequest(request.script);
+  } catch (error) {
+    respond({ error: '[PY_INVALID_SCRIPT] ' + errorText(error) });
+    return false;
+  }
+  if (request.script.dependencyMode === 'pypi' && !request.script.preflight && request.scriptDependencyApproved !== true) {
+    respond({ error: '[PY_DEPENDENCY_APPROVAL_REQUIRED] Public PyPI installation requires chat approval' });
+    return false;
   }
   if (jobs.size >= MAX_JOBS) {
     respond({ error: '[PY_HOST_BUSY] Too many Python requests are pending. Retry after the current runs finish.' });
     return false;
   }
   const controller = new AbortController();
-  jobs.set(request.id, controller);
-  if (request.script) scriptJobs.add(controller);
+  jobs.set(request.id, { controller, environmentId: request.state.environmentId });
   let started = false;
   let replied = false;
   const reply = (result: PythonHostResult) => {
@@ -195,9 +259,6 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       clearTimeout(timer);
       signal.removeEventListener('abort', abortPending);
       jobs.delete(request.id);
-      scriptJobs.delete(controller);
-      // 环境删除在途：最后一个任务收尾后立即回收，不让旧包残留进入重装后的运行
-      if (resetPending && jobs.size === 0) releaseWorker();
     }
   });
   return true;

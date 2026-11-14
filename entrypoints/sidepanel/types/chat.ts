@@ -44,6 +44,8 @@ export interface CompactionPartState {
   error?: string;
   /** 压缩耗时（毫秒；结算时写入） */
   durationMs?: number;
+  toolRounds?: number;
+  completionStatus?: string;
   /** 用户展开/收起意图（与 ToolCallUI.expanded 同语义） */
   expanded?: boolean;
 }
@@ -63,6 +65,16 @@ export interface MessagePart {
   compaction?: CompactionPartState;
   /** 仅用于 image 类型：图片内容哈希（本体在独立图片库，片段只持引用） */
   imageRef?: string;
+  /**
+   * 仅用于 notice 类型：可交互语义。
+   * - 'guard-stop'：循环守卫停止说明（轮次 / 时长上限未确认继续），
+   *   渲染层据此提供「继续 / 修改设置」操作；
+   * - 缺省 = 普通系统注记，仅展示文本。
+   * 该字段随 record.parts 持久化，历史会话重载后操作入口仍可还原。
+   */
+  noticeAction?: 'guard-stop';
+  /** 仅用于 notice（noticeAction='guard-stop'）：触发停止的守卫类型（设置定位用） */
+  guardKind?: 'max-iterations' | 'max-duration' | 'tool-failures';
   /** 仅用于 reasoning 类型：是否处于收起状态 */
   collapsed?: boolean;
   /**
@@ -96,6 +108,8 @@ export type MessageFeedback = 'up' | 'down';
  * 扩展聊天消息类型
  */
 export interface ExtendedChatMessage extends ChatMessage {
+  toolRounds?: number;
+  completionStatus?: string;
   id?: string;
   timestamp?: number;
   parts?: MessagePart[];

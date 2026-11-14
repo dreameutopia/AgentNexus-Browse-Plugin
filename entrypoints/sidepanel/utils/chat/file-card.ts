@@ -1,23 +1,19 @@
 /**
- * 聊天文件卡片：[file:ID|文件名] 标记 → 可下载文件卡片
+ * 聊天文件卡片：当前会话的 workspace-file 标记 → 可下载文件卡片
  *
  * 组成：
  * - 文件标记在 Markdown 语法层识别，避免在链接属性或代码中注入卡片；
  * - installFileCardHandler()：document 级事件委托（点击/键盘），解析文件并触发下载，
  *   覆盖聊天列表、历史抽屉等一切经 markdown 渲染输出卡片的容器。
  *
- * 文件解析顺序：fileManager 内存缓存 → chrome.storage 兜底
- * （文件可能由 background 上下文写入，本上下文的内存表尚未包含）。
+ * 点击后按需读取当前会话工作区的 outputs/ 文件。
  */
 
-import { fileManager, type ManagedFile } from '@/utils/file-manager';
 import { escapeHtml } from './html-escape';
 import { isWorkspaceOutput } from '@/utils/python-workspace/paths';
 import { readWorkspaceOutput } from '@/utils/python-workspace/store';
 import type MarkdownIt from 'markdown-it';
 
-/** 文件标记：[file:8位ID] 或 [file:8位ID|文件名]（ID 字符集与 fileManager 一致） */
-const FILE_MARKER_RE = /\[file:([A-Za-z0-9]{8})(?:\|([^[\]<>\r\n]{1,120}))?\]/g;
 const WORKSPACE_TAG_RE = /<workspace-file[ \t]+path=(?:"([^"<>\r\n]{1,12288})"|'([^'<>\r\n]{1,12288})')[ \t]*\/>/g;
 
 export function protectWorkspaceFileTags(source: string, protect: (tag: string) => string): string {
@@ -65,25 +61,17 @@ function cardHtml(attributes: string, safeName: string, icon: string): string {
   );
 }
 
-function buildCardHtml(fileId: string, displayName?: string): string {
-  const safeName = escapeHtml(decodeHtmlEntities(displayName ?? '').trim() || `文件 ${fileId}`);
-  const attrs = `data-file-id="${fileId}"` + (displayName ? ` data-file-name="${safeName}"` : '');
-  return cardHtml(attrs, safeName, XLSX_ICON_SVG);
+function buildWorkspaceCardHtml(path: string, chatId: string): string {
+  const name = escapeHtml(path.slice(path.lastIndexOf('/') + 1));
+  const attrs = `data-workspace-path="${escapeHtml(path)}" data-workspace-chat="${escapeHtml(chatId)}"`;
+  return cardHtml(attrs, name, /\.xlsx$/i.test(path) ? XLSX_ICON_SVG : FILE_ICON_SVG);
 }
 
 /** Only recognize file references as text tokens. Raw HTML remains disabled. */
 export function installFileCardSyntax(md: MarkdownIt): void {
   const tag = new RegExp('^' + WORKSPACE_TAG_RE.source);
-  const legacy = new RegExp('^' + FILE_MARKER_RE.source);
   md.inline.ruler.before('link', 'file_card', (state, silent) => {
     if (silent || (state as typeof state & { linkLevel: number }).linkLevel > 0) return false;
-    if (state.src.startsWith('[file:', state.pos)) {
-      const match = legacy.exec(state.src.slice(state.pos, Math.min(state.posMax, state.pos + 136)));
-      if (!match) return false;
-      state.push('legacy_file', '', 0).meta = { id: match[1], name: match[2] };
-      state.pos += match[0].length;
-      return true;
-    }
     if (typeof state.env?.workspaceChatId !== 'string' || !state.env.workspaceChatId ||
         !state.src.startsWith('<workspace-file', state.pos)) return false;
     const match = tag.exec(state.src.slice(state.pos, Math.min(state.posMax, state.pos + 12350)));
@@ -94,31 +82,28 @@ export function installFileCardSyntax(md: MarkdownIt): void {
     state.pos += match[0].length;
     return true;
   });
-  md.renderer.rules.legacy_file = (tokens, index) => {
-    const { id, name } = tokens[index].meta;
-    return buildCardHtml(id, name);
-  };
-  md.renderer.rules.workspace_file = (tokens, index, _options, env) => {
-    const path = tokens[index].content;
-    const name = escapeHtml(path.slice(path.lastIndexOf('/') + 1));
-    const attrs = `data-workspace-path="${escapeHtml(path)}" data-workspace-chat="${escapeHtml(env.workspaceChatId)}"`;
-    return cardHtml(attrs, name, FILE_ICON_SVG);
-  };
+  md.renderer.rules.workspace_file = (tokens, index, _options, env) =>
+    buildWorkspaceCardHtml(tokens[index].content, env.workspaceChatId);
 }
 
-/** Fallback for callers that disable Markdown. Its input is escaped text. */
-export function renderPlainFileCards(escapedText: string): string {
-  return escapedText.replace(FILE_MARKER_RE, (_match, id: string, name?: string) => buildCardHtml(id, name));
+/** Plain-text rendering follows the same file protocol, with all other text escaped. */
+export function renderPlainFileCards(text: string, chatId?: string): string {
+  const marker = new RegExp(WORKSPACE_TAG_RE.source, 'g');
+  let result = '', offset = 0;
+  for (const match of text.matchAll(marker)) {
+    result += escapeHtml(text.slice(offset, match.index));
+    {
+      const path = decodeHtmlEntities(match[1] ?? match[2]);
+      if (chatId && isWorkspaceOutput(path)) {
+        result += buildWorkspaceCardHtml(path, chatId);
+      } else result += escapeHtml(match[0]);
+    }
+    offset = match.index! + match[0].length;
+  }
+  return result + escapeHtml(text.slice(offset));
 }
 
 // ──────────────────────────── 下载（事件委托） ────────────────────────────
-
-/** 解析文件记录：内存缓存 → chrome.storage 兜底（跨上下文写入场景） */
-async function resolveFile(fileId: string): Promise<ManagedFile | null> {
-  const cached = await fileManager.getFile(fileId);
-  if (cached) return cached;
-  return typeof chrome !== 'undefined' && chrome.storage?.local ? fileManager.getStoredFile(fileId) : null;
-}
 
 function setHint(card: HTMLElement, text: string): void {
   const hint = card.querySelector('.file-card-hint');
@@ -134,15 +119,14 @@ function backfillName(card: HTMLElement, name: string): void {
 }
 
 async function handleCardClick(card: HTMLElement): Promise<void> {
-  const fileId = card.dataset.fileId;
   const { workspaceChat, workspacePath } = card.dataset;
-  if ((!fileId && !(workspaceChat && workspacePath)) || card.classList.contains('is-downloading')) return;
+  if (!(workspaceChat && workspacePath) || card.classList.contains('is-downloading')) return;
 
   card.classList.add('is-downloading');
   card.classList.remove('is-missing', 'is-done');
   setHint(card, '下载中…');
   try {
-    const file = await resolveDownload(fileId, workspaceChat, workspacePath);
+    const file = await resolveDownload(workspaceChat, workspacePath);
     if (!file) {
       card.classList.remove('is-downloading');
       card.classList.add('is-missing');
@@ -181,17 +165,9 @@ async function handleCardClick(card: HTMLElement): Promise<void> {
 }
 
 async function resolveDownload(
-  fileId?: string,
   chatId?: string,
   path?: string,
 ): Promise<{ name: string; blob: Blob } | null> {
-  if (fileId) {
-    const record = await resolveFile(fileId);
-    return record ? {
-      name: record.name,
-      blob: new Blob([record.content], { type: record.type || 'application/octet-stream' }),
-    } : null;
-  }
   if (!chatId || !path) return null;
   const blob = await readWorkspaceOutput(chatId, path);
   return blob ? { name: path.slice(path.lastIndexOf('/') + 1), blob } : null;

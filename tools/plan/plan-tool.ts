@@ -134,6 +134,9 @@ export class PlanTool extends BaseTool {
     // 全部操作均为会话内可逆状态变更，无需人审
     // 会话内存数据操作，不触碰页面：视觉循环无需重拍
     noVisionRecapture: true,
+    // 零成本状态工具：运行时长上限到达后仍放行——否则模型无法把已完成的
+    // 步骤标注为 done，计划状态与真实进度脱节（见 registry 的准入语义）
+    zeroCostStateTool: true,
   };
 
   openaiSchema: OpenAITool = {

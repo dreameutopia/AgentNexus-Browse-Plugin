@@ -17,8 +17,6 @@ export const ICONS = {
 // Timeouts and Delays (in milliseconds)
 export const TIMEOUTS = {
   DEFAULT_WAIT: 1000,
-  NETWORK_CAPTURE_MAX: 30000,
-  NETWORK_CAPTURE_IDLE: 3000,
   SCREENSHOT_DELAY: 100,
   KEYBOARD_DELAY: 50,
   CLICK_DELAY: 100,
@@ -26,6 +24,7 @@ export const TIMEOUTS = {
 
 // Limits and Thresholds
 export const LIMITS = {
+  /** browser_network_capture 单轮请求上限（工具描述与提示词引用同一数字） */
   MAX_NETWORK_REQUESTS: 100,
   MAX_SEARCH_RESULTS: 50,
   MAX_BOOKMARK_RESULTS: 100,
@@ -154,18 +153,13 @@ export const TOOL_NAMES = {
     // Navigation tools（统一导航：open/refresh/back/forward/wait 五 action）
     NAVIGATION: 'browser_navigation',
     
-    // History tools
-    HISTORY_SEARCH: 'browser_search_history',
-    
+    // 历史与书签统一工具（检索/打开/增删改/最近访问/最常访问/文件夹结构，八 action）
+    HISTORY_BOOKMARKS: 'browser_history_bookmarks',
+
     // Content tools
     CONTENT_GET: 'browser_get_page_text',
 
-    // Bookmark tools
-    BOOKMARK_CREATE: 'browser_bookmark_create',
-    BOOKMARK_SEARCH: 'browser_search_bookmarks',
-    BOOKMARK_DELETE: 'browser_bookmark_delete',
-    
-    // Content tools (extended)
+    // 内容工具（extended）：跨标签页正文检索（真实实现：读页面文本并按命中排序）
     SEARCH_TABS_CONTENT: 'browser_vector_search',
 
     // Interaction tools (extended)
@@ -173,9 +167,8 @@ export const TOOL_NAMES = {
     // Capture tools (extended)
     CONSOLE: 'browser_console',
     
-    // Page operation tools
-    SCROLL: 'browser_scroll',
-    WAIT_FOR_ELEMENT: 'browser_wait_for_element',
+    // 轻量页面操作（按屏滚动 / 等待元素出现，无需 DOM 引用）
+    PAGE_OPS: 'browser_page_ops',
     SET_ZOOM: 'browser_set_zoom',
     
     // Tab management tools（统一标签页与窗口：list/switch/close/create/windows 五 action）

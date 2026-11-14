@@ -204,6 +204,7 @@ export type SectionSummary = { key: MessageKey; params: Record<string, number> }
 
 /** 技能分区载荷 */
 export interface SkillsPayload {
+  lifecycle?: Record<string, unknown>;
   /** 自定义技能数组（StoredSkill[]） */
   custom: unknown[];
   /** 预置技能启停覆盖（skillId → enabled） */

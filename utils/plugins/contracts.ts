@@ -2,7 +2,21 @@ import { z } from 'zod';
 import { valid, validRange } from 'semver';
 
 export const PLUGIN_PROTOCOL = 'agentnexus.plugins.v1';
-export const PLUGIN_API_VERSION = '1.0.0';
+/**
+ * 宿主公共插件 API 版本。
+ *
+ * 1.2.0：强制规范包布局（tools/、skills/、agents/）、全类型贡献 ID 唯一、
+ * 智能体仅可引用 builtin 与本插件资源。旧布局包会在导入/更新时被明确拒绝，
+ * 不会以“兼容”名义进入目录。
+ */
+export const PLUGIN_API_VERSION = '1.2.0';
+
+/** 规范贡献入口路径（Plugin API 1.2），导入与启动对账共用同一口径 */
+export const canonicalContributionPath = (
+  kind: 'tools' | 'skills' | 'agents',
+  id: string,
+): string =>
+  kind === 'skills' ? `skills/${id}/SKILL.md` : `${kind}/${id}.json`;
 export const LIMITS = Object.freeze({
   archive: 10 * 1024 ** 2,
   expanded: 30 * 1024 ** 2,
@@ -15,12 +29,15 @@ export const LIMITS = Object.freeze({
   backup: 32 * 1024 ** 2,
 });
 export class PluginError extends Error {
+  /** 可读的精准原因（操作日志与 UI 诊断直接使用，不再从 message 反解析） */
+  public readonly detail: string;
   constructor(
     public readonly code: string,
     detail = code,
   ) {
     super(`${code}: ${detail}`);
     this.name = 'PluginError';
+    this.detail = detail;
   }
 }
 export function invariant(
@@ -51,6 +68,33 @@ export const versionSchema = z
     (v) => !!valid(v) && !v.includes('+'),
     'Use SemVer without build metadata',
   );
+/** 网络能力必须声明为 https 源（origin），导入期与执行期才能做精确比对 */
+const networkOrigin = z
+  .string()
+  .max(512)
+  .refine((value) => {
+    try {
+      const url = new URL(value);
+      return (
+        url.protocol === 'https:' &&
+        !url.username &&
+        !url.password &&
+        !url.search &&
+        !url.hash &&
+        url.origin === value
+      );
+    } catch {
+      return false;
+    }
+  }, 'Use an https origin without path, credentials, query or hash');
+const uniqueList = <T extends z.ZodTypeAny>(item: T, max: number) =>
+  z
+    .array(item)
+    .max(max)
+    .refine(
+      (items) => new Set(items as unknown[]).size === items.length,
+      'Duplicate entries are not allowed',
+    );
 const entry = z.object({ id: slug, path: z.string().min(1).max(240) }).strict();
 export const manifestSchema = z
   .object({
@@ -71,9 +115,9 @@ export const manifestSchema = z
     repository: z.string().url().max(512).optional(),
     capabilities: z
       .object({
-        network: z.array(z.string().url().max(512)).max(20).default([]),
-        hostTools: z.array(ref).max(100).default([]),
-        secretSlots: z.array(slug).max(10).default([]),
+        network: uniqueList(networkOrigin, 20).default([]),
+        hostTools: uniqueList(ref, 100).default([]),
+        secretSlots: uniqueList(slug, 10).default([]),
       })
       .strict(),
     contributes: z
@@ -94,7 +138,6 @@ export const manifestSchema = z
       })
       .strict(),
     dependencies: z.record(range).default({}),
-    optionalDependencies: z.record(range).default({}),
   })
   .strict();
 export const toolSchema = z
@@ -115,6 +158,28 @@ export const toolSchema = z
     ]),
   })
   .strict();
+/**
+ * 插件智能体头像：只接受 emoji 或远端/data 图片。
+ * 不接受扩展内相对路径——插件包内的 assets 不会成为宿主可解析的页面资源，
+ * 允许它会让配置看起来合法、实际渲染成空白。
+ */
+const avatarSchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('image'),
+      src: z
+        .string()
+        .min(1)
+        .max(1_500_000)
+        .refine(
+          (value) =>
+            value.startsWith('https://') || value.startsWith('data:image/'),
+          'Avatar image must be an https: or data:image URL',
+        ),
+    })
+    .strict(),
+  z.object({ type: z.literal('emoji'), value: z.string().min(1).max(16) }).strict(),
+]);
 export const agentSchema = z
   .object({
     name: z.string().min(1).max(32),
@@ -124,16 +189,29 @@ export const agentSchema = z
     skills: z.array(ref).max(20).default([]),
     category: z.string().max(24).default('general'),
     tags: z.array(z.string().max(16)).max(8).default([]),
+    avatar: avatarSchema.optional(),
+    capabilities: z
+      .object({
+        richComponents: z
+          .array(z.string().max(40).regex(/^[a-z][a-z0-9-]*$/))
+          .max(16)
+          .optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type PluginManifest = z.infer<typeof manifestSchema>;
 export type PluginTool = z.infer<typeof toolSchema> & {
   id: string;
   ref: string;
+  /** 包内规范入口路径，用于启动对账复核 1.2 布局 */
+  path: string;
 };
 export interface PluginSkill {
   id: string;
   ref: string;
+  path: string;
   name: string;
   description: string;
   body: string;
@@ -146,6 +224,8 @@ export interface PluginSkill {
 export type PluginAgent = z.infer<typeof agentSchema> & {
   id: string;
   ref: string;
+  /** 包内规范入口路径，用于启动对账复核 1.2 布局 */
+  path: string;
 };
 export interface VerifiedPlugin {
   key: string;
@@ -165,7 +245,28 @@ export interface InstalledPlugin extends VerifiedPlugin {
   epoch: number;
   installedAt: number;
   source?: GithubSource;
+  /** 运行时阻塞原因（依赖缺失、引用失效等，由目录可用性计算派生） */
   blocked?: string;
+  /**
+   * 启动对账隔离原因（宿主不兼容、快照损坏、安装包缺失等）。
+   * 与 blocked 分开持久化：blocked 每次由依赖图重算，quarantined 是“这份安装
+   * 本身不可信”的持久结论，重算不能把它覆盖掉。quarantined 的插件不注册任何
+   * 工具/Skill/智能体，但保留记录供用户诊断和卸载。
+   */
+  quarantined?: string;
+}
+/**
+ * 持久化视图：`blocked` 是依赖图每次重算的派生值，不写入 IndexedDB，
+ * 避免陈旧状态与“同一次启动因派生字段不同而重复提交”。
+ */
+export function persistedPackages(
+  packages: InstalledPlugin[],
+): InstalledPlugin[] {
+  return packages.map((plugin) => {
+    const copy = { ...plugin };
+    delete copy.blocked;
+    return copy;
+  });
 }
 export interface PluginSnapshot {
   generation: number;
@@ -195,33 +296,27 @@ export function validatePluginKey(key: string): void {
     key,
   );
 }
-export function resolveRef(
-  value: string,
-  key: string,
-  dependencies: Record<string, string>,
-): string {
+/**
+ * 解析插件内引用。Plugin API 1.2 只允许两种形态：
+ *   - `./<local-id>`：本插件的工具/技能/智能体；
+ *   - `builtin/<host-tool>`：显式公开的宿主工具。
+ * 跨插件引用在验包期即被拒绝，因此这里不再接受带依赖声明的完整 ref。
+ */
+export function resolveRef(value: string, key: string): string {
   if (value.startsWith('./')) {
+    const local = value.slice(2);
     invariant(
-      slug.safeParse(value.slice(2)).success ||
-        /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value.slice(2)),
+      slug.safeParse(local).success ||
+        /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(local),
       'INVALID_REF',
+      value,
     );
-    return `${key}/${value.slice(2)}`;
+    return `${key}/${local}`;
   }
-  if (/^builtin\/[a-zA-Z0-9_-]+$/.test(value)) return value;
-  const owner = ownerOf(value);
-  validatePluginKey(owner);
   invariant(
-    value.split('/').length === 3 &&
-      value.length <= 256 &&
-      /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value.split('/')[2]),
+    /^builtin\/[a-z][a-z0-9_]*$/.test(value),
     'INVALID_REF',
-    value,
-  );
-  invariant(
-    owner === key || Object.hasOwn(dependencies, owner),
-    'UNDECLARED_DEPENDENCY',
-    owner,
+    `${value} — use ./<local-id> or builtin/<host-tool>`,
   );
   return value;
 }

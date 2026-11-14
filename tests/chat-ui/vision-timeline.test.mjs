@@ -27,7 +27,7 @@ function visit(node) {
   ts.forEachChild(node, visit);
 }
 visit(ast);
-const functions = ['ensureAssistantMessage', 'applyUiRefresh', 'refreshUiMessage', 'recordMetaOf', 'handleConversationEvent'];
+const functions = ['ensureAssistantMessage', 'applyUiRefresh', 'refreshUiMessage', 'recordMetaOf', 'recordToUiMessage', 'handleConversationEvent'];
 for (const name of functions) assert.ok(initializers.has(name), `App.vue 必须存在 ${name}`);
 
 // 片段流装配的真实实现（占位转真实消息要保留首截图片段）
@@ -209,6 +209,25 @@ adapter.event({ type: 'assistant-start', chatId, messageId: failedSeedId });
 const failedSeed = bindings.messages.value.find(item => item.id === failedSeedId);
 assert.equal(failedSeed.parts[0].compaction.status, 'error');
 assert.equal(failedSeed.parts[0].compaction.error, '压缩请求失败: 超时');
+
+// Retry must replace its own row and seed from the persisted partial answer.
+const retryRecord = { id: 'retry-row', role: 'assistant', content: 'partial<api-error>first</api-error>',
+  parts: [{ type: 'text', content: 'partial<api-error>first</api-error>' }], toolCalls: [], reasoning: '', createdAt: 1, usage: { durationMs: 30 } };
+bindings.messages.value = [{ ...retryRecord }];
+bindings.pendingUiRefresh.set(retryRecord.id, { id: retryRecord.id, content: 'stale frame' });
+adapter.event({ type: 'assistant-start', chatId, messageId: retryRecord.id, record: structuredClone(retryRecord) });
+await flush();
+assert.equal(bindings.messages.value.length, 1, 'retry has only one assistant row');
+assert.equal(bindings.messages.value[0].content, retryRecord.content);
+assert.equal(bindings.messages.value[0].isThinking, false, 'thinking conversion must not clear previous output');
+adapter.event({ type: 'token', chatId, messageId: retryRecord.id, delta: 'continued' });
+await flush();
+assert.equal(bindings.messages.value[0].content, retryRecord.content + 'continued');
+adapter.event({ type: 'assistant-error', chatId, messageId: retryRecord.id, error: '<api-error>second</api-error>', durationMs: 60 });
+await flush();
+assert.equal(bindings.messages.value.length, 1);
+assert.equal((bindings.messages.value[0].content.match(/<api-error>/g) ?? []).length, 2);
+assert.equal(bindings.messages.value[0].durationMs, 60);
 
 dom.window.close();
 console.log('[vision-timeline] App 事件适配器：首截图按序内联、工具后重截图紧跟其轮次、终态不失位、压缩时间线条目（运行中 + 发送前种子）。');

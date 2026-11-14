@@ -315,32 +315,6 @@
       <p class="hub-hint">{{ t('hub.python.pkgSourceNote') }}</p>
     </section>
 
-    <section v-if="env.status === 'ready'" class="hub-python__card">
-      <div class="hub-python__card-head">
-        <div class="hub-python__skill-title">
-          <button
-            type="button"
-            class="hub-help-tip"
-            :aria-label="t('hub.python.skillScriptsHelpLabel')"
-            :aria-expanded="skillScriptsHelp"
-            aria-controls="python-skill-scripts-help"
-            @click="skillScriptsHelp = !skillScriptsHelp"
-          >?</button>
-          <h3 id="python-skill-scripts-title" class="hub-python__card-title">{{ t('hub.python.skillScriptsTitle') }}</h3>
-        </div>
-        <HubSwitch
-          :model-value="env.skillScriptsEnabled"
-          :disabled="skillScriptsBusy || removeEnvDialog.busy || verifying"
-          :aria-label="t('hub.python.skillScriptsTitle')"
-          @update:model-value="toggleSkillScripts"
-        />
-      </div>
-      <p class="hub-hint">{{ t(env.skillScriptsEnabled ? 'hub.python.skillScriptsOn' : 'hub.python.skillScriptsOff') }}</p>
-      <p v-show="skillScriptsHelp" id="python-skill-scripts-help" class="hub-python__notice">
-        {{ t('hub.python.skillScriptsHelp') }}
-      </p>
-    </section>
-    <p v-if="skillScriptsError" class="hub-hint" role="alert">{{ skillScriptsError }}</p>
 
     <!-- ══════════ micropip 复用设置（就绪后显示） ══════════ -->
     <section v-if="env.status === 'ready'" class="hub-python__card hub-python__micropip">
@@ -496,8 +470,9 @@
  *   「Python 计算」组可用性的唯一开关
  * - 包管理：锁文件目录（随扩展打包的 pyodide-lock.json）驱动，
  *   installPackages / uninstallPackages（wheel 经缓存层，sha256 校验）
- * - 测试运行台：与 python_run 工具完全同一执行管线（runPythonCode），
- *   在此验证的效果即智能体实际使用的效果
+ * - 测试运行台：与 python_run 工具共享同一 Pyodide 运行时与包管理
+ *   （本页为内联直跑 runPythonCode；工具侧为工作区脚本 create/run 管线），
+ *   在此验证的运行时行为即智能体实际使用的行为
  *
  * 与原「设置弹窗 · Python 环境」的差异（只增不减）：
  *   - 视觉整体换成管理中心的液态玻璃卡片（中性黑白灰，无任何蓝紫）；
@@ -525,9 +500,9 @@ import { downloadPyodideFile, preloadWheels, type PreloadItem } from '@/utils/py
 import { listFileMeta } from '@/utils/pyodide/pyodide-cache';
 import {
   DEFAULT_PYODIDE_ENV_STATE,
+  beginPyodideSetup,
   getPyodideEnvState,
-  setSkillScriptsEnabled,
-  updatePyodideEnvState,
+  updatePyodideEnvIfCurrent,
   watchPyodideEnv,
   type PyodideEnvState,
 } from '@/utils/pyodide/pyodide-env';
@@ -558,23 +533,6 @@ const props = defineProps<{
 // ──── 状态 ────
 
 const env = ref<PyodideEnvState>({ ...DEFAULT_PYODIDE_ENV_STATE });
-const skillScriptsHelp = ref(false);
-const skillScriptsBusy = ref(false);
-const skillScriptsError = ref('');
-
-async function toggleSkillScripts(enabled: boolean): Promise<void> {
-  if (skillScriptsBusy.value || env.value.status !== 'ready' || removeEnvDialog.busy || verifying.value) return;
-  skillScriptsBusy.value = true;
-  skillScriptsError.value = '';
-  try {
-    await setSkillScriptsEnabled(enabled);
-  } catch (error) {
-    skillScriptsError.value = t('hub.python.skillScriptsSaveError', { detail: String(error) });
-  } finally {
-    env.value = await getPyodideEnvState();
-    skillScriptsBusy.value = false;
-  }
-}
 const downloading = ref(false);
 const verifying = ref(false);
 const cancelController = ref<AbortController | null>(null);
@@ -678,6 +636,7 @@ async function startPreload(kind: 'featured' | 'all'): Promise<void> {
   try {
     const result = await preloadWheels(items, {
       signal: controller.signal,
+      environmentId: env.value.environmentId,
       onProgress: progress => {
         preload.done = progress.done;
         preload.total = progress.total;
@@ -975,12 +934,18 @@ async function startSetup(): Promise<void> {
   const controller = new AbortController();
   cancelController.value = controller;
 
-  await updatePyodideEnvState({ status: 'downloading', lastError: '' });
+  let environmentId: string | undefined;
+  let stopWatching: (() => void) | undefined;
   try {
+    environmentId = (await beginPyodideSetup()).environmentId;
+    stopWatching = watchPyodideEnv(state => {
+      if (state.environmentId !== environmentId) controller.abort();
+    });
     for (const file of PYODIDE_CORE_FILES) {
       progress[file.label] = { received: 0, total: -1 };
       await downloadPyodideFile(file.url, {
         signal: controller.signal,
+        environmentId,
         contentTypeFallback: file.contentType,
         onProgress: (received, total) => {
           progress[file.label] = { received, total };
@@ -993,22 +958,30 @@ async function startSetup(): Promise<void> {
     const { ensurePyodideRuntime } = await import('@/utils/pyodide');
     await ensurePyodideRuntime();
     const verifyResult = await verifyPyodideRuntime();
-    await updatePyodideEnvState({
+    controller.signal.throwIfAborted();
+    const updated = await updatePyodideEnvIfCurrent(environmentId, {
       status: 'ready',
       pythonVersion: verifyResult.pythonVersion,
       verifiedAt: Date.now(),
       lastError: '',
     });
-    void loadCatalog();
+    if (updated) void loadCatalog();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const cancelled = controller.signal.aborted || message.includes('取消') || message.includes('abort');
     downloading.value = false;
-    await updatePyodideEnvState({
-      status: cancelled ? 'idle' : 'error',
-      lastError: cancelled ? '' : message,
-    });
+    try {
+      if (!environmentId) throw error;
+      await updatePyodideEnvIfCurrent(environmentId, {
+        status: cancelled ? 'idle' : 'error',
+        lastError: cancelled ? '' : message,
+      });
+    } catch (stateError) {
+      console.error('[Python] Environment state update failed', stateError);
+    }
   } finally {
+    stopWatching?.();
+    downloading.value = false;
     verifying.value = false;
     cancelController.value = null;
     await hydrate();
@@ -1022,11 +995,12 @@ function cancelSetup(): void {
 async function reverify(): Promise<void> {
   if (verifying.value) return;
   verifying.value = true;
+  const environmentId = env.value.environmentId;
   try {
     const { ensurePyodideRuntime } = await import('@/utils/pyodide');
     await ensurePyodideRuntime();
     const verifyResult = await verifyPyodideRuntime();
-    await updatePyodideEnvState({
+    await updatePyodideEnvIfCurrent(environmentId, {
       status: 'ready',
       pythonVersion: verifyResult.pythonVersion,
       verifiedAt: Date.now(),
@@ -1034,7 +1008,11 @@ async function reverify(): Promise<void> {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await updatePyodideEnvState({ status: 'error', lastError: message });
+    try {
+      await updatePyodideEnvIfCurrent(environmentId, { status: 'error', lastError: message });
+    } catch (stateError) {
+      console.error('[Python] Environment state update failed', stateError);
+    }
   } finally {
     verifying.value = false;
     await hydrate();
@@ -1068,7 +1046,6 @@ async function confirmRemoveEnv(): Promise<void> {
   // wheel 重新写回 IndexedDB（"删不干净"的唯一活口），必须挡住
   if (runningTest.value || busyPackage.value || preload.active) return;
   removeEnvDialog.busy = true;
-  skillScriptsError.value = '';
   try {
     const { purgePyodideEnvironment } = await import('@/utils/pyodide');
     await purgePyodideEnvironment();
@@ -1079,7 +1056,7 @@ async function confirmRemoveEnv(): Promise<void> {
     await hydrate();          // 状态 → 未安装、缓存统计归零
     await hydrateMicropip();  // 复用清单已清空（跨上下文 watch 亦会推送）
   } catch (error) {
-    skillScriptsError.value = t('hub.python.removeEnvError', { detail: String(error) });
+    testOutcome.value = { ok: false, stdout: '', stderr: '', result: '', durationMs: 0, timedOut: false, errorName: 'EnvironmentRemovalError', errorDetail: t('hub.python.removeEnvError', { detail: String(error) }) };
     await hydrate();
   } finally {
     removeEnvDialog.busy = false;
@@ -1329,6 +1306,7 @@ watch(pkgQuery, () => {
 });
 
 onUnmounted(() => {
+  cancelSetup();
   unwatchEnv?.();
   unwatchMicropip?.();
   // 离开页面时中止进行中的预下载（缓存已写入部分保留，幂等可续）

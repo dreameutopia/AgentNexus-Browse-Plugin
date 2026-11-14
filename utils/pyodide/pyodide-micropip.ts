@@ -321,13 +321,16 @@ export async function removeMicropipPackage(name: string): Promise<void> {
 }
 
 /** 清空清单（两个作用域都清：语义是「忘掉全部 micropip 安装」） */
-export async function clearMicropipManifest(): Promise<void> {
-  try {
-    await chrome.storage.local.remove(MANIFEST_KEY);
-    if (chrome.storage.session) await chrome.storage.session.remove(MANIFEST_KEY);
-  } catch {
-    // 清理失败静默：下次写入会覆盖
-  }
+export async function clearMicropipManifest(strict = false): Promise<void> {
+  const clear = async (area: chrome.storage.StorageArea | undefined) => {
+    if (area) await area.remove(MANIFEST_KEY);
+  };
+  const results = await Promise.allSettled([
+    clear(globalThis.chrome?.storage?.local),
+    clear(globalThis.chrome?.storage?.session),
+  ]);
+  const errors = results.flatMap(result => result.status === 'rejected' ? [String(result.reason)] : []);
+  if (strict && errors.length) throw new Error('Could not clear the micropip manifest: ' + errors.join(' / '));
 }
 
 /**

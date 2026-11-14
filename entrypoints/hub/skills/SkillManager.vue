@@ -39,7 +39,7 @@
               {{ skill.source === 'preset' ? t('hub.preset') : t('hub.custom') }}
             </span>
           </div>
-          <p v-if="skill.plugin" class="hub-hint">{{ skill.plugin.displayName }} · {{ skill.plugin.version }} · {{ skill.plugin.publisher }}</p>
+          <p v-if="skill.origin" class="hub-hint">{{ skill.origin.pluginKey }} · {{ skill.origin.version }}</p>
           <p class="hub-card-desc" :title="skill.description">{{ skill.description }}</p>
           <!-- 分类与标签（与智能体卡片同一套徽章与分类规范） -->
           <div class="hub-card-taxonomy">
@@ -56,7 +56,7 @@
             <HubSwitch
               class="hub-switch-inline"
               :model-value="skill.enabled"
-              :disabled="skill.source === 'plugin'"
+              :disabled="['4', '5'].includes(skill.id)"
               @update:model-value="toggleEnabled(skill)"
             >{{ skill.enabled ? t('hub.enabled') : t('hub.disabled') }}</HubSwitch>
             <span class="hub-card-ops">
@@ -508,6 +508,7 @@
 </template>
 
 <script setup lang="ts">
+import { isSkillResourcePath } from '@/utils/skills/skill-resources';
 /**
  * 技能管理：全量启停（含预置，跨上下文同步）+ 自定义技能的新建/编辑/删除
  * + zip / md 导入导出。
@@ -546,8 +547,6 @@ import {
   setSkillEnabled,
   onSkillsChange,
   flushSkillStoreWrites,
-  rollbackCustomSkills,
-  snapshotCustomSkills,
   type SkillRecord,
   type SkillWriteResult,
 } from '@/utils/skills/skill-store';
@@ -556,7 +555,6 @@ import {
 } from '@/utils/learn/learn-draft-store';
 import type { SkillDraft, LearnDraftEditorState } from '@/utils/learn/learn-types';
 import SkillDraftConfirm from './SkillDraftConfirm.vue';
-import { modelSkillIdOf } from '@/utils/skills/skill-types';
 import {
   parseFrontmatter,
   validateSkillMd,
@@ -579,7 +577,6 @@ import {
   SKILL_IMPORT_MAX_PACKAGE_BYTES,
   SKILL_IMPORT_MAX_TOTAL_CHARS,
   SKILL_IMPORT_WARN_BYTES,
-  SKILL_PATH_MAX_CHARS,
   normalizeFolderList,
 } from '@/utils/skills/skill-types';
 
@@ -603,14 +600,16 @@ function resourceCountOf(skill: SkillRecord): number {
     Object.keys(skill.resourceBytes ?? {}).length;
 }
 
-const toggleEnabled = (skill: SkillRecord) => {
-  setSkillEnabled(skill.id, !skill.enabled);
+const toggleEnabled = async (skill: SkillRecord) => {
+  await setSkillEnabled(skill.id, !skill.enabled);
 };
 
-const removeSkill = (skill: SkillRecord) => {
+const removeSkill = async (skill: SkillRecord) => {
   if (skill.source !== 'custom') return;
   if (!window.confirm(t('hub.confirmDeleteSkill', { name: skill.name }))) return;
-  removeCustomSkill(skill.id);
+  try {
+    if (!await removeCustomSkill(skill.id, skill.updatedAt)) window.alert(t('hub.skillVersionConflict'));
+  } catch (error) { window.alert(t('hub.errorSkillStorageWrite', { detail: String(error) })); }
 };
 
 const exportSkill = (skill: SkillRecord) => {
@@ -620,7 +619,7 @@ const exportSkill = (skill: SkillRecord) => {
 /** 复制模型标识到剪贴板（失败静默——非关键路径不弹错） */
 const copyModelId = async (skill: SkillRecord) => {
   try {
-    await navigator.clipboard.writeText(modelSkillIdOf(skill));
+    await navigator.clipboard.writeText(skill.id);
   } catch {
     /* 剪贴板权限被拒等场景忽略 */
   }
@@ -749,14 +748,12 @@ async function handleImportFile(event: Event): Promise<void> {
       }
 
       // 门 4 + 5：提交（先拍回滚点）→ 落盘确认 → 失败回滚
-      const snapshot = snapshotCustomSkills();
-      const report = commitImportCandidates(approved);
+      const report = await commitImportCandidates(approved);
       report.skipped.unshift(...parsed.skipped);
       report.droppedFiles.push(...parsed.droppedFiles);
 
       const flushed = await flushSkillStoreWrites();
       if (!flushed.ok) {
-        rollbackCustomSkills(snapshot);
         importFeedbackLines.value = [
           t('hub.importStorageWriteFailed', { detail: flushed.error ?? '' }),
         ];
@@ -775,11 +772,9 @@ async function handleImportFile(event: Event): Promise<void> {
       }
       const text = await file.text();
       const fallbackName = file.name.replace(/\.md$/i, '');
-      const snapshot = snapshotCustomSkills();
-      const report = importSkillFromMdText(text, fallbackName);
+      const report = await importSkillFromMdText(text, fallbackName);
       const flushed = await flushSkillStoreWrites();
       if (!flushed.ok) {
-        rollbackCustomSkills(snapshot);
         importFeedbackLines.value = [
           t('hub.importStorageWriteFailed', { detail: flushed.error ?? '' }),
         ];
@@ -1023,31 +1018,13 @@ function normalizeResourcePath(raw: string): string {
   return raw.replace(/\\/g, '/').trim().replace(/^\.\/+/, '');
 }
 
-/** 路径含控制字符（NUL / 换行等，会污染存储键与 zip 导出路径）判定（逐码元扫描，规避 no-control-regex 对意图的误报） */
-function hasControlCharacter(text: string): boolean {
-  for (let index = 0; index < text.length; index++) {
-    const code = text.charCodeAt(index);
-    if (code <= 0x1f || code === 0x7f) return true;
-  }
-  return false;
-}
-
 /** 校验资源路径（originalPath 为重命名时的原路径，排除自比较） */
 function validateResourcePath(path: string, originalPath: string | null): string | null {
-  if (
-    !path ||
-    path.startsWith('/') ||
-    // 段级硬边界：拒绝空段（连续 / 或尾随 /）、当前层引用（a/./b）与穿越（..）
-    path.split('/').some(segment => segment === '' || segment === '.' || segment === '..') ||
-    hasControlCharacter(path)
-  ) {
+  if (!isSkillResourcePath(path)) {
     return t('hub.resourceFileInvalidPath');
   }
   if (path.toLowerCase() === 'skill.md') {
     return t('hub.resourceFileReservedPath');
-  }
-  if (path.length > SKILL_PATH_MAX_CHARS) {
-    return t('hub.resourceFileInvalidPath');
   }
   const others = { ...resourceFiles.value };
   if (originalPath !== null) delete others[originalPath];
@@ -1174,15 +1151,7 @@ function commitCreateFile(): void {
  * 既有目录 = 显式目录 ∪ 文件路径派生的目录。
  */
 function validateFolderPath(path: string, originalPath: string | null): string | null {
-  if (
-    !path ||
-    path.startsWith('/') ||
-    path.split('/').some(segment => segment === '' || segment === '.' || segment === '..') ||
-    hasControlCharacter(path)
-  ) {
-    return t('hub.resourceFolderInvalidPath');
-  }
-  if (path.length > SKILL_PATH_MAX_CHARS) {
+  if (!isSkillResourcePath(path)) {
     return t('hub.resourceFolderInvalidPath');
   }
   const existing = existingFolderPaths();
@@ -2081,6 +2050,10 @@ function switchMode(target: 'simple' | 'advanced'): void {
 /** 存储层失败原因 → 可读文案（同名已合法，写入层只可能 invalid / not-found） */
 function writeErrorText(result: Extract<SkillWriteResult, { ok: false }>): string {
   switch (result.reason) {
+    case 'storage':
+      return t('hub.errorSkillStorageWrite', { detail: result.error ?? '' });
+    case 'conflict':
+      return t('hub.skillVersionConflict');
     case 'not-found':
       return t('hub.errorSkillNotFound');
     default:
@@ -2150,11 +2123,12 @@ async function saveImpl(): Promise<void> {
       ? { allowedTools: editingSource.value.allowedTools }
       : {};
 
-  const result = setCustomSkill({
+  const result = await setCustomSkill({
     id: editingSource.value?.id ?? (activeTransferId.value ? getAllSkills().find(skill =>
       skill.source === 'custom' && parseFrontmatter(skill.files['SKILL.md'] ?? '').data[LEARN_TRANSFER_MARKER] === activeTransferId.value)?.id : undefined),
     name,
     files,
+    expectedUpdatedAt: editingSource.value?.updatedAt,
     // 显式目录（含空目录）随记录落库——空目录才不会在下次打开时凭空消失
     folders: resourceFolders.value,
     description,

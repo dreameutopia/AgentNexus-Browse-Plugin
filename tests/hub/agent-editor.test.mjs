@@ -52,10 +52,10 @@ export const useLocale=()=>({locale:ref('zh-CN'),switchLocale:()=>{}});export co
         api.onResolve({ filter: /@\/utils\/skills\/skill-store$/ }, args => ({ path: args.path, namespace: 'skill-store' }));
         api.onLoad({ filter: /.*/, namespace: 'skill-store' }, () => ({
           contents: `export function getAllSkills(){ return [
-  { id:'skill-a', name:'skill-a', description:'网页调研报告生成', category:'content', tags:['调研'], allowedTools:[], files:{'SKILL.md':'x'}, body:'x', source:'custom', enabled:true, updatedAt:0 },
-  { id:'skill-b', name:'skill-b', description:'表格数据抽取', category:'data', tags:['表格'], allowedTools:[], files:{'SKILL.md':'x'}, body:'x', source:'custom', enabled:true, updatedAt:0 },
+  { id:'1001', name:'skill-a', description:'网页调研报告生成', category:'content', tags:['调研'], allowedTools:[], files:{'SKILL.md':'x'}, body:'x', source:'custom', enabled:true, updatedAt:0 },
+  { id:'1002', name:'skill-b', description:'表格数据抽取', category:'data', tags:['表格'], allowedTools:[], files:{'SKILL.md':'x'}, body:'x', source:'custom', enabled:true, updatedAt:0 },
 ]; }
-export function onSkillsChange(){ return () => {}; } export function resolveSkill(){ return null; }`,
+export function onSkillsChange(){ return () => {}; } export function getSkillById(){ return null; } export async function restoreCustomSkillsFromStorage(){} export async function setCustomSkill(){return {ok:false,reason:'invalid'};}`,
         }));
         // Python 环境：状态源
         api.onResolve({ filter: /@\/utils\/pyodide\/pyodide-env$/ }, args => ({ path: args.path, namespace: 'pyodide' }));

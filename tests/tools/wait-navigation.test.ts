@@ -87,7 +87,7 @@ try {
   assert.equal(resumed.anyFailure,true,'同批存在未结算的交互调用时，批次不得被误判为全败');
 } finally {globalThis.setTimeout=originalSet;globalThis.clearTimeout=originalClear;Date.now=originalNow;toolExecutionEngine.resetTimerAdapter();}
 
-// —— browser_page_exec 引擎超时契约（独立 try/finally：与上方等待用例解耦，
+// —— js_run 引擎超时契约（独立 try/finally：与上方等待用例解耦，
 //    任一侧断言失败都不影响另一侧执行）——
 //    应用设置压到 1 分钟时，引擎也不得掐断工具 300s 的 timeout 上限
 //    （否则工具说明的 300s 是谎言）：引擎定时器必须 ≥ 工具上限 + 缓冲。
@@ -104,7 +104,7 @@ try {
     const engine2=new ConversationEngine({executeTool:async()=>({success:true,data:{text:'read'}}),requiresApproval:()=>false} as any) as any;
     // 引擎计时适配切换到本块的第二套虚拟时钟（上一块的 clock 已停止）
     toolExecutionEngine.setTimerAdapter({ setTimeout, clearTimeout });
-    const runtime2:any={chatId:'page-exec-timeout',toolIds:['browser_page_exec'],vision:null,
+    const runtime2:any={chatId:'page-exec-timeout',toolIds:['js_run'],vision:null,
       limits:{maxDurationMs:600000,toolTimeoutMs:60000}};
     const handle2:any={abortController:new AbortController(),dynamicToolIds:new Set(),record:{toolCalls:[],parts:[]},toolCallCount:0};
     // 轮次由 executeToolCalls 自行开闭（引擎的唯一入口），这里不预登记：
@@ -112,7 +112,7 @@ try {
     // committed 为 true 即证明闸门放行——结果确实写进了模型上下文。
     const call2=(name:string,args:any)=>({id:name,type:'function',function:{name,arguments:JSON.stringify(args)}});
     const pending2=engine2.executeToolCalls(runtime2,handle2,
-      [call2('browser_page_exec',{code:'return 1',timeout:PAGE_EXEC_MAX_TIMEOUT_MS})],{},()=>{},clock2+600000);
+      [call2('js_run',{action:'run',path:'scripts/probe.js',timeout:PAGE_EXEC_MAX_TIMEOUT_MS})],{},()=>{},clock2+600000);
     const scheduledMs2=()=>[...scheduled2.values()].map(timer=>timer.ms);
     assert.ok(
       scheduledMs2().includes(PAGE_EXEC_MAX_TIMEOUT_MS+PAGE_EXEC_TIMEOUT_SAFETY_MS),

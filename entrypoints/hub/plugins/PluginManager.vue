@@ -11,6 +11,7 @@
       </div>
     </header>
 
+    <PluginSkillUpdates />
     <!-- 成功 / 错误提示条 -->
     <PluginNoticeBar :notice="notice" @dismiss="dismissNotice()" />
 
@@ -96,6 +97,17 @@
           :title="t('hub.plugins.reviewBadge')"
         />
       </button>
+      <button
+        type="button"
+        role="tab"
+        class="pc-tab"
+        :class="{ active: activeTab === 'operations' }"
+        :aria-selected="activeTab === 'operations'"
+        @click="goToTab('operations')"
+      >
+        <ClipboardList :size="14" aria-hidden="true" />
+        <span>{{ t('hub.plugins.tabOperations') }}</span>
+      </button>
     </nav>
 
     <!-- 分区内容 -->
@@ -134,6 +146,14 @@
         />
         <p v-else class="pc-empty">{{ t('hub.plugins.reviewEmpty') }}</p>
       </div>
+      <div
+        v-show="activeTab === 'operations'"
+        class="pc-panel"
+        role="tabpanel"
+        :aria-label="t('hub.plugins.tabOperations')"
+      >
+        <PluginOperationsPanel />
+      </div>
     </div>
   </section>
 </template>
@@ -141,7 +161,7 @@
 <script setup lang="ts">
 /**
  * 插件中心页面本体（UI 独占文件）：只负责骨架组装——页头、提示条、
- * 全局工具栏、页内二级标签与三个分区的装配；状态与命令全部来自
+ * 全局工具栏、页内二级标签与四个分区的装配；状态与命令全部来自
  * usePluginCenter 模块单例，大组件已按分区拆分到 ./components/。
  *
  * DOM 契约（tests/plugins/ui.test.ts，独立挂载）：
@@ -152,6 +172,7 @@
  */
 import { onMounted } from 'vue';
 import {
+  ClipboardList,
   Compass,
   Github,
   Package,
@@ -165,6 +186,8 @@ import PluginNoticeBar from './components/PluginNoticeBar.vue';
 import PluginReviewPanel from './components/PluginReviewPanel.vue';
 import PluginDiscoverPanel from './components/PluginDiscoverPanel.vue';
 import PluginInstalledList from './components/PluginInstalledList.vue';
+import PluginSkillUpdates from './components/PluginSkillUpdates.vue';
+import PluginOperationsPanel from './components/PluginOperationsPanel.vue';
 import { usePluginCenter } from './composables/use-plugin-center';
 
 const {

@@ -180,6 +180,11 @@ export function watchPyodideEnv(listener) {
   envListeners.add(listener);
   return () => envListeners.delete(listener);
 }
+export async function beginPyodideSetup() { return updatePyodideEnvState({ status: 'downloading', environmentId: 'preview-setup' }); }
+export async function updatePyodideEnvIfCurrent(id, patch) {
+  if (envState.environmentId === id) return updatePyodideEnvState(patch);
+  return JSON.parse(JSON.stringify(envState));
+}
 export async function setSkillScriptsEnabled(enabled) {
   if (enabled && envState.status !== 'ready') throw new Error('Python runtime is not ready');
   envState = { ...envState, skillScriptsEnabled: enabled };

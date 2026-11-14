@@ -13,15 +13,11 @@
  */
 import { computed, ref } from 'vue';
 import { t } from '@/utils/i18n';
-import {
-  pluginRequest,
-  encodeBytes,
-  startPluginClient,
-} from '@/utils/plugins/client';
+import { pluginRequest, refresh, startPluginClient } from '@/utils/plugins/client';
+import { toBase64 } from '@/utils/plugins/codec';
 import {
   getPluginSnapshot,
   onPluginsChange,
-  applyPluginSnapshot,
 } from '@/utils/plugins/catalog';
 import {
   invariant,
@@ -30,13 +26,22 @@ import {
   type PluginPreview,
 } from '@/utils/plugins/contracts';
 import type { GithubCandidate } from '@/utils/plugins/github';
+import type {
+  PluginOperationAction,
+  PluginOperationQuery,
+  PluginOperationRecord,
+} from '@/utils/plugins/operations';
 import {
   OFFICIAL_CATALOG_PUBLIC_KEY,
   OFFICIAL_CATALOG_URL,
   isOfficialCatalogConfigured,
 } from '@/utils/plugins/official-catalog';
 
-export type PluginCenterTab = 'installed' | 'discover' | 'review';
+export type PluginCenterTab =
+  | 'installed'
+  | 'discover'
+  | 'review'
+  | 'operations';
 
 // ==================== 状态（模块级单例） ====================
 
@@ -70,6 +75,14 @@ let catalogFetchedAt = 0;
 const updates = ref<Record<string, { version: string; digest: string }>>({});
 const secrets = ref<Record<string, string>>({});
 const versions = ref<Record<string, { version: string; digest: string }[]>>({});
+// —— 操作日志（导入/更新/卸载/启动对账） ——
+const operations = ref<PluginOperationRecord[]>([]);
+const operationsLoading = ref(false);
+const operationFilter = ref<{
+  pluginKey: string;
+  action: '' | PluginOperationAction;
+  status: '' | 'success' | 'failure';
+}>({ pluginKey: '', action: '', status: '' });
 
 const activeTab = ref<PluginCenterTab>('installed');
 /** 审查来源标签：取消审查后回到进入前的分区 */
@@ -147,6 +160,7 @@ function goToTab(tab: PluginCenterTab): void {
   activeTab.value = tab;
   // 进入发现页即静默拉取官方目录（未部署则保持降级空态）
   if (tab === 'discover') void ensureOfficialCatalog();
+  if (tab === 'operations') void loadOperations();
 }
 
 /** 拿到待审查安装后切入审查标签（记录来源，便于取消后返回） */
@@ -170,10 +184,48 @@ async function run(action: () => Promise<void>): Promise<void> {
   }
 }
 
+let clientReady = false;
 async function load(): Promise<void> {
-  await startPluginClient();
-  snapshot.value = await pluginRequest('snapshot');
-  applyPluginSnapshot(snapshot.value);
+  if (clientReady) await refresh();
+  else {
+    // 首次加载由 startPluginClient 完成监听注册与首轮快照。
+    await startPluginClient();
+    clientReady = true;
+  }
+  snapshot.value = getPluginSnapshot();
+}
+
+// ==================== 操作日志 ====================
+
+async function loadOperations(): Promise<void> {
+  if (operationsLoading.value) return;
+  operationsLoading.value = true;
+  try {
+    const filter: PluginOperationQuery = { limit: 100 };
+    if (operationFilter.value.pluginKey)
+      filter.pluginKey = operationFilter.value.pluginKey;
+    if (operationFilter.value.action)
+      filter.action = operationFilter.value.action;
+    if (operationFilter.value.status)
+      filter.status = operationFilter.value.status;
+    operations.value = await pluginRequest<PluginOperationRecord[]>(
+      'operations',
+      filter,
+    );
+  } catch (error) {
+    showNotice(error instanceof Error ? error.message : String(error), 'error');
+  } finally {
+    operationsLoading.value = false;
+  }
+}
+
+async function clearOperations(): Promise<void> {
+  if (!window.confirm(t('hub.plugins.operationsClearConfirm'))) return;
+  await run(async () => {
+    await pluginRequest('operations-clear', {});
+    operations.value = [];
+    showNotice(t('hub.plugins.operationsCleared'));
+  });
 }
 
 // ==================== 预览与安装 ====================
@@ -200,7 +252,7 @@ async function importFile(event: Event): Promise<void> {
   await run(async () => {
     clearPreview();
     invariant(file.size <= LIMITS.archive, 'ARCHIVE_LIMIT');
-    pendingData.value = encodeBytes(new Uint8Array(await file.arrayBuffer()));
+    pendingData.value = toBase64(new Uint8Array(await file.arrayBuffer()));
     pending.value = await pluginRequest('preview', { data: pendingData.value });
     adoptReviewTab();
   });
@@ -260,6 +312,7 @@ async function install(): Promise<void> {
     clearPreview();
     activeTab.value = 'installed';
     await load();
+    await loadOperations();
     showNotice(t('hub.plugins.installedOk'));
   });
 }
@@ -289,22 +342,35 @@ async function toggle(p: InstalledPlugin): Promise<void> {
       generation: snapshot.value.generation,
     });
     await load();
+    await loadOperations();
   });
 }
 
 async function remove(p: InstalledPlugin): Promise<void> {
-  if (
-    !window.confirm(
-      t('hub.plugins.uninstallConfirm', { name: p.manifest.displayName }),
-    )
-  )
-    return;
+  // 卸载被依赖插件会让依赖者立即变为不可用；确认框必须展示影响面。
+  const dependents = snapshot.value.packages.filter(
+    (candidate) =>
+      candidate.key !== p.key &&
+      candidate.enabled &&
+      Object.prototype.hasOwnProperty.call(
+        candidate.manifest.dependencies,
+        p.key,
+      ),
+  );
+  const message = dependents.length
+    ? t('hub.plugins.uninstallDependents', {
+        name: p.manifest.displayName,
+        list: dependents.map((x) => x.manifest.displayName).join(', '),
+      })
+    : t('hub.plugins.uninstallConfirm', { name: p.manifest.displayName });
+  if (!window.confirm(message)) return;
   await run(async () => {
     await pluginRequest('uninstall', {
       key: p.key,
       generation: snapshot.value.generation,
     });
     await load();
+    await loadOperations();
   });
 }
 
@@ -444,6 +510,9 @@ export function usePluginCenter() {
     catalogKey,
     secrets,
     versions,
+    operations,
+    operationsLoading,
+    operationFilter,
     activeTab,
     reviewOrigin,
     // 派生
@@ -474,5 +543,7 @@ export function usePluginCenter() {
     checkUpdates,
     saveSecret,
     exportPlugin,
+    loadOperations,
+    clearOperations,
   };
 }

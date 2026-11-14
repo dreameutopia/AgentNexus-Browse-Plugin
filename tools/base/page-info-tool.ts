@@ -1,5 +1,6 @@
 import { structuredPagePayload } from '../browser/structured-page-payload';
 import { waitForTabReady } from '../browser/page-load';
+import { detectChallengeFromText } from '../browser/challenge-detect';
 import { saveDataRefJson, getDataRef, listDataRefs } from '@/utils/data-ref-store';
 import { trimDanglingSurrogate } from '@/utils/text/truncate';
 import { isRestrictedUrl } from '@/common/constants';
@@ -26,28 +27,6 @@ const MAX_URL_PARAM_CHARS = 8_192;
 const MAX_TITLE_CHARS = 300;
 /** frame 标头中 URL 的展示上限 */
 const MAX_FRAME_URL_CHARS = 200;
-/** 人机验证页判定：正文长度上限（超过即视为有真实内容，不判验证页） */
-const CHALLENGE_MAX_CONTENT_CHARS = 1_200;
-/** 判定采样的正文前缀长度（验证页的标记总在页面顶部） */
-const CHALLENGE_SCAN_CHARS = 400;
-/**
- * 强标记：出现即高度指向人机验证页——这些是风控页的固定文案，正常正文不会
- * 用它们起头。刻意不含「安全验证」「请稍候」「人机验证」等通用措辞：它们在
- * 正常文章里频繁出现，误判会把真实内容当成验证页丢弃（比漏判更糟）。
- */
-const CHALLENGE_STRONG_PATTERN =
-  /(Just a moment|Checking your browser|Attention Required|Verify you are human|Enable JavaScript and cookies|正在进行安全验证|正在进行安全检查|请完成安全验证|请完成下列验证)/i;
-/**
- * 标题特征（英文风控页固定文案，出现在标题开头即可）。
- */
-const CHALLENGE_TITLE_EN_PATTERN =
-  /^(just a moment|attention required|checking your browser|verify you are human|access denied|forbidden)/i;
-/**
- * 标题特征（中文风控页固定文案：**整条标题就是该词**才算数）。
- * 不能用「包含」——「登录安全验证指南」这类正常标题会被包含匹配命中。
- */
-const CHALLENGE_TITLE_ZH_PATTERN =
-  /^(请稍候|安全验证|人机验证|访问验证|正在验证|请完成验证|请完成安全验证)[\s。.…·～~]*$/;
 
 /**
  * 按页切片（代理项安全）：
@@ -85,7 +64,7 @@ function pageSlice(doc: string, page: number, limit: number): string {
  *     上下文，是触发人机验证（Cloudflare 等）的常见诱因；页面若弹出验证，
  *     用户可在该标签页手动完成后重试；
  *   - 分页：单次正文 ≤15k 字符；超长全文自动缓存为 dataRef（引用 ID + 页码续读，
- *     与 browser_page_exec 的 readRef 同一暂存区、同一 TTL）。
+ *     暂存区与 browser_network_capture 共用，同一 TTL）。
  */
 export class GetPageTextTool extends BaseBrowserTool {
   name = 'browser_get_page_text';
@@ -116,7 +95,7 @@ export class GetPageTextTool extends BaseBrowserTool {
         '标签页会保留在用户眼前（不后台打开、不自动关闭）——遇到人机验证可在该标签页手动完成后再重试；tabId 可指定标签页。' +
         '单次正文最多 15000 字符：超出时全量自动缓存并返回引用 ID（ref）与总页数，' +
         '用 ref+page 分页续读（缓存浏览器会话内约 12 小时有效），响应含 totalChars/hasMore/nextPage。' +
-        '需要交互展开、批量抽取时用 browser_interact / browser_page_exec。',
+        '需要交互展开、批量抽取时用 browser_interact / js_run。',
       parameters: {
         type: 'object',
         properties: {
@@ -364,18 +343,11 @@ export class GetPageTextTool extends BaseBrowserTool {
     let doc = (title ? `# ${title}\n\n` : '') + sections.join('\n\n');
 
     // ── 人机验证 / 风控拦截页识别 ──
-    // 判定同时看三件事，缺一不可，避免把正常文章误判成验证页：
-    //   ① 正文极短（真内容不会这么短）；② 标题命中验证页特征；
-    //   ③ 或正文开头命中强特征词（验证页的标记总在顶部）。
-    // 命中时不静默返回挑战页文本，而是明确告知模型「需要人工完成验证」——
-    // 用户可在刚打开的前台标签页里手动过验证后重试，或换一个来源。
-    const challengeBody = mainFrame.markdown.trim();
-    const challengeDetected =
-      challengeBody.length < CHALLENGE_MAX_CONTENT_CHARS &&
-      (CHALLENGE_TITLE_EN_PATTERN.test(title) ||
-        CHALLENGE_TITLE_ZH_PATTERN.test(title) ||
-        CHALLENGE_STRONG_PATTERN.test(challengeBody.slice(0, CHALLENGE_SCAN_CHARS)));
-    if (challengeDetected) {
+    // 判定口径与 browser_crawl 共用（tools/browser/challenge-detect.ts）：
+    // 同一验证页在两条路径上必须得到相同结论，否则模型会以为「单页读取
+    // 正常」而继续在验证页上重试。
+    const challenge = detectChallengeFromText(title, mainFrame.markdown);
+    if (challenge.detected) {
       warnings.push(
         '页面疑似人机验证 / 风控拦截页（正文未加载）。请在刚打开的前台标签页手动完成验证后重试，或改用其它来源；不要把本页内容当作事实依据。',
       );
@@ -396,7 +368,7 @@ export class GetPageTextTool extends BaseBrowserTool {
       );
     }
 
-    // 超长正文缓存为 dataRef（与 browser_page_exec 同一暂存区），后续 ref+page 分页续读
+    // 超长正文缓存为 dataRef（与 browser_network_capture 同一暂存区），后续 ref+page 分页续读
     let refId: string | undefined;
     if (totalChars > PAGE_CHARS_LIMIT) {
       let saved: Awaited<ReturnType<typeof saveDataRefJson>>;
@@ -460,7 +432,7 @@ export class GetPageTextTool extends BaseBrowserTool {
         ...(docTruncated ? { docTruncated: true } : {}),
       },
       ...(loadNote ? { note: loadNote } : {}),
-      ...(challengeDetected ? { verificationRequired: true } : {}),
+      ...(challenge.detected ? { verificationRequired: true } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
       hint:
         '结构化 Markdown 正文：保留标题/表格/列表/代码块/链接结构，覆盖全部可注入 frame 与可访问 shadow root；' +
@@ -468,7 +440,7 @@ export class GetPageTextTool extends BaseBrowserTool {
     };
     return this.createSuccessResponse(
       payload,
-      challengeDetected
+      challenge.detected
         ? '页面被人机验证 / 风控拦截，未取到正文。请在已打开的前台标签页手动完成验证后重试，或换来源。'
         : totalChars === 0
           ? '页面没有可提取的可见文本（空白页或全部内容在画布/受限 frame 内）'
@@ -534,29 +506,64 @@ export class GetPageTextTool extends BaseBrowserTool {
 /**
  * 获取页面 HTML 工具
  */
+/**
+ * 页面源码读取工具（browser_get_page_html）
+ *
+ * 合并掉了旧的两个工具（**旧名全仓禁绝**）：
+ *   - page-source            取页面 HTML 源码（含 iframe），但 format/includeIframes
+ *                             是**死参数**——注入荷载恒为 outerHTML，format='text'
+ *                             也返回 HTML；且无长度上限，大页面直接撑爆消息通道。
+ *   - browser_get_page_html  取主 frame 的 outerHTML，无 iframe 覆盖、无上限。
+ *
+ * 合并后的能力（两者能力并集 + 修掉死参数）：
+ *   - includeIframes=true 覆盖全部 frame（主 frame 置首，含跨域 iframe）
+ *   - format='text' 真正返回可见纯文本（旧实现的 text 分支是死代码）
+ *   - maxChars 硬上限，超限截断并如实标注 truncated（默认 200000 字符）
+ */
 export class GetPageHTMLTool extends BaseBrowserTool {
   name = 'browser_get_page_html';
 
   metadata: ToolMetadata = {
     name: 'browser_get_page_html',
-    description: '获取当前页面的 HTML 源码',
+    description: '获取当前页面的 HTML 源码或可见纯文本（可含全部 iframe，带长度上限）',
     category: 'browser',
-    version: '1.0.0',
+    version: '2.0.0',
     author: 'AgentNexus',
-    tags: ['browser', 'content', 'html']
+    tags: ['browser', 'content', 'html', 'source']
   };
 
   openaiSchema: OpenAITool = {
     type: 'function',
     function: {
       name: 'browser_get_page_html',
-      description: '获取当前页面的 HTML 源码',
+      description:
+        '获取页面的 HTML 源码或可见纯文本。format=html（默认）返回 outerHTML；' +
+        'format=text 返回可见纯文本（不含脚本与样式）。includeIframes=true 时覆盖全部 frame' +
+        '（含跨域 iframe），主 frame 置首。maxChars 为硬上限（默认 200000），超限截断并标注 truncated。' +
+        '需要结构化 Markdown 正文请用 browser_get_page_text（它会解析表格/列表/代码块并自动分页）。',
       parameters: {
         type: 'object',
+        additionalProperties: false,
         properties: {
           tabId: {
             type: 'number',
             description: '标签页 ID（可选，默认当前活动标签页）'
+          },
+          format: {
+            type: 'string',
+            enum: ['html', 'text'],
+            description: '返回格式：html=源码（默认）；text=可见纯文本',
+            default: 'html'
+          },
+          includeIframes: {
+            type: 'boolean',
+            description: '是否包含全部 iframe 的内容（默认 false=只取主 frame）',
+            default: false
+          },
+          maxChars: {
+            type: 'number',
+            description: '返回内容的字符上限（默认 200000，超限截断并标注 truncated）',
+            default: 200000
           }
         },
         required: []
@@ -564,10 +571,16 @@ export class GetPageHTMLTool extends BaseBrowserTool {
     }
   };
 
-  async execute(args: { tabId?: number } = {}, context?: ToolExecutionContext): Promise<ToolResult> {
+  async execute(args: { tabId?: number; format?: 'html' | 'text'; includeIframes?: boolean; maxChars?: number } = {}, context?: ToolExecutionContext): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     try {
+      const format = args?.format === 'text' ? 'text' : 'html';
+      const includeIframes = args?.includeIframes === true;
+      const maxChars = typeof args?.maxChars === 'number' && Number.isFinite(args.maxChars) && args.maxChars > 0
+        ? Math.min(args.maxChars, 2_000_000)
+        : 200_000;
+
       const tab = typeof args?.tabId === 'number'
         ? await chrome.tabs.get(args.tabId)
         : await this.getActiveTab();
@@ -578,23 +591,43 @@ export class GetPageHTMLTool extends BaseBrowserTool {
 
       if (typeof args?.tabId === 'number') context?.onTabTarget?.(tab.id);
 
-      // 执行脚本获取页面 HTML
       const results = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: () => {
-          return document.documentElement.outerHTML;
-        }
+        target: { tabId: tab.id, ...(includeIframes ? { allFrames: true } : {}) },
+        func: (wantText: boolean) => {
+          if (wantText) {
+            const body = document.body;
+            return body ? (body.innerText || body.textContent || '') : '';
+          }
+          return document.documentElement ? document.documentElement.outerHTML : '';
+        },
+        args: [format === 'text'],
       });
 
-      const htmlContent = results?.[0]?.result || '';
+      // 多 frame 时按 frameId 排序：主 frame（frameId 0）置首，其余保持注入顺序
+      const frames = (results ?? [])
+        .filter(frame => typeof frame.result === 'string')
+        .sort((a, b) => (a.frameId === 0 ? -1 : b.frameId === 0 ? 1 : (a.frameId ?? 0) - (b.frameId ?? 0)));
+
+      const full = frames.map(frame => frame.result as string).join('\n\n');
+      const truncated = full.length > maxChars;
+      const content = truncated ? full.slice(0, maxChars) : full;
 
       return this.createSuccessResponse({
-        htmlContent,
+        htmlContent: content,
+        content,
+        format,
+        includeIframes,
         url: tab.url,
         title: tab.title,
         tabId: tab.id,
-        length: htmlContent.length
-      }, 'Page HTML retrieved successfully');
+        length: content.length,
+        totalLength: full.length,
+        truncated,
+        frameCount: frames.length,
+        ...(truncated
+          ? { note: `内容超过 ${maxChars} 字符，已截断（完整长度 ${full.length}）；需要全文请用 browser_get_page_text 的分页续读` }
+          : {}),
+      }, 'Page source retrieved successfully');
     } catch (error) {
       return this.createErrorResponse('Failed to get page HTML', error);
     }

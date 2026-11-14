@@ -1,6 +1,11 @@
+import { restoreAgentSkillLinks } from '@/utils/agents/agent-skill-links';
+import { SKILL_SYSTEM_PROMPT_SECTION } from '@/tools/skill/skill-prompt';
 import { pluginBindings, pluginToolCeiling } from '@/utils/plugins/catalog';
 import { isPluginRef, ownerOf } from '@/utils/plugins/contracts';
-import { startPluginClient, refresh as refreshPluginCatalog } from '@/utils/plugins/client';
+import {
+  startPluginClient,
+  tryRefreshPluginCatalog,
+} from '@/utils/plugins/client';
 /**
  * 运行时装配引擎
  *
@@ -11,7 +16,7 @@ import { startPluginClient, refresh as refreshPluginCatalog } from '@/utils/plug
  *   - toolIds：多来源合并 + Set 去重（智能体预设 → 技能预授权 → 会话附加 → 技能承载工具）
  *   - model：经模型注册表按引用解析为端点快照（协议驱动/URL/密钥/阈值），密钥只进内存
  *   - initialContext：从用户面转录派生的 AI 面初始上下文
- *   - activationContext：用户预选技能合成的一轮 load_skill 调用（不进 system prompt）
+ *   - activationContext：用户预选技能合成的一轮 skill_tool(action="load") 调用（不进 system prompt）
  *
  * 本层不做请求类副作用（不执行工具、不发请求）；图片引用解析可能回读图片库
  * （缓存命中时为纯内存读），装配失败抛带原因的错误。
@@ -21,7 +26,7 @@ import { modelRegistry, appSettingsStore, FAILED_TOOL_ROUNDS_DEFAULT, MAX_ITERAT
 import { agentEngine, DEFAULT_AGENT_SYSTEM_PROMPT } from '../registry/agent-engine';
 import { skillEngine } from '../registry/skill-engine';
 import { getPyodideEnvState } from '@/utils/pyodide/pyodide-env';
-import { isSkillToolId, LEGACY_SKILL_COPY_ID, SKILL_TOOL_ID, skillModeGuidance, type SkillToolMode } from '@/utils/skills/skill-tool-contract';
+import { isSkillToolId, SKILL_TOOL_ID } from '@/utils/skills/skill-tool-contract';
 import { contextEngine } from '../context/context-engine';
 import { prepareProtocolHistory } from '../context/protocol-history';
 import { collectPriorViewportRefs } from '../context/viewport-ref-collector';
@@ -30,6 +35,9 @@ import { INTERACT_SYSTEM_PROMPT_SECTION } from '@/tools/interact/interact-prompt
 import { PLAN_SYSTEM_PROMPT_SECTION } from '@/tools/plan/plan-prompt';
 import { NOTE_SYSTEM_PROMPT_SECTION } from '@/tools/note/note-prompt';
 import { UPLOAD_FILE_SYSTEM_PROMPT_SECTION } from '@/tools/upload-file/upload-file-prompt';
+import { JS_SYSTEM_PROMPT_SECTION } from '@/tools/javascript/js-prompt';
+import { BACKEND_PAGE_EXEC_TOOL_ID } from '@/tools/javascript/js-contract';
+import { WORKSPACE_SYSTEM_PROMPT_SECTION } from '@/utils/python-workspace/workspace-prompt';
 import { CORE_SESSION_TOOL_IDS } from '@/utils/tools/tool-presets';
 import { VISION_GUI_TOOL_ID } from '@/tools/vision/gui-contract';
 import { isVisionAssistantTool } from '@/utils/agents/vision-assistant-policy';
@@ -87,7 +95,7 @@ export interface RuntimeBuildInput {
   /**
    * 禁用技能发现（动态装配场景专用，如网站学习的两个阶段）。
    *
-   * true：不解析可用技能清单——发现分区不注入、load_skill/read_skill_file
+   * true：不解析可用技能清单——发现分区不注入、skill_tool(action="load")/skill_tool(action="read")
    * 承载工具不注入、技能携带的工具（如 vision_gui）不参与 offersGui 判定。
    * 目的：
    *   - 学习不得被既有技能污染（照抄技能而不是试错探索）；
@@ -206,7 +214,7 @@ class RuntimeBuilder {
    * 上传文件准则 → 富内容输出准则 → history-and-tools → 智能体指令 →
    * 补充上下文 → 发现清单（可用技能 − 已激活）。
    * 预选技能不进 system prompt：其正文由 activationContext 承载（合成
-   * load_skill 轮），由会话引擎追加在本轮用户消息之后。工具合并顺序保证
+   * skill_tool(action="load") 轮），由会话引擎追加在本轮用户消息之后。工具合并顺序保证
    * 可预期：核心交互工具（无条件注入，任何智能体不可裁剪）→ 智能体
    * （先经「视觉操作开关注入」归一 vision_gui，见 build 内注释）→
    * 技能预授权 → 会话附加 → 技能承载工具（承载工具按「存在可用技能」判定
@@ -217,7 +225,18 @@ class RuntimeBuilder {
    * 视觉策略统一）、连续工具失败停止阈值）。
    */
   async build(input: RuntimeBuildInput): Promise<ConversationRuntime> {
-    if (typeof document !== 'undefined') { await startPluginClient(); await refreshPluginCatalog(); }
+    if (typeof document !== 'undefined') {
+      // 插件目录是增强能力：宿主/IDB 暂时不可用时保留上次快照并继续装配对话，
+      // 不能因为插件子系统故障阻断普通会话。
+      try {
+        await startPluginClient();
+      } catch (error) {
+        console.warn('[Plugins] Client start failed; continuing without refresh', error);
+      }
+      await tryRefreshPluginCatalog();
+    }
+    await skillEngine.restore();
+    await restoreAgentSkillLinks();
     // 单次解析：agent 本体 + 去重工具列表（避免 get/resolve 双重查找造成的不一致窗口）
     const { agent, toolIds: resolvedAgentToolIds } = agentEngine.resolve(input.agentName);
     const pluginCeiling = pluginToolCeiling(agent?.plugin?.key);
@@ -229,10 +248,10 @@ class RuntimeBuilder {
     const pythonEnv = await getPyodideEnvState();
     const pythonReady = pythonEnv.status === 'ready';
     const allowsSessionTool = (id: string) =>
-      !isSkillToolId(id) && (id !== 'python_run' || pythonReady) &&
+      id !== BACKEND_PAGE_EXEC_TOOL_ID && (id !== 'python_run' || pythonReady) &&
       (!isVisionGuide || isVisionAssistantTool(id)) && allowedByPlugin(id);
-    const allowsSkillDependency = (id: string) => isSkillToolId(id) ||
-      ((!isVisionGuide || isVisionAssistantTool(id)) && allowedByPlugin(id));
+    const allowsSkillDependency = (id: string) => id !== BACKEND_PAGE_EXEC_TOOL_ID && (isSkillToolId(id) ||
+      ((!isVisionGuide || isVisionAssistantTool(id)) && allowedByPlugin(id)));
 
     // ── 视觉操作开关注入（注入时序第 1 步：开关 → 工具面 → 提示词钩子）──
     // hub 编辑器「视觉操作」开关 = AgentConfig.vision 声明，它是智能体工具面
@@ -269,30 +288,17 @@ class RuntimeBuilder {
       ...agentToolIds,
       ...(input.extraToolIds ?? []),
     ].filter(allowsSessionTool);
+    const globalSkills = skillEngine.list().filter(skill => ['4', '5'].includes(skill.id));
     const availableSkills = input.disableSkillDiscovery
-      ? []
+      ? globalSkills
       : skillEngine.resolveAvailableSkills(agent, sessionToolIds)
         .filter(skill => skill.allowedTools.every(allowsSkillDependency));
     const selectedSkillNames = input.disableSkillDiscovery ? [] : input.skillNames.filter(ref => {
       const skill = skillEngine.get(ref);
       return skill?.enabled && skill.allowedTools.every(allowsSkillDependency);
     });
-    const workspaceEnabled = !input.disableSkillDiscovery && !isVisionGuide && pythonEnv.skillScriptsEnabled &&
-      (!pluginCeiling || pluginCeiling.includes(SKILL_TOOL_ID) || pluginCeiling.includes(LEGACY_SKILL_COPY_ID));
-    const enabledSkillIds = (refs: readonly string[]) => refs.flatMap(ref => {
-      const skill = skillEngine.get(ref);
-      return skill?.enabled ? [skill.id] : [];
-    });
-    const linked = pluginCeiling ? new Set(enabledSkillIds(agent?.skills ?? [])) : undefined;
-    const workspaceIds = new Set(workspaceEnabled ? [
-      ...availableSkills.filter(skill => !linked || linked.has(skill.id)).map(skill => skill.id),
-      ...enabledSkillIds(selectedSkillNames),
-    ] : []);
-    const activation = skillEngine.buildActivationRound(selectedSkillNames, workspaceIds);
+    const activation = skillEngine.buildActivationRound(selectedSkillNames);
     const availableSkillIds = [...new Set([...availableSkills.map(skill => skill.id), ...activation.skillIds])];
-    const skillResourceIds = availableSkillIds.filter(id => workspaceIds.has(id));
-    const skillMode: SkillToolMode = workspaceEnabled && (!availableSkillIds.length || skillResourceIds.length)
-      ? 'workspace' : 'text';
 
     // ── 系统提示词（XML 分区） ──
     // 注意：不在此拼入「当前时间」——时间戳逐轮变化会使 system 前缀失配、
@@ -323,6 +329,9 @@ class RuntimeBuilder {
     // 同为无条件注入的核心工具；何时读页的决策协议唯一权威在
     // upload-file-prompt，信封与工具描述只携带摘要句）
     sections.push(UPLOAD_FILE_SYSTEM_PROMPT_SECTION);
+    sections.push(WORKSPACE_SYSTEM_PROMPT_SECTION);
+    sections.push(SKILL_SYSTEM_PROMPT_SECTION);
+    sections.push(JS_SYSTEM_PROMPT_SECTION);
     // 富内容输出准则（固定分区，按智能体能力协商裁剪）：教模型在合适场景
     // 输出 ```component 信封 / 原生 DSL 围栏，由侧边栏可信渲染管线消费。
     // 分区正文由 rich-components/rich-output-prompt.ts 维护（能力清单来自
@@ -335,8 +344,6 @@ class RuntimeBuilder {
       '<history-and-tools>\n历史截图仅是过去状态的证据；GUI 操作必须使用最新有效截图，截图失效时重新获取，不得重用旧坐标。' +
         '\n</history-and-tools>',
     );
-    if (availableSkillIds.length) sections.push('<skill-capabilities>\n' + skillModeGuidance(skillMode) + '\n</skill-capabilities>');
-    else if (input.disableSkillDiscovery) sections.push('<skill-capabilities>\n本会话只依据当前任务指令和工具工作，不提供既有技能。\n</skill-capabilities>');
     // 智能体指令分区：动态装配方（网站学习等）经 agentSystemOverride 整体替换，
     // 否则取所选智能体指令，再兜底默认指令。
     // agentInstructionsIndex 记录该分区的插入锚点：条件注入钩子（视觉规程等）
@@ -351,7 +358,7 @@ class RuntimeBuilder {
       );
     }
 
-    // 合成激活轮（预选技能的 load_skill 调用）：正文不进 system prompt，
+    // 合成激活轮（预选技能的 skill_tool(action="load") 调用）：正文不进 system prompt，
     // 由会话侧追加到本轮用户消息之后；此处只取其预授权工具参与工具合并
     if (isVisionGuide && selectedSkillNames.length !== input.skillNames.length) {
       sections.push('<capability-boundary>\n本轮所选技能中存在不可用或超出观察范围的技能，已跳过激活。不要声称已运行这些技能；若用户目标依赖代操作，说明原因并建议切换视觉通用助手 / 文本通用助手 或数据采集助手。\n</capability-boundary>');
@@ -399,7 +406,7 @@ class RuntimeBuilder {
     //   工具保证跨会话知识沉淀能力恒定可用（使用准则见 note-prompt 固定分区）。
     // 与 CORE_SESSION_TOOL_IDS 同源：技能可用性判定复用同一份核心工具口径
     const toolIdSet = new Set([...sessionToolIds, ...activation.toolIds.filter(allowsSessionTool)]);
-    if (availableSkillIds.length) toolIdSet.add(SKILL_TOOL_ID);
+    toolIdSet.add(SKILL_TOOL_ID);
 
     // ── 模型配置（会话内模型引用经注册表解析，引用失效自动回落默认） ──
     const model = this.resolveModel(input.modelRef);
@@ -481,9 +488,8 @@ class RuntimeBuilder {
 
     return {
       chatId: input.chatId,
-      skillResourceIds,
       availableSkillIds,
-      skillMode,
+
       pluginBindings: pluginBindings(),
       ...(pluginCeiling ? { pluginToolCeiling: [...new Set([...pluginCeiling.filter(id => !isSkillToolId(id)), ...CORE_SESSION_TOOL_IDS, SKILL_TOOL_ID])] } : {}),
       pluginOwners: [...new Set([agent?.id ?? '', ...input.skillNames].filter(isPluginRef).map(ownerOf))],

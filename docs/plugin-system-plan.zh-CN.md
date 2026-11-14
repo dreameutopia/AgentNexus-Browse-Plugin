@@ -7,7 +7,7 @@
 采用「声明式插件包 + 宿主统一能力目录 + 受控工具适配器 + GitHub 目录与 Releases」架构。
 
 - 一个包可贡献 tools、skills、agents；三类贡献均进入全局目录，任何智能体均可显式选择已授权的贡献。
-- 插件智能体可引用自己的工具/Skill、宿主公开能力；跨插件引用必须声明依赖。
+- 插件智能体可引用自己的工具与宿主公开能力；Skill 只能引用本插件 Skill。完整跨插件 ref 在 Plugin API 1.2 起一律拒绝（不因声明依赖而放行）。
 - 本地导入、URL 安装、在线更新共用一个验证、更新和提交管线，不维护三套规则。
 - 身份不依赖名称、安装顺序、文件名或版本；禁止同名覆盖、自动加随机后缀、静默截断 ID。
 - 插件原件不可变，用户设置独立存储。安装更新以事务切换生效；禁用是运行时撤权。
@@ -30,7 +30,7 @@
 | `entrypoints/sidepanel/utils/tools/openai-tools-converter.ts` | sidepanel 单独注册工具；Schema 直接取注册表对象 | 只消费目录快照；传输适配层生成请求名映射 |
 | `utils/agents/agent-store.ts` | 主表按 `name`，ID 为二级索引；名称须唯一 | 主键转稳定 ID，名称作为非唯一展示索引 |
 | `utils/agents/agent-types.ts` | 工具 ID 上限 64，归一化截断；Skill 引用上限 96 | 新插件引用采用独立严格校验，超长拒绝；避免长 ID 被截成同一个值 |
-| `utils/skills/skill-types.ts` | ID 为 base36；模型标识为 `name-id`；来源只有 preset/custom | 增加 plugin 来源及所有者；插件使用全限定引用，保留标准本地 name |
+| `utils/skills/skill-types.ts` | Skill 定位统一为十进制数字 ID；内置 1–1000，其他从 1001 分配 | 插件 Skill 托管复制到本地，保留来源元数据；插件内部贡献引用映射到全局数字 ID |
 | `utils/skills/skill-store.ts` | `resolveSkill()` 最后按裸名称取首项 | 插件解析禁止裸名称兜底；历史解析单独隔离 |
 | `utils/skills/skill-import-export.ts` | 宽容导入，部分异常项跳过；`unzipSync` | 仅复用经审计的基础校验；插件需流式限额解包、整包严格验证 |
 | `entrypoints/sidepanel/core/runtime/runtime-builder.ts` | 一次性装配；未知工具被过滤 | 保存解析版本和授权快照；依赖缺失明确诊断 |
@@ -105,7 +105,7 @@ base32 必须无填充、固定 52 字符，解码后重新编码一致；它是
 - 别名在请求作用域内分配、显式检查唯一，不使用截断或短哈希猜测。
 - 所有协议适配器共享该映射；发请求时替换 Schema 名称，回包立刻解码；执行、日志存完整引用。
 - 会话历史保存原始协议名及对应映射/完整身份，重建请求时一致重映射 tool_calls 和结果消息；历史工具调用不自动重新执行。
-- Skill 的 `name` 继续遵循 Agent Skills 标准；`load_skill` 和文件读取使用完整 skillRef。插件不加入裸名称解析索引。
+- Skill 的 `name` 继续遵循 Agent Skills 标准；skill_tool 仅通过数字 skill_id 加载和操作托管后的 Skill。插件更新必须在管理页审阅批准后才覆盖本地版本。
 - 提示词提及本地工具时使用受限引用标记，如 `{{tool:search}}`、`{{tool:builtin/browser_get_page_text}}`；只解析已声明引用，不执行模板表达式，并按本次请求映射渲染工具名。
 - 历史裸名称只有迁移器可以解析，且多候选时返回 ambiguous，要求用户选择；不能取第一个注册者。
 
@@ -137,7 +137,7 @@ assets/icon.png
   "id": "web-research",
   "displayName": "网页调研",
   "version": "1.2.0",
-  "engines": { "agentnexus": ">=0.1.0 <1.0.0", "pluginApi": "^1.0.0" },
+  "engines": { "agentnexus": ">=0.1.0 <1.0.0", "pluginApi": "^1.2.0" },
   "license": "MIT",
   "repository": "https://github.com/example/web-research",
   "capabilities": {
@@ -150,8 +150,7 @@ assets/icon.png
     "skills": [{ "id": "research", "path": "skills/research/SKILL.md" }],
     "agents": [{ "id": "researcher", "path": "agents/researcher.json" }]
   },
-  "dependencies": {},
-  "optionalDependencies": {}
+  "dependencies": {}
 }
 ```
 

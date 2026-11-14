@@ -5,7 +5,6 @@
 
 import { ToolExecutor, ToolResult } from '@/common/tool-handler';
 import { OpenAITool } from '@/common/openai-types';
-import type { SkillToolMode } from '@/utils/skills/skill-tool-contract';
 
 // 工具元数据接口
 export interface ToolMetadata {
@@ -64,6 +63,20 @@ export interface ToolMetadata {
    */
   terminal?: boolean;
   /**
+   * 零成本状态工具：执行只改会话内状态（计划/笔记/批次台账），不触达页面、
+   * 不发起网络请求、耗时恒为毫秒级。
+   *
+   * 准入语义（**只放宽时长上限，不放宽其它任何约束**）：会话运行时长上限
+   * 用来截断「长耗时工作」，不是为了阻止模型记录进度。若这类工具也被
+   * 截断，模型会在预算耗尽时**无法把已经完成的步骤标注为 done**——
+   * 计划状态因此与真实进度脱节，下一轮只能靠模型凭记忆重建（实测代价：
+   * 停机后计划项仍显示 in_progress，与实际完成情况不符）。
+   *
+   * 因此：运行时长上限到达后，未开始的这类调用**仍放行**；它们不产生
+   * 外部副作用、不延长运行（毫秒级），放行不会造成预算失控。
+   */
+  zeroCostStateTool?: boolean;
+  /**
    * 视觉循环重拍豁免（单一事实源，默认 false = 保守重拍）。
    *
    * true 的准入条件（缺一不可，声错比漏标更危险——错标会让模型拿着已失效的
@@ -87,6 +100,9 @@ export interface ToolMetadata {
 // 会话感知工具（如 plan_tool）据此做数据隔离；不感知会话的工具可安全忽略
 // （可选参数，不破坏既有工具的 execute(args) 契约）。
 export interface ToolExecutionContext {
+  agentId?: string;
+  loadedSkillIds?: readonly string[];
+  toolPolicy?: 'vision-assistant';
   pluginBindings?: Record<string, { digest: string; epoch: number }>;
   pluginApproved?: boolean;
   /** In-process cancellation; never serialize AbortSignal through runtime messages. */
@@ -96,9 +112,7 @@ export interface ToolExecutionContext {
   /** 发起本次工具调用的会话 id（数据隔离键） */
   chatId?: string;
   /** Skill IDs authorized by the conversation runtime, never taken from tool arguments. */
-  skillResourceIds?: readonly string[];
   availableSkillIds?: readonly string[];
-  skillMode?: SkillToolMode;
   /** Set by the conversation engine after a required approval was granted. */
   toolApproved?: boolean;
   /** Report the actual tab once the tool has resolved its page target. */
@@ -106,7 +120,7 @@ export interface ToolExecutionContext {
 }
 
 export interface ToolSchemaOptions {
-  skillMode?: SkillToolMode;
+  toolPolicy?: 'vision-assistant';
 }
 
 // 扩展工具接口

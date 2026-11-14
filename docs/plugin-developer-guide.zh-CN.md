@@ -1,4 +1,4 @@
-# 插件开发与维护指南（Plugin API 1.0）
+# 插件开发与维护指南（Plugin API 1.2）
 
 ## 快速开始
 
@@ -16,13 +16,31 @@ npm run plugin:sdk -- validate D:\plugins\web-research-1.0.0.anplugin
 
 升级时提高 plugin.json 的 SemVer，用同一密钥重新打包。文件导入、GitHub 在线安装和更新共享相同身份、签名、兼容性和内容校验。安装成功前不会发布一半资源。
 
-## 文件与编辑器补全
+## 规范包布局（Plugin API 1.2 强制）
 
-根文件为 plugin.json、integrity.json、signature.json。后两项由 CLI 生成。工具、智能体为 JSON；Skill 使用标准目录和 SKILL.md。可只声明 tools、skills、agents 中任意一类。
+1.2 起不再接受“入口路径随便放”的包。根目录只允许下列条目，未声明的文件或目录会以 `UNEXPECTED_PACKAGE_FILE` 拒绝整包。这是破坏性布局升级：旧包需用新版 CLI 重新打包并重新导入；已安装的 1.1 包在升级后的首次启动会被隔离（`INCOMPATIBLE_HOST`），插件中心操作日志会给出精确原因，卸载或重新导入 1.2 包后恢复。
+
+```text
+plugin.json                     # 必须
+integrity.json                  # CLI 生成
+signature.json                  # CLI 生成
+README.md / LICENSE / LICENSE.md
+assets/**                       # 可选静态资源（图标等）
+tools/<tool-id>.json            # 与 contributes.tools 一一对应
+skills/<skill-id>/SKILL.md      # 与 contributes.skills 一一对应
+skills/<skill-id>/**            # references / assets / scripts 等资源
+agents/<agent-id>.json          # 与 contributes.agents 一一对应
+```
+
+- 入口路径必须逐字等于上述规范路径（`tools/search.json`，不能是 `src/search.json` 或 `tools/nested/search.json`）。
+- 同一个插件内，tools、skills、agents 共享同一个 local ID 命名空间；任意两类出现同名 ID 都会以 `DUPLICATE_CONTRIBUTION` 拒绝。这保证 `pluginKey/local-id` 形式的 ref 永远无歧义。
+- `tools/`、`agents/` 下不得出现未声明文件；`skills/` 下的所有文件必须位于某个已声明技能目录内。
+- Skill 资源可以是 UTF-8 文本或二进制（图片、字体等）；二进制通过 `resourceBytes` 提供，不进入提示词正文。
+- 插件智能体支持 name、description、system、tools、skills、category、tags、avatar、capabilities.richComponents。avatar 只接受 emoji 或 `https:` / `data:image` 图片；包内相对路径不会被宿主解析。
 
 编辑器 Schema 已生成在 `docs/plugin-schemas/{plugin,tool,agent}-v1.json`。例如开发时将 `$schema` 指向本地 schema 文件；打包前可删除开发路径。`npm run plugin:sdk -- schemas <目录>` 可重新生成，运行时仍以共享 Zod 契约为准。Schema 中 SemVer 字符串的语义约束由 CLI 验证。
 
-包限制：压缩 10 MiB、解压 30 MiB、500 文件、单文件 5 MiB、目录深度 12。路径仅允许 ASCII 字母、数字、`_ . - /`，禁止绝对路径、反斜杠、重复/大小写重名和符号链接。Skill 资源当前为 UTF-8 文本；不把二进制文件放在 Skill 子目录。为了限制扩展消息和内存开销，安装目录的 JSON 快照总大小上限为 24 MiB；超限会拒绝安装并保留原状态。插件备份分区的 Base64 总量上限为 32 MiB，过大时需逐个导出原安装包。
+包限制：压缩 10 MiB、解压 30 MiB、500 文件、单文件 5 MiB、目录深度 12。路径仅允许 ASCII 字母、数字、`_ . - /`，禁止绝对路径、反斜杠、重复/大小写重名和符号链接。为了限制扩展消息和内存开销，安装目录的 JSON 快照总大小上限为 24 MiB；超限会拒绝安装并保留原状态。插件备份分区的 Base64 总量上限为 32 MiB，过大时需逐个导出原安装包。
 
 ## 稳定身份
 
@@ -34,9 +52,14 @@ skillRef    = pluginKey/skill-local-name
 agentRef    = pluginKey/agent-local-id
 ```
 
-ID 永不使用显示名称或版本号。同一发布者不可为两个不同产品复用相同 pluginId；不同发布者可用同名 pluginId。工具、Skill、智能体分别按类型建立唯一注册空间。
+ID 永不使用显示名称或版本号。同一发布者不可为两个不同产品复用相同 pluginId；不同发布者可用同名 pluginId。一个插件内的 local ID 在 tools、skills、agents 三类之间也必须唯一。
 
-在包内工具/技能引用中，`./search` 指本插件贡献；`builtin/browser_get_page_text` 指公开宿主能力；跨插件引用必须是完整 ref，并在 dependencies / optionalDependencies 中声明完整 pluginKey 和版本范围。包内相对引用只供作者书写，保存到运行目录的是完整 ref。
+在包内工具/技能引用中，只允许两种写法：
+
+- `./search`：本插件贡献；
+- `builtin/browser_get_page_text`：在 manifest 的 capabilities.hostTools 中声明的公开宿主能力。
+
+插件智能体的 `tools` 可引用本插件工具或已声明宿主工具；其 `skills` **只能**引用本插件 Skill。完整跨插件 ref（`ed25519:...`）即使声明了 dependencies 也会以 `CROSS_PLUGIN_REFERENCE` 拒绝；Skill 的 `allowed-tools` 与提示词中的 `{{tool:...}}` 同一边界。包内相对引用只供作者书写，保存到运行目录的是完整 ref。
 
 提示词中使用 `{{tool:search}}` 或 `{{tool:builtin/browser_get_page_text}}`；这是受限引用标记，不支持模板表达式。Skill 的标准 `name` 不加命名空间，关联和加载使用 skillRef。模型接口中的短函数名是请求级映射，不是插件的真实身份；不要硬编码 `anp_0` 等传输名。
 
@@ -48,12 +71,12 @@ ID 永不使用显示名称或版本号。同一发布者不可为两个不同�
 | publisher.id/displayName          | 可验证公钥身份 / 展示名称                                    |
 | id/displayName/version            | 不变本地 ID / 展示名称 / 不含 build metadata 的 SemVer       |
 | engines.agentnexus                | 宿主产品兼容版本范围，当前产品版本见 package.json            |
-| engines.pluginApi                 | 插件公共 API 范围，当前为 `^1.0.0`                           |
+| engines.pluginApi                 | 插件公共 API 范围，当前为 `^1.2.0`                           |
 | capabilities.hostTools            | 明确申请的公开宿主工具，所有 builtin 引用须在此声明          |
 | capabilities.network              | 明确申请的 HTTPS origin，不含 path，不支持 localhost/私有 IP |
 | capabilities.secretSlots          | 宿主管理的按插件隔离的凭据槽名称，包内不得包含实际秘密       |
 | contributes                       | 各类贡献的本地 ID 与包内入口文件路径                         |
-| dependencies/optionalDependencies | 以完整 pluginKey 为键的 SemVer 范围                          |
+| dependencies                      | 以完整 pluginKey 为键的 SemVer 范围（仅表达安装期版本约束）   |
 
 未知顶层字段报错。v1 不支持任意 JS/脚本、激活/卸载钩子、任意 HTTP 模板、动态工作流和直接操作 chrome.*。新增贡献类型须随宿主版本发布校验器和处理器；第三方不能提交可执行的扩展点实现。
 
@@ -76,7 +99,9 @@ ID 永不使用显示名称或版本号。同一发布者不可为两个不同�
 }
 ```
 
-公开宿主工具表位于 `entrypoints/background/plugins/execution.ts` 的 PUBLIC_HOST_TOOLS。当前包括正文/页面信息/标签页列表、导航、书签与历史检索。宿主可在后续 API 版本扩大公开表，内部终止/控制工具不自动开放。
+公开宿主工具表位于 `utils/plugins/host-tools.ts` 的 `PUBLIC_HOST_TOOLS`，在验包、启动对账与运行时三层同时生效。当前包括正文/页面信息/标签页列表、导航、历史与书签统一工具（`browser_history_bookmarks`：检索/打开/增删改/最近访问/最常访问/文件夹结构）。宿主可在后续 API 版本扩大公开表，内部终止/控制工具不自动开放。
+
+> 1.1.0 变更：书签与历史检索的公开入口由 `browser_search_bookmarks` / `browser_search_history` 合并为单一 `browser_history_bookmarks`（旧名已删除，声明旧 ref 的插件会被判为 HOST_TOOL_NOT_PUBLIC）。
 
 第三方工具默认需要会话操作审批。代理不会获得宿主全部扩展权限，也不能通过填写 metadata 关闭审批。限制了传入参数的代理仍调用原宿主实现。
 
@@ -117,6 +142,40 @@ JSON Schema 是无需 eval 的有界解释器，当前支持 type、properties�
 - 禁用立即撤权并尝试中止进行中调用；取消不能撤销已发生的服务端/浏览器副作用。失效引用保留在用户配置中，不绑定同名替代物。
 - 历史版本按钮仅允许恢复本机保存过的可信发布，重新验签并检查兼容性；卸载会删除该插件的本地发布历史和凭据。
 - 扩展完整备份包含当前安装包，不含凭据；恢复后插件保持禁用，用户重新启用。旧备份没有 plugins 分区时不会清空本机插件。
+
+## 首次导入与启动时序
+
+首次导入严格分为两段，任何一段都不会留下“导入了一半”的状态：
+
+1. `preview`：解包限额 → 路径安全 → integrity → Ed25519 → manifest Schema → 规范布局 → 全类型 ID 唯一 → 引用边界 → 宿主兼容 → MCP/宿主能力声明 → 目录可应用性预验证；该阶段无任何持久化副作用。
+2. `install`：用户确认摘要与来源后，以 CAS generation 提交 release 归档与安装状态；提交前再次验证目录结构；提交后应用目录并广播 generation。同一包重复导入按 digest 幂等，不会重复注册工具。
+
+浏览器每次启动（或后台 worker 被回收后重启）的插件流程：
+
+1. 后台同步注册协议监听器，页面不会因为 worker 冷启动而连不上宿主；
+2. 打开 IndexedDB（v1 → v2 原地升级，新增操作日志 store）；
+3. 执行启动对账：去重、兼容性、ref 归属、release 完整性；坏包隔离、其余包照常加载；
+4. 原子应用目录并 reconcile 执行网关，随后 `ready`；
+5. 页面请求快照并本地应用；失败时保留上次快照，不阻断会话；
+6. 再次启动不会重复导入，已安装工具从持久化且复核过的快照重建。
+
+## 操作日志、启动对账与故障隔离
+
+插件中心新增「操作日志」标签页，数据持久化在 IndexedDB，保留最近 1000 条：
+
+- 记录导入校验、安装、更新、启用、禁用、卸载、回滚、备份恢复、备份回滚、更新检查与启动对账；
+- 每条包含动作、状态、插件 key/名称、前后版本、来源、包摘要、generation、耗时；
+- 失败项额外包含阶段（下载/解包/包结构/签名/清单/兼容/Schema/引用/依赖/提交/应用/运行）、稳定错误码和原始 detail，例如 `INCOMPATIBLE_HOST: host 0.0.1 not in ">=0.0.1 <1.0.0" or pluginApi 1.2.0 not in "^1.1.0"`；
+- 支持按插件、动作、状态筛选和一键清空；日志写入失败不会反向影响插件操作。
+
+启动时后台宿主会先对已安装记录做一次对账：
+
+1. 去重重复 `pluginKey`，跳过非对象记录；
+2. 逐包复核 manifest 身份、安装摘要、宿主与 pluginApi 兼容性、贡献 ref 归属与全类型唯一；
+3. 复核对应 release 归档仍然存在且摘要一致；
+4. 任何单包失败只把该包标记为 `quarantined` 并写入日志，其余插件照常加载；隔离包不注册工具/Skill/智能体，但保留记录供诊断和卸载；
+5. 宿主升级或重新恢复兼容后，对账会自动解除隔离；
+6. 目录应用失败时先隔离全部包、保留管理页可用，再写日志；插件子系统故障不会阻断普通对话装配。
 
 ## GitHub 发布与发现
 
@@ -175,4 +234,4 @@ npm run plugin:sdk -- catalog-sign unsigned-catalog.json --key catalog-private-j
 - `scripts/plugin-cli.mjs`：创建、打包、验签、Schema 生成和目录签名；共享宿主验证逻辑。
 - 既有用户智能体的名称键保持兼容；插件贡献有独立的 ID 目录和精确引用查询，不加入裸名称兼容索引。
 
-运行 `npm run test:plugins:ui` 可挂载真实 Vue 组件，验证文件导入、显式授权、来源版本展示、工具选择和撤权后失效引用保留；测试自动生成自己的签名样例，不依赖手工准备。运行 `npm run test:plugins` 覆盖签名/篡改、同名隔离、版本重发、CAS、更新撤权、依赖阻塞、MCP Schema 漂移、GitHub 摘要、目录重放、后台 sender 与备份恢复。现有 tools、skills、backup、channels、conversation-runtime、contract 套件继续执行。生产发布前还需在真实浏览器安装扩展验证 UI，并与实际部署的 GitHub 目录和 MCP 服务做端到端验证；Node 中的模拟测试不能替代这些外部环境检查。
+运行 `npm run test:plugins:ui` 可挂载真实 Vue 组件，验证文件导入、显式授权、来源版本展示、工具选择、操作日志、撤权后失效引用保留；测试自动生成自己的签名样例，不依赖手工准备。运行 `npm run test:plugins` 覆盖签名/篡改、规范布局、全类型 ID 唯一、智能体引用边界、启动隔离、操作日志、同名隔离、版本重发、CAS、更新撤权、依赖阻塞、MCP Schema 漂移、GitHub 摘要、目录重放、后台 sender 与备份恢复。现有 tools、skills、backup、channels、conversation-runtime、contract 套件继续执行。生产发布前还需在真实浏览器安装扩展验证 UI，并与实际部署的 GitHub 目录和 MCP 服务做端到端验证；Node 中的模拟测试不能替代这些外部环境检查。

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 import { zipSync, strToU8 } from 'fflate';
 import { canonicalize } from 'json-canonicalize';
-import { base32, sha256, verifyPackage } from '../../utils/plugins/package';
+import { base32, sha256 } from '../../utils/plugins/codec';
+import { verifyPackage } from '../../utils/plugins/package';
 import { PluginRepository } from '../../utils/plugins/repository';
 import { PluginService } from '../../utils/plugins/service';
 import { strictJson } from '../../utils/plugins/json';
@@ -11,6 +12,10 @@ import { checkSchema, validateArguments } from '../../utils/plugins/schema';
 import { readArchive, safePath } from '../../utils/plugins/archive';
 import { wireNames } from '../../utils/plugins/wire-names';
 import { computeAvailability } from '../../utils/plugins/dependencies';
+import {
+  reconcilePackages,
+  assertCatalogConsistent,
+} from '../../utils/plugins/reconcile';
 import { PluginExecutionGateway } from '../../entrypoints/background/plugins/execution';
 import { toolRegistry } from '../../tools/registry';
 import { publicHttps } from '../../utils/plugins/network';
@@ -41,6 +46,11 @@ async function bundle(
     extra?: Record<string, Uint8Array>;
     id?: string;
     mcp?: boolean;
+    /** 在计算 integrity 前修改 manifest 与文件集合（用于布局/引用越界测试） */
+    mutate?: (
+      manifest: any,
+      files: Record<string, Uint8Array>,
+    ) => void;
   } = {},
 ) {
   const keys = opts.pair ?? pair,
@@ -52,7 +62,7 @@ async function bundle(
     id: opts.id ?? 'research',
     displayName: 'Research',
     version,
-    engines: { agentnexus: '>=0.0.1 <1.0.0', pluginApi: '^1.0.0' },
+    engines: { agentnexus: '>=0.0.1 <1.0.0', pluginApi: '^1.2.0' },
     license: 'MIT',
     capabilities: {
       hostTools: ['builtin/browser_get_page_text'],
@@ -65,7 +75,6 @@ async function bundle(
       agents: [{ id: 'researcher', path: 'agents/researcher.json' }],
     },
     dependencies: opts.dependencies ?? {},
-    optionalDependencies: {},
   };
   if (opts.mcp)
     manifest.capabilities.network = ['https://mcp.example.com'] as never[];
@@ -101,6 +110,8 @@ async function bundle(
     ),
     ...opts.extra,
   };
+  opts.mutate?.(manifest, files);
+  files['plugin.json'] = strToU8(JSON.stringify(manifest));
   const integrity = {
     version: 1,
     files: await Promise.all(
@@ -150,6 +161,8 @@ await test('signed skills retain binary resources and literal script contents', 
   } }), '0.0.1');
   assert.equal(plugin.skills[0].resourceBytes?.['assets/data.bin'], Buffer.from(asset).toString('base64'));
   assert.equal(plugin.skills[0].files['scripts/run.py'], 'print("ok")\r\n');
+  // 入口正文不重复计入资源清单
+  assert.equal(plugin.skills[0].files['SKILL.md'], undefined);
 });
 await test('publisher namespace separates identically named plugins', async () => {
   const other = await verifyPackage(
@@ -157,6 +170,34 @@ await test('publisher namespace separates identically named plugins', async () =
     '0.0.1',
   );
   assert.notEqual(other.key, verified.key);
+});
+await test('non-public host tools are rejected at import and by startup reconciliation', async () => {
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', {
+        mutate: (manifest) => {
+          manifest.capabilities.hostTools.push('builtin/browser_page_exec');
+        },
+      }),
+      '0.0.1',
+    ),
+    /HOST_TOOL_NOT_PUBLIC/,
+  );
+  const tampered = {
+    ...verified,
+    enabled: true,
+    epoch: 1,
+    installedAt: Date.now(),
+    manifest: {
+      ...verified.manifest,
+      capabilities: {
+        ...verified.manifest.capabilities,
+        hostTools: ['builtin/browser_page_exec'],
+      },
+    },
+  };
+  const result = reconcilePackages([tampered as any], '0.0.1', '1.2.0');
+  assert.match(result.packages[0].quarantined!, /HOST_TOOL_NOT_PUBLIC/);
 });
 await test('tampering and corrupt ZIP fail without producing contributions', async () => {
   const files = readArchive(a);
@@ -182,6 +223,7 @@ await test('strict JSON rejects duplicate keys, unsafe keys and depth attacks', 
     [...(strictJson(JSON.stringify([1, true, 'a"b'])) as any[])],
     [1, true, 'a"b'],
   );
+  assert.throws(() => strictJson('"unterminated'), /INVALID_JSON/);
 });
 await test('unsafe paths, symlink names and case-folded collisions rejected', async () => {
   for (const p of [
@@ -202,6 +244,268 @@ await test('unsafe paths, symlink names and case-folded collisions rejected', as
     /DUPLICATE/,
   );
 });
+await test('Plugin API 1.2 enforces the canonical layout', async () => {
+  // 入口路径必须是规范路径
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', {
+        mutate: (manifest) => {
+          manifest.contributes.tools[0].path = 'src/search.json';
+        },
+        extra: {
+          'src/search.json': strToU8(
+            JSON.stringify({
+              description: 'x',
+              inputSchema: {
+                type: 'object',
+                properties: {},
+                additionalProperties: false,
+              },
+              executor: {
+                type: 'host-alias',
+                target: 'builtin/browser_get_page_text',
+              },
+            }),
+          ),
+        },
+      }),
+      '0.0.1',
+    ),
+    /INVALID_LAYOUT/,
+  );
+  // 技能必须位于 skills/<id>/ 内
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', {
+        mutate: (manifest) => {
+          manifest.contributes.skills[0].path = 'skills/research/nested/SKILL.md';
+        },
+        extra: {
+          'skills/research/nested/SKILL.md': strToU8(
+            '---\nname: research\ndescription: R\n---\nbody',
+          ),
+        },
+      }),
+      '0.0.1',
+    ),
+    /INVALID_LAYOUT/,
+  );
+  // 未声明、又不属于任何规范目录的文件被拒绝
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', { extra: { 'misc/notes.txt': strToU8('x') } }),
+      '0.0.1',
+    ),
+    /UNEXPECTED_PACKAGE_FILE/,
+  );
+  // 技能目录之外的 skills/ 文件同样被拒绝
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', {
+        extra: { 'skills/other/SKILL.md': strToU8('---\nname: other\ndescription: o\n---\nx') },
+      }),
+      '0.0.1',
+    ),
+    /UNEXPECTED_PACKAGE_FILE/,
+  );
+  // assets/ 与根文件合法
+  await verifyPackage(
+    await bundle('1.0.0', {
+      extra: {
+        'assets/logo.png': Uint8Array.of(1, 2, 3),
+        'README.md': strToU8('# Research'),
+        LICENSE: strToU8('MIT'),
+      },
+    }),
+    '0.0.1',
+  );
+});
+await test('contribution ids are unique across tools, skills and agents', async () => {
+  // 同一插件内两个同名工具：直接拒绝，避免两套实现互相遮蔽
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', {
+        mutate: (manifest) => {
+          manifest.contributes.tools.push({
+            id: 'search',
+            path: 'tools/search.json',
+          });
+        },
+      }),
+      '0.0.1',
+    ),
+    /DUPLICATE_CONTRIBUTION/,
+  );
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', {
+        mutate: (manifest) => {
+          manifest.contributes.skills[0].id = 'search';
+          manifest.contributes.skills[0].path = 'skills/search/SKILL.md';
+        },
+        extra: {
+          'skills/search/SKILL.md': strToU8(
+            '---\nname: search\ndescription: S\nallowed-tools: ./search\n---\nbody',
+          ),
+        },
+      }),
+      '0.0.1',
+    ),
+    /DUPLICATE_CONTRIBUTION/,
+  );
+});
+await test('plugin agents may only reference own tools/skills and builtin tools', async () => {
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', {
+        mutate: (manifest, files) => {
+          const agent = JSON.parse(
+            new TextDecoder().decode(files['agents/researcher.json']),
+          );
+          agent.tools = [`${manifest.publisher.id}/other/search`];
+          files['agents/researcher.json'] = strToU8(JSON.stringify(agent));
+        },
+      }),
+      '0.0.1',
+    ),
+    /CROSS_PLUGIN_REFERENCE/,
+  );
+  // 系统 Skill 引用同样不允许
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', {
+        mutate: (manifest, files) => {
+          const agent = JSON.parse(
+            new TextDecoder().decode(files['agents/researcher.json']),
+          );
+          agent.skills = ['builtin/pdf'];
+          files['agents/researcher.json'] = strToU8(JSON.stringify(agent));
+        },
+      }),
+      '0.0.1',
+    ),
+    /CROSS_PLUGIN_REFERENCE/,
+  );
+  // 未声明的宿主工具引用被拒绝
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', {
+        mutate: (manifest, files) => {
+          const agent = JSON.parse(
+            new TextDecoder().decode(files['agents/researcher.json']),
+          );
+          agent.tools = ['./search', 'builtin/browser_page_exec'];
+          files['agents/researcher.json'] = strToU8(JSON.stringify(agent));
+        },
+      }),
+      '0.0.1',
+    ),
+    /UNDECLARED_HOST_TOOL/,
+  );
+  // 完整属性（头像 / 能力）可用，非法头像被拒绝
+  const withAvatar = await verifyPackage(
+    await bundle('1.0.0', {
+      mutate: (manifest, files) => {
+        const agent = JSON.parse(
+          new TextDecoder().decode(files['agents/researcher.json']),
+        );
+        agent.avatar = { type: 'emoji', value: '🧭' };
+        agent.category = 'search';
+        agent.tags = ['research'];
+        agent.capabilities = { richComponents: ['plan-card'] };
+        files['agents/researcher.json'] = strToU8(JSON.stringify(agent));
+      },
+    }),
+    '0.0.1',
+  );
+  assert.equal(withAvatar.agents[0].avatar?.type, 'emoji');
+  assert.equal(withAvatar.agents[0].category, 'search');
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', {
+        mutate: (manifest, files) => {
+          const agent = JSON.parse(
+            new TextDecoder().decode(files['agents/researcher.json']),
+          );
+          agent.avatar = { type: 'image', src: 'assets/logo.png' };
+          files['agents/researcher.json'] = strToU8(JSON.stringify(agent));
+        },
+      }),
+      '0.0.1',
+    ),
+    /MANIFEST_INVALID/,
+  );
+});
+await test('startup reconciliation quarantines bad records without losing the rest', async () => {
+  const good = await verifyPackage(a, '0.0.1');
+  const goodRecord = {
+    ...good,
+    enabled: true,
+    epoch: 1,
+    installedAt: 1,
+  };
+  const corrupt = {
+    ...goodRecord,
+    key: `${good.manifest.publisher.id}/broken`,
+    digest: 'not-a-digest',
+  };
+  const result = reconcilePackages(
+    [goodRecord, corrupt, { ...goodRecord } as any],
+    '0.0.1',
+    '1.2.0',
+  );
+  assert.equal(result.packages.length, 2);
+  const broken = result.packages.find((p) => p.digest === 'not-a-digest')!;
+  assert.match(broken.quarantined!, /CATALOG_CORRUPT/);
+  assert.match(broken.blocked!, /CATALOG_CORRUPT/);
+  const healthy = result.packages.find((p) => p.key === good.key)!;
+  assert.equal(healthy.quarantined, undefined);
+  assert.equal(healthy.blocked, undefined);
+  assert(result.issues.some((i) => i.code === 'DUPLICATE_PLUGIN'));
+  // 隔离是持久的：依赖重算不会把它覆盖成可用
+  const recomputed = computeAvailability(result.packages);
+  assert.match(recomputed.find((p) => p.digest === 'not-a-digest')!.blocked!, /CATALOG_CORRUPT/);
+  // 不兼容宿主也应隔离而不是抛错
+  const incompatible = reconcilePackages(
+    [goodRecord],
+    '0.0.1',
+    '2.0.0',
+  );
+  assert.match(incompatible.packages[0].quarantined!, /INCOMPATIBLE_HOST/);
+  // 恢复兼容后自动解除隔离
+  const restored = reconcilePackages(
+    incompatible.packages,
+    '0.0.1',
+    '1.2.0',
+  );
+  assert.equal(restored.packages[0].quarantined, undefined);
+  // 1.1 遗留的非规范入口路径在启动时被隔离
+  const legacy = {
+    ...goodRecord,
+    tools: goodRecord.tools.map((tool) => ({
+      ...tool,
+      path: 'src/search.json',
+    })),
+  };
+  const legacyResult = reconcilePackages([legacy], '0.0.1', '1.2.0');
+  assert.match(legacyResult.packages[0].quarantined!, /INVALID_LAYOUT/);
+});
+await test('catalog consistency is enforced before commit', async () => {
+  const plugin = await verifyPackage(a, '0.0.1');
+  const record = { ...plugin, enabled: true, epoch: 1, installedAt: 1 };
+  assert.throws(
+    () => assertCatalogConsistent([record, { ...record }]),
+    /CATALOG_CONFLICT/,
+  );
+  assert.throws(
+    () =>
+      assertCatalogConsistent([
+        { ...record, tools: [{ ...record.tools[0], ref: 'ed25519:evil/x' }] },
+      ]),
+    /CATALOG_CONFLICT/,
+  );
+  assertCatalogConsistent([record]);
+});
 await test('schema interpreter fails closed on unsupported and expensive features', () => {
   assert.throws(() => checkSchema({ type: 'object', $ref: 'https://evil' }));
   assert.throws(() =>
@@ -218,11 +522,147 @@ await test('schema interpreter fails closed on unsupported and expensive feature
   };
   checkSchema(s);
   validateArguments(s, { x: 2 });
-  assert.throws(() => validateArguments(s, { x: 0 }));
-  assert.throws(() => validateArguments(s, { x: 2, y: 1 }));
+  assert.throws(
+    () => validateArguments(s, { x: 0 }),
+    /root\.x: number is outside the allowed range/,
+  );
+  assert.throws(
+    () => validateArguments(s, { x: 2, y: 1 }),
+    /root\.y: additional properties are not allowed/,
+  );
 });
 const repo = new PluginRepository(`plugins-test-${crypto.randomUUID()}`),
   service = new PluginService(repo, '0.0.1');
+await test('installPreviewed rejects stale preview metadata before writing', async () => {
+  const bytes = await bundle('1.0.0'),
+    preview = await service.preview(bytes);
+  await assert.rejects(
+    service.installPreviewed(
+      { ...preview, generation: preview.generation + 1 },
+      bytes,
+      preview.generation,
+      preview.plugin.digest,
+    ),
+    /STALE_PREVIEW/,
+  );
+  assert.equal((await service.snapshot()).packages.length, 0);
+});
+await test('corrupt persisted state is normalized instead of crashing snapshots', async () => {
+  const dirty = new PluginRepository(`plugins-dirty-${crypto.randomUUID()}`),
+    name = (dirty as any).name as string;
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const r = indexedDB.open(name, 2);
+    r.onupgradeneeded = () => {
+      const d = r.result;
+      if (!d.objectStoreNames.contains('state')) d.createObjectStore('state');
+      if (!d.objectStoreNames.contains('releases'))
+        d.createObjectStore('releases', { keyPath: 'id' });
+      if (!d.objectStoreNames.contains('operations')) {
+        const operations = d.createObjectStore('operations', { keyPath: 'id' });
+        operations.createIndex('at', 'at');
+        operations.createIndex('plugin', 'pluginKey');
+      }
+    };
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('state', 'readwrite');
+    tx.objectStore('state').put(
+      { generation: 'broken', packages: { nope: true } },
+      'active',
+    );
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+  const state = await dirty.read();
+  assert.equal(state.generation, 0);
+  assert.deepEqual(state.packages, []);
+});
+await test('operation log persists, filters and clears', async () => {
+  const logRepo = new PluginRepository(`plugins-log-${crypto.randomUUID()}`);
+  const now = Date.now();
+  await logRepo.appendOperations([
+    {
+      id: crypto.randomUUID(),
+      at: now - 2,
+      action: 'install',
+      status: 'success',
+      pluginKey: 'k/a',
+      durationMs: 1,
+      generationBefore: 0,
+      generationAfter: 1,
+    },
+    {
+      id: crypto.randomUUID(),
+      at: now - 1,
+      action: 'update',
+      status: 'failure',
+      pluginKey: 'k/a',
+      stage: 'manifest',
+      errorCode: 'MANIFEST_INVALID',
+      errorDetail: 'plugin.json: id: Required',
+      durationMs: 2,
+      generationBefore: 1,
+      generationAfter: 1,
+    },
+    {
+      id: crypto.randomUUID(),
+      at: now,
+      action: 'uninstall',
+      status: 'success',
+      pluginKey: 'k/b',
+      durationMs: 3,
+      generationBefore: 1,
+      generationAfter: 2,
+    },
+  ]);
+  const all = await logRepo.listOperations({ limit: 10 });
+  assert.equal(all.length, 3);
+  assert.equal(all[0].action, 'uninstall');
+  const failures = await logRepo.listOperations({
+    pluginKey: 'k/a',
+    status: 'failure',
+  });
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].errorCode, 'MANIFEST_INVALID');
+  assert.equal(failures[0].errorDetail, 'plugin.json: id: Required');
+  await logRepo.clearOperations();
+  assert.equal((await logRepo.listOperations()).length, 0);
+});
+await test('re-importing the same digest heals a quarantined install missing its release', async () => {
+  const healRepo = new PluginRepository(`plugins-heal-${crypto.randomUUID()}`),
+    heal = new PluginService(healRepo, '0.0.1'),
+    bytes = await bundle('1.0.0'),
+    preview = await heal.preview(bytes);
+  await healRepo.restore(
+    0,
+    [
+      {
+        ...preview.plugin,
+        enabled: true,
+        epoch: 1,
+        installedAt: Date.now(),
+        quarantined: 'RELEASE_MISSING: test',
+      },
+    ],
+    [],
+  );
+  const before = await heal.snapshot();
+  assert.match(before.packages[0].quarantined!, /RELEASE_MISSING/);
+  assert.equal(await healRepo.release(preview.plugin.key, '1.0.0'), undefined);
+  const after = await heal.install(
+    bytes,
+    before.generation,
+    preview.plugin.digest,
+  );
+  assert.equal(after.packages[0].quarantined, undefined);
+  assert(after.packages[0].enabled);
+  assert(
+    await healRepo.release(preview.plugin.key, preview.plugin.manifest.version),
+  );
+});
 await test('install and duplicate import are atomic and idempotent', async () => {
   const preview = await service.preview(a);
   const next = await service.install(
@@ -420,6 +860,25 @@ await test('real host-alias execution is aborted and late results suppressed on 
   assert.equal(result.success, false);
   release();
 });
+await test('a fresh repository instance restores the same verified catalog after restart', async () => {
+  const freshService = new PluginService(
+    new PluginRepository((repo as any).name),
+    '0.0.1',
+  );
+  const snapshot = await freshService.snapshot();
+  assert.equal(snapshot.packages.length, 1);
+  const persisted = snapshot.packages[0];
+  assert.equal(persisted.digest, verified.digest);
+  assert.equal(persisted.tools[0].ref, verified.tools[0].ref);
+  const reconciled = reconcilePackages(
+    snapshot.packages,
+    '0.0.1',
+    '1.2.0',
+  );
+  assert.equal(reconciled.packages[0].quarantined, undefined);
+  assert.equal(reconciled.packages[0].blocked, undefined);
+  assert.equal(reconciled.issues.length, 0);
+});
 await test('GitHub release discovery pins repository identity and package digest', async () => {
   const original = globalThis.fetch;
   globalThis.fetch = async (input) => {
@@ -530,7 +989,7 @@ await test('background protocol rejects content-script senders and supports inst
     storage: {
       local: {
         get: async (k: any) =>
-          k === null ? Object.fromEntries(bgStorage) : { [k]: bgStorage.get(k) },
+          k === null ? Object.fromEntries(bgStorage) : Object.fromEntries((Array.isArray(k) ? k : [k]).map(key => [key,bgStorage.get(key)])),
         set: async (v: any) =>
           Object.entries(v).forEach(([k, v]) => bgStorage.set(k, v)),
         remove: async (k: any) => {
@@ -586,6 +1045,47 @@ await test('background protocol rejects content-script senders and supports inst
     true,
   );
   assert.equal((await request('snapshot')).value.packages[0].enabled, true);
+
+  // 操作日志：成功安装、失败安装（含错误码/detail）与查询/清空
+  const installedLogs = await request('operations', {
+    pluginKey: verified.key,
+  });
+  assert.equal(installedLogs.ok, true);
+  assert(
+    installedLogs.value.some(
+      (r: any) =>
+        r.action === 'install' &&
+        r.status === 'success' &&
+        r.pluginKey === verified.key &&
+        typeof r.durationMs === 'number',
+    ),
+  );
+  const failedInstall = await request('install', {
+    data,
+    generation: 0,
+    digest: verified.digest,
+  });
+  assert.equal(failedInstall.ok, false);
+  const failures = await request('operations', {
+    pluginKey: verified.key,
+    status: 'failure',
+    limit: 10,
+  });
+  const failure = failures.value.find(
+    (r: any) => r.action === 'install' || r.action === 'update',
+  );
+  assert(failure, 'expected failed install to be logged');
+  assert.equal(typeof failure.errorCode, 'string');
+  assert.equal(typeof failure.errorDetail, 'string');
+  assert(failure.errorDetail.length > 0);
+  assert.equal((await request('operations-clear', {})).ok, true);
+  assert.equal((await request('operations')).value.length, 0);
+  // 日志读取是管理页能力：会话页不可访问
+  assert.equal(
+    (await request('operations', {}, 'chrome-extension://test/sidepanel.html'))
+      .code,
+    'MANAGEMENT_ONLY',
+  );
 });
 await test('check-updates throttles, detects newer releases and aborts on rate limits', async () => {
   const send = (operation: string, payload: any = {}) =>
@@ -760,7 +1260,7 @@ await test('declared ZIP expansion limits reject highly compressed oversized fil
   assert(bomb.length < 100_000);
   assert.throws(() => readArchive(bomb), /ZIP_LIMIT/);
 });
-await test('500 plugins / 5000 contributed tools publish without collisions and reject atomic replacement conflicts', () => {
+await test('500 plugins / 5000 contributed tools publish without collisions and reject atomic replacement conflicts', async () => {
   const baseline = process.memoryUsage().heapUsed,
     start = performance.now();
   const packages = Array.from({ length: 500 }, (_, i) => {
@@ -779,7 +1279,7 @@ await test('500 plugins / 5000 contributed tools publish without collisions and 
     }));
     return p;
   });
-  applyPluginSnapshot({ generation: 10000, packages });
+  await applyPluginSnapshot({ generation: 10000, packages });
   assert.equal(
     toolRegistry.getAll().filter((t) => t.metadata.plugin).length,
     5000,
@@ -790,7 +1290,7 @@ await test('500 plugins / 5000 contributed tools publish without collisions and 
   );
   const bad = structuredClone(packages);
   bad[1].tools[0].ref = bad[0].tools[0].ref;
-  assert.throws(
+  await assert.rejects(
     () => applyPluginSnapshot({ generation: 10001, packages: bad }),
     /CONFLICT/,
   );

@@ -1,4 +1,4 @@
-import { isWorkspacePath } from '@/utils/python-workspace/paths';
+import { isWorkspaceRelativePath } from '@/utils/python-workspace/paths';
 
 export interface PythonScriptRequest {
   path: string;
@@ -18,8 +18,9 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+/** 工作区相对路径（与文件操作同一校验：逐段拒绝 .. / 反斜杠 / 控制符 + 盘符前缀）。 */
 function filePath(value: unknown): value is string {
-  return typeof value === 'string' && !/^[a-z]:/i.test(value) && isWorkspacePath(value);
+  return typeof value === 'string' && isWorkspaceRelativePath(value);
 }
 
 function scriptText(value: unknown, maxLength: number): value is string {
@@ -38,14 +39,16 @@ function strings(value: unknown, maxItems: number, maxLength: number, label: str
 
 /** Used at both the model-facing and offscreen message boundaries. */
 export function parsePythonScriptRequest(input: unknown): PythonScriptRequest {
-  const { path, module, cwd, argv, env, stdin, preflight, dependencyMode, wheels, requirements } = record(input);
+  const source = record(input);
+  if (Object.keys(source).some(key => !['path', 'module', 'cwd', 'argv', 'env', 'stdin', 'preflight', 'dependencyMode', 'wheels', 'requirements'].includes(key))) throw new Error('Script request contains unknown fields');
+  const { path, module, cwd, argv, env, stdin, preflight, dependencyMode, wheels, requirements } = source;
   if (!filePath(path) || !path.endsWith('.py')) {
-    throw new Error('scriptPath must be a workspace-relative .py file. Use a compatible Python implementation for other script languages.');
+    throw new Error('path must be a workspace-relative .py file. Use a compatible Python implementation for other script languages.');
   }
   if (cwd !== undefined && cwd !== '.' && !filePath(cwd)) throw new Error('cwd must be "." or a workspace-relative directory');
   if (module !== undefined && (typeof module !== 'string' || module.length > 256 ||
       !/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$/.test(module))) {
-    throw new Error('module must be a dotted Python module name matching scriptPath');
+    throw new Error('module must be a dotted Python module name matching path');
   }
   if (preflight !== undefined && typeof preflight !== 'boolean') throw new Error('preflight must be a boolean');
   if (dependencyMode !== undefined && dependencyMode !== 'catalog' && dependencyMode !== 'pypi') {

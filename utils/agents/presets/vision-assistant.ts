@@ -8,6 +8,8 @@ import { getPresetToolIds } from '@/utils/tools/tool-presets';
 
 export const visionAssistantConfig: PresetAgentConfig = {
   id: 'Vision-Assistant',
+  // 发布闸门：false = 底层禁用（管理中心与输入框 @ 选择器都看不到）
+  available: true,
   name: '视觉助手',
   description: '帮你看懂当前页面并告诉你该怎么做：解读界面与报错、翻译外文、读图表小字、指出按钮位置。只讲解不代你点击',
   category: 'vision',

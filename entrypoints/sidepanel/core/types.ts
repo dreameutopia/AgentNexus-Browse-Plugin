@@ -14,7 +14,6 @@ import type { ChatMessage } from '../utils/ai/ai-chat-api';
 import type { MessageFeedback, MessagePart, ToolCallUI } from '../types/chat';
 import type { ModelRef, ResolvedModelEndpoint } from '../utils/channels';
 import type { PageQuote } from '../utils/chat/page-quote';
-import type { SkillToolMode } from '@/utils/skills/skill-tool-contract';
 
 // ==================== 用户面：会话与消息记录（IndexedDB，无长度限制） ====================
 
@@ -55,7 +54,7 @@ export interface ChatSessionMeta {
   /**
    * 本会话最近一次使用的技能引用列表。
    * v2 起存技能 id（稳定引用，技能改名不失效）；v1 历史会话为技能名——
-   * 读取侧经 resolveSkill 三态解析（id / 模型标识 / 名称）统一兼容。
+   * 读取侧经 getSkillById 三态解析（id / 模型标识 / 名称）统一兼容。
    */
   skillNames: string[];
   /**
@@ -175,11 +174,21 @@ export interface ChatMessageRecord {
    * 删除本键（而非写入 null），保证读取侧只需真值判定。
    */
   feedback?: MessageFeedback;
+  /**
+   * 自动续跑产生的隐藏用户轮（守卫停止后的「继续」）。
+   *
+   * 语义：该用户消息**参与模型上下文**（模型看到「继续」），但不作为用户
+   * 气泡渲染。渲染层按此标记置 isIgnore；它仍存在于消息列表中，因此
+   * 「组件下方是否已有新输出」的时效判定能正确把后续隐藏轮视为新内容。
+   * 缺省 = 普通用户消息。
+   */
+  synthetic?: boolean;
   createdAt: number;
   updatedAt: number;
 }
 
 export interface ChatMessageUsage {
+  toolRounds?: number;
   /** 工具循环轮数 */
   iterations: number;
   durationMs: number;
@@ -221,10 +230,27 @@ export type { VisionRuntimeConfigImpl as VisionRuntimeConfig };
 type VisionRuntimeConfig = VisionRuntimeConfigImpl;
 
 export interface ConversationRuntime {
+  /** Retry resumes this failed record, guarded against stale requests. */
+  retryTarget?: { messageId: string; content: string };
+  /**
+   * 守卫停止后的「继续」目标：必须在运行开始时对最新落库记录重新校验
+   * （目标仍是最后一条助手消息的最后一个 notice 片段，且之后没有任何输出）。
+   * 与 retryTarget 互斥；校验失败抛 API_ERROR_CONTINUE_EXPIRED。
+   */
+  guardContinueTarget?: {
+    messageId: string;
+    /** notice 片段在 record.parts 中的原始下标 */
+    partIndex: number;
+    /** 期望的注记全文（与片段 content 逐字比对） */
+    expectedNotice: string;
+  };
+  /**
+   * 本轮用户输入是自动续跑的隐藏轮：转录照常落库（模型上下文可见），
+   * UI 侧按 record.synthetic 标记为不渲染的用户气泡。
+   */
+  hiddenUserInput?: boolean;
   pluginToolCeiling?: string[];
-  skillResourceIds?: readonly string[];
   availableSkillIds?: readonly string[];
-  skillMode?: SkillToolMode;
   pluginOwners?: string[];
   pluginBindings?: Record<string, { digest: string; epoch: number }>;
   agentId?: string;
@@ -339,7 +365,7 @@ export interface PreRunCompactionPayload {
 
 export type ConversationEvent =
   | { type: 'user-message'; chatId: string; record: ChatMessageRecord }
-  | { type: 'assistant-start'; chatId: string; messageId: string }
+  | { type: 'assistant-start'; chatId: string; messageId: string; record?: ChatMessageRecord }
   | { type: 'token'; chatId: string; messageId: string; delta: string }
   | { type: 'reasoning'; chatId: string; messageId: string; delta: string }
   | {
@@ -348,6 +374,10 @@ export type ConversationEvent =
       chatId: string;
       messageId: string;
       text: string;
+      /** 可交互语义（与 MessagePart.noticeAction 同源；缺省 = 普通注记） */
+      noticeAction?: 'guard-stop';
+      /** 守卫停止的触发类型（noticeAction='guard-stop' 时存在） */
+      guardKind?: 'max-iterations' | 'max-duration' | 'tool-failures';
     }
   | { type: 'tool-call'; chatId: string; messageId: string; call: ToolCallUI }
   | {

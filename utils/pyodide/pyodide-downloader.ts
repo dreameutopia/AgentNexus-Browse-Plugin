@@ -9,6 +9,7 @@
  */
 
 import { PyodideCacheEntry, deleteFile, getFile, putFile } from './pyodide-cache';
+import { getPyodideEnvState, withPyodideEnvLock } from './pyodide-env';
 
 export interface DownloadResult {
   buffer: ArrayBuffer;
@@ -23,6 +24,7 @@ export interface DownloadOptions {
   onProgress?: (received: number, total: number) => void;
   /** 取消信号 */
   signal?: AbortSignal;
+  environmentId?: string;
   /** 缓存/响应内容类型提示（响应头缺失时回退） */
   contentTypeFallback?: string;
   /**
@@ -55,6 +57,18 @@ function urlToLabel(url: string): string {
  * @throws Error（含 "已取消" 字样时视为用户主动取消）
  */
 export async function downloadPyodideFile(url: string, options: DownloadOptions = {}): Promise<DownloadResult> {
+  const mutateCache = (mutation: () => Promise<void>) => {
+    options.signal?.throwIfAborted();
+    if (!options.environmentId) return mutation();
+    return withPyodideEnvLock(async () => {
+      const state = await getPyodideEnvState();
+      if (state.environmentId !== options.environmentId || state.status === 'idle') {
+        throw new Error('Python environment changed during the download');
+      }
+      options.signal?.throwIfAborted();
+      await mutation();
+    }, options.signal);
+  };
   const verify = async (buffer: ArrayBuffer): Promise<void> => {
     if (!options.expectedSha256) return;
     const actual = await sha256Hex(buffer);
@@ -73,9 +87,10 @@ export async function downloadPyodideFile(url: string, options: DownloadOptions 
       // 缓存条目损坏（校验不过）：删除自愈并回落网络重下，
       // 否则坏条目会让后续每次命中都抛错、永远无法恢复。
       cacheValid = false;
-      await deleteFile(url).catch(() => undefined);
+      await mutateCache(() => deleteFile(url).catch(() => undefined));
     }
     if (cacheValid) {
+      options.signal?.throwIfAborted();
       options.onProgress?.(cached.size, cached.size);
       return { buffer: cached.data, contentType: cached.contentType, size: cached.size, fromCache: true };
     }
@@ -126,7 +141,7 @@ export async function downloadPyodideFile(url: string, options: DownloadOptions 
     size: buffer.byteLength,
     storedAt: Date.now(),
   };
-  await putFile(entry);
+  await mutateCache(() => putFile(entry));
 
   return { buffer, contentType, size: buffer.byteLength, fromCache: false };
 }
@@ -175,6 +190,7 @@ export interface PreloadOptions {
   /** 并发上限（默认 4——CDN 友好且不至于拖垮主线程 IDB 写入） */
   concurrency?: number;
   signal?: AbortSignal;
+  environmentId?: string;
   onProgress?: (progress: PreloadProgress) => void;
 }
 
@@ -222,6 +238,7 @@ export async function preloadWheels(
         const result = await downloadPyodideFile(item.url, {
           expectedSha256: item.sha256,
           signal: options.signal,
+          environmentId: options.environmentId,
           contentTypeFallback: 'application/octet-stream',
         });
         bytes += result.size;

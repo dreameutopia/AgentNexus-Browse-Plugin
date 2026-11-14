@@ -2,6 +2,7 @@ import {
   conversationEngine,
   composeLlmUserMessage,
 } from "../sidepanel/core/conversation/conversation-engine";
+import { queryActivePageInfo } from "../sidepanel/utils/system-context";
 import { contextCompactor } from "../sidepanel/core/context/compactor";
 import { transcriptEngine } from "../sidepanel/core/context/transcript-engine";
 import {
@@ -432,14 +433,18 @@ export function initConversationRuntime(): void {
         const task = (async () => {
           await Promise.all([skillEngine.restore(), appSettingsStore.load()]);
           if (cancelled.has(runtime.chatId)) throw new Error("会话已停止");
+          // 预运行计量与引擎构造同口径注入 <system_context>（时间时区 +
+          // 激活网页）；queryActivePageInfo 失败返回 null，不影响计量
+          const activePage = await queryActivePageInfo();
           // The long first compaction belongs to the worker as well. Closing the
           // panel during this model request must not discard the pending input.
           if (
-            runtime.initialContext?.length &&
+            // Retries update the existing last record. Runtime compaction keeps
+            // its continuation in modelContext without advancing past its seq.
+            !runtime.retryTarget && runtime.initialContext?.length &&
             measureContextUsage({
               systemPrompt: runtime.systemPrompt,
               toolIds: runtime.advertisedToolIds ?? runtime.toolIds,
-              skillMode: runtime.skillMode,
               messages: [
                 ...runtime.initialContext,
                 composeLlmUserMessage(
@@ -447,6 +452,8 @@ export function initConversationRuntime(): void {
                   runtime.attachmentPrompt,
                   runtime.userImages,
                   runtime.pageQuotePrompt,
+                  false,
+                  activePage,
                 ),
                 ...runtime.activationContext,
               ],

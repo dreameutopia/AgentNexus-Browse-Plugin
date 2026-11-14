@@ -3,6 +3,11 @@ import { invariant, isPluginRef } from './contracts';
 
 /** Request-local bijection, applied before any provider-specific adapter. Canonical history is untouched. */
 export function wireNames(tools: OpenAITool[] = [], messages: any[] = []) {
+  invariant(
+    tools.length <= 200,
+    'TOOL_REQUEST_LIMIT',
+    'Select at most 200 tools for one request',
+  );
   const refs = new Set(tools.map((t) => t.function.name).filter(isPluginRef));
   for (const m of messages) {
     if (isPluginRef(m.name ?? '')) refs.add(m.name);
@@ -71,11 +76,6 @@ export function wireNames(tools: OpenAITool[] = [], messages: any[] = []) {
       ? { content: replacePrompt(m.content) }
       : {}),
   });
-  invariant(
-    tools.length <= 200,
-    'TOOL_REQUEST_LIMIT',
-    'Select at most 200 tools for one request',
-  );
   return {
     tools: tools.map((t) => ({
       ...t,

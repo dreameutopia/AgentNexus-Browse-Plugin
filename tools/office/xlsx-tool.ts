@@ -3,129 +3,191 @@
  *
  * 单一工具覆盖 Excel 文件生成的完整操作面，通过 action 区分：
  *   - create                ：声明式创建（多表/合并单元格/公式/富文本/超链接/样式/冻结/筛选；
- *                             可引用 dataRef 暂存批次，与手写表跨表混排）
+ *                             可引用 dataRef 暂存批次或 dataFiles 工作区数据文件，与手写表跨表混排）
  *   - create_from_markdown  ：把 Markdown 表格文本（支持多表）转换为 xlsx
- *   - create_from_data      ：批量数据导出入口（dataRef 直出、零转录，至少含一个
- *                             dataRef 表，可混排手写公式汇总表）
+ *   - create_from_data      ：批量数据导出入口（dataFiles 结果文件 / dataRef 批次直出、
+ *                             零转录，至少含一个数据表，可混排手写公式汇总表）
  *
- * 产物路径：生成 → 存入扩展文件库（chrome.storage，fileId 索引）→（可选）自动下载。
- * 返回结果携带 [file:ID|文件名] 标记，渲染端据此展示可下载的文件卡片。
+ * 数据源三类（同一工作表互斥，不同工作表可混用）：
+ *   - dataFiles：工作区数据文件路径列表（js_run run/crawl 执行结果与
+ *     data_ref_tool 治理产物，results/ 下持久保存；按列表顺序拼接成一张表）；
+ *   - dataRef：暂存批次 ID（browser_network_capture 等被动捕获，会话内有效）；
+ *   - rows：手写数据行。
+ *
+ * 产物路径：生成 → 存入当前会话工作区 outputs/ →（可选）自动下载。
+ * 返回统一 WorkspaceArtifact 与 workspace-file 标记。
  *
  * 错误约定：所有参数/构建错误以精准原因（含参数路径）封装为失败 ToolResult 返回，
  * 绝不向上抛出中断对话流程。
  */
 
-import { BaseTool } from '../base-tool';
-import { ToolMetadata } from '../registry';
-import { OpenAITool } from '@/common/openai-types';
-import { ToolResult } from '@/common/tool-handler';
-import { fileManager } from '@/utils/file-manager';
-import { arrayBufferToBase64 } from '@/utils/shared/base64';
-import { getDataRef, MAX_FIELDS as DATA_REF_MAX_FIELDS } from '@/utils/data-ref-store';
-import { buildWorkbook, XlsxBuildError, XLSX_LIMITS } from './xlsx-builder';
-import { parseMarkdownTables } from './xlsx-markdown';
+import { BaseTool } from "../base-tool";
+import { ToolMetadata, type ToolExecutionContext } from "../registry";
+import { OpenAITool } from "@/common/openai-types";
+import { ToolResult } from "@/common/tool-handler";
+import { saveWorkspaceOutput } from "@/utils/python-workspace/store";
+import {
+  requireWorkspaceChatId,
+  type WorkspaceArtifact,
+} from "@/utils/python-workspace/artifact-contract";
+import { downloadWorkspaceArtifact } from "@/utils/python-workspace/artifact-download";
+import { readWorkspaceDataFile } from "@/utils/python-workspace/data-files";
+import { getDataRef } from "@/utils/data-ref-store";
+import {
+  analyzeValue,
+  collectRecordFields,
+  MAX_FIELDS,
+  type DataShape,
+} from "@/utils/data-ref-rows";
+import { buildWorkbook, XlsxBuildError, XLSX_LIMITS } from "./xlsx-builder";
+import { parseMarkdownTables } from "./xlsx-markdown";
 
-const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-
-/** Service Worker 环境下 data: URL 自动下载的体积守卫 */
-const DATA_URL_MAX_BYTES = 8 * 1024 * 1024;
+const XLSX_MIME =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 /**
  * 文件名合法化：
- * - 剔除文件系统/下载非法字符（含 [ ]，避免破坏 [file:ID|文件名] 标记解析）与全部控制字符；
+ * - 剔除文件系统/下载非法字符（含 [ ]，保证跨平台下载文件名可用）与全部控制字符；
  * - 换行/制表符折叠为空格；Windows 不允许结尾点号，去尾点；
  * - 强制 .xlsx 后缀；基名长度 ≤ 96（含后缀 ≤ 102）。
  * 返回 name 与可选 note（入参类型异常时的降级说明）。
  */
 function sanitizeFilename(raw: unknown): { name: string; note?: string } {
-  const fallback = `导出_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`;
-  if (raw === undefined || raw === null || raw === '') return { name: fallback };
-  if (typeof raw !== 'string') {
-    return { name: fallback, note: `filename 需为字符串（实际收到 ${Array.isArray(raw) ? '数组' : typeof raw}），已使用默认名 ${fallback}` };
+  const fallback = `导出_${new Date().toISOString().slice(0, 10).replace(/-/g, "")}.xlsx`;
+  if (raw === undefined || raw === null || raw === "")
+    return { name: fallback };
+  if (typeof raw !== "string") {
+    return {
+      name: fallback,
+      note: `filename 需为字符串（实际收到 ${Array.isArray(raw) ? "数组" : typeof raw}），已使用默认名 ${fallback}`,
+    };
   }
 
   let name = raw
     .trim()
     // 控制字符（0x00-0x1F、0x7F）与文件名非法字符整体剔除；换行/制表折叠为空格
-    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[\r\n\t]+/g, " ")
     // eslint-disable-next-line no-control-regex -- 刻意匹配控制字符以清理文件名
-    .replace(/[\u0000-\u001F\u007F]/g, '')
-    .replace(/[\\/:*?"<>|[\]]/g, '')
-    .replace(/\s+/g, ' ')
+    .replace(/[\u0000-\u001F\u007F]/g, "")
+    .replace(/[\\/:*?"<>|[\]]/g, "")
+    .replace(/\s+/g, " ")
     .trim()
-    .replace(/\.+$/, ''); // Windows 结尾点号
-  if (!name || name === '.xlsx') return { name: fallback };
+    .replace(/\.+$/, ""); // Windows 结尾点号
+  if (!name || name === ".xlsx") return { name: fallback };
   if (!/\.xlsx$/i.test(name)) name = `${name}.xlsx`;
   // 基名（去掉 .xlsx 后）截断到 96 字符
-  const base = name.replace(/\.xlsx$/i, '');
+  const base = name.replace(/\.xlsx$/i, "");
   if (base.length > 96) name = `${base.slice(0, 96)}.xlsx`;
   return { name };
 }
 
 const STYLE_SCHEMA = {
-  type: 'object',
-  description: '单元格/区域样式',
+  type: "object",
+  description: "单元格/区域样式",
   properties: {
-    bold: { type: 'boolean', description: '加粗' },
-    italic: { type: 'boolean', description: '斜体' },
-    underline: { type: 'boolean', description: '下划线' },
-    strike: { type: 'boolean', description: '删除线' },
-    fontSize: { type: 'number', description: '字号 1-100' },
-    fontName: { type: 'string', description: '字体名，如 "微软雅黑"' },
-    fontColor: { type: 'string', description: '文字颜色：#RGB/#RRGGBB 或颜色名' },
-    fillColor: { type: 'string', description: '背景颜色：#RGB/#RRGGBB 或颜色名' },
-    hAlign: { type: 'string', enum: ['left', 'center', 'right'], description: '水平对齐' },
-    vAlign: { type: 'string', enum: ['top', 'middle', 'bottom'], description: '垂直对齐' },
-    wrap: { type: 'boolean', description: '自动换行' },
+    bold: { type: "boolean", description: "加粗" },
+    italic: { type: "boolean", description: "斜体" },
+    underline: { type: "boolean", description: "下划线" },
+    strike: { type: "boolean", description: "删除线" },
+    fontSize: { type: "number", description: "字号 1-100" },
+    fontName: { type: "string", description: '字体名，如 "微软雅黑"' },
+    fontColor: {
+      type: "string",
+      description: "文字颜色：#RGB/#RRGGBB 或颜色名",
+    },
+    fillColor: {
+      type: "string",
+      description: "背景颜色：#RGB/#RRGGBB 或颜色名",
+    },
+    hAlign: {
+      type: "string",
+      enum: ["left", "center", "right"],
+      description: "水平对齐",
+    },
+    vAlign: {
+      type: "string",
+      enum: ["top", "middle", "bottom"],
+      description: "垂直对齐",
+    },
+    wrap: { type: "boolean", description: "自动换行" },
     border: {
-      description: '边框：统一线型字符串，或按边对象',
+      description: "边框：统一线型字符串，或按边对象",
       oneOf: [
-        { type: 'string', enum: ['none', 'hair', 'thin', 'medium', 'thick', 'double', 'dashed', 'dotted', 'dashDot', 'dashDotDot', 'slantDashDot'] },
         {
-          type: 'object',
+          type: "string",
+          enum: [
+            "none",
+            "hair",
+            "thin",
+            "medium",
+            "thick",
+            "double",
+            "dashed",
+            "dotted",
+            "dashDot",
+            "dashDotDot",
+            "slantDashDot",
+          ],
+        },
+        {
+          type: "object",
           properties: {
-            top: { type: 'string' },
-            bottom: { type: 'string' },
-            left: { type: 'string' },
-            right: { type: 'string' },
-            color: { type: 'string', description: '边框颜色' },
+            top: { type: "string" },
+            bottom: { type: "string" },
+            left: { type: "string" },
+            right: { type: "string" },
+            color: { type: "string", description: "边框颜色" },
           },
         },
       ],
     },
-    borderColor: { type: 'string', description: '边框颜色（border 为字符串线型时使用）' },
-    numFmt: { type: 'string', description: "数字/日期格式，如 '0.00%'、'yyyy-mm-dd'、'#,##0'" },
+    borderColor: {
+      type: "string",
+      description: "边框颜色（border 为字符串线型时使用）",
+    },
+    numFmt: {
+      type: "string",
+      description: "数字/日期格式，如 '0.00%'、'yyyy-mm-dd'、'#,##0'",
+    },
   },
 };
 
 const CELL_SCHEMA = {
-  description: '单元格：直接值（string/number/boolean），或对象声明（值形态 v/value、formula、richText、link、date 六选一，可附 style/numFmt）',
+  description:
+    "单元格：直接值（string/number/boolean），或对象声明（值形态 v/value、formula、richText、link、date 六选一，可附 style/numFmt）",
   oneOf: [
-    { type: ['string', 'number', 'boolean', 'null'] },
+    { type: ["string", "number", "boolean", "null"] },
     {
-      type: 'object',
+      type: "object",
       properties: {
-        v: { description: '纯值（string/number/boolean）' },
-        value: { description: 'v 的别名' },
-        formula: { type: 'string', description: "Excel 公式，如 'SUM(A1:A10)'（等号可省略）" },
+        v: { description: "纯值（string/number/boolean）" },
+        value: { description: "v 的别名" },
+        formula: {
+          type: "string",
+          description: "Excel 公式，如 'SUM(A1:A10)'（等号可省略）",
+        },
         richText: {
-          type: 'array',
-          description: '富文本片段',
+          type: "array",
+          description: "富文本片段",
           items: {
-            type: 'object',
+            type: "object",
             properties: {
-              text: { type: 'string' },
-              bold: { type: 'boolean' },
-              italic: { type: 'boolean' },
-              color: { type: 'string' },
-              size: { type: 'number' },
+              text: { type: "string" },
+              bold: { type: "boolean" },
+              italic: { type: "boolean" },
+              color: { type: "string" },
+              size: { type: "number" },
             },
-            required: ['text'],
+            required: ["text"],
           },
         },
-        link: { type: 'string', description: '超链接 URL（http/https/mailto）；可与 v 搭配，v 作为链接显示文字' },
-        date: { type: 'string', description: "日期字符串，如 '2026-10-30'" },
-        numFmt: { type: 'string' },
+        link: {
+          type: "string",
+          description:
+            "超链接 URL（http/https/mailto）；可与 v 搭配，v 作为链接显示文字",
+        },
+        date: { type: "string", description: "日期字符串，如 '2026-10-30'" },
+        numFmt: { type: "string" },
         style: STYLE_SCHEMA,
       },
     },
@@ -133,65 +195,108 @@ const CELL_SCHEMA = {
 };
 
 const SHEET_SCHEMA = {
-  type: 'object',
+  type: "object",
   description:
-    '工作表声明：数据来源二选一——rows 手写数据，或 dataRef 引用暂存批次（同一工作表不能同时提供；不同工作表可混用，可一次生成「批量数据表 + 公式汇总表」的混合工作簿）',
+    "工作表声明：数据来源三选一——rows 手写数据、dataFiles 工作区数据文件列表（按列表顺序拼接成一张表）或 dataRef 暂存批次（同一工作表只能提供一种；不同工作表可混用，可一次生成「批量数据表 + 公式汇总表」的混合工作簿）",
   properties: {
-    name: { type: 'string', description: '工作表名（≤31 字符，不含 : \\ / ? * [ ]）' },
-    title: { type: 'string', description: '大标题：置于表格上方，跨全部列合并居中加粗' },
-    headers: { type: 'array', description: '表头行（默认蓝底白字加粗、冻结表头）', items: CELL_SCHEMA },
-    firstRowAsHeader: { type: 'boolean', description: '无 headers 时是否把 rows 第一行当表头美化（默认 false）' },
-    rows: { type: 'array', description: `数据行二维数组（每行 ≤ ${XLSX_LIMITS.maxColumnsPerSheet} 列，共 ≤ ${XLSX_LIMITS.maxRowsPerSheet} 行；与 dataRef 二选一）`, items: { type: 'array', items: CELL_SCHEMA } },
+    name: {
+      type: "string",
+      description: "工作表名（≤31 字符，不含 : \\ / ? * [ ]）",
+    },
+    title: {
+      type: "string",
+      description: "大标题：置于表格上方，跨全部列合并居中加粗",
+    },
+    headers: {
+      type: "array",
+      description: "表头行（默认蓝底白字加粗、冻结表头）",
+      items: CELL_SCHEMA,
+    },
+    firstRowAsHeader: {
+      type: "boolean",
+      description: "无 headers 时是否把 rows 第一行当表头美化（默认 false）",
+    },
+    rows: {
+      type: "array",
+      description: `数据行二维数组（每行 ≤ ${XLSX_LIMITS.maxColumnsPerSheet} 列，共 ≤ ${XLSX_LIMITS.maxRowsPerSheet} 行；与 dataFiles/dataRef 互斥）`,
+      items: { type: "array", items: CELL_SCHEMA },
+    },
     cells: {
-      type: 'array',
-      description: '精确单元格放置（ref 如 "B3"），与 rows 叠加使用（后写覆盖）；dataRef 表也可用它在数据区之外追加注释/落款',
-      items: { type: 'object', properties: { ref: { type: 'string', description: "单元格引用，如 'B3'" } }, required: ['ref'] },
+      type: "array",
+      description:
+        '精确单元格放置（ref 如 "B3"），与 rows 叠加使用（后写覆盖）；dataFiles/dataRef 表也可用它在数据区之外追加注释/落款',
+      items: {
+        type: "object",
+        properties: {
+          ref: { type: "string", description: "单元格引用，如 'B3'" },
+        },
+        required: ["ref"],
+      },
+    },
+    dataFiles: {
+      type: "array",
+      description:
+        "工作区数据文件路径列表（与 rows/dataRef 互斥）：js_run run/crawl 的执行结果文件（results/*.json，工具响应的 resultFile.path）与 data_ref_tool 治理产物，可混列多个——按列表顺序把各行数据拼接成一张表（对象数组按字段并集成列，二维数组按行拼接）。文件须为 JSON 数组、单文件 ≤10MB；批量数据零转录，禁止手写 rows 复现",
+      items: { type: "string" },
     },
     dataRef: {
-      type: 'string',
+      type: "string",
       description:
-        '数据批次 ID（browser_page_exec 抓取产生：saveResult 默认开启即暂存，或结果超 2000 字符自动暂存；browser_network_capture 捕获的响应正文也入同一暂存区；data_ref_tool(action="list") 可查，分页批次先 merge/extract/dedupe）。与 rows 互斥；浏览器会话内约 12 小时有效',
+        '暂存批次 ID（browser_network_capture 捕获的响应正文等；data_ref_tool(action="list") 可查）。与 rows/dataFiles 互斥；浏览器会话内约 12 小时有效。js_run 的执行结果已改为工作区结果文件——请用 dataFiles 引用',
     },
     fields: {
-      type: 'array',
-      description: '仅 dataRef 表有效：按此字段列表取值，并决定导出列的顺序与数量（缺省取数据全部字段；不在此列表中的字段不导出；字段名拼写错误会被校验拒绝）',
-      items: { type: 'string' },
+      type: "array",
+      description:
+        "仅 dataFiles/dataRef 表有效：按此字段列表取值，并决定导出列的顺序与数量（缺省取数据全部字段；不在此列表中的字段不导出；字段名拼写错误会被校验拒绝）",
+      items: { type: "string" },
     },
-    merges: { type: 'array', description: "合并区域，如 ['A1:C1','B2:B5']（区域内只允许左上角有数据）", items: { type: 'string' } },
+    merges: {
+      type: "array",
+      description: "合并区域，如 ['A1:C1','B2:B5']（区域内只允许左上角有数据）",
+      items: { type: "string" },
+    },
     columns: {
-      type: 'array',
-      description: '按列序号（从 1 起）的列定义：width/numFmt/style（作用该列数据格）',
+      type: "array",
+      description:
+        "按列序号（从 1 起）的列定义：width/numFmt/style（作用该列数据格）",
       items: {
-        type: 'object',
+        type: "object",
         properties: {
-          width: { type: 'number', description: '显式列宽（缺省自动列宽）' },
-          numFmt: { type: 'string' },
+          width: { type: "number", description: "显式列宽（缺省自动列宽）" },
+          numFmt: { type: "string" },
           style: STYLE_SCHEMA,
         },
       },
     },
     colWidths: {
-      type: 'object',
-      description: '列宽策略（默认自动列宽）',
+      type: "object",
+      description: "列宽策略（默认自动列宽）",
       properties: {
-        auto: { type: 'boolean' },
-        minWidth: { type: 'number' },
-        maxWidth: { type: 'number' },
+        auto: { type: "boolean" },
+        minWidth: { type: "number" },
+        maxWidth: { type: "number" },
       },
     },
-    rowHeights: { type: 'object', description: '行高，如 {"1": 30}（行号从 1 起）' },
-    freeze: { description: "冻结窗格引用（如 'A2' 冻结第 1 行）；有 headers 时默认冻结表头，传 false 关闭", oneOf: [{ type: 'string' }, { type: 'boolean', enum: [false] }] },
-    autoFilter: { type: 'boolean', description: '表头自动筛选（默认 false）' },
-    zebra: { type: 'boolean', description: '数据行斑马纹底色（默认 false）' },
-    tabColor: { type: 'string', description: '工作表标签颜色' },
-    landscape: { type: 'boolean', description: '横向打印适配' },
+    rowHeights: {
+      type: "object",
+      description: '行高，如 {"1": 30}（行号从 1 起）',
+    },
+    freeze: {
+      description:
+        "冻结窗格引用（如 'A2' 冻结第 1 行）；有 headers 时默认冻结表头，传 false 关闭",
+      oneOf: [{ type: "string" }, { type: "boolean", enum: [false] }],
+    },
+    autoFilter: { type: "boolean", description: "表头自动筛选（默认 false）" },
+    zebra: { type: "boolean", description: "数据行斑马纹底色（默认 false）" },
+    tabColor: { type: "string", description: "工作表标签颜色" },
+    landscape: { type: "boolean", description: "横向打印适配" },
   },
-  required: ['name'],
+  required: ["name"],
 };
 
 /** 是否为普通对象（非数组） */
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -201,7 +306,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function previewValue(value: unknown): string {
   try {
     const text = JSON.stringify(value ?? null);
-    return typeof text === 'string' ? text : String(value);
+    return typeof text === "string" ? text : String(value);
   } catch {
     return String(value);
   }
@@ -210,94 +315,99 @@ function previewValue(value: unknown): string {
 /** 任意抓取值 → xlsx 可接受的纯值（超长文本截断、结构化值紧凑 JSON 化） */
 function toXlsxCell(value: unknown): string | number | boolean | null {
   if (value === null || value === undefined) return null;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : String(value);
-  if (typeof value === 'boolean') return value;
+  if (typeof value === "number")
+    return Number.isFinite(value) ? value : String(value);
+  if (typeof value === "boolean") return value;
   const maxLen = XLSX_LIMITS.maxCellTextLength;
-  if (typeof value === 'string') {
-    return value.length > maxLen ? `${value.slice(0, maxLen - 12)}…[已截断]` : value;
+  if (typeof value === "string") {
+    return value.length > maxLen
+      ? `${value.slice(0, maxLen - 12)}…[已截断]`
+      : value;
   }
   try {
     const text = JSON.stringify(value);
-    const json = typeof text === 'string' ? text : String(value);
-    return json.length > maxLen ? `${json.slice(0, maxLen - 12)}…[已截断]` : json;
+    const json = typeof text === "string" ? text : String(value);
+    return json.length > maxLen
+      ? `${json.slice(0, maxLen - 12)}…[已截断]`
+      : json;
   } catch {
-    return '[无法序列化的值]';
+    return "[无法序列化的值]";
   }
 }
 
+/** 单表 dataFiles 数据源的数量上限（与 data_ref_tool 治理批量一致） */
+const MAX_DATA_FILES_PER_SHEET = 50;
+
 /**
- * 解析单个 dataRef 工作表：把暂存批次转换为 buildWorkbook 可用的工作表声明。
+ * 统一的行化数据（dataFiles / dataRef 两类数据源的共同下游）：
+ * 已加载为行数组并算好形态与字段并集，materializeDataSheet 负责后续成表。
+ */
+interface LoadedSheetData {
+  kind: DataShape;
+  rows: unknown[];
+  /** records 的字段并集（matrix 无） */
+  fields?: string[];
+  /** 字段并集是否被 MAX_FIELDS 截断（fields 拼写校验的跳过条件） */
+  fieldsTruncated: boolean;
+  /** 错误消息里的来源描述（批次 ID 或文件路径） */
+  sourceLabel: string;
+}
+
+/**
+ * 行化数据 → buildWorkbook 可用的工作表声明。
  * 对象数组 → 按 fields（或全部字段）逐行取值；二维数组 → 行内值规范化后直传。
  * cells 叠加（数据区外注释/落款）随 styleProps 透传给 buildWorkbook。
  * 所有结构性错误以带参数路径的 XlsxBuildError 抛出，由 execute 统一转为失败结果；
  * 数据质量提示（嵌套对象降级、全空列）以 warnings 返回，不阻断导出。
  */
-async function resolveDataRefSheet(
+function materializeDataSheet(
   spec: Record<string, unknown>,
   path: string,
-): Promise<{ sheet: Record<string, unknown>; warnings: string[]; roughCells: number }> {
-  const refId = spec.dataRef;
-  if (typeof refId !== 'string' || !refId.trim()) {
-    throw new XlsxBuildError(`${path}.dataRef: 必须是数据批次 ID（browser_page_exec 抓取产生：saveResult 默认开启，或结果超 2000 字符自动暂存）`);
-  }
-
-  const entry = await getDataRef(refId.trim());
-  if (!entry) {
-    throw new XlsxBuildError(
-      `${path}.dataRef: 引用 "${refId}" 不存在或已过期（暂存区数据仅在浏览器会话内有效）——请重新抓取后再导出`,
-    );
-  }
-
-  let value: unknown;
-  try {
-    value = JSON.parse(entry.json);
-  } catch {
-    throw new XlsxBuildError(`${path}.dataRef: 批次 "${refId}" 数据已损坏，无法解析`);
-  }
-  if (!Array.isArray(value)) {
-    throw new XlsxBuildError(`${path}.dataRef: 批次 "${refId}" 不是表格形态数据（kind=${entry.kind}），无法生成工作表`);
-  }
-  if (entry.kind === 'value') {
-    throw new XlsxBuildError(
-      `${path}.dataRef: 批次 "${refId}" 不是对象数组或二维数组——请在抓取脚本中返回表格形态的数据`,
-    );
-  }
-
-  // 样式/结构选项透传给 buildWorkbook（dataRef/fields 是本层参数，剔除后再传；
-  // cells 保留——它是数据区之外的叠加放置，与 dataRef 不冲突）
-  const { dataRef: _dataRef, fields: _fields, ...styleProps } = spec;
+  data: LoadedSheetData,
+): { sheet: Record<string, unknown>; warnings: string[]; roughCells: number } {
+  const {
+    dataFiles: _files,
+    dataRef: _dataRef,
+    fields: _fields,
+    ...styleProps
+  } = spec;
 
   let rows: unknown[][];
   let headers: unknown[] | undefined;
   const warnings: string[] = [];
 
-  if (entry.kind === 'records') {
-    // records 批次恒定自动生成表头——firstRowAsHeader 在此必然被忽略，显式拒绝
+  if (data.kind === "records") {
+    // records 数据恒定自动生成表头——firstRowAsHeader 在此必然被忽略，显式拒绝
     if (spec.firstRowAsHeader === true) {
       throw new XlsxBuildError(
-        `${path}.firstRowAsHeader: 对象数组批次自动生成表头，该参数仅适用于二维数组批次`,
+        `${path}.firstRowAsHeader: 对象数组数据自动生成表头，该参数仅适用于二维数组数据`,
       );
     }
     let keys: string[];
     if (spec.fields !== undefined) {
-      if (!Array.isArray(spec.fields) || !spec.fields.every(k => typeof k === 'string')) {
-        throw new XlsxBuildError(`${path}.fields: 必须是字符串数组（对象数据的字段名列表）`);
+      if (
+        !Array.isArray(spec.fields) ||
+        !spec.fields.every((k) => typeof k === "string")
+      ) {
+        throw new XlsxBuildError(
+          `${path}.fields: 必须是字符串数组（对象数据的字段名列表）`,
+        );
       }
       keys = spec.fields as string[];
-      // 字段名硬校验：与批次存储时算好的字段并集比对，typo 直接报错而不是静默产出空列。
-      // 并集在存储层截断到 MAX_FIELDS（超出部分不在列表内）——此时跳过校验避免误伤合法字段。
-      const known = entry.fields ?? [];
-      if (known.length > 0 && known.length < DATA_REF_MAX_FIELDS) {
-        const unknownKeys = keys.filter(k => !known.includes(k));
+      // 字段名硬校验：与数据加载时算好的字段并集比对，typo 直接报错而不是静默产出空列。
+      // 并集被截断到 MAX_FIELDS 时（超出部分不在列表内）跳过校验避免误伤合法字段。
+      const known = data.fields ?? [];
+      if (known.length > 0 && !data.fieldsTruncated) {
+        const unknownKeys = keys.filter((k) => !known.includes(k));
         if (unknownKeys.length > 0) {
           throw new XlsxBuildError(
-            `${path}.fields: 字段 ${unknownKeys.map(k => JSON.stringify(k)).join('、')} 不在批次字段列表中（可能拼写有误）。` +
-              `批次实际字段：${known.join('、')}（data_ref_tool(action="info", ref="${refId.trim()}") 可复核）`,
+            `${path}.fields: 字段 ${unknownKeys.map((k) => JSON.stringify(k)).join("、")} 不在数据字段列表中（可能拼写有误）。` +
+              `数据实际字段：${known.join("、")}（data_ref_tool(action="info") 可复核）`,
           );
         }
       }
     } else {
-      keys = entry.fields ?? [];
+      keys = data.fields ?? [];
     }
     if (keys.length === 0) {
       throw new XlsxBuildError(`${path}: 数据没有可导出的字段`);
@@ -310,38 +420,42 @@ async function resolveDataRefSheet(
     // 逐行取值时同步做数据质量侦测：嵌套结构降级计数、全空列计数
     let nestedCount = 0;
     const definedHits = new Map<string, number>();
-    rows = (value as unknown[]).map(record => {
+    rows = data.rows.map((record) => {
       const plain = isPlainRecord(record);
-      return keys.map(key => {
-        const cellValue = plain ? record[key] : undefined;
+      return keys.map((key) => {
+        const cellValue = plain
+          ? (record as Record<string, unknown>)[key]
+          : undefined;
         if (cellValue !== undefined && cellValue !== null) {
           definedHits.set(key, (definedHits.get(key) ?? 0) + 1);
-          if (typeof cellValue === 'object') nestedCount++;
+          if (typeof cellValue === "object") nestedCount++;
         }
         return toXlsxCell(cellValue);
       });
     });
     if (nestedCount > 0) {
       warnings.push(
-        `${path}（${spec.name}）：${nestedCount} 个单元格的值是嵌套对象/数组，已按紧凑 JSON 文本写入单元格——如需独立列请在抓取脚本中展平字段后再暂存`,
+        `${path}（${spec.name}）：${nestedCount} 个单元格的值是嵌套对象/数组，已按紧凑 JSON 文本写入单元格——如需独立列请用 data_ref_tool(action="project", flatten=true) 展平后再导出`,
       );
     }
-    const emptyKeys = keys.filter(k => (definedHits.get(k) ?? 0) === 0);
+    const emptyKeys = keys.filter((k) => (definedHits.get(k) ?? 0) === 0);
     if (emptyKeys.length > 0 && rows.length > 0) {
       warnings.push(
-        `${path}（${spec.name}）：字段 ${emptyKeys.join('、')} 在所有行都是空值——若非预期请用 data_ref_tool(action="info") 核对字段名`,
+        `${path}（${spec.name}）：字段 ${emptyKeys.join("、")} 在所有行都是空值——若非预期请用 data_ref_tool(action="info") 核对字段名`,
       );
     }
     headers = spec.headers !== undefined ? (spec.headers as unknown[]) : keys;
-  } else {
+  } else if (data.kind === "matrix") {
     if (spec.fields !== undefined) {
-      throw new XlsxBuildError(`${path}.fields: 仅对象数组数据支持字段筛选（该批次为二维数组）`);
+      throw new XlsxBuildError(
+        `${path}.fields: 仅对象数组数据支持字段筛选（该数据为二维数组）`,
+      );
     }
     let nestedCount = 0;
-    rows = (value as unknown[]).map(row =>
+    rows = data.rows.map((row) =>
       Array.isArray(row)
-        ? row.map(v => {
-            if (typeof v === 'object' && v !== null) nestedCount++;
+        ? row.map((v) => {
+            if (typeof v === "object" && v !== null) nestedCount++;
             return toXlsxCell(v);
           })
         : [toXlsxCell(row)],
@@ -351,12 +465,17 @@ async function resolveDataRefSheet(
         `${path}（${spec.name}）：${nestedCount} 个单元格的值是嵌套对象/数组，已按紧凑 JSON 文本写入单元格`,
       );
     }
-    headers = spec.headers !== undefined ? (spec.headers as unknown[]) : undefined;
+    headers =
+      spec.headers !== undefined ? (spec.headers as unknown[]) : undefined;
+  } else {
+    throw new XlsxBuildError(
+      `${path}: 数据 ${data.sourceLabel} 不是对象数组或二维数组——请在抓取脚本中返回表格形态的数据，或先用 data_ref_tool(action="project") 投影`,
+    );
   }
 
   if (rows.length > XLSX_LIMITS.maxRowsPerSheet) {
     throw new XlsxBuildError(
-      `${path}: 批次 "${refId}" 有 ${rows.length} 行，超过单表上限 ${XLSX_LIMITS.maxRowsPerSheet} 行——请分批导出（分多个工作表或多个文件）`,
+      `${path}: 数据 ${data.sourceLabel} 有 ${rows.length} 行，超过单表上限 ${XLSX_LIMITS.maxRowsPerSheet} 行——请分批导出（分多个工作表或多个文件）`,
     );
   }
   const roughCells = rows.length * (headers?.length ?? (rows[0]?.length || 0));
@@ -374,138 +493,335 @@ async function resolveDataRefSheet(
 }
 
 /**
+ * 解析单个 dataRef 工作表：从暂存区加载批次并交给 materializeDataSheet。
+ */
+async function resolveDataRefSheet(
+  spec: Record<string, unknown>,
+  path: string,
+): Promise<{
+  sheet: Record<string, unknown>;
+  warnings: string[];
+  roughCells: number;
+}> {
+  const refId = spec.dataRef;
+  if (typeof refId !== "string" || !refId.trim()) {
+    throw new XlsxBuildError(
+      `${path}.dataRef: 必须是数据批次 ID（browser_network_capture 等产生的暂存批次）`,
+    );
+  }
+
+  const entry = await getDataRef(refId.trim());
+  if (!entry) {
+    throw new XlsxBuildError(
+      `${path}.dataRef: 引用 "${refId}" 不存在或已过期（暂存区数据仅在浏览器会话内有效）——请重新捕获后再导出`,
+    );
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(entry.json);
+  } catch {
+    throw new XlsxBuildError(
+      `${path}.dataRef: 批次 "${refId}" 数据已损坏，无法解析`,
+    );
+  }
+  if (!Array.isArray(value)) {
+    throw new XlsxBuildError(
+      `${path}.dataRef: 批次 "${refId}" 不是表格形态数据（kind=${entry.kind}）——信封/复合结构请先用 data_ref_tool(action="project") 投影`,
+    );
+  }
+  const shape = analyzeValue(value);
+  return materializeDataSheet(spec, path, {
+    kind: shape.kind,
+    rows: value,
+    fields: entry.fields,
+    fieldsTruncated: (entry.fields?.length ?? 0) >= MAX_FIELDS,
+    sourceLabel: `"${refId.trim()}"`,
+  });
+}
+
+/**
+ * 解析单个 dataFiles 工作表：逐个读取工作区数据文件（JSON 数组）并按列表
+ * 顺序拼接为一张表——多批抓取结果无需预先 merge 即可一次导出。
+ */
+async function resolveDataFilesSheet(
+  spec: Record<string, unknown>,
+  path: string,
+  chatId: string,
+  signal?: AbortSignal,
+): Promise<{
+  sheet: Record<string, unknown>;
+  warnings: string[];
+  roughCells: number;
+}> {
+  const rawFiles = spec.dataFiles;
+  if (
+    !Array.isArray(rawFiles) ||
+    rawFiles.length === 0 ||
+    !rawFiles.every((f) => typeof f === "string" && f.trim())
+  ) {
+    throw new XlsxBuildError(
+      `${path}.dataFiles: 必须是非空字符串数组（工作区数据文件路径，如 ["results/run-….json"]，按列表顺序拼接）`,
+    );
+  }
+  if (rawFiles.length > MAX_DATA_FILES_PER_SHEET) {
+    throw new XlsxBuildError(
+      `${path}.dataFiles: 单表最多引用 ${MAX_DATA_FILES_PER_SHEET} 个数据文件（收到 ${rawFiles.length} 个）——更多批次请先用 data_ref_tool(action="merge", files=[...]) 合并`,
+    );
+  }
+
+  const rows: unknown[] = [];
+  const trimmed = rawFiles.map((f) => (f as string).trim());
+  /** 逐文件形态记账：records/matrix 混拼时精确点名冲突文件，而不是笼统报「非表格形态」 */
+  const kindByFile: { path: string; kind: DataShape }[] = [];
+  for (let i = 0; i < trimmed.length; i++) {
+    let loaded;
+    try {
+      loaded = await readWorkspaceDataFile(chatId, trimmed[i], signal);
+    } catch (error) {
+      throw new XlsxBuildError(
+        `${path}.dataFiles[${i}]: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (!Array.isArray(loaded.value)) {
+      throw new XlsxBuildError(
+        `${path}.dataFiles[${i}]: 文件 ${loaded.path} 不是数组数据——信封/复合结构请先用 data_ref_tool(action="project", file="${loaded.path}", ...) 投影`,
+      );
+    }
+    const fileShape = analyzeValue(loaded.value);
+    if (fileShape.kind === "value") {
+      // 单文件内部即混形态（对象行与非对象行混杂）：定位到文件本身
+      throw new XlsxBuildError(
+        `${path}.dataFiles[${i}]: 文件 ${loaded.path} 的行不是统一的表格形态（对象行与其它类型行混杂）——请用 data_ref_tool(action="project", file="${loaded.path}") 整形`,
+      );
+    }
+    // 空数组文件（如某轮 crawl 零行）不参与形态记账：零行数据不构成混拼冲突
+    if (loaded.value.length > 0)
+      kindByFile.push({ path: loaded.path, kind: fileShape.kind });
+    for (const row of loaded.value) rows.push(row);
+  }
+  const mixedKinds = new Set(kindByFile.map((item) => item.kind));
+  if (mixedKinds.size > 1) {
+    const recordsFile = kindByFile.find(
+      (item) => item.kind === "records",
+    )!.path;
+    const matrixFile = kindByFile.find((item) => item.kind === "matrix")!.path;
+    throw new XlsxBuildError(
+      `${path}.dataFiles: 数据文件形态不一致——${recordsFile} 是对象数组、${matrixFile} 是二维数组，不能拼在同一张表；请分到不同工作表或先统一抓取脚本的输出结构`,
+    );
+  }
+
+  const shape = analyzeValue(rows);
+  let fields: string[] | undefined;
+  let fieldsTruncated = false;
+  if (shape.kind === "records") {
+    // 对象行之外混入非对象行时 analyzeValue 会判为 value——此处仅对纯对象数组收集字段
+    [fields, fieldsTruncated] = collectRecordFields(
+      rows as Record<string, unknown>[],
+    );
+  }
+  return materializeDataSheet(spec, path, {
+    kind: shape.kind,
+    rows,
+    fields,
+    fieldsTruncated,
+    sourceLabel:
+      trimmed.length === 1 ? `"${trimmed[0]}"` : `${trimmed.length} 个数据文件`,
+  });
+}
+
+/**
  * 统一的工作表数据源解析（create / create_from_data 共用）：
- *   - dataRef 表：解析暂存批次为行数据（零转录通道）；
+ *   - dataFiles 表：读取工作区数据文件并按序拼接为行数据（零转录通道）；
+ *   - dataRef 表：解析暂存批次为行数据；
  *   - rows/布局表（headers/cells）：原样直通，由 buildWorkbook 全量校验；
- *   - 同表同时给 dataRef 与 rows → 拒绝（数据来源二选一）；
+ *   - 同表数据来源互斥（rows/dataFiles/dataRef 三选一）；
  *   - 无任何数据来源 → 拒绝并提示可选来源。
  * 混排能力由此打通：一次调用可同时产出「批量数据表 + 公式汇总表」。
  */
 async function resolveWorkbookSheets(
   rawSheets: unknown,
+  chatId: string,
+  signal?: AbortSignal,
 ): Promise<{
   sheets: unknown[];
   warnings: string[];
-  dataRefSheetCount: number;
-  dataRefRoughCells: number;
+  dataSheetCount: number;
+  dataRoughCells: number;
 }> {
   if (!Array.isArray(rawSheets) || rawSheets.length === 0) {
     throw new XlsxBuildError(
-      'sheets: 需要工作表数组（每项含 name，以及 rows 或 dataRef 之一），或单表简写 sheet 对象',
+      "sheets: 需要工作表数组（每项含 name，以及 rows、dataFiles 或 dataRef 之一），或单表简写 sheet 对象",
     );
   }
 
   const sheets: unknown[] = [];
   const warnings: string[] = [];
-  let dataRefSheetCount = 0;
-  let dataRefRoughCells = 0;
+  let dataSheetCount = 0;
+  let dataRoughCells = 0;
 
   for (let i = 0; i < rawSheets.length; i++) {
     const path = `sheets[${i}]`;
     const raw = rawSheets[i];
     if (!isPlainRecord(raw)) {
-      const actual = raw === null ? 'null' : Array.isArray(raw) ? '数组' : typeof raw;
+      const actual =
+        raw === null ? "null" : Array.isArray(raw) ? "数组" : typeof raw;
       throw new XlsxBuildError(`${path}: 工作表必须是对象，实际收到 ${actual}`);
     }
     const spec = raw as Record<string, unknown>;
+    const hasDataFiles = spec.dataFiles !== undefined;
     const hasDataRef = spec.dataRef !== undefined;
     const hasRows = spec.rows !== undefined;
+    const sourceCount =
+      Number(hasDataFiles) + Number(hasDataRef) + Number(hasRows);
 
-    if (hasDataRef && hasRows) {
+    if (sourceCount > 1) {
       throw new XlsxBuildError(
-        `${path}: 数据来源二选一——dataRef（暂存批次）与 rows（手写行）不能同时提供；混合工作簿请把两类表分到不同工作表`,
+        `${path}: 数据来源三选一——rows（手写行）、dataFiles（工作区数据文件）与 dataRef（暂存批次）不能同时提供；混合工作簿请把不同来源的表分到不同工作表`,
       );
     }
 
+    if (hasDataFiles) {
+      const resolved = await resolveDataFilesSheet(spec, path, chatId, signal);
+      sheets.push(resolved.sheet);
+      warnings.push(...resolved.warnings);
+      dataSheetCount++;
+      dataRoughCells += resolved.roughCells;
+      continue;
+    }
     if (hasDataRef) {
       const resolved = await resolveDataRefSheet(spec, path);
       sheets.push(resolved.sheet);
       warnings.push(...resolved.warnings);
-      dataRefSheetCount++;
-      dataRefRoughCells += resolved.roughCells;
+      dataSheetCount++;
+      dataRoughCells += resolved.roughCells;
       continue;
     }
 
-    // 手写/布局表：fields 只对 dataRef 有意义，出现在这里必是误用——
+    // 手写/布局表：fields 只对数据表有意义，出现在这里必是误用——
     // 显式拒绝而不是静默忽略（杜绝「传了但没生效」的歧义）
     if (spec.fields !== undefined) {
-      throw new XlsxBuildError(`${path}.fields: fields 仅在提供 dataRef 时有效（用于从暂存批次选列）`);
-    }
-    if (spec.rows === undefined && spec.cells === undefined && spec.headers === undefined) {
       throw new XlsxBuildError(
-        `${path}: 工作表没有任何内容——提供 rows（手写数据）、dataRef（暂存批次）或 cells/headers（布局）之一`,
+        `${path}.fields: fields 仅在提供 dataFiles/dataRef 时有效（用于从数据源选列）`,
+      );
+    }
+    if (
+      spec.rows === undefined &&
+      spec.cells === undefined &&
+      spec.headers === undefined
+    ) {
+      throw new XlsxBuildError(
+        `${path}: 工作表没有任何内容——提供 rows（手写数据）、dataFiles（工作区数据文件）、dataRef（暂存批次）或 cells/headers（布局）之一`,
       );
     }
     sheets.push(spec);
   }
 
-  if (dataRefRoughCells > XLSX_LIMITS.maxTotalCells) {
+  if (dataRoughCells > XLSX_LIMITS.maxTotalCells) {
     throw new XlsxBuildError(
-      `预计 dataRef 数据表总单元格数约 ${dataRefRoughCells} 超过上限 ${XLSX_LIMITS.maxTotalCells}——请减少导出列（fields 精简）或拆分为多个文件`,
+      `预计数据表总单元格数约 ${dataRoughCells} 超过上限 ${XLSX_LIMITS.maxTotalCells}——请减少导出列（fields 精简）或拆分为多个文件`,
     );
   }
 
-  return { sheets, warnings, dataRefSheetCount, dataRefRoughCells };
+  return { sheets, warnings, dataSheetCount, dataRoughCells };
 }
 
 export class XlsxTool extends BaseTool {
-  name = 'xlsx_tool';
+  name = "xlsx_tool";
 
   metadata: ToolMetadata = {
-    name: 'xlsx_tool',
-    description: '生成 Excel (.xlsx) 文件：多工作表、合并单元格、公式、富文本、超链接、样式美化、自动列宽、批量抓取数据直接导出（支持数据表与公式汇总表混排），并把文件保存为可下载产物',
-    category: 'office',
-    version: '1.1.0',
-    author: 'AgentNexus',
-    displayName: 'Excel 文件生成',
-    tags: ['xlsx', 'excel', 'office', 'file', 'export'],
-    permissions: ['downloads', 'storage'],
+    name: "xlsx_tool",
+    description:
+      "生成 Excel (.xlsx) 文件：多工作表、合并单元格、公式、富文本、超链接、样式美化、自动列宽、批量抓取数据直接导出（结果文件/暂存批次数据表与公式汇总表混排），并把文件保存为可下载产物",
+    category: "office",
+    version: "1.2.0",
+    author: "AgentNexus",
+    displayName: "Excel 文件生成",
+    tags: ["xlsx", "excel", "office", "file", "export", "dataFiles"],
+    permissions: ["downloads", "storage"],
   };
 
   openaiSchema: OpenAITool = {
-    type: 'function',
+    type: "function",
     function: {
-      name: 'xlsx_tool',
+      name: "xlsx_tool",
       description:
-        '生成 Excel (.xlsx) 文件并保存为可下载产物。action=create 用声明式结构一次生成完整工作簿（多表/合并单元格/公式/富文本/超链接/冻结表头/自动筛选/样式；也可用 dataRef 引用暂存批次）；' +
-        'action=create_from_markdown 把 Markdown 表格文本（支持多表，标题作表名）转为 xlsx；' +
-        'action=create_from_data 批量数据导出入口：dataRef 引用暂存批次直接成表（数据零转录，适合电商 SKU、评论、榜单等大批量场景），可与手写 rows 表混排——同一次调用产出「批量数据表 + 公式汇总表」。' +
-        '每张表的数据来源二选一（dataRef 或 rows），不同表可混用。' +
-        '默认自动美化：表头蓝底白字加粗、全表细边框、自动列宽、冻结表头。生成成功后按结果中的【输出指引】在回复里插入文件标记。',
+        "生成 Excel (.xlsx) 文件并保存为可下载产物。action=create 用声明式结构一次生成完整工作簿（多表/合并单元格/公式/富文本/超链接/冻结表头/自动筛选/样式）；" +
+        "action=create_from_markdown 把 Markdown 表格文本（支持多表，标题作表名）转为 xlsx；" +
+        "action=create_from_data 批量数据导出入口：sheets[].dataFiles 引用工作区数据文件（js_run run/crawl 的结果文件 results/*.json 与 data_ref_tool 治理产物，可列多个按序拼接）直接成表（数据零转录，适合电商 SKU、评论、榜单等大批量场景），或 sheets[].dataRef 引用暂存批次，可与手写 rows 表混排——同一次调用产出「批量数据表 + 公式汇总表」。" +
+        "每张表的数据来源三选一（dataFiles / dataRef / rows），不同表可混用。" +
+        "默认自动美化：表头蓝底白字加粗、全表细边框、自动列宽、冻结表头。产物保存到当前会话 outputs/，按全局工作区规范交付返回的 marker。",
       parameters: {
-        type: 'object',
+        type: "object",
         properties: {
-          action: { type: 'string', enum: ['create', 'create_from_markdown', 'create_from_data'], description: '操作类型：create=声明式工作簿（手写表与 dataRef 表均可）；create_from_markdown=Markdown 表格转 xlsx；create_from_data=批量数据导出（至少含一个 dataRef 表，可混排手写公式汇总表）' },
-          filename: { type: 'string', description: '文件名（无需 .xlsx 后缀也会自动补全）' },
-          autoDownload: { type: 'boolean', description: '生成后是否同时下载到浏览器下载目录（默认 false；文件始终保存到扩展文件库供下载）' },
-          sheets: { type: 'array', description: `工作表声明列表（create/create_from_data 必填，1-${XLSX_LIMITS.maxSheets} 张；每张表数据来源二选一：rows 手写数据或 dataRef 引用暂存批次，可混排）`, items: SHEET_SCHEMA },
-          sheet: { ...SHEET_SCHEMA, description: '单表简写：只有一张表时可直接给 sheet 对象（与 sheets 二选一）' },
-          markdown: { type: 'string', description: 'create_from_markdown 必填：含 Markdown 表格的文本（| 分隔；多张表用标题行 # 分隔并命名）' },
-          defaultSheetName: { type: 'string', description: 'create_from_markdown：单表默认工作表名' },
+          action: {
+            type: "string",
+            enum: ["create", "create_from_markdown", "create_from_data"],
+            description:
+              "操作类型：create=声明式工作簿（手写表与数据表均可）；create_from_markdown=Markdown 表格转 xlsx；create_from_data=批量数据导出（至少含一个 dataFiles 或 dataRef 数据表，可混排手写公式汇总表）",
+          },
+          filename: {
+            type: "string",
+            description: "文件名（无需 .xlsx 后缀也会自动补全）",
+          },
+          autoDownload: {
+            type: "boolean",
+            description:
+              "生成后是否同时下载到浏览器下载目录（默认 false；文件始终先保存到当前会话工作区 outputs/）",
+          },
+          sheets: {
+            type: "array",
+            description: `工作表声明列表（create/create_from_data 必填，1-${XLSX_LIMITS.maxSheets} 张；每张表数据来源三选一：rows 手写数据、dataFiles 工作区数据文件列表或 dataRef 暂存批次，可跨表混排）`,
+            items: SHEET_SCHEMA,
+          },
+          sheet: {
+            ...SHEET_SCHEMA,
+            description:
+              "单表简写：只有一张表时可直接给 sheet 对象（与 sheets 二选一）",
+          },
+          markdown: {
+            type: "string",
+            description:
+              "create_from_markdown 必填：含 Markdown 表格的文本（| 分隔；多张表用标题行 # 分隔并命名）",
+          },
+          defaultSheetName: {
+            type: "string",
+            description: "create_from_markdown：单表默认工作表名",
+          },
         },
-        required: ['action'],
+        required: ["action"],
       },
     },
   };
 
-  async execute(params: Record<string, unknown>): Promise<ToolResult> {
+  async execute(
+    params: Record<string, unknown>,
+    context?: ToolExecutionContext,
+  ): Promise<ToolResult> {
     try {
       // ── 入参形态守卫 ──
-      if (!params || typeof params !== 'object' || Array.isArray(params)) {
+      if (!params || typeof params !== "object" || Array.isArray(params)) {
         return this.createErrorResponse(
-          `参数必须是 JSON 对象，实际收到 ${params === null ? 'null' : Array.isArray(params) ? '数组' : typeof params}`,
+          `参数必须是 JSON 对象，实际收到 ${params === null ? "null" : Array.isArray(params) ? "数组" : typeof params}`,
         );
       }
 
       const { action } = params;
-      if (action !== 'create' && action !== 'create_from_markdown' && action !== 'create_from_data') {
+      if (
+        action !== "create" &&
+        action !== "create_from_markdown" &&
+        action !== "create_from_data"
+      ) {
         return this.createErrorResponse(
           `action 必须是 'create'、'create_from_markdown' 或 'create_from_data'，实际收到 ${previewValue(action)}`,
         );
       }
 
       // ── 标量选项严格校验（类型错误直接报精准原因，杜绝静默忽略） ──
-      if (params.autoDownload !== undefined && typeof params.autoDownload !== 'boolean') {
+      if (
+        params.autoDownload !== undefined &&
+        typeof params.autoDownload !== "boolean"
+      ) {
         return this.createErrorResponse(
           `autoDownload 必须是布尔值，实际收到 ${JSON.stringify(params.autoDownload) ?? String(params.autoDownload)}`,
         );
@@ -513,7 +829,7 @@ export class XlsxTool extends BaseTool {
       if (
         params.defaultSheetName !== undefined &&
         params.defaultSheetName !== null &&
-        typeof params.defaultSheetName !== 'string'
+        typeof params.defaultSheetName !== "string"
       ) {
         return this.createErrorResponse(
           `defaultSheetName 必须是字符串，实际收到 ${JSON.stringify(params.defaultSheetName) ?? String(params.defaultSheetName)}`,
@@ -522,8 +838,10 @@ export class XlsxTool extends BaseTool {
 
       // ── 组装工作表声明 ──
       const dataWarnings: string[] = [];
+      // 会话归属先于数据源解析（dataFiles 读取工作区文件需要 chatId）
+      const chatId = requireWorkspaceChatId(context?.chatId);
       let sheetsSpec: unknown;
-      if (action === 'create' || action === 'create_from_data') {
+      if (action === "create" || action === "create_from_data") {
         // 跨 action 参数互斥：markdown 只属于 create_from_markdown——
         // 传了却没生效属于「静默忽略」，显式拒绝
         if (params.markdown !== undefined) {
@@ -532,19 +850,28 @@ export class XlsxTool extends BaseTool {
           );
         }
         if (params.sheets !== undefined && params.sheet !== undefined) {
-          return this.createErrorResponse(`sheets 与 sheet 只能提供一个（多表用 sheets 数组，单表用 sheet 对象）`);
+          return this.createErrorResponse(
+            `sheets 与 sheet 只能提供一个（多表用 sheets 数组，单表用 sheet 对象）`,
+          );
         }
         if (params.sheets === undefined && params.sheet === undefined) {
-          return this.createErrorResponse(`缺少工作表数据：请提供 sheets 数组（多表），或单表简写 sheet 对象`);
-        }
-        sheetsSpec = params.sheets !== undefined ? params.sheets : [params.sheet];
-        // 数据源解析（create / create_from_data 共用）：dataRef 表从暂存区解析为
-        // 行数据（零转录），手写/布局表直通；错误带参数路径，由 catch 统一转失败
-        // 结果，数据质量提示以 warnings 透传给模型
-        const resolved = await resolveWorkbookSheets(sheetsSpec);
-        if (action === 'create_from_data' && resolved.dataRefSheetCount === 0) {
           return this.createErrorResponse(
-            'create_from_data 至少需要一个 dataRef 工作表（引用暂存批次，实现批量数据零转录导出）；纯手写工作簿请改用 action="create"',
+            `缺少工作表数据：请提供 sheets 数组（多表），或单表简写 sheet 对象`,
+          );
+        }
+        sheetsSpec =
+          params.sheets !== undefined ? params.sheets : [params.sheet];
+        // 数据源解析（create / create_from_data 共用）：dataFiles 表读取工作区数据
+        // 文件、dataRef 表从暂存区解析为行数据（零转录），手写/布局表直通；
+        // 错误带参数路径，由 catch 统一转失败结果，数据质量提示以 warnings 透传给模型
+        const resolved = await resolveWorkbookSheets(
+          sheetsSpec,
+          chatId,
+          context?.signal,
+        );
+        if (action === "create_from_data" && resolved.dataSheetCount === 0) {
+          return this.createErrorResponse(
+            'create_from_data 至少需要一个数据表（dataFiles 工作区数据文件或 dataRef 暂存批次，实现批量数据零转录导出）；纯手写工作簿请改用 action="create"',
           );
         }
         sheetsSpec = resolved.sheets;
@@ -559,33 +886,44 @@ export class XlsxTool extends BaseTool {
         }
         sheetsSpec = parseMarkdownTables({
           markdown: params.markdown,
-          path: 'markdown',
+          path: "markdown",
           defaultSheetName:
-            typeof params.defaultSheetName === 'string' ? params.defaultSheetName : undefined,
+            typeof params.defaultSheetName === "string"
+              ? params.defaultSheetName
+              : undefined,
         });
       }
 
       // ── 构建 xlsx ──
       const { name: filename, note } = sanitizeFilename(params.filename);
+      context?.signal?.throwIfAborted();
       const startedAt = Date.now();
-      const { buffer, sheets: sheetSummaries, totalCells } = await buildWorkbook(sheetsSpec);
+      const {
+        buffer,
+        sheets: sheetSummaries,
+        totalCells,
+      } = await buildWorkbook(sheetsSpec);
       const sizeBytes = buffer.byteLength;
-      this.log(`工作簿构建完成：${sheetSummaries.length} 表 / ${totalCells} 格 / ${(sizeBytes / 1024).toFixed(1)}KB / ${Date.now() - startedAt}ms`);
+      this.log(
+        `工作簿构建完成：${sheetSummaries.length} 表 / ${totalCells} 格 / ${(sizeBytes / 1024).toFixed(1)}KB / ${Date.now() - startedAt}ms`,
+      );
 
-      // ── 存入扩展文件库（渲染端文件卡片按 fileId 下载） ──
-      let fileId: string;
+      // Persist before advertising a download card; no global-library fallback.
+      let file: WorkspaceArtifact;
       try {
-        fileId = await fileManager.addFile(filename, buffer, XLSX_MIME, {
-          kind: 'xlsx',
-          sheetNames: sheetSummaries.map(s => s.name),
-          totalCells,
-          tool: this.name,
-        });
+        file = await saveWorkspaceOutput(
+          chatId,
+          "outputs/" + filename,
+          new Blob([buffer], { type: XLSX_MIME }),
+          context?.signal,
+        );
       } catch (storageError) {
-        // 存储层失败（配额/序列化）单独归因：文件已生成但无法交付，指向可行动的清理路径
-        const reason = storageError instanceof Error ? storageError.message : String(storageError);
+        const reason =
+          storageError instanceof Error
+            ? storageError.message
+            : String(storageError);
         return this.createErrorResponse(
-          `文件已生成但保存到扩展文件库失败（${reason}）——可在设置的文件管理中清理空间后重试`,
+          "Excel 已生成但保存到当前会话工作区失败：" + reason,
         );
       }
 
@@ -594,19 +932,33 @@ export class XlsxTool extends BaseTool {
       if (note) warnings.push(note);
       let autoDownloaded = false;
       if (params.autoDownload === true) {
-        const downloadResult = await this.tryAutoDownload(filename, buffer);
-        autoDownloaded = downloadResult.ok;
-        if (downloadResult.warning) warnings.push(downloadResult.warning);
+        try {
+          context?.signal?.throwIfAborted();
+          await downloadWorkspaceArtifact(
+            file,
+            new Blob([buffer], { type: XLSX_MIME }),
+          );
+          autoDownloaded = true;
+        } catch (error) {
+          warnings.push(
+            "工作区文件已保存，自动下载未发起：" +
+              (error instanceof Error ? error.message : String(error)),
+          );
+        }
       }
 
       // ── 成功结果（含给模型的输出指引） ──
-      const marker = `[file:${fileId}|${filename}]`;
-      const sizeLabel = sizeBytes >= 1024 * 1024
-        ? `${(sizeBytes / 1024 / 1024).toFixed(2)} MB`
-        : `${(sizeBytes / 1024).toFixed(1)} KB`;
+      const { marker } = file;
+      const sizeLabel =
+        sizeBytes >= 1024 * 1024
+          ? `${(sizeBytes / 1024 / 1024).toFixed(2)} MB`
+          : `${(sizeBytes / 1024).toFixed(1)} KB`;
       const sheetLines = sheetSummaries
-        .map(s => `  - ${s.name}：${s.rowCount} 行 × ${s.columnCount} 列${s.mergeCount > 0 ? `，${s.mergeCount} 处合并` : ''}${s.frozen ? '，冻结表头' : ''}`)
-        .join('\n');
+        .map(
+          (s) =>
+            `  - ${s.name}：${s.rowCount} 行 × ${s.columnCount} 列${s.mergeCount > 0 ? `，${s.mergeCount} 处合并` : ""}${s.frozen ? "，冻结表头" : ""}`,
+        )
+        .join("\n");
 
       // 直接构造 ToolResult（不经 createSuccessResponse 的 JSON 再序列化）：
       // content[0].text 保持纯文本给模型阅读，data 供渲染端/程序化消费，二者不重复
@@ -615,19 +967,20 @@ export class XlsxTool extends BaseTool {
         isError: false,
         content: [
           {
-            type: 'text',
+            type: "text",
             text:
               `✅ Excel 文件生成成功\n\n` +
-              `- 文件名：${filename}（${sizeLabel}，文件ID ${fileId}）\n` +
+              `- 文件名：${file.name}（${sizeLabel}，工作区路径 ${file.path}）\n` +
               `- 工作表：\n${sheetLines}\n` +
-              (autoDownloaded ? `- 已自动下载到浏览器下载目录\n` : '') +
-              (warnings.length > 0 ? `- 提示：${warnings.join('；')}\n` : '') +
-              `\n【输出指引】在最终回复中必须原样插入下面这行标记（单独成行，不要放进代码块或引用块，不要改动任何字符），界面会把它渲染为可下载的文件卡片：\n${marker}`,
+              (autoDownloaded ? `- 已发起浏览器下载\n` : "") +
+              (warnings.length > 0 ? `- 提示：${warnings.join("；")}\n` : "") +
+              `\n已保存的文件：\n${marker}`,
           },
         ],
         data: {
-          message: 'Excel 文件生成成功',
-          file: { fileId, name: filename, sizeBytes, mime: XLSX_MIME, kind: 'xlsx', marker },
+          message: "Excel 文件生成成功",
+          file,
+          files: [file],
           sheets: sheetSummaries,
           autoDownloaded,
           warnings,
@@ -636,41 +989,12 @@ export class XlsxTool extends BaseTool {
     } catch (error) {
       // 精准错误路径：XlsxBuildError 的 message 已含「参数路径 + 实际值 + 期望」
       if (error instanceof XlsxBuildError) {
-        this.log(`参数校验/构建失败：${error.message}`, 'warn');
+        this.log(`参数校验/构建失败：${error.message}`, "warn");
         return this.createErrorResponse(`参数不合法 → ${error.message}`);
       }
       const message = error instanceof Error ? error.message : String(error);
-      this.log(`执行失败：${message}`, 'error');
+      this.log(`执行失败：${message}`, "error");
       return this.createErrorResponse(`生成失败 → ${message}`);
-    }
-  }
-
-  /**
-   * 自动下载：
-   * - DOM 上下文（sidepanel）：blob URL + chrome.downloads
-   * - Service Worker（无 DOM、无 URL.createObjectURL）：data: URL（8MB 守卫，超限降级为仅入库）
-   */
-  private async tryAutoDownload(filename: string, buffer: ArrayBuffer): Promise<{ ok: boolean; warning?: string }> {
-    try {
-      if (typeof document !== 'undefined') {
-        const url = URL.createObjectURL(new Blob([buffer], { type: XLSX_MIME }));
-        await chrome.downloads.download({ url, filename, saveAs: false });
-        // 全局 setTimeout（sidepanel 与 SW 均可用），延迟回收避免下载尚未启动就失效
-        setTimeout(() => URL.revokeObjectURL(url), 60_000);
-        return { ok: true };
-      }
-      if (buffer.byteLength > DATA_URL_MAX_BYTES) {
-        return {
-          ok: false,
-          warning: `文件 ${(buffer.byteLength / 1024 / 1024).toFixed(1)}MB 超过后台直下上限 8MB，已保存到扩展文件库（用户仍可从文件卡片下载）`,
-        };
-      }
-      const dataUrl = `data:${XLSX_MIME};base64,${arrayBufferToBase64(buffer)}`;
-      await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
-      return { ok: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, warning: `自动下载失败（${message}）；文件已保存到扩展文件库，可从文件卡片下载` };
     }
   }
 }

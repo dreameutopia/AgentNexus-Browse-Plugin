@@ -12,7 +12,7 @@ await build({
     contents: `
       export { chatDatabase } from './entrypoints/sidepanel/core/context/chat-database';
       export { withPythonWorkspace } from './utils/python-workspace/python-filesystem';
-      export { importWorkspaceFiles, readWorkspaceOutput, saveWorkspace } from './utils/python-workspace/store';
+      export { importWorkspaceFiles, readWorkspaceOutput, saveWorkspace, saveWorkspaceOutput } from './utils/python-workspace/store';
       export { markdownRenderer } from './entrypoints/sidepanel/utils/chat/markdown-renderer';
       export { pythonWorkerGlobals } from './utils/pyodide/python-worker-globals';
       export { encodeWorkspaceBackups, decodeWorkspaceBackups } from './entrypoints/sidepanel/utils/backup/workspace-backup';
@@ -29,7 +29,7 @@ await build({
 const dom = new JSDOM('<!doctype html><main></main>');
 globalThis.document = dom.window.document;
 globalThis.window = dom.window;
-const { chatDatabase, withPythonWorkspace, importWorkspaceFiles, readWorkspaceOutput, saveWorkspace,
+const { chatDatabase, withPythonWorkspace, importWorkspaceFiles, readWorkspaceOutput, saveWorkspace, saveWorkspaceOutput,
   markdownRenderer, pythonWorkerGlobals, encodeWorkspaceBackups, decodeWorkspaceBackups, fileManager } =
   await import(pathToFileURL(outfile).href);
 const py = await loadPyodide({ jsglobals: pythonWorkerGlobals() });
@@ -57,6 +57,7 @@ await asyncio.sleep(0.001)
   assert.deepEqual([...paths.values()], ['inputs/data.csv', 'inputs/data (2).csv']);
   assert.deepEqual(await importWorkspaceFiles('chat_a', uploads), paths, 'Retry reuses the assigned paths');
 
+  await saveWorkspaceOutput('chat_a', 'outputs/tool.bin', new Blob([new Uint8Array([0, 255, 13])]));
   const cwd = py.FS.cwd();
   const run = (chatId, code) => withPythonWorkspace(py.FS, chatId, async () => {
     await py.runPythonAsync(code);
@@ -67,11 +68,12 @@ from pathlib import Path
 import os
 assert os.getcwd() == '/work-space/chat_a'
 assert Path('inputs/data (2).csv').read_bytes() == bytes([0, 255, 13])
+assert Path('outputs/tool.bin').read_bytes() == bytes([0, 255, 13])
 Path('outputs/nested').mkdir()
 Path('outputs/nested/报告 & data.csv').write_bytes(Path('inputs/data.csv').read_bytes())
 `);
   const output = 'outputs/nested/报告 & data.csv';
-  assert.deepEqual(result.workspaceOutputs, [output]);
+  assert.deepEqual(result.workspaceOutputs, [output, 'outputs/tool.bin']);
   assert.equal(py.FS.cwd(), cwd, 'Caller working directory is restored');
   assert.equal((await readWorkspaceOutput('chat_a', output)).size, 8);
   await run('chat_a', `assert Path('outputs/nested/报告 & data.csv').read_bytes() == b'a,b\\n1,2\\n'`);
@@ -197,7 +199,7 @@ with Image.open('outputs/picture.png') as image:
     assert.doesNotMatch(markdownRenderer.renderMessage(literal, { workspaceChatId: 'chat_a' }), /data-workspace-path=/);
   }
   assert.doesNotMatch(markdownRenderer.renderMessage(tag), /data-workspace-path=/);
-  assert.match(markdownRenderer.renderMessage('[file:Abc12345|Legacy.xlsx]'), /data-file-id="Abc12345"/);
+  assert.doesNotMatch(markdownRenderer.renderMessage('[file:Abc12345|Legacy.xlsx]'), /data-file-id=/);
   assert.doesNotMatch(markdownRenderer.renderMessage('[link](https://example.test "[file:Abc12345|legacy]")'), /data-file-id=/);
   assert.doesNotMatch(markdownRenderer.renderMessage('[link](https://example.test \'<workspace-file path="outputs/file.csv" />\')',
     { workspaceChatId: 'chat_a' }), /data-workspace-path=/);

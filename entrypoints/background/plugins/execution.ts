@@ -7,24 +7,17 @@ import {
   invariant,
   LIMITS,
   ownerOf,
+  PluginError,
   type PluginSnapshot,
   type PluginTool,
 } from '@/utils/plugins/contracts';
 import { checkSchema, validateArguments } from '@/utils/plugins/schema';
+import { PUBLIC_HOST_TOOLS } from '@/utils/plugins/host-tools';
+import { describeOperationError } from '@/utils/plugins/operations';
 import { publicHttps } from '@/utils/plugins/network';
 import { strictJson } from '@/utils/plugins/json';
 import type { PluginService } from '@/utils/plugins/service';
-import { verifyPackage } from '@/utils/plugins/package';
 
-// Explicit public host API. Internal control/terminal tools are never plugin targets.
-export const PUBLIC_HOST_TOOLS = new Set([
-  'browser_get_page_text',
-  'browser_get_page_info',
-  'browser_tabs',
-  'browser_navigation',
-  'browser_search_bookmarks',
-  'browser_search_history',
-]);
 export class PluginExecutionGateway {
   private running = new Map<string, Set<AbortController>>();
   constructor(
@@ -46,9 +39,12 @@ export class PluginExecutionGateway {
     const key = ownerOf(ref),
       controller = new AbortController(),
       running = this.running.get(key) ?? new Set<AbortController>();
-    const abort = () => controller.abort();
-    context?.signal?.addEventListener('abort', abort, { once: true });
-    const timer = setTimeout(abort, 60_000);
+    const abort = (reason: 'timeout' | 'revoked') => {
+      if (!controller.signal.aborted) controller.abort(reason);
+    };
+    const onContextAbort = () => abort('revoked');
+    context?.signal?.addEventListener('abort', onContextAbort, { once: true });
+    const timer = setTimeout(() => abort('timeout'), 60_000);
     try {
       invariant(
         context?.pluginApproved && context.pluginBindings?.[key],
@@ -84,7 +80,7 @@ export class PluginExecutionGateway {
       const operation = async () => {
         if (tool.executor.type === 'host-alias') {
           const target = tool.executor.target.slice('builtin/'.length);
-          invariant(PUBLIC_HOST_TOOLS.has(target), 'HOST_TOOL_NOT_PUBLIC');
+          invariant(PUBLIC_HOST_TOOLS.has(target), 'HOST_TOOL_NOT_PUBLIC', target);
           const host = toolRegistry.get(target);
           invariant(host && !host.metadata.plugin, 'HOST_TOOL_NOT_FOUND');
           return host.execute(cleanArgs, {
@@ -95,14 +91,22 @@ export class PluginExecutionGateway {
         return this.mcp(key, tool, cleanArgs, controller.signal);
       };
       const cancelled = new Promise<never>((_, reject) => {
-        if (controller.signal.aborted)
-          reject(new Error('CAPABILITY_REVOKED_OR_TIMEOUT'));
-        else
-          controller.signal.addEventListener(
-            'abort',
-            () => reject(new Error('CAPABILITY_REVOKED_OR_TIMEOUT')),
-            { once: true },
+        const rejectAborted = () => {
+          const timedOut = controller.signal.reason === 'timeout';
+          reject(
+            new PluginError(
+              timedOut ? 'PLUGIN_HOST_TIMEOUT' : 'CAPABILITY_REVOKED',
+              timedOut
+                ? 'Plugin tool execution exceeded 60s'
+                : 'Plugin capability was revoked or the run was cancelled',
+            ),
           );
+        };
+        if (controller.signal.aborted) rejectAborted();
+        else
+          controller.signal.addEventListener('abort', rejectAborted, {
+            once: true,
+          });
       });
       const result = await Promise.race([operation(), cancelled]);
       const latest = (await this.service.snapshot()).packages.find(
@@ -133,12 +137,11 @@ export class PluginExecutionGateway {
         },
       };
     } catch (error) {
-      return createErrorResponse(
-        error instanceof Error ? error.message : 'PLUGIN_EXECUTION_FAILED',
-      );
+      const described = describeOperationError(error);
+      return createErrorResponse(`${described.code}: ${described.detail}`);
     } finally {
       clearTimeout(timer);
-      context?.signal?.removeEventListener('abort', abort);
+      context?.signal?.removeEventListener('abort', onContextAbort);
       running.delete(controller);
       if (!running.size) this.running.delete(key);
     }
@@ -152,9 +155,10 @@ export class PluginExecutionGateway {
     invariant(tool.executor.type === 'mcp', 'INVALID_EXECUTOR');
     const executor = tool.executor,
       origin = publicHttps(executor.url).origin;
-    const token = executor.secretSlot
+    const raw = executor.secretSlot
       ? await this.secret(key, executor.secretSlot)
       : undefined;
+    const token = typeof raw === 'string' && raw.length ? raw : undefined;
     if (executor.secretSlot)
       invariant(token, 'SECRET_REQUIRED', executor.secretSlot);
     const client = new Client(
@@ -267,6 +271,13 @@ export class PluginExecutionGateway {
         { signal, timeout: 30_000 },
       );
       return { ...result, success: !result.isError } as ToolResult;
+    } catch (error) {
+      // MCP SDK 的异常类型不稳定：统一收敛为稳定错误码，同时保留原始 message。
+      if (error instanceof PluginError) throw error;
+      throw new PluginError(
+        'MCP_FAILED',
+        error instanceof Error ? error.message : String(error),
+      );
     } finally {
       signal.removeEventListener('abort', abort);
       await client.close().catch(() => undefined);

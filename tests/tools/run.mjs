@@ -22,7 +22,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
@@ -36,6 +36,9 @@ mkdirSync(workDir, { recursive: true });
 const outfile = path.join(workDir, 'tools.test.mjs');
 
 /** 把 Vite 专属的 import.meta.glob(...) 改写为返回 {} 的本地函数（仅当文件中出现时才改写） */
+const presetGlob = {};
+function readPresets(dir, relative = '') { for (const entry of readdirSync(dir,{withFileTypes:true})) { const rel = relative ? relative + '/' + entry.name : entry.name; if (entry.isDirectory()) readPresets(path.join(dir,entry.name),rel); else presetGlob['/skills/'+rel] = readFileSync(path.join(dir,entry.name)).toString('base64'); } }
+readPresets(path.join(root,'skills'));
 const importMetaGlobShim = {
   name: 'import-meta-glob-shim',
   setup(buildApi) {
@@ -44,7 +47,7 @@ const importMetaGlobShim = {
       const source = await readFileSync(args.path, 'utf8');
       if (!source.includes('import.meta.glob')) return undefined;
       const shimmed =
-        'const __importMetaGlobShim = () => ({});\n' +
+        'const __importMetaGlobShim = () => (' + JSON.stringify(presetGlob) + ');\n' +
         source.replace(/import\.meta\.glob/g, '__importMetaGlobShim');
       return { contents: shimmed, loader: 'ts' };
     });

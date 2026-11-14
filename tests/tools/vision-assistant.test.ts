@@ -74,7 +74,7 @@ assert.deepEqual(
 }
 import { skillEngine } from '../../entrypoints/sidepanel/core/registry/skill-engine';
 
-assert.deepEqual(filterVisionAssistantTools(['screenshot','browser_page_exec','browser_scroll','vision_gui','vision_gui','ocr']), ['screenshot','vision_gui']);
+assert.deepEqual(filterVisionAssistantTools(['screenshot','browser_page_exec','browser_page_ops','vision_gui','vision_gui','ocr']), ['screenshot','vision_gui']);
 for (const id of ['browser_navigation','browser_interact','browser_inject_script','ocr','browser_page_exec']) assert.equal(isVisionAssistantTool(id), false);
 // 合并后的观察者能力面：vision_gui 进白名单，开放面收敛为 action 级闸门
 assert.equal(isVisionAssistantTool('vision_gui'), true);
@@ -280,10 +280,10 @@ try {
   assert.equal(regionFeedback.message.content.filter((part:any)=>part.type==='image_url').length,1);
   assert.equal(captures,1,'GUI zoom must not recapture or disappear when auto-refresh is disabled');
 } finally { imageStore.putFromDataUrl=imageWrite; }
-const dangerous = setCustomSkill({name:'guide-forbidden-skill',files:{'SKILL.md':'---\nname: guide-forbidden-skill\ndescription: Test forbidden execution\n---\nExecute code'},allowedTools:['browser_page_exec']});
+const dangerous = await setCustomSkill({name:'guide-forbidden-skill',files:{'SKILL.md':'---\nname: guide-forbidden-skill\ndescription: Test forbidden execution\n---\nExecute code'},allowedTools:['browser_interact']});
 assert.equal(dangerous.ok,true);
 if (dangerous.ok) {
-  const denied = await engine.executeToolCalls(runtime,handle,calls('skill_tool',{action:'load',skill_name:dangerous.skill.id}),{},()=>{},Date.now()+60000);
+  const denied = await engine.executeToolCalls(runtime,handle,calls('skill_tool',{action:'load',skill_id:dangerous.skill.id}),{},()=>{},Date.now()+60000);
   assert.equal(denied.anyFailure,true); assert.equal(executed,0);
   engine.injectSkillTools(runtime,handle,{data:{skill:dangerous.skill.id}});
   handle.dynamicToolIds.clear();
@@ -387,7 +387,7 @@ try {
   const noAgentSkills = skillEngine.resolveAvailableSkills(null, customAction.toolIds);
   assert.ok(noAgentSkills.every(s => s.allowedTools.every(t => customAction.toolIds.includes(t))),
     '无智能体可用技能同样满足承载校验');
-  const safe=setCustomSkill({name:'guide-safe-skill',files:{'SKILL.md':'---\nname: guide-safe-skill\ndescription: Safe reading\n---\nRead current page'},allowedTools:['vision_gui']});
+  const safe=await setCustomSkill({name:'guide-safe-skill',files:{'SKILL.md':'---\nname: guide-safe-skill\ndescription: Safe reading\n---\nRead current page'},allowedTools:['vision_gui']});
   assert.equal(safe.ok,true);
   if(safe.ok){
     const safeRuntime=await runtimeBuilder.build({chatId:'safe-guide',userInput:'解释页面',agentName:'视觉助手',skillNames:[safe.skill.id],priorRecords:[]});

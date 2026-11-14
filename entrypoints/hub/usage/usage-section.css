@@ -338,6 +338,16 @@
   gap: 8px;
 }
 
+/* 限高滚动容器：内容超高时出滚动条，不把整页撑长（明细 / 失败 / 详细数据共用） */
+.hub-usage__scroll,
+.hub-usage__detail-scroll {
+  max-height: 360px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  min-height: 0;
+}
+
 .hub-usage__row {
   display: flex;
   flex-direction: column;
@@ -405,6 +415,183 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ══════════ 状态标签（结局 / 缓存 / 上下文） ══════════ */
+
+/*
+ * 小胶囊标签：请求明细里的「成功 / 失败」「首轮 / 缓存失效 / 缓存命中」等
+ * 状态从纯文本升级为标签。语义色仅用于状态表达（好 / 警 / 坏），
+ * 与顶部状态徽章同一套配色，不引入蓝紫。
+ */
+.hub-usage__tag {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  padding: 1.5px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  backdrop-filter: blur(6px) saturate(130%);
+  -webkit-backdrop-filter: blur(6px) saturate(130%);
+}
+
+.hub-usage__tag--neutral {
+  color: var(--ink-secondary, #787671);
+  background: rgba(41 40 36 / 0.05);
+  border-color: rgba(41 40 36 / 0.14);
+}
+
+.hub-usage__tag--good {
+  color: #047857;
+  background: rgba(16 185 129 / 0.1);
+  border-color: rgba(16 185 129 / 0.28);
+}
+
+.hub-usage__tag--warn {
+  color: #b45309;
+  background: rgba(245 158 11 / 0.12);
+  border-color: rgba(245 158 11 / 0.3);
+}
+
+.hub-usage__tag--bad {
+  color: #b91c1c;
+  background: rgba(239 68 68 / 0.1);
+  border-color: rgba(239 68 68 / 0.28);
+}
+
+/* ══════════ 请求明细 + 失败原因：宽屏左右并排 ══════════ */
+
+/*
+ * 宽屏（≥1080px）两列并排：明细占大头（3fr）、失败原因占小头（2fr）；
+ * 窄屏回落单列堆叠。无失败记录时 is-solo 让明细独占整行。
+ * align-items: start —— 两块高度各自按内容（封顶 360px），不互相拉伸留白。
+ */
+.hub-usage__split {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.hub-usage__split.is-solo {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (max-width: 1079px) {
+  .hub-usage__split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ══════════ 详细数据（按维度聚合的卡片网格） ══════════ */
+
+/* 维度切换（渠道 / 模型 / 智能体）：贴组标题右侧，垂直居中对齐基线 */
+.hub-usage__dimension {
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+/* auto-fill：一行多卡、窄屏自动降列；align-content 防止末行被拉伸 */
+.hub-usage__detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+  gap: 10px;
+  align-content: start;
+}
+
+.hub-usage__detail-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.78));
+  background: var(--glass-tint, rgba(255, 255, 255, 0.55));
+  backdrop-filter: var(--glass-blur, blur(18px) saturate(165%));
+  -webkit-backdrop-filter: var(--glass-blur, blur(18px) saturate(165%));
+  box-shadow: var(--glass-inset, inset 0 1px 0 rgba(255, 255, 255, 0.92)),
+    0 1px 3px rgb(41 40 36 / 4%);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.hub-usage__detail-card:hover {
+  border-color: rgba(41 40 36 / 0.18);
+  box-shadow: var(--glass-inset, inset 0 1px 0 rgba(255, 255, 255, 0.92)),
+    0 4px 14px rgb(41 40 36 / 8%);
+}
+
+.hub-usage__detail-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hub-usage__detail-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-primary, #292824);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hub-usage__detail-card-tokens {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--ink-secondary, #787671);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 2×2 指标宫格：标签在上、数值在下，数值用墨色加重形成视觉锚点 */
+.hub-usage__detail-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+}
+
+.hub-usage__detail-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.hub-usage__detail-metric-label {
+  font-size: 10.5px;
+  color: var(--ink-muted, #9b9790);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hub-usage__detail-metric-value {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ink-primary, #292824);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 卡脚：虚线分隔，左「命中 / 上报」明细、右成功率 */
+.hub-usage__detail-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 10px;
+  padding-top: 7px;
+  border-top: 1px dashed rgba(41 40 36 / 0.12);
+  font-size: 11px;
+  color: var(--ink-muted, #9b9790);
+}
+
+.hub-usage__detail-card-foot span {
+  font-variant-numeric: tabular-nums;
+}
+
 /* ══════════ 失败摘要 ══════════ */
 
 .hub-usage__errors {
@@ -450,7 +637,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .hub-usage__bar-fill,
-  .hub-usage__row {
+  .hub-usage__row,
+  .hub-usage__detail-card {
     transition: none;
   }
 }

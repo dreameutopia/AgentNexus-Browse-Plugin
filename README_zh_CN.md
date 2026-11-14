@@ -92,6 +92,10 @@ Markdown 渲染支持 Mermaid 图表、KaTeX 公式、PlantUML、代码高亮与
 ### 🛡️ 安全守护
 受限 URL 保护、危险操作确认栏（Guard Confirm）、声明式网络请求规则。
 
+### 会话工作区与文件交付
+
+所有工具生成或获取的交付文件（Excel、Mermaid PNG、下载资源及 Python 产物）统一保存在当前会话工作区 `outputs/`。工作区按需创建，独立于 Python 安装；原始附件位于 `inputs/`。工具返回 `<workspace-file path="outputs/文件名" />` 标记，AI 在回复正文中原样输出后渲染为可点击下载的卡片。同名新产物自动编号，仅保留这一种产物卡片协议。
+
 ## 🧭 技能（Skill）设计
 
 ### 设计定位
@@ -121,9 +125,9 @@ Markdown 渲染支持 Mermaid 图表、KaTeX 公式、PlantUML、代码高亮与
 
 ### 运行 Python 脚本
 
-安装 Python 后，可在管理中心的「Python 环境」开启 **运行时 Skill 脚本支持**。默认关闭，删除 Python 环境时自动关闭。开启后，符合会话权限的技能可使用 `skill_tool(action="copy")` 复制文件或目录。传 `paths: ["."]` 可复制整个技能，原始字节和目录结构保存在当前会话的 `skills/<id>/<revision>/` 下。请只运行可信来源的脚本。
+每个会话默认注入 `skill_tool`，提供 `load/read/copy/create/edit/delete`。资源复制不依赖 Python。调用时只传十进制 `skill_id` 与精确的 `paths`（`["."]` 表示整个技能），保留字节与相对目录；已有文件绝不覆盖，冲突时放入 `<skill_id>/`，再冲突则创建编号副本目录。后续必须使用返回的实际路径。仅执行 Python 时需要安装 Python 运行时。
 
-把复制后的 `.py` 相对路径作为 `scriptPath` 传给 `python_run`。技能脚本默认从复制后的技能根目录运行。`AGENTNEXUS_WORKSPACE` 指向会话工作区，上传文件在 `inputs/`，交付物写到 `outputs/`。用 `argv`、`stdin` 和 `env` 分别传入参数、输入和非敏感配置。包内入口可额外传入点分隔的 `module`。回复中用 `<workspace-file path="outputs/report.csv" />` 引用已保存的产物。
+用 `python_run(action="create", path="scripts/report.py", content=...)` 把脚本写入会话工作区，再用 `action="run"` 执行（path 必须是工作区内已存在的相对路径 `.py`）；`action="edit"` 修改文件（全量重写，或 `find`+`replace` 唯一命中替换），`action="delete"` 删除文件。所有 path 都相对工作区根目录，绝对路径、盘符与 `..` 一律拒绝。上面复制出的技能脚本从其复制根目录用同样的方式运行。`AGENTNEXUS_WORKSPACE` 指向会话工作区，上传文件在 `inputs/`，交付物写到 `outputs/`。用 `argv`、`stdin` 和 `env` 分别传入参数、输入和非敏感配置。包内入口可额外传入点分隔的 `module`。回复中用 `<workspace-file path="outputs/report.csv" />` 引用已保存的产物。
 
 先用 `preflight: true` 检查静态导入、PEP 723 元数据、`requirements.txt` 或静态 `pyproject.toml` 声明，以及环境变量引用。默认使用 Pyodide 官方包目录和显式指定的本地 wheel。通过会话审批后才会解析公开 PyPI wheel。依赖 Bash、子进程、系统程序或缺少兼容 wheel 的技能，需要改用等效 Python 实现或其他可用工具。
 
@@ -259,3 +263,7 @@ git push origin v0.1.0
 ## 第三方插件开发
 
 插件开发、签名打包、GitHub 发布、兼容边界与维护说明见 [插件开发指南](docs/plugin-developer-guide.zh-CN.md)。运行 `npm run test:plugins` 和 `npm run test:plugins:ui` 验证插件内核与界面交互。
+
+会话 JavaScript 统一使用全局默认 `js_run`：先 create 保存 `scripts/*.js`，再 run 传相对路径与 JSON `args`（脚本通过 `$args` 读取）。文本编辑与 Python 共用引擎，支持精确/显式缩进匹配、原子 `edits` 及可选 SHA-256 冲突检查；`read` 按页读取任意工作区文本文件（每页 2000 字符并携带页码账目）。每次 run/crawl 的执行结果自动持久化为会话工作区 `results/` 目录下的独立 JSON 文件（单文件上限 10MB、跨浏览器重启可用），响应只回传前 2000 字符，data_ref_tool 与 xlsx_tool 直接消费这些结果文件。原内联页面执行工具实现保持不变，仅供 backend；两个脚本入口均不出现在智能体工具组中。
+
+技能生命周期、数字 ID 与插件待批准更新规范见 [Skill 生命周期](docs/skill-lifecycle.md)。

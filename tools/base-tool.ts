@@ -96,7 +96,7 @@ export abstract class BaseTool implements ExtendedTool {
  * web_search 的落地移除——新工具自带导航（chrome.tabs）与解析，不再经由
  * browser_navigation 组合，也不再需要 background 上下文转发舞蹈。
  * 现行的搜索工具基类是 tools/search/search-tool-base.ts 的 BaseSearchTool
- * （web_search / platform_search 共用执行链路），与本文件的导航基类无关。
+ * （web_search / platform_search / bilibili_search 共用执行链路），与本文件的导航基类无关。
  */
 export abstract class BaseNavigationTool extends BaseTool {
   protected async navigateToUrl(url: string, options?: {

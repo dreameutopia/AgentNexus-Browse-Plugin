@@ -1,14 +1,16 @@
+import { requireWorkspaceChatId, workspaceArtifact, type WorkspaceArtifact } from './artifact-contract';
+import { isWorkspaceRelativePath } from './paths';
 import { chatDatabase } from '@/entrypoints/sidepanel/core/context/chat-database';
+import { withNamedLock } from '@/utils/shared/async-lock';
+import { WorkspaceOperationError } from '@/utils/shared/error-details';
 import {
   checkWorkspaceLimits, indexWorkspaceEntries, isWorkspaceName, isWorkspaceOutput, truncateWorkspaceName,
   WorkspaceMissingChatError, workspaceRoot, type WorkspaceEntry,
 } from './paths';
 
 export async function withWorkspaceLock<T>(chatId: string, work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-  signal?.throwIfAborted();
-  return typeof navigator !== 'undefined' && navigator.locks
-    ? navigator.locks.request(`agentnexus-python-workspace:${chatId}`, { signal }, work)
-    : work();
+  requireWorkspaceChatId(chatId);
+  return withNamedLock(`agentnexus-workspace:${chatId}`, work, signal);
 }
 
 export async function importWorkspaceFiles(
@@ -66,48 +68,13 @@ export async function saveWorkspace(
   indexWorkspaceEntries(workspaceRoot(chatId), entries);
   return chatDatabase.updateWorkspace(chatId, current => {
     if (current?.revision !== expectedRevision) {
-      throw new Error('Workspace changed during Python execution. Rerun the code against the latest files.');
+      throw new WorkspaceOperationError('CONFLICT', 'Workspace changed during the operation. Read the latest files before retrying.');
     }
     return { snapshot: { revision: crypto.randomUUID(), entries }, result: undefined };
   }, signal);
 }
 
-/** Stage a bounded set of named resources without replacing existing files or following links. */
-export function stageWorkspaceResources(
-  chatId: string,
-  resources: readonly WorkspaceEntry[],
-  signal?: AbortSignal,
-): Promise<void> {
-  const root = workspaceRoot(chatId);
-  indexWorkspaceEntries(root, resources);
-  return withWorkspaceLock(chatId, () => chatDatabase.updateWorkspace(chatId, current => {
-    const entries = indexWorkspaceEntries(root, current?.entries ?? []);
-    let changed = false;
-    for (const resource of resources) {
-      if (!resource.path.startsWith('skills/') || resource.link || (resource.blob && !resource.importId)) {
-        throw new Error('Invalid staged skill resource');
-      }
-      const existing = entries.get(resource.path);
-      if (existing) {
-        if ((!resource.blob && !existing.blob && !existing.link) ||
-            (resource.blob && existing.blob && existing.importId === resource.importId)) continue;
-        throw new Error(`Workspace path already occupied: ${JSON.stringify(resource.path)}`);
-      }
-      entries.set(resource.path, resource);
-      changed = true;
-      for (let slash = resource.path.lastIndexOf('/'); slash >= 0; slash = resource.path.lastIndexOf('/', slash - 1)) {
-        const path = resource.path.slice(0, slash);
-        if (!entries.has(path)) {
-          entries.set(path, { path, blob: null });
-          checkWorkspaceLimits(entries.size, 0);
-        }
-      }
-    }
-    const combined = [...entries.values()];
-    indexWorkspaceEntries(root, combined);
-    return { snapshot: changed ? { revision: crypto.randomUUID(), entries: combined } : undefined, result: undefined };
-  }, signal), signal);
-}
+export type WorkspaceCommitGuard = (commit: () => Promise<void>) => Promise<void>;
 
 export async function readWorkspaceOutput(chatId: string, path: string): Promise<Blob | null> {
   if (!chatId || !isWorkspaceOutput(path)) return null;
@@ -120,4 +87,47 @@ export async function readWorkspaceOutput(chatId: string, path: string): Promise
     if (error instanceof WorkspaceMissingChatError) return null;
     throw error;
   }
+}
+
+/** Atomically persist a deliverable, preserving earlier files and rejecting linked parents.
+ * Independent of Python; the transaction verifies ownership against concurrent chat deletion.
+ */
+export async function saveWorkspaceOutput(
+  chatId: string,
+  requestedPath: string,
+  blob: Blob,
+  signal?: AbortSignal,
+): Promise<WorkspaceArtifact> {
+  requireWorkspaceChatId(chatId);
+  if (!isWorkspaceRelativePath(requestedPath) || !isWorkspaceOutput(requestedPath) || !(blob instanceof Blob)) {
+    throw new Error('Invalid workspace output path or contents');
+  }
+  checkWorkspaceLimits(1, blob.size, blob.size);
+  return withWorkspaceLock(chatId, () => chatDatabase.updateWorkspace(chatId, current => {
+    const root = workspaceRoot(chatId);
+    const entries = indexWorkspaceEntries(root, current?.entries ?? []);
+    const slash = requestedPath.lastIndexOf('/');
+    const directory = requestedPath.slice(0, slash);
+    const name = requestedPath.slice(slash + 1);
+    const dot = name.lastIndexOf('.');
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const extension = dot > 0 && name.length - dot <= 32 ? name.slice(dot) : '';
+    let path = requestedPath;
+    for (let suffix = 2; entries.has(path); suffix++) {
+      path = directory + '/' + truncateWorkspaceName(stem, ' (' + suffix + ')' + extension);
+    }
+    for (let end = path.lastIndexOf('/'); end >= 0; end = path.lastIndexOf('/', end - 1)) {
+      const parent = path.slice(0, end);
+      const existing = entries.get(parent);
+      if (existing?.blob || existing?.link) throw new Error('Workspace parent is not a directory: ' + parent);
+      if (!existing) entries.set(parent, { path: parent, blob: null });
+    }
+    entries.set(path, { path, blob, mtime: Date.now() });
+    const combined = [...entries.values()];
+    indexWorkspaceEntries(root, combined);
+    return {
+      snapshot: { revision: crypto.randomUUID(), entries: combined },
+      result: workspaceArtifact(path, blob),
+    };
+  }, signal), signal);
 }

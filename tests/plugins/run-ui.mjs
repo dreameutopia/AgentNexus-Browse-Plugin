@@ -14,6 +14,7 @@ await build({
   entryPoints: [path.join(root, 'tests/plugins/ui.test.ts')],
   outfile: out,
   bundle: true,
+  banner: { js: 'import.meta.glob = () => ({});' },
   platform: 'node',
   format: 'esm',
   packages: 'external',
@@ -44,7 +45,7 @@ await build({
 });
 const fixtureDir = path.join(
   root,
-  'node_modules/.cache/agentnexus-plugins/ui-fixture',
+  'node_modules/.cache/agentnexus-plugins/ui-fixture-v14',
 );
 const pluginDir = path.join(fixtureDir, 'plugin-example'),
   fixture = path.join(fixtureDir, 'plugin-example-1.0.0.anplugin');

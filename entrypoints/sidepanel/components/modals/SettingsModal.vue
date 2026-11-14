@@ -139,7 +139,7 @@
  *   - 备份恢复、使用监控、Python 环境已迁至「更多设置」独立页（entrypoints/hub）；
  *     files / system 为迁入的历史功能分区，导航隐藏（hidden: true）
  */
-import { computed, onMounted, onUnmounted, provide, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue';
 import { t, useLocale, LOCALE_OPTIONS, type MessageKey } from '@/utils/i18n';
 import { modelRegistry } from '../../utils/channels';
 import './settings-modal.css';
@@ -165,9 +165,15 @@ const props = withDefaults(
     visible: boolean;
     /** 打开时直接定位到的分区（如语音按钮未配置提示「去配置」跳到 ASR 页） */
     initialSection?: SettingsSectionId;
+    /**
+     * 打开后精确聚焦的设置项（data-setting-id）。
+     * 仅用于需要「直达具体字段」的入口（守卫停止注记 → 轮次上限）。
+     */
+    focusTarget?: 'maxIterations' | null;
   }>(),
   {
     initialSection: 'channels',
+    focusTarget: null,
   }
 );
 
@@ -224,6 +230,22 @@ function onOpen() {
   void settingsForm.hydrate();
   activeSection.value = props.initialSection;
   openEpoch.value++;
+  void nextTick(focusTargetSetting);
+}
+
+/**
+ * 定位到指定设置项：分区经 v-show 常驻挂载，因此目标节点此时已存在；
+ * 滚动到视口中部并聚焦其输入控件。找不到时静默降级为「仅打开分区」。
+ */
+function focusTargetSetting() {
+  const target = props.focusTarget;
+  if (!target) return;
+  const root = document.querySelector('.api-config-modal');
+  const group = root?.querySelector<HTMLElement>(`[data-setting-id="${target}"]`);
+  if (!group) return;
+  group.scrollIntoView({ block: 'center' });
+  const control = group.querySelector<HTMLElement>('input, select, textarea') ?? group;
+  control.focus({ preventScroll: true });
 }
 
 onMounted(onOpen);

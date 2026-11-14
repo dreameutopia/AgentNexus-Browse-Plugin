@@ -66,7 +66,7 @@
                   @change="toggle(tool.ref)"
                 />
                 <span class="external-tools__tool-text">
-                  {{ tool.id }} — {{ tool.description }}
+                  {{ group.manifest.id }}/{{ tool.id }} — {{ tool.description }}
                   <small v-if="!group.enabled || group.blocked">({{ group.blocked || tr('已禁用', 'Disabled') }})</small>
                 </span>
               </label>

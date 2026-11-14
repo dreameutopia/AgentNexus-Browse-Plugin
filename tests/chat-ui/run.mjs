@@ -55,6 +55,10 @@ const recovery = spawnSync(process.execPath, [path.resolve('tests/chat-ui/learn-
 assert.equal(recovery.status, 0, 'Learning result receipt sync and persistent dismissal regression');
 const scroll = spawnSync(process.execPath, [path.resolve('tests/chat-ui/scroll-follow.test.mjs')], { stdio: 'inherit' });
 assert.equal(scroll.status, 0, 'Scroll follow regression');
+const retry = spawnSync(process.execPath, [path.resolve('tests/chat-ui/api-error-retry.test.mjs')], { stdio: 'inherit' });
+assert.equal(retry.status, 0, 'Error retry eligibility and draft isolation regression');
+const guardContinue = spawnSync(process.execPath, [path.resolve('tests/chat-ui/guard-continue.test.mjs')], { stdio: 'inherit' });
+assert.equal(guardContinue.status, 0, 'Guard-stop continue eligibility regression');
 const apiErrorCard = spawnSync(process.execPath, [path.resolve('tests/chat-ui/api-error-card.test.mjs')], { stdio: 'inherit' });
 assert.equal(apiErrorCard.status, 0, 'API error card request-model panel regression');
 const richComponents = spawnSync(process.execPath, [path.resolve('tests/chat-ui/rich-components.test.mjs')], { stdio: 'inherit' });
@@ -73,3 +77,9 @@ const guardConfirm = spawnSync(process.execPath, [path.resolve('tests/chat-ui/gu
 assert.equal(guardConfirm.status, 0, 'Guard confirm bar (plan-card design language) regression');
 const pageQuote = spawnSync(process.execPath, [path.resolve('tests/chat-ui/page-quote.test.mjs')], { stdio: 'inherit' });
 assert.equal(pageQuote.status, 0, 'Page quote bar (pending/confirmed) and <page_quote> envelope regression');
+
+const workspaceArtifacts = spawnSync(process.execPath, [path.resolve('tests/chat-ui/workspace-artifacts.test.mjs')], { stdio: 'inherit' });
+assert.equal(workspaceArtifacts.status, 0, 'Unified chat artifacts without Python');
+
+const skillCapture = spawnSync(process.execPath, [path.resolve('tests/chat-ui/skill-capture.test.mjs')], {stdio:'inherit'});
+assert.equal(skillCapture.status,0,'Skill capture confirmation and persistence');

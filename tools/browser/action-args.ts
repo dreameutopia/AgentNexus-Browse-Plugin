@@ -151,6 +151,29 @@ export function readNumberField(
 }
 
 /**
+ * 字符串数组字段（去重保序：重复项只保留首个）。
+ * 供「批量 id 列表」「扩展名列表」这类参数使用。
+ */
+export function readStringArrayField(
+  input: Record<string, unknown>,
+  key: string,
+  rules: { min?: number; emptyError?: string } = {},
+): Field<string[]> {
+  const value = input[key];
+  if (value === undefined) return { ok: true };
+  const { min = 1, emptyError } = rules;
+  if (!Array.isArray(value) || value.length === 0) {
+    return { ok: false, error: emptyError ?? `${key} 必须是非空数组` };
+  }
+  for (const item of value) {
+    if (typeof item !== 'string' || !item.trim()) {
+      return { ok: false, error: `${key} 的元素必须全部是非空字符串，收到 ${JSON.stringify(item)}` };
+    }
+  }
+  return { ok: true, value: [...new Set(value as string[])] };
+}
+
+/**
  * 整数数组字段（去重保序：重复 id 只保留首个——批量关闭重复 id 会让
  * 底层 API 对同一目标二次操作）。
  */

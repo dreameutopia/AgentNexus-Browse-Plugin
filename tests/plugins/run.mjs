@@ -13,6 +13,7 @@ await build({
   entryPoints: [path.join(root, 'tests/plugins/plugins.test.ts')],
   outfile: out,
   bundle: true,
+  banner: { js: 'import.meta.glob = () => ({});' },
   platform: 'node',
   format: 'esm',
   packages: 'external',

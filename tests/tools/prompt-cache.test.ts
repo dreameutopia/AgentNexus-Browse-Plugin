@@ -243,7 +243,18 @@ try {
   const compactionInputs: ChatMessage[][] = [];
   const compactor = new ContextCompactor({ sendStream: async (messages: ChatMessage[]) => {
     compactionInputs.push(structuredClone(messages));
-    return { finalMessage: { role: 'assistant', content: '<summary>All task constraints and evidence retained</summary>' }, finishReason: 'stop' };
+    // 摘要必须满足六分区契约（compactor 的 assertSummaryStructure 会校验）：
+    // 缺任一分区即视为该维度记忆丢失。
+    return { finalMessage: { role: 'assistant', content: [
+      '<summary>',
+      '<task>任务目标</task>',
+      '<constraints>约束</constraints>',
+      '<key-facts>关键事实</key-facts>',
+      '<progress>进度</progress>',
+      '<errors>错误</errors>',
+      '<pending>待办</pending>',
+      '</summary>',
+    ].join('') }, finishReason: 'stop' };
   } } as any);
   const summarized = await compactor.compact({ model: runtime.model, threshold: 8192, messages: [
     { role: 'user', content: 'FIRST_FACT:' + '中'.repeat(15000) + ':LAST_FACT' },

@@ -1,7 +1,8 @@
 import { gt, lt } from 'semver';
 import { verifyPackage } from './package';
 import { computeAvailability } from './dependencies';
-import { PluginRepository } from './repository';
+import { assertCatalogConsistent } from './reconcile';
+import { PluginRepository, type PluginState } from './repository';
 import {
   invariant,
   type GithubSource,
@@ -20,10 +21,46 @@ export class PluginService {
   ) {}
   async snapshot(): Promise<PluginSnapshot> {
     const state = await this.repository.read();
-    return {
-      generation: state.generation,
-      packages: computeAvailability(state.packages),
-    };
+    let packages: InstalledPlugin[];
+    try {
+      packages = computeAvailability(state.packages);
+    } catch (error) {
+      // 依赖图重算失败时返回“全部隔离”的只读视图，保证管理页仍能打开并
+      // 卸载问题插件；下一次启动对账会修复持久状态。
+      const detail = `CATALOG_CORRUPT: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      packages = state.packages.map((plugin) => ({
+        ...plugin,
+        quarantined: plugin.quarantined ?? detail,
+        blocked: detail,
+      }));
+    }
+    return { generation: state.generation, packages };
+  }
+  /**
+   * 提交后广播：仓库只持久化“事实”，blocked 必须在这里重新派生，
+   * 否则依赖被禁用的插件会在本次变更里被错误注册为可用。
+   */
+  private async publish(state: PluginState): Promise<PluginSnapshot> {
+    let packages: InstalledPlugin[];
+    try {
+      packages = computeAvailability(state.packages);
+    } catch (error) {
+      // 已经提交的状态不能因为派生计算失败被报成“操作失败”；返回隔离视图，
+      // 让管理页仍可诊断/卸载，下一次启动对账会修复持久状态。
+      const detail = `CATALOG_CORRUPT: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      packages = state.packages.map((plugin) => ({
+        ...plugin,
+        quarantined: plugin.quarantined ?? detail,
+        blocked: detail,
+      }));
+    }
+    const snapshot = { generation: state.generation, packages };
+    await this.changed(snapshot);
+    return snapshot;
   }
   async preview(
     bytes: Uint8Array,
@@ -78,6 +115,7 @@ export class PluginService {
       changes,
     };
   }
+  /** 先验包再安装（内部/测试入口）；后台已持有预览时直接走 installPreviewed。 */
   async install(
     bytes: Uint8Array,
     expected: number,
@@ -85,7 +123,25 @@ export class PluginService {
     source?: GithubSource,
     rollback = false,
   ): Promise<PluginSnapshot> {
-    const preview = await this.preview(bytes, source, rollback);
+    return this.installPreviewed(
+      await this.preview(bytes, source, rollback),
+      bytes,
+      expected,
+      approvedDigest,
+    );
+  }
+  /**
+   * 使用已验签的预览落库，避免同一份包在一次安装里被重复 SHA-256 + 验签。
+   *
+   * `expected` 与 `approvedDigest` 来自用户确认的预览；这里再次比对，保证
+   * 预览与待落库字节没有在调用链中被替换。
+   */
+  async installPreviewed(
+    preview: PluginPreview,
+    bytes: Uint8Array,
+    expected: number,
+    approvedDigest: string,
+  ): Promise<PluginSnapshot> {
     invariant(
       preview.generation === expected &&
         preview.plugin.digest === approvedDigest,
@@ -93,7 +149,9 @@ export class PluginService {
     );
     const state = await this.snapshot(),
       old = state.packages.find((p) => p.key === preview.plugin.key);
-    if (old?.digest === preview.plugin.digest) {
+    // 同摘要幂等短路只适用于健康安装；隔离中的同包需要走完整安装流程，
+    // 以便补写 release 归档并清除 quarantined，否则永远无法自愈。
+    if (old?.digest === preview.plugin.digest && !old.quarantined) {
       if (!old.source && preview.source) {
         const next = await this.repository.commit(
           expected,
@@ -101,8 +159,7 @@ export class PluginService {
             p.key === old.key ? { ...p, source: preview.source } : p,
           ),
         );
-        await this.changed(next);
-        return next;
+        return this.publish(next);
       }
       return state;
     }
@@ -117,6 +174,8 @@ export class PluginService {
       ...state.packages.filter((p) => p.key !== item.key),
       item,
     ]);
+    // 提交前验证目录结构，避免落库后应用快照才暴露重复 ref/key。
+    assertCatalogConsistent(packages);
     invariant(
       !packages.find((p) => p.key === item.key)?.blocked,
       'DEPENDENCY_BLOCKED',
@@ -135,8 +194,7 @@ export class PluginService {
       digest: item.digest,
       bytes,
     });
-    await this.changed(next);
-    return next;
+    return this.publish(next);
   }
   async setEnabled(
     key: string,
@@ -144,23 +202,27 @@ export class PluginService {
     expected: number,
   ): Promise<PluginSnapshot> {
     const state = await this.snapshot();
-    invariant(
-      state.packages.some((p) => p.key === key),
-      'PLUGIN_NOT_FOUND',
-    );
+    const target = state.packages.find((p) => p.key === key);
+    invariant(target, 'PLUGIN_NOT_FOUND');
+    if (enabled)
+      invariant(
+        !target.quarantined,
+        'PLUGIN_QUARANTINED',
+        `${key}: ${target.quarantined}`,
+      );
     const packages = computeAvailability(
       state.packages.map((p) =>
         p.key === key ? { ...p, enabled, epoch: p.epoch + 1 } : p,
       ),
     );
+    assertCatalogConsistent(packages);
     if (enabled)
       invariant(
         !packages.find((p) => p.key === key)?.blocked,
         'DEPENDENCY_BLOCKED',
       );
     const next = await this.repository.commit(expected, packages);
-    await this.changed(next);
-    return next;
+    return this.publish(next);
   }
   async uninstall(key: string, expected: number): Promise<PluginSnapshot> {
     const state = await this.snapshot();
@@ -168,13 +230,16 @@ export class PluginService {
       state.packages.some((p) => p.key === key),
       'PLUGIN_NOT_FOUND',
     );
+    const packages = computeAvailability(
+      state.packages.filter((p) => p.key !== key),
+    );
+    assertCatalogConsistent(packages);
     const next = await this.repository.commit(
       expected,
-      computeAvailability(state.packages.filter((p) => p.key !== key)),
+      packages,
       undefined,
       key,
     );
-    await this.changed(next);
-    return next;
+    return this.publish(next);
   }
 }

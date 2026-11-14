@@ -24,7 +24,7 @@ export function strictJson(text: string): unknown {
       }
       escaped = c === '\\' && !escaped;
     }
-    throw new Error('INVALID_JSON: unclosed string');
+    invariant(false, 'INVALID_JSON', 'unclosed string');
   }
   function value(depth: number): unknown {
     invariant(depth <= 32, 'JSON_DEPTH');

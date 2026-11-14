@@ -98,8 +98,9 @@
       <p class="config-form-hint">{{ t('sidepanel.apiConfig.interactTimeoutHint') }}</p>
     </div>
 
-    <!-- 对话轮次上限（全局应用级，文本与视觉策略统一） -->
-    <div class="config-form-group">
+    <!-- 对话轮次上限（全局应用级，文本与视觉策略统一）。
+         data-setting-id 供「守卫停止 → 修改设置」精确滚动/聚焦 -->
+    <div class="config-form-group" data-setting-id="maxIterations">
       <label class="config-form-label">{{ t('sidepanel.apiConfig.maxIterations') }}</label>
       <input
         type="number"

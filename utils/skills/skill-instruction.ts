@@ -2,9 +2,9 @@
  * 技能指令装配（L2 正文的唯一实现）
  *
  * 两条入口共用同一份装配逻辑，保证「模型拿到的技能指令」逐字一致：
- *   1. load_skill 工具（模型在 available-skills 清单命中后自主加载）；
+ *   1. skill_tool(action="load") 工具（模型在 available-skills 清单命中后自主加载）；
  *   2. 合成激活轮（用户在输入框用 / 预选技能时，会话引擎自动封装一轮
- *      load_skill 调用注入模型上下文，见 skill-engine.buildActivationRound）。
+ *      skill_tool(action="load") 调用注入模型上下文，见 skill-engine.buildActivationRound）。
  *
  * 两条入口的产物差异仅在承载形式（ToolResult vs 合成 tool 消息），指令正文、
  * 资源文件清单、环境说明与优先级约定完全同源——模型无法也不需要区分
@@ -14,7 +14,7 @@
  *   - 正文按 SKILL_PAGE_TOKEN_BUDGET（≈3000 token）分页注入，默认第 1 页；
  *     超出一页时页脚提示页码 / 字数 / 续读调用，模型按页码续读；
  *   - 资源文件（references/ 等）不随激活注入，清单带各文件字数，模型经
- *     read_skill_file 按相对路径分页读取（path 缺省读 SKILL.md）。
+ *     skill_tool(action="read") 按相对路径分页读取（path 缺省读 SKILL.md）。
  *
  * 分层：本文件只依赖 skill-types / skill-pagination（纯函数与常量）与
  * common/tool-handler 的响应拼装函数，不触碰存储层与工具注册表，可被
@@ -22,7 +22,6 @@
  */
 
 import type { SkillRecord } from './skill-types';
-import { modelSkillIdOf } from './skill-types';
 import {
   SKILL_PAGE_TOKEN_BUDGET,
   countSkillChars,
@@ -30,11 +29,11 @@ import {
   type SkillPageInfo,
 } from './skill-pagination';
 import { buildSuccessPayload } from '@/common/tool-handler';
-import { isSkillToolId, skillToolCall, type SkillToolMode } from './skill-tool-contract';
+import { isSkillToolId, skillToolCall } from './skill-tool-contract';
 
 /**
  * 优先级约定：技能正文随身携带，而不是挂在 system prompt 的技能分区上。
- * 原 <activated-skills> 分区已删除（改为合成 load_skill 轮），这条约定必须
+ * 原 <activated-skills> 分区已删除（改为合成 skill_tool(action="load") 轮），这条约定必须
  * 跟着技能正文走，才能在「预激活」与「模型自加载」两条路径上都成立。
  */
 const SKILL_CONFLICT_NOTICE =
@@ -42,11 +41,11 @@ const SKILL_CONFLICT_NOTICE =
   '本技能是针对特定任务的深化指令，执行相关任务时以其流程为准（覆盖智能体的通用流程）；' +
   '若技能内容与用户本轮指令冲突，以用户指令为准。';
 
-/** load_skill 成功响应的结构化载荷（content 文本与 data 字段同源）。
+/** skill_tool(action="load") 成功响应的结构化载荷（content 文本与 data 字段同源）。
  *  用 type 而非 interface：需整体作为 Record<string, unknown> 传给
  *  buildSuccessPayload（interface 没有隐式索引签名，type 才有）。 */
 export type SkillInstructionResult = {
-  /** 模型标识 `${name}-${id}`（工具入参与清单标识） */
+  /** 模型标识 十进制 Skill ID（工具入参与清单标识） */
   skill: string;
   id: string;
   name: string;
@@ -59,7 +58,7 @@ export type SkillInstructionResult = {
   truncated: boolean;
 };
 
-/** 请求页码超出正文总页数（load_skill 捕获后转为可自纠的工具报错） */
+/** 请求页码超出正文总页数（skill_tool(action="load") 捕获后转为可自纠的工具报错） */
 export class SkillPageOutOfRangeError extends Error {
   readonly pageCount: number;
   readonly requestedPage: number;
@@ -72,7 +71,7 @@ export class SkillPageOutOfRangeError extends Error {
   }
 }
 
-/** 成功提示文案（与 load_skill 工具的响应 message 同源，两处共用） */
+/** 成功提示文案（与 skill_tool(action="load") 工具的响应 message 同源，两处共用） */
 export function skillLoadSuccessMessage(result: SkillInstructionResult): string {
   return result.truncated
     ? `已加载技能 ${result.name}（正文第 ${result.pagination.page}/${result.pagination.pageCount} 页）`
@@ -114,14 +113,14 @@ function safeSkillParts(skill: SkillRecord): { body: string; files: Record<strin
  * 不再嵌入 system prompt 的分区结构。空正文（存储层未强制非空）不产生空段，
  * 分节统一用 \n\n 连接，任何输入形态下都不会出现连续空行。
  */
-export function buildSkillInstruction(skill: SkillRecord, page = 1, mode: SkillToolMode = 'text'): SkillInstructionResult {
+export function buildSkillInstruction(skill: SkillRecord, page = 1): SkillInstructionResult {
   const { body: rawBody, files } = safeSkillParts(skill);
   const body = rawBody.trim();
   const paged = paginateSkillText(body, page);
   if (!paged.ok) {
     throw new SkillPageOutOfRangeError(page, paged.pageCount);
   }
-  const modelId = modelSkillIdOf(skill);
+  const modelId = skill.id;
 
   const sections: string[] = [SKILL_CONFLICT_NOTICE];
 
@@ -138,8 +137,8 @@ export function buildSkillInstruction(skill: SkillRecord, page = 1, mode: SkillT
   const resourceFiles = Object.entries(files).filter(
     ([path, content]) => path !== 'SKILL.md' && typeof content === 'string',
   );
-  const binaryPaths = mode === 'workspace' ? Object.keys(skill.resourceBytes ?? {}).sort() : [];
-  const folders = mode === 'workspace' ? skill.folders ?? [] : [];
+  const binaryPaths = Object.keys(skill.resourceBytes ?? {}).sort();
+  const folders = skill.folders ?? [];
   if (resourceFiles.length || binaryPaths.length || folders.length) {
     const listing = [
       ...resourceFiles.map(([path, content]) => `- ${JSON.stringify(path)}（${countSkillChars(content)} 字）`),
@@ -149,7 +148,7 @@ export function buildSkillInstruction(skill: SkillRecord, page = 1, mode: SkillT
     sections.push(
       `# 技能资源文件\n` +
         `用 skill_tool(action="read") 分页读取文本（每页约 ${SKILL_PAGE_TOKEN_BUDGET} token）。` +
-        (mode === 'workspace' ? '用 skill_tool(action="copy") 将文件或目录复制到会话工作区。' : '') + '\n' +
+        '必须先用 skill_tool(action="copy") 将文件或目录复制到会话工作区，再使用返回的实际路径。' + '\n' +
         listing,
     );
   }
@@ -160,9 +159,7 @@ export function buildSkillInstruction(skill: SkillRecord, page = 1, mode: SkillT
     : [];
   sections.push(
     '# 环境说明\n' +
-      (mode === 'workspace'
-        ? '会话提供 python_run 时，可预检并运行复制到工作区的兼容 Python 脚本。'
-        : '本技能在此会话中使用文本模式，脚本仅作参考，请用会话已有工具完成等效操作。') +
+      '脚本及资源一律先复制到当前会话工作区，严禁直接修改技能资源。JavaScript 用 js_run 按路径执行并动态传参；Python 仅在会话提供 python_run 时执行。' +
       `\n技能预授权工具：${allowedTools.length > 0 ? allowedTools.join(' ') : '（未声明，沿用会话现有工具）'}`,
   );
 
@@ -188,7 +185,7 @@ export function buildSkillInstruction(skill: SkillRecord, page = 1, mode: SkillT
  * 合成激活轮回传给模型的 tool 结果消息 content。
  *
  * 由 `buildSuccessPayload`（BaseTool.createSuccessResponse 同一函数）拼装，
- * 因此与真实 load_skill 调用的回传**逐字相同**：`data` 是完整载荷
+ * 因此与真实 skill_tool(action="load") 调用的回传**逐字相同**：`data` 是完整载荷
  * （含技能正文 `instruction`），`content[0].text` 是它的紧凑摘要。
  * 模型无法也（不需要）区分「自己调的」与「系统代调的」。
  *

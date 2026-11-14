@@ -82,6 +82,8 @@ export class NoteTool extends BaseNoteTool {
     requiresApprovalActions: ['delete'],
     // 笔记库数据操作，不触碰页面：视觉循环无需重拍
     noVisionRecapture: true,
+    // 零成本状态工具：运行时长上限到达后仍放行（见 registry 的准入语义）
+    zeroCostStateTool: true,
   };
 
   openaiSchema: OpenAITool = {

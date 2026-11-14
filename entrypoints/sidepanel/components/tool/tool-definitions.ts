@@ -167,39 +167,6 @@ export const categories: ToolCategory[] = [
         required: ['formData']
       },
       {
-        name: 'get_downloads_status',
-        description: '获取浏览器下载任务的状态、进度和历史记录',
-        category: 'automation',
-        version: '1.0.0',
-        parameters: {
-          state: {
-            type: 'string',
-            description: '过滤下载状态',
-            enum: ['all', 'in_progress', 'complete', 'interrupted'],
-            default: 'all'
-          },
-          limit: {
-            type: 'number',
-            description: '返回的最大数量',
-            default: 10,
-            minimum: 1,
-            maximum: 100
-          },
-          query: {
-            type: 'string',
-            description: '搜索文件名或URL',
-            placeholder: '搜索关键词...'
-          },
-          orderBy: {
-            type: 'string',
-            description: '排序字段',
-            enum: ['startTime', 'bytesReceived', 'totalBytes'],
-            default: 'startTime'
-          }
-        },
-        required: []
-      },
-      {
         name: 'check_restricted_url',
         description: '检查当前页面是否在受限URL（如 chrome://、edge:// 等），如果是则自动导航到安全页面',
         category: 'automation',
@@ -416,53 +383,44 @@ export const categories: ToolCategory[] = [
         required: ['action']
       },
       {
-        name: 'browser_scroll',
-        description: '滚动页面。支持按屏滚动（以视口高度为单位），可选择先点击指定坐标区域',
+        name: 'browser_page_ops',
+        description: '轻量页面操作：按屏滚动整页 / 等待指定元素出现（action 驱动，无需 DOM 引用）',
         category: 'browser',
         version: '1.0.0',
         parameters: {
+          action: {
+            type: 'string',
+            description: 'scroll=按屏滚动整页；wait_element=等待元素出现',
+            enum: ['scroll', 'wait_element']
+          },
           direction: {
             type: 'string',
-            description: '滚动方向',
+            description: '仅 action=scroll：滚动方向',
             enum: ['up', 'down']
           },
           screens: {
             type: 'number',
-            description: '滚动屏数（如1、2、3），实际滚动距离 = 视口高度 × 95% × 屏数',
+            description: '仅 action=scroll：滚动屏数（实际距离 = 视口高度 × 95% × 屏数，上限100）',
             default: 1,
             placeholder: '1'
           },
           clickBox: {
             type: 'array',
-            description: '点击坐标box2d格式 [x1, y1, x2, y2]（选填，如有值将先点击该区域中心点）',
+            description: '仅 action=scroll：点击坐标box2d格式 [x1, y1, x2, y2]（选填，如有值将先点击该区域中心点）',
             placeholder: '[100, 200, 300, 400]'
-          }
-        },
-        required: ['direction']
-      },
-      {
-        name: 'browser_wait_for_element',
-        description: '等待指定元素出现在页面上',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {
+          },
           selector: {
             type: 'string',
-            description: '要等待的元素CSS选择器',
+            description: '仅 action=wait_element：要等待的元素CSS选择器',
             placeholder: '#loading-indicator'
           },
           timeout: {
             type: 'number',
-            description: '等待超时时间（毫秒）',
-            default: 30000
-          },
-          visible: {
-            type: 'boolean',
-            description: '是否要求元素可见',
-            default: true
+            description: '仅 action=wait_element：等待超时时间（毫秒，默认5000，上限120000）',
+            default: 5000
           }
         },
-        required: ['selector']
+        required: ['action']
       },
       {
         name: 'browser_extract_data',
@@ -578,91 +536,112 @@ export const categories: ToolCategory[] = [
         },
         required: ['query']
       },
-      // scriptInject / executeJavaScript 已移除：无同名注册工具；脚本统一使用 browser_page_exec
+      // scriptInject / executeJavaScript 已移除：无同名注册工具；脚本统一使用 js_run
+      // 历史与书签已按域合并为一个工具（browser_history_bookmarks，九 action）：
+      // 旧名 browser_search_history / browser_search_bookmarks /
+      // browser_bookmark_create / browser_bookmark_delete / quick_navigation /
+      // history_navigation / bookmark_navigation 全部删除，不得回潮。
       {
-        name: 'browser_search_history',
-        description: '搜索浏览器历史记录',
+        name: 'browser_history_bookmarks',
+        description: '浏览历史与书签统一管理：检索/打开/增删改/最近访问/最常访问/文件夹结构（action 驱动）',
         category: 'browser',
         version: '1.0.0',
         parameters: {
-          text: {
+          action: {
             type: 'string',
-            description: '搜索文本（可选）',
-            placeholder: '搜索历史记录'
+            description:
+              'search=检索 / open=打开 / create=新增书签或文件夹 / update=改或移书签 / delete=删书签 / clear=清理浏览历史 / recent=最近访问 / top=最常访问 / folders=文件夹结构',
+            enum: ['search', 'open', 'create', 'update', 'delete', 'clear', 'recent', 'top', 'folders']
           },
-          maxResults: {
-            type: 'number',
-            description: '最大结果数',
-            default: 100
-          },
-          startTime: {
-            type: 'string',
-            description: '开始时间（ISO 格式或相对时间，如 "1 day ago"）',
-            placeholder: '1 day ago'
-          }
-        },
-        required: []
-      },
-      {
-        name: 'browser_search_bookmarks',
-        description: '搜索浏览器书签',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {
           query: {
             type: 'string',
-            description: '搜索关键词',
-            placeholder: '搜索书签'
+            description: '仅 action=search：关键词（匹配标题或 URL，留空取全部）',
+            placeholder: '关键词'
           },
-          maxResults: {
+          source: {
+            type: 'string',
+            description: '仅 action=search/open：history=历史 / bookmark=书签 / both=两者（默认 both）',
+            enum: ['history', 'bookmark', 'both']
+          },
+          since: {
+            type: 'string',
+            description: '仅 action=search/recent：时间窗起点（today / 3 days ago / 2w / ISO / 毫秒时间戳）',
+            placeholder: '1 day ago'
+          },
+          until: {
+            type: 'string',
+            description: '仅 action=search/recent：时间窗终点（缺省为现在）'
+          },
+          limit: {
             type: 'number',
-            description: '最大结果数量',
-            default: 100
-          }
-        },
-        required: []
-      },
-      {
-        name: 'browser_bookmark_create',
-        description: '添加书签',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {
+            description: '仅 action=search/recent/top：返回条数上限（1~100）',
+            default: 20
+          },
+          sort: {
+            type: 'string',
+            description: '仅 action=search：relevance=相关度 / recent=最后访问 / visited=访问次数',
+            enum: ['relevance', 'recent', 'visited']
+          },
+          excludeCurrentTabs: {
+            type: 'boolean',
+            description: '仅 action=search：是否排除当前已打开的标签页地址',
+            default: false
+          },
+          autoOpen: {
+            type: 'boolean',
+            description: '仅 action=search：唯一命中时是否直接打开该页面',
+            default: false
+          },
           url: {
             type: 'string',
-            description: '书签URL（可选，默认当前页面）',
+            description: 'action=open 要打开的地址 / create 新书签地址 / update、delete 按地址定位书签',
             placeholder: 'https://example.com'
+          },
+          id: {
+            type: 'string',
+            description: '仅 action=open：条目 id（来自 search/recent/top 的结果）'
+          },
+          newTab: {
+            type: 'boolean',
+            description: '仅 action=open：是否在现有窗口新建标签页',
+            default: true
+          },
+          waitForLoad: {
+            type: 'boolean',
+            description: '仅 action=open：是否等待页面就绪再返回',
+            default: true
+          },
+          timeout: {
+            type: 'number',
+            description: '仅 action=open：等待页面就绪上限（毫秒）',
+            default: 30000
           },
           title: {
             type: 'string',
-            description: '书签标题（可选，默认页面标题）',
+            description: 'action=create 书签标题（folder=true 时为文件夹名）/ update 新标题',
             placeholder: '我的书签'
           },
           parentId: {
             type: 'string',
-            description: '父文件夹ID（可选）'
-          }
-        },
-        required: []
-      },
-      {
-        name: 'browser_bookmark_delete',
-        description: '删除书签',
-        category: 'browser',
-        version: '1.0.0',
-        parameters: {
+            description: 'action=create 父文件夹 id（默认 1 书签栏）/ update 移到该文件夹 / folders 只列该子树'
+          },
+          folder: {
+            type: 'boolean',
+            description: '仅 action=create：true=新建文件夹（此时只需 title）',
+            default: false
+          },
           bookmarkId: {
             type: 'string',
-            description: '书签ID',
+            description: 'action=update/delete：书签 id（精确寻址）',
             placeholder: 'bookmark-id'
           },
-          url: {
-            type: 'string',
-            description: '书签URL（未提供ID时使用）',
-            placeholder: 'https://example.com'
+          all: {
+            type: 'boolean',
+            description: '仅 action=clear：true=清空全部浏览历史（不可逆，需用户批准）；否则必须给 since 指定时间窗',
+            default: false
           }
         },
-        required: []
+        required: ['action']
       },
       // rightClick / drag 已移除：当前 toolRegistry 中无对应注册工具
       // 窗口枚举（原 browser_window）已并入 browser_tabs(action="windows")
@@ -732,7 +711,7 @@ export const categories: ToolCategory[] = [
       {
         name: 'platform_search',
         description:
-          '站点平台搜索：一次调用完成「导航到站点搜索结果页 → 等待加载 → 解析结构化结果 → Markdown 表格」（知乎 / GitHub / CSDN / MOOC / 小红书 / 知网 / Bilibili）。' +
+          '站点平台搜索：一次调用完成「导航到站点搜索结果页 → 等待加载 → 解析结构化结果 → Markdown 表格」（知乎 / GitHub / CSDN / MOOC / 小红书 / 知网）。' +
           '⚠ 自带页面导航（效果等同 browser_navigation(action="open")），禁止同一轮并发调用；知乎/小红书等需登录态，未登录可能返回登录墙或空结果',
         category: 'search',
         version: '1.0.0',
@@ -740,7 +719,7 @@ export const categories: ToolCategory[] = [
           platform: {
             type: 'string',
             description:
-              '目标站点平台（枚举）：zhihu=知乎、github=GitHub、csdn=CSDN、mooc=中国大学MOOC、xiaohongshu=小红书、cnki=中国知网、bilibili=Bilibili',
+              '目标站点平台（枚举）：zhihu=知乎、github=GitHub、csdn=CSDN、mooc=中国大学MOOC、xiaohongshu=小红书、cnki=中国知网',
             placeholder: 'zhihu'
           },
           query: {
@@ -760,6 +739,32 @@ export const categories: ToolCategory[] = [
           }
         },
         required: ['platform', 'query']
+      },
+      {
+        name: 'bilibili_search',
+        description:
+          'Bilibili 站内视频搜索：一次调用完成「导航到 B 站搜索结果页 → 等待加载 → 解析视频条目 → Markdown 表格」。' +
+          '⚠ 自带页面导航（效果等同 browser_navigation(action="open")），禁止同一轮并发调用；拿到视频后用 browser_navigation 打开视频页，再用 bilibili_subtitle_tool 提取字幕',
+        category: 'search',
+        version: '1.0.0',
+        parameters: {
+          query: {
+            type: 'string',
+            description: '搜索查询关键词（必填，最长 300 字符）',
+            placeholder: '输入搜索内容'
+          },
+          newTab: {
+            type: 'boolean',
+            description: '是否在新标签页打开搜索结果（默认 true；连续搜索可传 false 复用当前标签页）',
+            default: true
+          },
+          waitTime: {
+            type: 'integer',
+            description: '页面加载完成后的额外等待毫秒数（0-10000，默认 3000；B 站结果动态渲染，解析不全时可调大）',
+            default: 3000
+          }
+        },
+        required: ['query']
       }
     ]
   },
@@ -799,14 +804,30 @@ export const categories: ToolCategory[] = [
       },
       {
         name: 'browser_get_page_html',
-        description: '获取当前页面的HTML源代码',
+        description: '获取当前页面的HTML源代码或可见纯文本（可含全部iframe，带长度上限）',
         category: 'base',
-        version: '1.0.0',
+        version: '2.0.0',
         parameters: {
           tabId: {
             type: 'number',
             description: '标签页ID（可选，默认当前活动标签页）',
             placeholder: '留空表示当前标签页'
+          },
+          format: {
+            type: 'string',
+            description: '返回格式：html=源码（默认）；text=可见纯文本',
+            enum: ['html', 'text'],
+            default: 'html'
+          },
+          includeIframes: {
+            type: 'boolean',
+            description: '是否包含全部iframe内容（默认false=只取主frame）',
+            default: false
+          },
+          maxChars: {
+            type: 'number',
+            description: '返回内容的字符上限（默认200000，超限截断并标注truncated）',
+            default: 200000
           }
         },
         required: []
@@ -821,20 +842,6 @@ export const categories: ToolCategory[] = [
             type: 'number',
             description: '标签页ID（可选，默认当前活动标签页）',
             placeholder: '留空表示当前标签页'
-          }
-        },
-        required: []
-      },
-      {
-        name: 'page-source',
-        description: '获取页面源代码',
-        category: 'base',
-        version: '1.0.0',
-        parameters: {
-          selector: {
-            type: 'string',
-            description: 'CSS选择器（可选）',
-            placeholder: '#content'
           }
         },
         required: []
@@ -897,60 +904,6 @@ export const categories: ToolCategory[] = [
     ]
   },
   {
-    id: 'navigation',
-    name: '导航工具',
-    icon: '🧭',
-    tools: [
-      {
-        name: 'quick_navigation',
-        description: '快速导航到常用网站',
-        category: 'navigation',
-        version: '1.0.0',
-        parameters: {
-          site: {
-            type: 'string',
-            description: '网站名称或关键词',
-            placeholder: 'github'
-          }
-        },
-        required: ['site']
-      },
-      {
-        name: 'bookmark_navigation',
-        description: '通过书签导航',
-        category: 'navigation',
-        version: '1.0.0',
-        parameters: {
-          keyword: {
-            type: 'string',
-            description: '书签关键词',
-            placeholder: '搜索书签'
-          }
-        },
-        required: ['keyword']
-      },
-      {
-        name: 'history_navigation',
-        description: '通过历史记录导航',
-        category: 'navigation',
-        version: '1.0.0',
-        parameters: {
-          keyword: {
-            type: 'string',
-            description: '历史记录关键词',
-            placeholder: '搜索历史'
-          },
-          maxResults: {
-            type: 'number',
-            description: '最大结果数',
-            default: 10
-          }
-        },
-        required: ['keyword']
-      }
-    ]
-  },
-  {
     id: 'vision',
     name: '视觉工具',
     icon: '👁️',
@@ -962,87 +915,140 @@ export const categories: ToolCategory[] = [
   },
   {
     id: 'resource',
-    name: '资源工具',
+    name: '资源与下载工具',
     icon: '📦',
     tools: [
       {
-        name: 'resource_sniffer',
-        description: '嗅探页面资源',
-        category: 'resource',
+        name: 'browser_resources',
+        description: '页面资源与下载捕获：嗅探/列出/下载/直链下载/下载拦截/捕获副本/导出副本/状态（action 驱动）',
+        category: 'browser',
         version: '1.0.0',
         parameters: {
-          resourceType: {
+          action: {
             type: 'string',
-            description: '资源类型',
-            enum: ['image', 'video', 'audio', 'document', 'all']
-          }
-        },
-        required: []
-      },
-      {
-        name: 'resource_downloader',
-        description: '下载页面资源',
-        category: 'resource',
-        version: '1.0.0',
-        parameters: {
+            description:
+              'sniff=嗅探 / list=列出缓存 / download=下载嗅探结果 / fetch=直链下载 / intercept=拦截器开关 / captured=捕获副本库 / export=导出副本 / status=总体状态',
+            enum: ['sniff', 'list', 'download', 'fetch', 'intercept', 'captured', 'export', 'status']
+          },
+          fileTypes: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '仅 action=sniff：要嗅探的类型（扩展名或类别名 document/archive/video/audio/image/code/font/data）'
+          },
+          maxResults: {
+            type: 'number',
+            description: '仅 action=sniff：最多返回多少条',
+            default: 10,
+            minimum: 1,
+            maximum: 100
+          },
+          includeImages: {
+            type: 'boolean',
+            description: '仅 action=sniff：是否包含图片类资源',
+            default: false
+          },
+          resourceIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '仅 action=download：要下载的资源 id 列表（来自 sniff/list）'
+          },
+          downloadPath: {
+            type: 'string',
+            description: '仅 action=download：保存文件名（相对下载目录）'
+          },
           url: {
             type: 'string',
-            description: '资源URL',
-            placeholder: 'https://example.com/image.jpg'
+            description: '仅 action=fetch：要下载的完整 URL',
+            placeholder: 'https://example.com/file.zip'
           },
           filename: {
             type: 'string',
-            description: '保存的文件名',
-            placeholder: 'image.jpg'
-          }
-        },
-        required: ['url']
-      },
-      {
-        name: 'start_download_interception',
-        description: '开始拦截下载请求',
-        category: 'resource',
-        version: '1.0.0',
-        parameters: {},
-        required: []
-      },
-      {
-        name: 'stop_download_interception',
-        description: '停止拦截下载请求',
-        category: 'resource',
-        version: '1.0.0',
-        parameters: {},
-        required: []
-      },
-      {
-        name: 'list_captured_files',
-        description: '列出已拦截的文件',
-        category: 'resource',
-        version: '1.0.0',
-        parameters: {},
-        required: []
-      },
-      {
-        name: 'get_captured_file_by_id',
-        description: '根据ID获取拦截的文件',
-        category: 'resource',
-        version: '1.0.0',
-        parameters: {
+            description: '仅 action=fetch/export：保存文件名'
+          },
+          operation: {
+            type: 'string',
+            description:
+              '仅 action=intercept/captured：子动作。intercept=start/stop/state；captured=list/get/clear',
+            enum: ['start', 'stop', 'state', 'list', 'get', 'clear']
+          },
+          extraExtensions: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '仅 action=intercept operation=start：追加拦截的扩展名'
+          },
           fileId: {
             type: 'string',
-            description: '文件ID',
+            description: '仅 action=captured operation=get 与 action=export：捕获副本的 id',
             placeholder: 'file-xxx'
+          },
+          limit: {
+            type: 'number',
+            description: '仅 action=captured operation=list：返回条数上限',
+            default: 50,
+            minimum: 1,
+            maximum: 200
+          },
+          offset: {
+            type: 'number',
+            description: '仅 action=captured operation=list：偏移量（分页用）',
+            default: 0,
+            minimum: 0
+          },
+          openAfterDownload: {
+            type: 'boolean',
+            description: '仅 action=download/fetch：下载完成后是否用系统默认程序打开',
+            default: false
           }
         },
-        required: ['fileId']
+        required: ['action']
       },
       {
-        name: 'clear_captured_files',
-        description: '清空已拦截的文件',
-        category: 'resource',
+        name: 'browser_downloads',
+        description: '浏览器下载管理：查询/取消/暂停/恢复/清除历史/定位文件/打开文件（action 驱动）',
+        category: 'browser',
         version: '1.0.0',
-        parameters: {},
-        required: []
+        parameters: {
+          action: {
+            type: 'string',
+            description: 'list=查询 / cancel=取消 / pause=暂停 / resume=恢复 / erase=清除历史 / show=定位 / open=打开',
+            enum: ['list', 'cancel', 'pause', 'resume', 'erase', 'show', 'open']
+          },
+          state: {
+            type: 'string',
+            description: '仅 action=list：按状态过滤',
+            enum: ['all', 'in_progress', 'complete', 'interrupted'],
+            default: 'all'
+          },
+          limit: {
+            type: 'number',
+            description: '仅 action=list：返回条数上限',
+            default: 10,
+            minimum: 1,
+            maximum: 100
+          },
+          query: {
+            type: 'string',
+            description: '仅 action=list：按文件名或地址子串过滤',
+            placeholder: '搜索关键词...'
+          },
+          orderBy: {
+            type: 'string',
+            description: '仅 action=list：排序字段（一律降序）',
+            enum: ['startTime', 'bytesReceived', 'totalBytes'],
+            default: 'startTime'
+          },
+          downloadId: {
+            type: 'number',
+            description: 'cancel/pause/resume/show/open 必填：下载任务 ID',
+            placeholder: '123'
+          },
+          downloadIds: {
+            type: 'array',
+            items: { type: 'number' },
+            description: '仅 action=erase：要清除历史记录的下载 ID 列表'
+          }
+        },
+        required: ['action']
       }
     ]
   },

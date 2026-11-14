@@ -1,7 +1,7 @@
 /**
  * 搜索工具共享基类（web_search / platform_search）
  *
- * 两个工具的行为完全同构：一次调用完成「导航到搜索结果页 → 等待加载 →
+ * 三个工具的行为完全同构：一次调用完成「导航到搜索结果页 → 等待加载 →
  * 结构化解析 → Markdown 表」。差异只有三处——目标集合（引擎 vs 站点平台）、
  * 目标参数名（engine vs platform）、面向模型的文案。因此执行链路收敛在本
  * 基类，两个具体工具只声明差异面，避免两处各写一套随时间漂移的导航/解析逻辑。
@@ -11,6 +11,10 @@
  * 整工具转发；chrome.scripting / chrome.tabs.sendMessage 两上下文同样原生可用。
  *
  * 结果契约（两部分独立封装，解析失败绝不吞掉导航事实）：
+ *   data.target     —— 实际检索的目标 id（工具的枚举参数名对应：engine / platform；
+ *                      专属工具没有目标参数时，这里记录它固定的站点）；
+ *   data.query      —— 归一化后的关键词；
+ *   data.searchEngine —— 目标来源标识（Baidu / Bing / Zhihu / Bilibili …）；
  *   data.navigation —— 是否成功导航 + 当前实际网址（重定向后的最终 URL）+ 标签页；
  *   data.results    —— 解析产物（success/count/hint）；条目本体只经 content 的
  *                      Markdown 表承载一份（data 里不再重复，避免模型上下文双份
@@ -92,8 +96,17 @@ export interface ParseOutcome {
  * 具体搜索工具的差异面（基类据此调整参数校验与文案）
  */
 export interface SearchToolSpec {
-  /** 目标集合（引擎或站点平台） */
+  /** 目标集合（引擎 / 站点平台 / 专属目标） */
   targets: readonly SearchTargetId[];
+  /**
+   * 固定目标（专属工具）：声明后 schema **不含**目标参数——调用方只能传
+   * query 等通用参数，目标由工具自己决定（专属工具只服务一个站点，
+   * 让模型再选一次目标没有意义）。
+   *
+   * 防御：调用方若仍传了目标参数，必须与固定目标一致，否则明确报错——
+   * 静默忽略会让「模型以为在搜 A、实际搜了 B」这类偏差无从察觉。
+   */
+  fixedTarget?: SearchTargetId;
   /** 目标参数名：engine（通用搜索引擎）/ platform（站点平台） */
   paramName: 'engine' | 'platform';
   /** 目标参数的中文名（引擎 / 站点平台） */
@@ -107,12 +120,30 @@ export abstract class BaseSearchTool extends BaseTool {
   protected abstract readonly spec: SearchToolSpec;
   /** 工具描述主体（子类撰写：能力边界 + 并发禁令 + 结果契约） */
   protected abstract readonly usageDescription: string;
-  /** 目标参数说明（子类撰写） */
-  protected abstract readonly paramDescription: string;
+  /**
+   * 目标参数选择指引（仅在 schema 含目标参数时有意义；专属工具可省略）。
+   * 枚举清单由基类按注册表生成，此处只写「怎么选」。
+   */
+  protected readonly paramDescription?: string;
+
+  /**
+   * 目标的展示名（注册表缺失时回落 id）。
+   *
+   * 防御：schema 在**类初始化期**组装（模块加载即执行），此处若因配置疏漏
+   * 让 undefined 渗进 `.label`，崩的将是整个扩展的加载过程——远比一次调用
+   * 失败严重。回落成 id 只影响文案可读性，不会拖垮启动。
+   */
+  private targetLabel(id: SearchTargetId): string {
+    const target = SEARCH_TARGETS[id] as SearchTargetConfig | undefined;
+    return target?.label ?? id;
+  }
 
   /**
    * 组装 OpenAI Schema：结构共用（目标参数 + query + newTab + waitTime），
    * 描述与枚举文案由子类注入——枚举值一律取自注册表 id 数组，杜绝手抄漂移。
+   *
+   * 专属工具（spec.fixedTarget）：schema **不含**目标参数——目标由工具固定，
+   * 模型只需给关键词；required 也相应只有 query。
    *
    * 防御：子类字段初始化顺序若把 openaiSchema 写在 spec 之前，本方法会读到
    * 未初始化的 spec——这里显式抛出可读错误，而不是让 undefined 渗进 schema。
@@ -125,7 +156,34 @@ export abstract class BaseSearchTool extends BaseTool {
     if (!spec || !Array.isArray(rawTargets) || rawTargets.length === 0) {
       throw new Error(`搜索工具 ${name} 的目标集合未声明或为空（spec 配置缺陷）`);
     }
-    const { paramName, paramLabel, targets, targetKindLabel } = spec;
+    const { paramName, paramLabel, targets, targetKindLabel, fixedTarget } = spec;
+    const properties: Record<string, unknown> = {};
+    if (!fixedTarget) {
+      properties[paramName] = {
+        type: 'string',
+        enum: [...targets],
+        // 枚举清单由注册表派生（防手抄漂移），选择指引由子类补充——
+        // 两者拼接，缺一不可：清单告诉模型「有哪些」，指引告诉它「怎么选」
+        description:
+          `目标${paramLabel}（枚举值，小写）：` +
+          targets.map(id => `${id}=${this.targetLabel(id)}`).join('、') +
+          `（${targetKindLabel}共 ${targets.length} 个）。` +
+          (this.paramDescription ?? ''),
+      };
+    }
+    properties.query = {
+      type: 'string',
+      description: '搜索关键词（必填，去除首尾空白，最长 300 字符）',
+    };
+    properties.newTab = {
+      type: 'boolean',
+      description:
+        '是否在新标签页打开搜索结果（默认 true）。连续多轮搜索可传 false 直接复用当前标签页，避免标签页堆积',
+    };
+    properties.waitTime = {
+      type: 'integer',
+      description: `页面加载完成后的额外等待毫秒数（0-${WAIT_TIME_MAX_MS}，默认 ${WAIT_TIME_DEFAULT_MS}）：动态内容较多的站点可适当调大以保证结果渲染`,
+    };
     return {
       type: 'function',
       function: {
@@ -134,33 +192,8 @@ export abstract class BaseSearchTool extends BaseTool {
         parameters: {
           type: 'object',
           additionalProperties: false,
-          properties: {
-            [paramName]: {
-              type: 'string',
-              enum: [...targets],
-              // 枚举清单由注册表派生（防手抄漂移），选择指引由子类补充——
-              // 两者拼接，缺一不可：清单告诉模型「有哪些」，指引告诉它「怎么选」
-              description:
-                `目标${paramLabel}（枚举值，小写）：` +
-                targets.map(id => `${id}=${SEARCH_TARGETS[id].label}`).join('、') +
-                `（${targetKindLabel}共 ${targets.length} 个）。` +
-                (this.paramDescription ?? ''),
-            },
-            query: {
-              type: 'string',
-              description: '搜索关键词（必填，去除首尾空白，最长 300 字符）',
-            },
-            newTab: {
-              type: 'boolean',
-              description:
-                '是否在新标签页打开搜索结果（默认 true）。连续多轮搜索可传 false 直接复用当前标签页，避免标签页堆积',
-            },
-            waitTime: {
-              type: 'integer',
-              description: `页面加载完成后的额外等待毫秒数（0-${WAIT_TIME_MAX_MS}，默认 ${WAIT_TIME_DEFAULT_MS}）：动态内容较多的站点可适当调大以保证结果渲染`,
-            },
-          },
-          required: [paramName, 'query'],
+          properties,
+          required: fixedTarget ? ['query'] : [paramName, 'query'],
         },
       },
     };
@@ -174,7 +207,7 @@ export abstract class BaseSearchTool extends BaseTool {
     if (!spec || !Array.isArray(rawTargets) || rawTargets.length === 0) {
       return this.createErrorResponse('搜索目标集合未配置（工具配置缺陷，无法执行）');
     }
-    const { paramName, paramLabel, targets, targetKindLabel } = spec;
+    const { paramName, paramLabel, targets, targetKindLabel, fixedTarget } = spec;
     const signal = context?.signal;
 
     // ── 参数防御：形态校验先于一切副作用 ──
@@ -185,17 +218,40 @@ export abstract class BaseSearchTool extends BaseTool {
     if (!args) {
       return this.createErrorResponse(`参数必须是 JSON 对象（${paramName} / query 必填）`);
     }
-    const targetRaw =
-      typeof args[paramName] === 'string'
-        ? (args[paramName] as string).trim().toLowerCase()
-        : '';
-    // 目标 id 既要在注册表内，也要属于本工具的类别（引擎工具不接站点平台）
-    if (!isSearchTargetId(targetRaw) || !targets.includes(targetRaw)) {
-      return this.createErrorResponse(
-        `不支持的${targetKindLabel}：${JSON.stringify(args[paramName] ?? '')}。${this.name} 仅支持 ${targets.join(' / ')}，请从 ${paramName} 的枚举值中选择`,
-      );
+    // ── 目标解析 ──
+    // 专属工具：目标固定；调用方若仍传了目标参数，必须与固定目标一致
+    // （静默忽略会让「模型以为在搜 A、实际搜了 B」的偏差无从察觉）。
+    let targetId: SearchTargetId;
+    if (fixedTarget) {
+      const provided =
+        typeof args[paramName] === 'string'
+          ? (args[paramName] as string).trim().toLowerCase()
+          : '';
+      if (provided && provided !== fixedTarget) {
+        return this.createErrorResponse(
+          `${this.name} 只支持 ${fixedTarget}，不接受 ${paramName}=${JSON.stringify(provided)}`,
+        );
+      }
+      targetId = fixedTarget;
+    } else {
+      const raw =
+        typeof args[paramName] === 'string'
+          ? (args[paramName] as string).trim().toLowerCase()
+          : '';
+      // 目标 id 既要在注册表内，也要属于本工具的类别（引擎工具不接站点平台）
+      if (!isSearchTargetId(raw) || !targets.includes(raw)) {
+        return this.createErrorResponse(
+          `不支持的${targetKindLabel}：${JSON.stringify(args[paramName] ?? '')}。${this.name} 仅支持 ${targets.join(' / ')}，请从 ${paramName} 的枚举值中选择`,
+        );
+      }
+      targetId = raw;
     }
-    const target = SEARCH_TARGETS[targetRaw];
+    // 防御：目标必须已登记在注册表（专属工具写错 fixedTarget 时给出可读的配置
+    // 错误，而不是让 undefined 渗进后续字段访问）
+    const target = SEARCH_TARGETS[targetId] as SearchTargetConfig | undefined;
+    if (!target) {
+      return this.createErrorResponse(`搜索目标 "${targetId}" 未在注册表中登记（工具配置缺陷）`);
+    }
     if (typeof args.query !== 'string' || !args.query.trim()) {
       return this.createErrorResponse(`query 必填且为非空字符串（${target.label}）`);
     }
@@ -225,7 +281,7 @@ export abstract class BaseSearchTool extends BaseTool {
       if (signal?.aborted) {
         return this.abortedResult(
           paramName,
-          targetRaw,
+          targetId,
           query,
           target,
           navigation,
@@ -238,7 +294,7 @@ export abstract class BaseSearchTool extends BaseTool {
         success: false,
         error: `[${this.name}] 导航失败：${reason}`,
         data: {
-          [paramName]: targetRaw,
+          [paramName]: targetId,
           query,
           searchEngine: target.engine,
           navigation,
@@ -261,14 +317,14 @@ export abstract class BaseSearchTool extends BaseTool {
     if (waitTime > 0) {
       const settled = await this.sleep(waitTime, signal);
       if (!settled) {
-        return this.abortedResult(paramName, targetRaw, query, target, navigation, '等待结果渲染期间被中断');
+        return this.abortedResult(paramName, targetId, query, target, navigation, '等待结果渲染期间被中断');
       }
     }
 
     // ── 解析（失败只提示，不拖垮整体结果） ──
     const parse = await this.parseResults(target, navigation, signal);
     if (parse.aborted) {
-      return this.abortedResult(paramName, targetRaw, query, target, navigation, '解析结果页期间被中断');
+      return this.abortedResult(paramName, targetId, query, target, navigation, '解析结果页期间被中断');
     }
     const message = parse.outcome.success
       ? parse.outcome.count > 0
@@ -285,7 +341,7 @@ export abstract class BaseSearchTool extends BaseTool {
       success: true,
       message,
       data: {
-        [paramName]: targetRaw,
+        [paramName]: targetId,
         query,
         searchEngine: target.engine,
         navigation,
@@ -301,7 +357,7 @@ export abstract class BaseSearchTool extends BaseTool {
   /** 中止时的失败结果（导航事实保留，原因可读） */
   private abortedResult(
     paramName: 'engine' | 'platform',
-    targetRaw: string,
+    targetId: SearchTargetId,
     query: string,
     target: SearchTargetConfig,
     navigation: NavigationOutcome,
@@ -313,7 +369,7 @@ export abstract class BaseSearchTool extends BaseTool {
       success: false,
       error: `[${this.name}] ${reason}`,
       data: {
-        [paramName]: targetRaw,
+        [paramName]: targetId,
         query,
         searchEngine: target.engine,
         navigation,

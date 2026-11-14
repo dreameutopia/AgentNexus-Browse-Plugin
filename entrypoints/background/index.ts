@@ -2,7 +2,8 @@ import { initPluginHost } from './plugins/host';
 import { backgroundWebSocket } from './ws/websocket-background';
 import { initToolsManagerListener } from './tools/tools-manager-listener';
 import { initConversationRuntime, listBusySessionIds } from './conversation-runtime';
-import { initPythonSkillPolicy } from './python-skill-policy';
+import { initPythonEnvPolicy } from './python-skill-policy';
+import { initPdfRenderChannel } from '@/tools/browser/pdf-channel';
 import { downloadDB } from '@/utils/download-database';
 import { initLocale, t } from '@/utils/i18n/core';
 import { notesDB, broadcastNotesChanged } from '@/utils/notes-database';
@@ -48,7 +49,11 @@ async function registerInterceptor() {
 
   chrome.webRequest.onHeadersReceived.addListener(
     webRequestCallback,
-    { urls: ["<all_urls>"], types: ["main_frame", "sub_frame"] },
+    // 捕获面覆盖 main_frame / sub_frame / xmlhttprequest：绝大多数站点的文件
+    // 下载是 fetch/XHR 触发的（<a download> 指向 API、Blob URL、POST 下载），
+    // 旧实现只监听前两类，实际抓不到大多数下载。'other' 兜底少数不归类的
+    // 请求（Chrome 会把部分流式/特殊响应归到 other）。
+    { urls: ["<all_urls>"], types: ["main_frame", "sub_frame", "xmlhttprequest", "other"] },
     ["responseHeaders"]
   );
 }
@@ -90,14 +95,23 @@ async function processDownloadAsync(details: chrome.webRequest.WebResponseHeader
     // 检查文件扩展名是否在拦截列表中
     if (!state.extensionsToIntercept.includes(extension)) {
       console.log(`Skipping capture for ${filename}: extension not in list.`);
-      return; 
+      return;
     }
-    
+
     console.log(`Capturing file copy: ${filename} from ${details.url}`);
 
-    // 并行抓取文件副本数据
-    const response = await fetch(details.url);
+    // 重新请求取副本：带 Cookie 凭证（站点常要求登录态才能取到文件），
+    // 并对无响应/非 2xx 给出明确原因，不把失败伪装成成功。
+    const response = await fetch(details.url, { credentials: 'include' });
+    if (!response.ok) {
+      console.warn(`Capture skipped for ${filename}: HTTP ${response.status} ${response.statusText}`);
+      return;
+    }
     const blobData = await response.blob();
+    if (!blobData || blobData.size === 0) {
+      console.warn(`Capture skipped for ${filename}: empty body`);
+      return;
+    }
     const mimeType = blobData.type;
 
     // 存入 IndexedDB
@@ -318,7 +332,9 @@ export default defineBackground(() => {
   initToolsManagerListener();
   void initPluginHost().catch(error => console.error('[Plugins] Host startup failed', error));
   initConversationRuntime();
-  initPythonSkillPolicy();
+  initPythonEnvPolicy();
+  // PDF 渲染通道（document_tool 的 CDP 打印在后台执行，sidepanel 不直接持有 debugger 权限）
+  initPdfRenderChannel();
   // 归档会话到期清理（保留策略的执行端）：worker 启动即跑一次。
   // 失败仅告警 —— 清理是后台动作，绝不能影响后台的正常启动；
   // 真正到期删不掉的会话会在下一次启动时再次被清理（幂等）。
@@ -763,10 +779,21 @@ export default defineBackground(() => {
     // Handle file interception commands
     switch (message.command) {
       case 'startInterception':
-        setState({ isEnabled: true, extensionsToIntercept: message.payload.interceptExtensions })
-          .then(registerInterceptor)
-          .then(() => sendResponse({ success: true }))
-          .catch(error => sendResponse({ success: false, error: error.message }));
+        (async () => {
+          try {
+            const extensions = Array.isArray(message.payload?.interceptExtensions)
+              ? message.payload.interceptExtensions
+              : [];
+            await setState({ isEnabled: true, extensionsToIntercept: extensions });
+            await registerInterceptor();
+            sendResponse({ success: true });
+          } catch (error) {
+            sendResponse({
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        })();
         return true; // 表示异步响应
 
       case 'stopInterception':
@@ -785,9 +812,40 @@ export default defineBackground(() => {
         })();
         return true;
 
+      case 'getInterceptionState':
+        (async () => {
+          try {
+            const currentState = await getState();
+            sendResponse({
+              success: true,
+              isEnabled: currentState.isEnabled,
+              extensionsToIntercept: currentState.extensionsToIntercept || [],
+            });
+          } catch (error) {
+            sendResponse({
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        })();
+        return true;
+
       case 'getCapturedFileList':
         downloadDB.getFileList()
-          .then(fileList => sendResponse({ success: true, fileList }))
+          .then(fileList => {
+            // 分页在 background 侧完成：副本库可能很大，整表回传会撑爆消息通道
+            const limit = Number(message.payload?.limit) > 0 ? Number(message.payload.limit) : fileList.length;
+            const offset = Number(message.payload?.offset) > 0 ? Number(message.payload.offset) : 0;
+            const page = fileList.slice(offset, offset + limit).map(file => ({
+              id: file.id,
+              filename: file.filename,
+              mimeType: file.mimeType,
+              size: file.size,
+              capturedAt: file.capturedAt,
+              sourcePageUrl: file.sourcePageUrl,
+            }));
+            sendResponse({ success: true, fileList: page, totalCount: fileList.length });
+          })
           .catch(error => sendResponse({ success: false, error: error.message }));
         return true;
 
@@ -799,9 +857,31 @@ export default defineBackground(() => {
 
       case 'getFileDetailsById':
         downloadDB.getFileById(message.payload.id)
-          .then(fileDetails => sendResponse({ success: true, fileDetails }))
+          .then(fileDetails => {
+            if (!fileDetails) {
+              sendResponse({ success: false, error: `副本 ${message.payload.id} 不存在` });
+              return;
+            }
+            // Blob 无法经 chrome.runtime.sendMessage 的 JSON 序列化传出：
+            // 旧实现直接把整条记录回传，副本内容在序列化中静默丢失（副本成了
+            // 死数据）。这里只回传元数据 + 内容长度，正文由 browser_resources 在扩展内直接读取并复制到会话工作区。
+            sendResponse({
+              success: true,
+              fileDetails: {
+                id: fileDetails.id,
+                filename: fileDetails.filename,
+                mimeType: fileDetails.mimeType,
+                size: fileDetails.size,
+                capturedAt: fileDetails.capturedAt,
+                sourcePageUrl: fileDetails.sourcePageUrl,
+                contentLength: fileDetails.blobData?.size ?? 0,
+              },
+            });
+          })
           .catch(error => sendResponse({ success: false, error: error.message }));
         return true;
+
+
     }
   });
 

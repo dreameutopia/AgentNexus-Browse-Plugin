@@ -13,8 +13,8 @@
 | --- | --- | --- |
 | browser_observe | DOM 控件、输入、表格结构、选项、滚动容器、当前焦点、浏览器辅助功能树 | 未加载内容或整张工作簿的完整数据 |
 | browser_interact | click/fill/focus/keys/type/scroll，按节点引用操作 | 页面业务已保存、任意画布均可编辑 |
-| browser_network_capture | start/read/stop，被动观察真实请求及文本响应，完整正文进入 dataRef（**仅数据采集 / 网站学习 / 技能验证场景具备；文本通用助手与视觉通用助手 不携带**） | 全历史网络记录、二进制协议解码、接口写权限 |
-| browser_page_exec | 指定 tab/frame 的脚本与 dataRef 数据通道 | 任意闭包、Worker、跨域 frame 自动可读 |
+| browser_network_capture | start/read/stop，被动观察 start 之后的真实请求与文本响应（urlIncludes/urlExcludes/types/includeHeaders/durationSec 可选过滤与窗口；read 支持 onlyMissing 对账），完整正文进入 dataRef（**仅数据采集 / 网站学习 / 技能验证场景具备；文本通用助手与视觉通用助手 不携带**） | start 之前的历史请求、二进制协议解码、接口写权限 |
+| js_run | 指定 tab/frame 的脚本执行与工作区结果文件数据通道（每次执行结果自动落盘 results/，持久可分页核对） | 任意闭包、Worker、跨域 frame 自动可读 |
 | browser_get_page_text | 全部可注入 frame、可访问 shadow root 的结构化 Markdown 正文（标题/表格/列表/代码块/链接；超 15000 字符 ref 分页，url= 可直读指定页） | 对 Canvas 像素的识别 |
 
 页面菜单和少量编辑用交互；批量取数优先使用已确认且有权限的数据接口/导出。当前没有凭据配置的厂商 API 不作为可用工具承诺。
@@ -86,7 +86,7 @@ keys/type 后读取返回的 focus。Tab、Enter、F2 可能切换到新编辑�
 
 ## 网络与脚本
 
-网络 start 后才捕获请求，read 分页返回元信息/受限预览及 dataRef，stop 结束当前观察，停止后仍可读取已捕获结果。默认上限100请求、正文每条1M字符/合计4M字符、并发4条、55秒。非文本或未解码正文明确标记 unavailable；掉包与未覆盖子 target 会声明，不宣称全量。两个 action agent（文本通用助手 / 视觉通用助手）不携带网络观察工具：它们的职责是操作页面，观察网络对定位与操作是噪声，且该工具占用与视觉 GUI 共享的调试会话互斥队列。
+网络 start 后才捕获请求，read 分页返回元信息/受限预览及 dataRef（stats 给出预算对账：已存/缺失/在途/丢弃），stop 结束当前观察，停止后仍可读取已捕获结果。默认上限100请求、正文每条1M字符/合计4M字符、正文抓取并发4（超出排队不丢弃）、默认55秒（durationSec 10–300 可调）。非文本、超限或缓冲逐出的正文明确标记 unavailable 原因；掉包与未覆盖子 target 会声明，不宣称全量。两个 action agent（文本通用助手 / 视觉通用助手）不携带网络观察工具：它们的职责是操作页面，观察网络对定位与操作是噪声，且该工具占用与视觉 GUI 共享的调试会话互斥队列。
 
 脚本支持 Chrome FrameId，不会在子 frame 不可执行时静默改用主页面。编译权限探测失败才能安全切换引擎；用户代码已经开始、无返回或传输异常均不自动重放。代码统一为 async 函数体，使用 return 返回结果；不再猜测表达式完成值或通过错误文案重试。CDP 执行失败不再自动去另一个 world 重放。
 
@@ -110,7 +110,7 @@ STALE_ELEMENT/STALE_SNAPSHOT/FOCUS_CHANGED 重采；WRONG_TAB 切回来源或在
 | 原生文件/权限窗口、验证码、登录验证 | 不属于页面节点工具的通用处理范围，需要用户完成相应步骤 |
 | 协作修改、保护区域、筛选/隐藏行列 | 业务身份与当前权限再次核对；索引不等于记录身份，不绕过保护 |
 
-脚本求值仅保留 browser_page_exec，移除 browser_inject_script 兼容入口；内容脚本命令发送是不同能力，仍单独保留。
+会话脚本求值统一由全局 js_run 提供，先创建脚本再按相对路径运行；内容脚本命令发送是不同能力，仍单独保留。
 
 - tests/tools/element-interaction.test.ts：实际 DOM 引用、快照、跨 tab/frame、过期、竞态、Shadow DOM、标准输入校验。
 - tests/tools/text-automation.test.ts：辅助功能引用、原生键盘释放/取消、状态变更与真实响应捕获的协议模拟。

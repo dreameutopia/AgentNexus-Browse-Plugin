@@ -1,3 +1,4 @@
+import { linkedSkillIds, restoreAgentSkillLinks, onAgentSkillLinksChange } from './agent-skill-links';
 import { pluginAgent, pluginAgents, onPluginsChange } from '@/utils/plugins/catalog';
 /**
  * 智能体存储（共享数据层）
@@ -38,9 +39,11 @@ import {
 import {
   AGENT_NAME_MAX_CHARS,
   compareAgents,
+  filterAvailableAgents,
   generateAgentId,
   normalizeAgentConfig,
   type AgentConfig,
+  type PresetAgentConfig,
 } from './agent-types';
 import { LocalWriteFingerprint, subscribeStorageKey } from '../shared/storage-sync';
 
@@ -52,8 +55,12 @@ export * from './agent-types';
 /**
  * 预置智能体表（声明顺序即列表展示顺序；对象冻结防止运行期被意外改写）。
  * 对外只读：预置不可被覆盖/删除/改名，外部拿到的引用不得被改写。
+ *
+ * 每个预置都必须显式声明发布闸门 `available`（编译期强制，见 PresetAgentConfig）：
+ * false = 底层禁用——该预置在管理中心与输入框 @ 选择器中都看不到，
+ * 用户无法通过任何入口把它打开（与用户级 enabled 开关相互独立）。
  */
-export const PRESET_AGENTS: readonly AgentConfig[] = Object.freeze([
+export const PRESET_AGENTS: readonly PresetAgentConfig[] = Object.freeze([
   Object.freeze(autoActionConfig),
   Object.freeze(dataHarvesterConfig),
   Object.freeze(visionAssistantConfig),
@@ -67,6 +74,26 @@ export const PRESET_AGENTS: readonly AgentConfig[] = Object.freeze([
 export const PRESET_AGENT_IDS: ReadonlySet<string> = new Set(
   PRESET_AGENTS.map(agent => agent.id),
 );
+
+/**
+ * 底层禁用的预置智能体 id 集合（发布闸门 available === false）。
+ * 由预置表派生——发布态是代码事实，不进存储、不跨上下文同步。
+ */
+const unavailablePresetIds = new Set(
+  PRESET_AGENTS.filter(agent => agent.available === false).map(agent => agent.id),
+);
+
+/**
+ * 该智能体是否对外可见（发布态闸门）。
+ *
+ * 与 isAgentEnabled（用户级运行开关）正交：
+ *   - 不可用 = 管理中心与 @ 选择器都看不到，用户无法启用；
+ *   - 停用   = 管理中心仍可见，只是不能被 @ 选中。
+ * 自定义与插件智能体恒为可用（无发布闸门）。
+ */
+export function isAgentAvailable(agentId: string): boolean {
+  return !unavailablePresetIds.has(agentId);
+}
 
 /** 是否为预置智能体（预置不可被覆盖/删除/占用 ID） */
 export function isPresetAgent(agentId: string): boolean {
@@ -261,6 +288,7 @@ applyAgents(PRESET_AGENTS);
  * 覆盖两类场景：localStorage 被清除后的恢复；本上下文启动期间其它页面的写入。
  */
 export async function restoreCustomAgentsFromStorage(): Promise<void> {
+  await restoreAgentSkillLinks();
   try {
     if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
     const result = await chrome.storage.local.get([
@@ -351,6 +379,8 @@ export function isAgentEnabled(agentId: string): boolean {
 /** 列表出口统一补齐 enabled 字段（预置记录被冻结，停用态以副本呈现，不改写原对象） */
 function withEnabled(agent: AgentConfig): AgentConfig {
   const enabled = isAgentEnabled(agent.id);
+  const extra = linkedSkillIds(agent.id);
+  if (extra.length) agent = { ...agent, skills: [...new Set([...(agent.skills ?? []), ...extra])] };
   if ((agent.enabled !== false) === enabled) return agent;
   return { ...agent, enabled };
 }
@@ -395,12 +425,21 @@ export function getAgentById(agentId: string): AgentConfig | null {
 }
 
 /**
- * 全部智能体（预置 + 自定义）。
+ * 全部**对外可见**的智能体（预置 + 自定义 + 插件）。
+ *
  * 顺序：预置按声明顺序在前，自定义按名称稳定排序在后——
  * 让「开箱即用的能力」永远出现在列表顶部，且自定义部分的顺序与数据恢复顺序无关。
+ *
+ * 底层禁用的预置（available === false）**不进入本列表**：
+ * 管理中心与输入框 @ 选择器共用这一个出口，闸门在此收口，
+ * 新增消费方不必（也不会）再各自过滤一遍。
+ * 注意：被禁用的预置仍可按 id / 名称解析（getAgentById / getAgentConfig）——
+ * 历史会话引用它时仍能正确回显，不会静默退化成「无智能体」。
  */
 export function getAllAgents(): AgentConfig[] {
-  const presets = PRESET_AGENTS.filter(agent => agentsByName.has(agent.name));
+  const presets = filterAvailableAgents(
+    PRESET_AGENTS.filter(agent => agentsByName.has(agent.name)),
+  );
   const customs = [...agentsByName.values()]
     .filter(agent => !isPresetAgent(agent.id))
     .sort(compareAgents);
@@ -515,3 +554,5 @@ export function removeAgentConfig(agentName: string): AgentWriteResult {
 }
 
 onPluginsChange(notifyChange);
+
+onAgentSkillLinksChange(notifyChange);

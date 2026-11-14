@@ -3,7 +3,7 @@
 ## 原有问题
 
 - 编排只按 strategy 选择学习工具，视觉目标和文本目标的视觉辅助共用同一工具组。
-- 视觉学习继承 GUI 工具，没有 `browser_observe`、`browser_interact`、`browser_page_exec`，无法沿用文本观察与交互。
+- 视觉学习继承 GUI 工具，没有 `browser_observe`、`browser_interact`、`js_run`，无法沿用文本观察与交互。
 - 文本目标使用视觉策略时，提示词强制 `vision_gui(action="mark") → vision_gui(action="inspect")`，将 DOM 取证不必要地绑定到截图标注。
 - `browser_observe` 能枚举和过滤，却缺少通过当前节点引用读取指定元素完整属性与 XPath 的入口。
 - 技能只要求笼统的“工作流”，没有独立完成计划及逐项对应的具体操作讲解；原因、双线索、隐藏入口等未形成统一规范。
@@ -214,7 +214,7 @@ storage 事件即时同步，页面重新获得焦点/可见及点击创建前�
 
 - `browser_observe`：`controls/buttons/inputs` 枚举；`element` 查询指定节点属性；`structure/accessibility` 处理复杂页面。
 - `browser_interact`：点击、填充、聚焦、键盘、输入和容器滚动。
-- `browser_page_exec`：常规观察不足时探测页面结构或组件作用域。
+- `js_run`：常规观察不足时探测页面结构或组件作用域。
 - `browser_get_page_text`（核心注入）、`browser_get_page_info`、`browser_navigation`（open/refresh/back/forward/wait 五 action，含加载等待）。
 - `browser_tabs`（list/switch/close/create/windows 五 action）、`browser_network_capture`、`web_search`、`generic_wait`。
 - `plan_tool`、`note_tool` 与交互征询工具（同为 CORE_SESSION_TOOL_IDS 核心注入，所有会话恒定可用，学习域逐步留痕/记录卡点的用法由 learn-prompts 约束）、学习终止工具 `submit_skill`。

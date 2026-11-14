@@ -56,14 +56,16 @@ import {
 import { clearFiles, deleteFile, getFile, putFile } from './pyodide-cache';
 import {
   getPyodideEnvState,
-  updatePyodideEnvState,
+  updatePyodideEnvIfCurrent,
   resetPyodideEnvState,
+  withPyodideEnvLock,
+  watchPyodideEnv,
   type PyodideInstalledPackage,
   type PyodideEnvState,
 } from './pyodide-env';
 import { stagePythonWorkspace, withPythonWorkspace, WorkspaceRuntimeError } from '@/utils/python-workspace/python-filesystem';
 import type { WorkspaceEntry, WorkspaceSnapshot } from '@/utils/python-workspace/paths';
-import { pythonWorkerGlobals, type createScriptNetwork } from './python-worker-globals';
+import { pythonWorkerGlobals } from './python-worker-globals';
 import {
   clearMicropipManifest,
   micropipManifestKey,
@@ -73,12 +75,9 @@ import {
   restoreMicropipPackages,
   type MicropipPackage,
 } from './pyodide-micropip';
-import { PYTHON_HOST_RESET } from './python-host-protocol';
 
-type ScriptNetwork = ReturnType<typeof createScriptNetwork>;
 interface WorkerScriptExecution {
   preflight: boolean;
-  network: ScriptNetwork;
   run: (pyodide: PyodideInterface, loadImports: (source: string) => Promise<void>, signal?: AbortSignal) => Promise<void>;
 }
 
@@ -142,6 +141,7 @@ function installFetchInterception(): void {
       });
     }
 
+    const environment = typeof window === 'undefined' ? undefined : await getPyodideEnvState();
     const response = await nativeFetch(input, init);
     if (response.ok && response.body) {
       // 写透缓存：克隆响应体异步落盘，不阻塞调用方；失败静默（缓存只是加速层）
@@ -150,12 +150,17 @@ function installFetchInterception(): void {
         .arrayBuffer()
         .then(buffer => {
           if (buffer.byteLength === 0 || buffer.byteLength > PYODIDE_CACHE_FILE_MAX_BYTES) return;
-          return putFile({
+          const write = () => putFile({
             url,
             data: buffer,
             contentType: response.headers.get('content-type')?.split(';')[0] || 'application/octet-stream',
             size: buffer.byteLength,
             storedAt: Date.now(),
+          });
+          if (!environment) return write();
+          return withPyodideEnvLock(async () => {
+            const current = await getPyodideEnvState();
+            if (current.environmentId === environment.environmentId && current.status !== 'idle') await write();
           });
         })
         .catch(() => undefined);
@@ -218,8 +223,17 @@ function createInterruptController(): InterruptController | null {
  * 启动 Pyodide 运行时（幂等，多调用共享同一 Promise）。
  * 失败不缓存 rejection：下次调用自动重试。
  */
-export function ensurePyodideRuntime(workerState?: PyodideEnvState, scriptNetwork?: ScriptNetwork): Promise<BootedRuntime> {
-  if (!workerState) assertWindowContext();
+let watchingLocalRuntime = false;
+export function ensurePyodideRuntime(workerState?: PyodideEnvState): Promise<BootedRuntime> {
+  if (!workerState) {
+    assertWindowContext();
+    if (!watchingLocalRuntime && typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
+      watchPyodideEnv((state, previous) => {
+        if (state.environmentId !== previous.environmentId) resetPyodideRuntime();
+      });
+      watchingLocalRuntime = true;
+    }
+  }
   if (booted) return Promise.resolve(booted);
   if (bootPromise) return bootPromise;
 
@@ -252,7 +266,7 @@ export function ensurePyodideRuntime(workerState?: PyodideEnvState, scriptNetwor
           Parameters<typeof loaderModule.loadPyodide>[0]
         >['lockFileContents'],
         packageBaseUrl: PYODIDE_CDN_BASE,
-        ...(workerState ? { jsglobals: scriptNetwork?.globals ?? pythonWorkerGlobals() } : {}),
+        ...(workerState ? { jsglobals: pythonWorkerGlobals() } : {}),
         stdout: (msg: string) => bootLog.push(msg),
         stderr: (msg: string) => bootLog.push(`[stderr] ${msg}`),
       });
@@ -266,9 +280,10 @@ export function ensurePyodideRuntime(workerState?: PyodideEnvState, scriptNetwor
 
     runtime.interrupt = workerState ? null : createInterruptController();
 
-    // 恢复已安装包（缓存命中时零网络；个别缺失按可失败项忽略）
+    // 页面运行时恢复已安装包（缓存命中时零网络；个别缺失按可失败项忽略）。
+    // Worker 跳过：脚本按 import/requirements 惰性加载，避免启动即装满目录包。
     const state = workerState ?? await getPyodideEnvState();
-    const savedNames = scriptNetwork ? [] : state.packages.map(pkg => pkg.name).filter(name => name !== 'micropip');
+    const savedNames = workerState ? [] : state.packages.map(pkg => pkg.name).filter(name => name !== 'micropip');
     if (savedNames.length > 0) {
       try {
         await runtime.pyodide.loadPackage(savedNames);
@@ -308,24 +323,9 @@ export function ensurePyodideRuntime(workerState?: PyodideEnvState, scriptNetwor
  */
 export function resetPyodideRuntime(): void {
   runtimeGeneration += 1;
+  booted?.interrupt?.worker.terminate();
   booted = null;
   bootPromise = null;
-}
-
-/**
- * 通知离屏宿主回收 Python Worker（删除环境的最后一步）。
- *
- * Worker 内存文件系统中的包与 micropip 安装不经过 IndexedDB，
- * 只有回收 Worker 才真正清掉。离屏文档未打开 / 无监听方时静默失败
- * （此时也不存在活 Worker，无需回收）。
- */
-function notifyPythonHostReset(): void {
-  try {
-    if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) return;
-    void Promise.resolve(chrome.runtime.sendMessage({ type: PYTHON_HOST_RESET })).catch(() => undefined);
-  } catch {
-    // 无宿主可通知 = 无 Worker 可残留，忽略
-  }
 }
 
 /**
@@ -345,8 +345,7 @@ function notifyPythonHostReset(): void {
 export async function purgePyodideEnvironment(): Promise<void> {
   await resetPyodideEnvState(async () => {
     resetPyodideRuntime();
-    notifyPythonHostReset();
-    const results = await Promise.allSettled([clearFiles(), clearMicropipManifest()]);
+    const results = await Promise.allSettled([clearFiles(), clearMicropipManifest(true)]);
     const failed = results.filter(result => result.status === 'rejected');
     if (failed.length) throw new Error(failed.map(result => String(result.reason)).join(' / '));
   });
@@ -394,22 +393,37 @@ export async function findCatalogEntry(name: string): Promise<PyodideCatalogEntr
 }
 
 /** 把工具执行时自动加载的包并入环境清单（版本从锁文件目录补齐；失败静默） */
-export async function recordAutoLoadedPackages(names: string[]): Promise<void> {
+export async function recordAutoLoadedPackages(names: string[], environmentId: string): Promise<void> {
   try {
     const catalog = await getPackageCatalog();
     const catalogIndex = new Map(catalog.map(entry => [entry.name.toLowerCase(), entry]));
-    const state = await getPyodideEnvState();
-    const merged = new Map(state.packages.map(pkg => [pkg.name, pkg]));
-    for (const name of names) {
-      const entry = catalogIndex.get(name.trim().toLowerCase());
-      if (!entry) continue;
-      merged.set(entry.name, merged.get(entry.name) ?? { name: entry.name, version: entry.version, installedAt: Date.now() });
-    }
-    if (merged.size !== state.packages.length) {
-      await updatePyodideEnvState({ packages: [...merged.values()] });
-    }
+    await updatePyodideEnvIfCurrent(environmentId, state => {
+      if (state.status !== 'ready') return {};
+      const additions = names.flatMap(name => {
+        const entry = catalogIndex.get(name.trim().toLowerCase());
+        return entry ? [{ name: entry.name, version: entry.version, installedAt: Date.now() }] : [];
+      });
+      return mergeInstalledPackages(state, additions);
+    });
   } catch {
     // 清单回写失败不影响执行本身
+  }
+}
+
+function mergeInstalledPackages(state: PyodideEnvState, additions: readonly PyodideInstalledPackage[]) {
+  const merged = new Map(state.packages.map(pkg => [pkg.name, pkg]));
+  for (const pkg of additions) if (!merged.has(pkg.name)) merged.set(pkg.name, pkg);
+  return merged.size === state.packages.length ? {} : { packages: [...merged.values()] };
+}
+
+export async function recordCurrentMicropipPackages(packages: readonly MicropipPackage[], environmentId: string): Promise<void> {
+  try {
+    await withPyodideEnvLock(async () => {
+      const state = await getPyodideEnvState();
+      if (state.status === 'ready' && state.environmentId === environmentId) await recordMicropipPackages(packages);
+    });
+  } catch {
+    // Package reuse is optional and cannot invalidate an otherwise successful run.
   }
 }
 
@@ -418,6 +432,8 @@ export async function recordAutoLoadedPackages(names: string[]): Promise<void> {
 /** 安装锁文件目录中的包（wheel 走缓存层，含 sha256 完整性校验） */
 export async function installPackages(names: string[]): Promise<PyodideInstalledPackage[]> {
   if (names.length === 0) return [];
+  const state = await getPyodideEnvState();
+  if (state.status !== 'ready') throw codeError(PY_ERR_NOT_READY, 'Python environment is not ready');
   const runtime = await ensurePyodideRuntime();
 
   const catalog = await getPackageCatalog();
@@ -440,12 +456,9 @@ export async function installPackages(names: string[]): Promise<PyodideInstalled
   }));
 
   // 与既有清单合并去重（保留最早 installedAt）
-  const state = await getPyodideEnvState();
-  const merged = new Map(state.packages.map(pkg => [pkg.name, pkg]));
-  for (const pkg of installed) {
-    merged.set(pkg.name, merged.get(pkg.name) ?? pkg);
-  }
-  await updatePyodideEnvState({ packages: [...merged.values()] });
+  const updated = await updatePyodideEnvIfCurrent(state.environmentId, current =>
+    current.status === 'ready' ? mergeInstalledPackages(current, installed) : {});
+  if (updated?.status !== 'ready') throw codeError(PY_ERR_NOT_READY, 'Python environment changed during package installation');
   return installed;
 }
 
@@ -456,14 +469,20 @@ export async function installPackages(names: string[]): Promise<PyodideInstalled
 export async function uninstallPackages(names: string[]): Promise<void> {
   const state = await getPyodideEnvState();
   const removing = new Set(names.map(name => name.trim().toLowerCase()));
-  await updatePyodideEnvState({
-    packages: state.packages.filter(pkg => !removing.has(pkg.name.toLowerCase())),
-  });
+  const updated = await updatePyodideEnvIfCurrent(state.environmentId, current => ({
+    packages: current.packages.filter(pkg => !removing.has(pkg.name.toLowerCase())),
+  }));
+  if (!updated) return;
   for (const name of removing) {
     const entry = await findCatalogEntry(name);
     if (!entry) continue;
     try {
-      await deleteFile(`${PYODIDE_CDN_BASE}${entry.fileName}`);
+      await withPyodideEnvLock(async () => {
+        const current = await getPyodideEnvState();
+        if (current.environmentId === state.environmentId && !current.packages.some(pkg => pkg.name.toLowerCase() === name)) {
+          await deleteFile(`${PYODIDE_CDN_BASE}${entry.fileName}`);
+        }
+      });
     } catch {
       // 缓存删除失败不阻塞：磁盘条目孤儿不影响正确性
     }
@@ -615,6 +634,7 @@ async function runPythonCodeInternal(
   code: string,
   options: {
     timeoutMs: number;
+    environmentId?: string;
     workerState?: PyodideEnvState;
     signal?: AbortSignal;
     script?: WorkerScriptExecution;
@@ -629,11 +649,10 @@ async function runPythonCodeInternal(
   let packageWarning: string | undefined;
 
   // 恢复 micropip 复用清单：清单指纹与上次一致则整段跳过（零成本）。
-  // 脚本模式不恢复——脚本有独立依赖通道（requirements/wheels/pypi 授权），
-  // 且其 fetch 受限，micropip 恢复会被拒。
-  // 恢复输出走 setStdout 之前的默认通道（bootLog/noop），不污染用户 stdout。
+  // 运行期网络已放开，页面直跑与 worker 脚本运行统一恢复；恢复输出走
+  // setStdout 之前的默认通道（bootLog/noop），不污染用户 stdout。
   const manifest = options.micropipManifest;
-  if (!options.script && manifest && manifest.length > 0) {
+  if (!options.script?.preflight && manifest && manifest.length > 0) {
     const manifestKey = micropipManifestKey(manifest);
     if (runtime.micropipRestoredKey !== manifestKey) {
       try {
@@ -681,8 +700,8 @@ async function runPythonCodeInternal(
   pyodide.setStderr({ batched: line => stderrCapture.push(line) });
 
   // 自动加载的包回写环境清单：下次启动才能自动恢复（wheel 已在缓存层沉淀）
-  if (autoLoadedPackages.length > 0 && !options.workerState) {
-    void recordAutoLoadedPackages(autoLoadedPackages);
+  if (autoLoadedPackages.length > 0 && !options.workerState && options.environmentId) {
+    void recordAutoLoadedPackages(autoLoadedPackages, options.environmentId);
   }
 
   let timedOut = false;
@@ -732,17 +751,16 @@ async function runPythonCodeInternal(
   options.signal?.throwIfAborted();
   if (interrupted) throw codeError('PY_EXEC_CANCELLED', 'Python execution was cancelled');
 
-  // 探测 micropip 安装痕迹并记账（仅当代码触及 micropip——探测有 ~50ms 成本）：
+  // 探测 micropip 安装痕迹并入账（纯本地遍历 distributions；micropip 未加载时
+  // 快速失败返回空，天然只对真正用过 micropip 的运行产生开销）：
   // - 页上下文（无 workerState）直接写清单；worker 上下文经 outcome 回传，
   //   由 python-run-tool（SW，有 storage）记账——镜像 autoLoadedPackages 分流。
   // - 即使本次执行失败（errorName 非空），已装包也应入清单（装了就是装了）。
   let micropipPackages: MicropipPackage[] | undefined;
-  if (!options.script && code.includes('micropip')) {
-    const probed = await probeMicropipPackages(pyodide);
-    if (probed.length) {
-      micropipPackages = probed;
-      if (!options.workerState) void recordMicropipPackages(probed);
-    }
+  const probed = await probeMicropipPackages(pyodide);
+  if (probed.length) {
+    micropipPackages = probed;
+    if (!options.workerState && options.environmentId) void recordCurrentMicropipPackages(probed, options.environmentId).catch(error => console.warn('[Pyodide] Could not persist installed packages:', error));
   }
 
   return {
@@ -798,26 +816,34 @@ export async function runPythonCode(
 ): Promise<PythonRunOutcome> {
   // 页上下文有 chrome：自动读取 micropip 复用清单（读取永不抛错，失败回退空清单=不恢复）
   const micropipManifest = options.micropipManifest ?? await readMicropipManifest();
-  return withPythonRun(code, { ...options, micropipManifest }, (runtime, run) => options.chatId
-    ? runWorkspaceOperation(() => withPythonWorkspace(runtime.pyodide.FS, options.chatId!, run, options.signal))
+  return withPythonRun(code, { ...options, micropipManifest }, (runtime, run, state) => options.chatId
+    ? runWorkspaceOperation(() => withPythonWorkspace(runtime.pyodide.FS, options.chatId!, run, options.signal, commit =>
+      withPyodideEnvLock(async () => {
+        const current = await getPyodideEnvState();
+        if (current.status !== 'ready' || current.environmentId !== state.environmentId) {
+          throw new Error('Python environment changed before the workspace commit');
+        }
+        await commit();
+      }, options.signal),
+    ))
     : run());
 }
 
 export function runPythonInWorker(
-  code: string,
   options: {
     timeoutMs: number;
-    chatId?: string;
+    chatId: string;
     workerState: PyodideEnvState;
     snapshot?: WorkspaceSnapshot;
-    script?: WorkerScriptExecution;
-    /** 宿主（offscreen，有 chrome）读取后经消息传入；worker 内无法访问 storage */
+    script: WorkerScriptExecution;
+    /** 宿主（offscreen，无 storage 访问权）经环境策略应答读取后经消息传入 */
     micropipManifest?: MicropipPackage[];
   },
 ): Promise<{ outcome: PythonRunOutcome; entries?: WorkspaceEntry[] }> {
-  return withPythonRun(code, options, async (runtime, run) => options.chatId
-    ? runWorkspaceOperation(() => stagePythonWorkspace(runtime.pyodide.FS, options.chatId!, options.snapshot, run, undefined, !options.script?.preflight))
-    : { outcome: await run() });
+  return withPythonRun('', options, async (runtime, run) =>
+    runWorkspaceOperation(() => stagePythonWorkspace(
+      runtime.pyodide.FS, options.chatId, options.snapshot, run, undefined, !options.script.preflight,
+    )));
 }
 
 async function runWorkspaceOperation<T>(operation: () => Promise<T>): Promise<T> {
@@ -844,7 +870,7 @@ async function withPythonRun<T>(
     script?: WorkerScriptExecution;
     micropipManifest?: MicropipPackage[];
   },
-  execute: (runtime: BootedRuntime, run: () => Promise<PythonRunOutcome>) => Promise<T>,
+  execute: (runtime: BootedRuntime, run: () => Promise<PythonRunOutcome>, state: PyodideEnvState) => Promise<T>,
 ): Promise<T> {
   if (!options.workerState) assertWindowContext();
 
@@ -867,8 +893,16 @@ async function withPythonRun<T>(
   await previous.catch(() => undefined);
   try {
     options.signal?.throwIfAborted();
-    const runtime = await ensurePyodideRuntime(options.workerState, options.script?.network);
-    return await execute(runtime, () => runPythonCodeInternal(runtime, code, { ...options, timeoutMs }));
+    if (!options.workerState) {
+      const current = await getPyodideEnvState();
+      if (current.status !== 'ready' || current.environmentId !== state.environmentId) {
+        throw codeError(PY_ERR_NOT_READY, 'Python environment changed while the request was queued');
+      }
+    }
+    const runtime = await ensurePyodideRuntime(options.workerState);
+    return await execute(runtime, () => runPythonCodeInternal(runtime, code, {
+      ...options, timeoutMs, environmentId: state.environmentId,
+    }), state);
   } finally {
     release();
   }

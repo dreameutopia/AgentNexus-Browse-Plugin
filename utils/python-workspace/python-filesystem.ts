@@ -4,7 +4,7 @@ import {
   checkWorkspaceLimits, indexWorkspaceEntries, isInternalWorkspaceLink,
   isWorkspacePath, workspaceOutputPaths, workspaceRoot, type WorkspaceEntry, type WorkspaceSnapshot,
 } from './paths';
-import { saveWorkspace, withWorkspaceLock } from './store';
+import { saveWorkspace, withWorkspaceLock, type WorkspaceCommitGuard } from './store';
 
 type FS = PyodideInterface['FS'];
 type MountedFS = FS & {
@@ -44,7 +44,7 @@ function collectWorkspace(fs: FS, root: string, previous: Map<string, WorkspaceE
       bytes += size;
       checkWorkspaceLimits(entries.length + 1, bytes, size);
       const original = previous.get(path);
-      const blob = isDirectory ? null : new Blob([fs.readFile(absolute).slice().buffer], { type: original?.blob?.type });
+      const blob = isDirectory ? null : new Blob([fs.readFile(absolute) as Uint8Array<ArrayBuffer>], { type: original?.blob?.type });
       entries.push({
         path, blob, mode: stat.mode & 0o777, mtime: stat.mtime.getTime(),
         importId: blob ? original?.importId : undefined,
@@ -133,12 +133,13 @@ export function withPythonWorkspace<T extends WorkspaceOutcome>(
   chatId: string,
   run: () => Promise<T>,
   signal?: AbortSignal,
+  authorizeCommit: WorkspaceCommitGuard = commit => commit(),
 ): Promise<T> {
   return withWorkspaceLock(chatId, async () => {
     const snapshot = await chatDatabase.readWorkspace(chatId, signal);
     const { outcome, entries } = await stagePythonWorkspace(fs, chatId, snapshot, run, signal);
     if (entries) {
-      await saveWorkspace(chatId, snapshot?.revision, entries, signal);
+      await authorizeCommit(() => saveWorkspace(chatId, snapshot?.revision, entries, signal));
       outcome.workspaceOutputs = workspaceOutputPaths(entries);
     }
     return outcome;

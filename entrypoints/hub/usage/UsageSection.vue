@@ -64,10 +64,7 @@
           <div class="hub-usage__card">
             <span class="hub-usage__card-label">{{ t('hub.usage.successRate') }}</span>
             <span class="hub-usage__card-value" :class="successRateClass">{{ successRateLabel }}</span>
-            <span class="hub-usage__card-sub">
-              {{ t('hub.usage.successCount') }} / {{ t('hub.usage.ratedTotal') }}
-              {{ formatCount(snapshot.totals.success + snapshot.totals.failed) }}
-            </span>
+            <span class="hub-usage__card-sub">{{ t('hub.usage.successRateHint') }}</span>
           </div>
         </div>
       </section>
@@ -210,75 +207,116 @@
         <p v-else class="hub-hint">{{ t('hub.usage.noMatch') }}</p>
       </section>
 
-      <!-- ══════════ 缓存诊断（按渠道 / 模型 / 智能体） ══════════ -->
+      <!-- ══════════ 详细数据（按渠道 / 模型 / 智能体分组卡片） ══════════ -->
       <section class="hub-usage__group">
         <div class="hub-usage__group-head">
           <h3 class="hub-usage__group-title">{{ t('hub.usage.cacheDiagnostics') }}</h3>
+          <HubSegmented
+            v-model="detailDimension"
+            class="hub-usage__dimension"
+            :options="dimensionOptions"
+            :aria-label="t('hub.usage.detailDimension')"
+          />
         </div>
         <p class="hub-hint">{{ t('hub.usage.cacheExplanation') }}</p>
-        <div v-if="filteredScopes.length" class="hub-usage__rows">
-          <div
-            v-for="entry in filteredScopes"
-            :key="JSON.stringify([entry.provider, entry.channelId, entry.modelId, entry.agentId, entry.requestKind])"
-            class="hub-usage__row"
-          >
-            <div class="hub-usage__row-head">
-              <span class="hub-usage__row-name">{{ entry.model }}</span>
-            </div>
-            <div class="hub-usage__row-meta">
-              <span>{{ entry.channelLabel || t('hub.usage.legacyChannel') }}</span>
-              <span>{{ entry.agentId || t('hub.usage.otherRequests') }} · {{ entry.requestKind }}</span>
-              <span>{{ t('hub.usage.cacheHitRate') }} {{ cacheRatio(entry) }}</span>
-              <span>{{ t('hub.usage.cacheRequestRate') }} {{ cacheRequestRatio(entry) }}</span>
-              <span>{{ t('hub.usage.continuationCache') }} {{ continuationRatio(entry) }}</span>
-              <span>{{ t('hub.usage.cacheHitDetail', { cached: formatTokens(entry.cachedInputTokens), base: formatTokens(entry.cacheEligibleInputTokens) }) }}</span>
-            </div>
+        <div v-if="detailCards.length" class="hub-usage__detail-scroll">
+          <div class="hub-usage__detail-grid">
+            <article v-for="card in detailCards" :key="card.key" class="hub-usage__detail-card">
+              <div class="hub-usage__detail-card-head">
+                <span class="hub-usage__detail-card-name" :title="card.label">{{ card.label }}</span>
+                <span class="hub-usage__detail-card-tokens">{{ formatTokens(card.totalTokens) }}</span>
+              </div>
+              <div class="hub-usage__bar">
+                <div class="hub-usage__bar-fill" :style="{ width: barWidth(card.share) }"></div>
+              </div>
+              <div class="hub-usage__detail-metrics">
+                <div class="hub-usage__detail-metric">
+                  <span class="hub-usage__detail-metric-label" :title="t('hub.usage.cacheHitRate')">
+                    {{ t('hub.usage.cacheHitRate') }}
+                  </span>
+                  <span class="hub-usage__detail-metric-value">{{ cacheRatio(card) }}</span>
+                </div>
+                <div class="hub-usage__detail-metric">
+                  <span class="hub-usage__detail-metric-label" :title="t('hub.usage.cacheRequestRate')">
+                    {{ t('hub.usage.cacheRequestRate') }}
+                  </span>
+                  <span class="hub-usage__detail-metric-value">{{ cacheRequestRatio(card) }}</span>
+                </div>
+                <div class="hub-usage__detail-metric">
+                  <span class="hub-usage__detail-metric-label" :title="t('hub.usage.continuationCache')">
+                    {{ t('hub.usage.continuationCache') }}
+                  </span>
+                  <span class="hub-usage__detail-metric-value">{{ continuationRatio(card) }}</span>
+                </div>
+                <div class="hub-usage__detail-metric">
+                  <span class="hub-usage__detail-metric-label">{{ t('hub.usage.totalRequests') }}</span>
+                  <span class="hub-usage__detail-metric-value">{{ formatCount(card.requests) }}</span>
+                </div>
+              </div>
+              <div class="hub-usage__detail-card-foot">
+                <span>{{ t('hub.usage.cacheHitDetail', { cached: formatTokens(card.cachedInputTokens), base: formatTokens(card.cacheEligibleInputTokens) }) }}</span>
+                <span>{{ t('hub.usage.successRate') }} {{ modelSuccessRate(card) }}</span>
+              </div>
+            </article>
           </div>
         </div>
         <p v-else class="hub-hint">{{ t('hub.usage.noMatch') }}</p>
       </section>
 
-      <!-- ══════════ 请求明细 ══════════ -->
-      <section class="hub-usage__group">
-        <div class="hub-usage__group-head">
-          <h3 class="hub-usage__group-title">{{ t('hub.usage.requestLog') }}</h3>
-          <span class="hub-usage__group-hint">{{ t('hub.usage.recentRequests') }}</span>
-        </div>
-        <div v-if="filteredRequests.length" class="hub-usage__rows">
-          <div v-for="(entry, index) in filteredRequests" :key="`${entry.at}:${index}`" class="hub-usage__row">
-            <div class="hub-usage__row-head">
-              <span class="hub-usage__row-name">{{ entry.model }}</span>
-              <span class="hub-usage__row-time">{{ formatTime(entry.at) }}</span>
-            </div>
-            <div class="hub-usage__row-meta">
-              <span>{{ entry.channelLabel || t('hub.usage.legacyChannel') }}</span>
-              <span>{{ entry.agentId || t('hub.usage.otherRequests') }} · {{ entry.kind }} · {{ entry.outcome }}</span>
-              <span v-if="entry.runId">{{ entry.runId.slice(-8) }} #{{ entry.iteration }}</span>
-              <span>{{ t('hub.usage.inputTokens') }} {{ entry.usage?.inputTokens ?? '—' }}</span>
-              <span>{{ t('hub.usage.cachedTokens') }} {{ entry.usage?.cachedInputTokens ?? '—' }}</span>
-              <span v-if="entry.iteration">{{ entry.iteration === 1 ? t('hub.usage.firstRound') : entry.prefixChanged ? t('hub.usage.prefixChanged') : t('hub.usage.prefixStable') }}</span>
-              <span v-if="entry.trimmed || entry.compacted">{{ t('hub.usage.contextChanged') }}</span>
+      <!-- ══════════ 请求明细 + 最近失败（宽屏左右并排，限高滚动） ══════════ -->
+      <div class="hub-usage__split" :class="{ 'is-solo': !snapshot.recentErrors.length }">
+        <section class="hub-usage__group">
+          <div class="hub-usage__group-head">
+            <h3 class="hub-usage__group-title">{{ t('hub.usage.requestLog') }}</h3>
+            <span class="hub-usage__group-hint">{{ t('hub.usage.recentRequests') }}</span>
+          </div>
+          <div v-if="filteredRequests.length" class="hub-usage__scroll">
+            <div class="hub-usage__rows">
+              <div v-for="(entry, index) in filteredRequests" :key="`${entry.at}:${index}`" class="hub-usage__row">
+                <div class="hub-usage__row-head">
+                  <span class="hub-usage__row-name" :title="entry.model">{{ entry.model }}</span>
+                  <span class="hub-usage__tag" :class="outcomeTagClass(entry.outcome)">{{ outcomeLabel(entry.outcome) }}</span>
+                  <span class="hub-usage__row-time">{{ formatTime(entry.at) }}</span>
+                </div>
+                <div class="hub-usage__row-meta">
+                  <span>{{ entry.channelLabel || t('hub.usage.legacyChannel') }}</span>
+                  <span>{{ entry.agentId || t('hub.usage.otherRequests') }}</span>
+                  <span>{{ kindLabel(entry.kind) }}</span>
+                  <span v-if="entry.runId">{{ entry.runId.slice(-8) }} #{{ entry.iteration }}</span>
+                  <span>{{ t('hub.usage.inputTokens') }} {{ entry.usage?.inputTokens ?? '—' }}</span>
+                  <span>{{ t('hub.usage.cachedTokens') }} {{ entry.usage?.cachedInputTokens ?? '—' }}</span>
+                  <span
+                    v-if="entry.iteration"
+                    class="hub-usage__tag"
+                    :class="prefixTagClass(entry)"
+                  >{{ prefixLabel(entry) }}</span>
+                  <span v-if="entry.trimmed || entry.compacted" class="hub-usage__tag hub-usage__tag--warn">
+                    {{ t('hub.usage.contextChanged') }}
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-        <p v-else class="hub-hint">{{ t('hub.usage.noMatch') }}</p>
-      </section>
+          <p v-else class="hub-hint">{{ t('hub.usage.noMatch') }}</p>
+        </section>
 
-      <!-- ══════════ 最近失败 ══════════ -->
-      <section v-if="snapshot.recentErrors.length" class="hub-usage__group">
-        <div class="hub-usage__group-head">
-          <h3 class="hub-usage__group-title">{{ t('hub.usage.recentErrors') }}</h3>
-          <span class="hub-usage__group-hint">{{ t('hub.usage.recentErrorsHint') }}</span>
-        </div>
-        <ul class="hub-usage__errors">
-          <li v-for="(err, index) in snapshot.recentErrors" :key="`${err.at}-${index}`" class="hub-usage__error">
-            <span class="hub-usage__error-time">{{ formatTime(err.at) }}</span>
-            <span v-if="err.provider" class="hub-usage__error-provider">{{ providerLabel(err.provider) }}</span>
-            <span class="hub-usage__error-model">[{{ err.model }}]</span>
-            <span class="hub-usage__error-summary">{{ err.summary }}</span>
-          </li>
-        </ul>
-      </section>
+        <section v-if="snapshot.recentErrors.length" class="hub-usage__group">
+          <div class="hub-usage__group-head">
+            <h3 class="hub-usage__group-title">{{ t('hub.usage.recentErrors') }}</h3>
+            <span class="hub-usage__group-hint">{{ t('hub.usage.recentErrorsHint') }}</span>
+          </div>
+          <div class="hub-usage__scroll">
+            <ul class="hub-usage__errors">
+              <li v-for="(err, index) in snapshot.recentErrors" :key="`${err.at}-${index}`" class="hub-usage__error">
+                <span class="hub-usage__error-time">{{ formatTime(err.at) }}</span>
+                <span v-if="err.provider" class="hub-usage__error-provider">{{ providerLabel(err.provider) }}</span>
+                <span class="hub-usage__error-model">[{{ err.model }}]</span>
+                <span class="hub-usage__error-summary">{{ err.summary }}</span>
+              </li>
+            </ul>
+          </div>
+        </section>
+      </div>
     </template>
   </div>
 </template>
@@ -292,15 +330,25 @@
  *
  * 与原「设置弹窗 · 使用监控」的差异（只增不减）：
  *   - 顶部指标卡按「请求 / Token」两组重排为管理中心玻璃卡；
- *   - 筛选栏统一作用于模型占比、缓存诊断与请求明细三张表（原仅后两张）；
+ *   - 筛选栏统一作用于模型占比、详细数据与请求明细三张表（原仅后两张）；
  *   - 新增按协议聚合视图、排序切换（Token / 请求数 / 占比 / 成功率）；
+ *   - 详细数据支持按渠道 / 模型 / 智能体切换聚合维度，每组一张卡片；
+ *   - 请求明细与失败原因宽屏左右并排、限高滚动，缓存状态以标签呈现；
  *   - 新增 JSON / CSV 导出与摘要复制；
  *   - 顶部展示「最近更新」时间戳，让实时同步状态可见。
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { t, useLocale } from '@/utils/i18n';
 import { aiUsageMetrics } from '../../sidepanel/utils/metrics/usage-metrics-engine';
-import type { UsageMetricsSnapshot, ModelUsageMetrics } from '../../sidepanel/utils/metrics/usage-metrics-types';
+import type {
+  UsageMetricsSnapshot,
+  ModelUsageMetrics,
+  UsageCounters,
+  UsageOutcome,
+  UsageRequestKind,
+  UsageRequestDetail,
+} from '../../sidepanel/utils/metrics/usage-metrics-types';
+import { createEmptyCounters } from '../../sidepanel/utils/metrics/usage-metrics-types';
 import { driverRegistry } from '../../sidepanel/utils/stream/driver-registry';
 import type { ProviderType } from '../../sidepanel/utils/stream/types';
 import HubSelect from '../components/HubSelect.vue';
@@ -316,12 +364,20 @@ const selectedChannel = ref('*');
 const selectedModel = ref('*');
 const selectedAgent = ref('*');
 const sortBy = ref<'tokens' | 'requests' | 'share' | 'success'>('tokens');
+/** 详细数据分组维度：渠道 / 模型 / 智能体（仅影响详细数据卡片的聚合方式） */
+const detailDimension = ref<'channel' | 'model' | 'agent'>('channel');
 
 const sortOptions = computed(() => [
   { value: 'tokens', label: t('hub.usage.sortTokens') },
   { value: 'requests', label: t('hub.usage.sortRequests') },
   { value: 'share', label: t('hub.usage.sortShare') },
   { value: 'success', label: t('hub.usage.sortSuccessRate') },
+]);
+
+const dimensionOptions = computed(() => [
+  { value: 'channel', label: t('hub.usage.byChannel') },
+  { value: 'model', label: t('hub.usage.byModel') },
+  { value: 'agent', label: t('hub.usage.byAgent') },
 ]);
 
 const channelOptions = computed(() => [
@@ -357,7 +413,7 @@ const filteredModels = computed(() =>
   snapshot.value.models.filter(entry => matchesScope(entry) && matchesQuery(entry)),
 );
 
-/** 缓存诊断表（按渠道 / 模型 / 智能体 + 文本搜索） */
+/** 维度明细表（详细数据卡片的数据源；按渠道 / 模型 / 智能体 + 文本搜索） */
 const filteredScopes = computed(() =>
   snapshot.value.scopes.filter(entry => matchesScope(entry) && matchesQuery(entry)),
 );
@@ -366,6 +422,50 @@ const filteredScopes = computed(() =>
 const filteredRequests = computed(() =>
   snapshot.value.recentRequests.filter(entry => matchesScope(entry) && matchesQuery(entry)),
 );
+
+// ==================== 详细数据（按维度聚合的卡片） ====================
+
+/** 一张聚合卡片 = 单个渠道 / 模型 / 智能体的全部计数器 + 展示字段 */
+interface DetailCard extends UsageCounters {
+  key: string;
+  label: string;
+  share: number;
+}
+
+const COUNTER_KEYS = Object.keys(createEmptyCounters()) as (keyof UsageCounters)[];
+
+/**
+ * 按所选维度聚合筛选后的 scope：
+ *   - 渠道：同一 channelId 的多模型 / 多智能体合并；
+ *   - 模型：同名模型跨渠道合并；
+ *   - 智能体：同一智能体的多渠道合并（空智能体归入「其他请求」）。
+ * 占比基于聚合后小计重算，与模型占比表同口径。
+ */
+const detailCards = computed<DetailCard[]>(() => {
+  const dimension = detailDimension.value;
+  const map = new Map<string, DetailCard>();
+  for (const entry of filteredScopes.value) {
+    const key =
+      dimension === 'channel' ? (entry.channelId ?? '') :
+      dimension === 'model' ? entry.model :
+      (entry.agentId ?? '');
+    const label =
+      dimension === 'channel' ? (entry.channelLabel || t('hub.usage.legacyChannel')) :
+      dimension === 'model' ? entry.model :
+      (entry.agentId || t('hub.usage.otherRequests'));
+    let card = map.get(key);
+    if (!card) {
+      card = { key, label, share: 0, ...createEmptyCounters() };
+      map.set(key, card);
+    }
+    for (const counterKey of COUNTER_KEYS) card[counterKey] += entry[counterKey] ?? 0;
+  }
+  const cards = [...map.values()];
+  const subtotal = cards.reduce((sum, card) => sum + card.totalTokens, 0);
+  return cards
+    .map(card => ({ ...card, share: subtotal > 0 ? card.totalTokens / subtotal : 0 }))
+    .sort((a, b) => b.totalTokens - a.totalTokens || b.requests - a.requests || a.label.localeCompare(b.label));
+});
 
 /**
  * 占比基于「当前筛选后的小计」重算——筛选后仍显示全局占比会误导
@@ -683,22 +783,61 @@ function formatTime(timestamp: number): string {
 }
 
 /** 模型成功率（分母为 0 时显示 —） */
-function modelSuccessRate(entry: ModelUsageMetrics): string {
+function modelSuccessRate(entry: UsageCounters): string {
   const rated = entry.success + entry.failed;
   if (rated === 0) return '—';
   return percentLabel(entry.success / rated);
 }
 
-function cacheRatio(e: ModelUsageMetrics): string {
+function cacheRatio(e: UsageCounters): string {
   return e.cacheEligibleInputTokens > 0 ? percentLabel(e.cachedInputTokens / e.cacheEligibleInputTokens) : '—';
 }
 
-function cacheRequestRatio(e: ModelUsageMetrics): string {
+function cacheRequestRatio(e: UsageCounters): string {
   return e.cacheObservedRequests > 0 ? percentLabel(e.cacheHitRequests / e.cacheObservedRequests) : '—';
 }
 
-function continuationRatio(e: ModelUsageMetrics): string {
+function continuationRatio(e: UsageCounters): string {
   return e.continuationInputTokens > 0 ? percentLabel(e.continuationCachedTokens / e.continuationInputTokens) : '—';
+}
+
+// ==================== 请求明细标签 ====================
+
+/** 结局标签文案（成功 / 失败 / 已取消） */
+function outcomeLabel(outcome: UsageOutcome): string {
+  if (outcome === 'success') return t('hub.usage.outcomeSuccess');
+  if (outcome === 'failed') return t('hub.usage.outcomeFailed');
+  return t('hub.usage.outcomeAborted');
+}
+
+/** 结局标签配色：语义色仅用于状态表达（成功绿 / 失败红 / 取消中性） */
+function outcomeTagClass(outcome: UsageOutcome): string {
+  if (outcome === 'success') return 'hub-usage__tag--good';
+  if (outcome === 'failed') return 'hub-usage__tag--bad';
+  return 'hub-usage__tag--neutral';
+}
+
+/** 请求类别文案（对话 / 连通测试 / 语音识别 / 上下文压缩） */
+function kindLabel(kind: UsageRequestKind): string {
+  if (kind === 'chat') return t('hub.usage.kindChat');
+  if (kind === 'probe') return t('hub.usage.kindProbe');
+  if (kind === 'asr') return t('hub.usage.kindAsr');
+  return t('hub.usage.kindCompaction');
+}
+
+/**
+ * 缓存状态标签：首轮（无从对比）/ 缓存失效（前缀变短，旧缓存作废）/
+ * 缓存命中（前缀稳定，可复用缓存）。文案面向使用者，不暴露「前缀」术语。
+ */
+function prefixLabel(entry: UsageRequestDetail): string {
+  if (!entry.iteration) return '';
+  if (entry.iteration === 1) return t('hub.usage.firstRound');
+  return entry.prefixChanged ? t('hub.usage.prefixChanged') : t('hub.usage.prefixStable');
+}
+
+function prefixTagClass(entry: UsageRequestDetail): string {
+  if (!entry.iteration || entry.iteration === 1) return 'hub-usage__tag--neutral';
+  return entry.prefixChanged ? 'hub-usage__tag--warn' : 'hub-usage__tag--good';
 }
 
 /** 协议标签：已注册协议用驱动展示名，其余（如 asr）原样展示 */

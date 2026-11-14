@@ -28,6 +28,7 @@
     "test:channels": "node tests/channels/run.mjs",
     "test:i18n": "node tests/i18n/run.mjs",
     "test:tools": "node tests/tools/run.mjs",
+    "test:document-dom": "node tests/tools/run-document-dom.mjs",
     "test:text-browser": "node tests/tools/text-browser-probe.mjs",
     "test:semantic-controls": "node tests/tools/semantic-controls-browser.mjs",
     "test:semantic-controls:unit": "node tests/tools/run-semantic-controls.mjs",
@@ -44,12 +45,15 @@
     "format:check": "npx prettier --check .",
     "test:vision": "node tests/vision/run.mjs",
     "test:chat-ui": "node tests/chat-ui/run.mjs",
+    "test:js": "node tests/tools/js-run.test.mjs",
+    "test:workspace": "node tests/chat-ui/workspace-artifacts.test.mjs",
     "test:conversation-runtime": "node tests/conversation-runtime/run.mjs",
+    "test:system-context": "node tests/system-context/run.mjs",
     "test:compaction": "node tests/compaction/run.mjs",
     "test:plugins": "node tests/plugins/run.mjs",
-    "test:all": "npm run test:contract && npm run test:engine && npm run test:backup && npm run test:channels && npm run test:i18n && npm run test:tools && npm run test:semantic-controls:unit && npm run test:image-context && npm run test:message-meta && npm run test:message-collapse && npm run test:user-bubble && npm run test:skills && npm run test:hub && npm run test:vision && npm run test:chat-ui && npm run test:conversation-runtime && npm run test:compaction && npm run test:plugins && npm run test:plugins:ui",
+    "test:all": "npm run test:js && npm run test:contract && npm run test:engine && npm run test:backup && npm run test:channels && npm run test:i18n && npm run test:tools && npm run test:semantic-controls:unit && npm run test:image-context && npm run test:message-meta && npm run test:message-collapse && npm run test:user-bubble && npm run test:skills && npm run test:hub && npm run test:vision && npm run test:chat-ui && npm run test:conversation-runtime && npm run test:compaction && npm run test:plugins && npm run test:plugins:ui",
     "plugin:sdk": "node scripts/plugin-cli.mjs",
-    "test:plugins:ui": "node tests/plugins/run-ui.mjs"
+    "test:plugins:ui": "node tests/plugins/run-ui.mjs && node tests/plugins/skill-updates-ui.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.11.0",

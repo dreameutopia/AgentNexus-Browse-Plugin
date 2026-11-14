@@ -92,6 +92,10 @@ Interface available in Simplified Chinese and English, switchable in one click a
 ### 🛡️ Safety Guards
 Restricted-URL protection, a guard confirmation bar for dangerous actions, and declarative net request rules.
 
+### Session workspace and file delivery
+
+All deliverables generated or acquired by tools (Excel, Mermaid PNGs, downloaded resources, and Python outputs) are saved to the current chat workspace under `outputs/`. Workspaces are created on demand, independently of Python installation; original attachments live in `inputs/`. Tools return a `<workspace-file path="outputs/report.csv" />` marker for the assistant to include in its reply as a clickable download card. New files receive unique names on collision. This is the only artifact card protocol.
+
 ## 🧭 Skill Design
 
 ### Positioning
@@ -119,14 +123,14 @@ One skill = one `SKILL.md` (YAML frontmatter + Markdown body) + optional resourc
 
 ### Running Python scripts
 
-After installing Python, turn on **Runtime Skill script support** in the Python Environment section of the management hub. The setting starts off and resets when Python is removed. With it enabled, eligible chats offer `skill_tool(action="copy")` to copy files or directories. Pass `paths: ["."]` to copy the entire skill. Copies retain bytes and relative paths under `skills/<id>/<revision>/` in the chat workspace. Use scripts from trusted sources.
+Every chat receives `skill_tool` with `load`, `read`, `copy`, `create`, `edit`, and `delete`. Copying resources requires no Python runtime. Pass a decimal `skill_id` and exact `paths` (or `["."]` for the whole Skill). Files keep their bytes and relative layout. Existing files are preserved; collisions go under `<skill_id>/` and then numbered copy directories. Always use returned paths. Install Python only when Python execution is needed.
 
-Pass a staged `.py` path as `scriptPath` to `python_run`. Skill scripts start in their copied skill root. `AGENTNEXUS_WORKSPACE` points to the chat workspace, where user files are under `inputs/` and deliverables belong under `outputs/`. Use `argv`, `stdin`, and `env` for arguments, input, and non-secret configuration. For package entry points, pass the dotted `module` alongside its file path. Link a saved output with `<workspace-file path="outputs/report.csv" />`.
+Write scripts into the chat workspace with `python_run(action="create", path="scripts/report.py", content=...)` and execute them with `action="run"` (the path must be an existing workspace-relative `.py`); use `action="edit"` (full rewrite, or a unique `find`/`replace`) to modify files and `action="delete"` to remove them. All paths are relative to the workspace root — absolute paths, drive letters and `..` are rejected. Skill scripts copied above run the same way from their copied root. `AGENTNEXUS_WORKSPACE` points to the chat workspace, where user files are under `inputs/` and deliverables belong under `outputs/`. Use `argv`, `stdin`, and `env` for arguments, input, and non-secret configuration. For package entry points, pass the dotted `module` alongside its file path. Link a saved output with `<workspace-file path="outputs/report.csv" />`.
 
 Set `preflight: true` to inspect static imports, PEP 723 metadata, `requirements.txt` or static `pyproject.toml` metadata, and environment references. The default resolver uses the Pyodide catalog and explicitly supplied local wheels. Public PyPI wheel resolution requires approval in chat. Scripts that need Bash, subprocesses, native programs, or packages with no compatible wheel need an equivalent Python implementation or another available tool.
 
 ### Getting Started
-The three built-in skills (`skills/web-research-report`, `skills/bilibili-video-summary`, `skills/xlsx-creator`) serve as official templates — read and imitate them directly; enable/disable and import/export are available in the management hub.
+Built-ins have protected IDs 1–1000, maintained in a static map; IDs 4 and 5 are the global `skill-create` and `skill-edit` guides. All custom, imported and locally managed plugin Skills receive unique numeric IDs from 1001. Creating or changing Skills requires the user’s explicit request and loading the matching guide first. Deleting an existing Skill requires a second interactive confirmation. Plugin Skill updates are reviewed and approved separately in Plugin Management. See [Skill lifecycle](docs/skill-lifecycle.md).
 
 ## 📦 Implementation Stage
 
@@ -258,3 +262,5 @@ Vision Assistant explains the current page and guides the user: bounded visible 
 ## Third-party plugin development
 
 See the [plugin developer guide](docs/plugin-developer-guide.zh-CN.md) for package contracts, signing, GitHub distribution and compatibility boundaries. Run `npm run test:plugins` and `npm run test:plugins:ui` to validate lifecycle invariants and UI interactions.
+
+Session JavaScript uses the globally available `js_run`: create `scripts/*.js` first, then run by workspace-relative path with JSON `args` ($args inside the async function body). Text files share the Python editor, including exact/explicit indentation matching, atomic `edits`, and optional SHA-256 conflict checks; `read` pages any workspace text file (2000 chars per page with page counters). Every run/crawl result is persisted as an independent JSON file under the session workspace `results/` directory (up to 10MB each, survives browser restarts) with only the first 2000 chars returned, and data_ref_tool / xlsx_tool consume those files directly. The legacy inline execution tool remains unchanged for backend clients only. Neither script entry point is selectable in agent tool groups.

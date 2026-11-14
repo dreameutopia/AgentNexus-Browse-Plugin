@@ -213,7 +213,18 @@ export class OllamaAdapter extends BaseAdapter {
       }
 
       if (chunk.done) {
-        acc.finishReason = acc.toolCallChunks.size > 0 ? 'tool_calls' : acc.finishReason || 'stop';
+        // done_reason 是 Ollama 官方终止原因（llm.DoneReason.String()：
+        // "stop" 正常结束 / "length" 触达 num_predict 截断，另有 load/unload
+        // 边界值与空串的连接中断形态）——原样透传为统一 finishReason。
+        // 不透传的话 num_predict 截断会被掩成 'stop'，上层截断注记与
+        // finishReason 调试日志在 Ollama 协议下永远看不到 length
+        const doneReason =
+          typeof chunk.done_reason === 'string' && chunk.done_reason.length > 0
+            ? chunk.done_reason
+            : null;
+        // 统一语义：有工具调用时优先标记 tool_calls（与其它协议一致）
+        acc.finishReason =
+          acc.toolCallChunks.size > 0 ? 'tool_calls' : doneReason ?? acc.finishReason ?? 'stop';
         return true;
       }
       return false; // 继续处理

@@ -70,9 +70,9 @@ export async function testSiteLearning(check: (condition: boolean, label: string
     check(prompt.includes('2–3') && prompt.includes('不执行整个批次') && prompt.includes('不得为了重走流程再次发送/投递'), `${scenario} 学习抽样完整路径且不重复副作用`);
     check(prompt.includes('优先按照用户描述') && prompt.includes('先按颜色选择规格') && prompt.includes('必须写入 SKILL') && prompt.includes('说明差异并询问用户'), `${scenario} 用户过程优先验证、写入并在冲突时交互`);
     check(!prompt.includes('confirm=true') && prompt.includes('调用 interact 并等待真实答复'), `${scenario} 由工具统一确认规则，人工步骤等待用户回调`);
-    check(['browser_observe', 'browser_interact', 'browser_page_exec', 'submit_skill'].every(id => ids.includes(id)), `${scenario} 具备完整文本能力与学习提交`);
+    check(['browser_observe', 'browser_interact', 'submit_skill'].every(id => ids.includes(id)), `${scenario} 具备完整文本能力与学习提交`);
     // note_tool 升级核心层（与 plan_tool 同级）：场景清单不再登记，断言其随核心恒定可用
-    check(CORE_SESSION_TOOL_IDS.includes('note_tool') && CORE_SESSION_TOOL_IDS.includes('plan_tool'), 'note_tool / plan_tool 由核心层无条件注入');
+    check(CORE_SESSION_TOOL_IDS.includes('js_run') && CORE_SESSION_TOOL_IDS.includes('note_tool') && CORE_SESSION_TOOL_IDS.includes('plan_tool'), 'note_tool / plan_tool 由核心层无条件注入');
     check(!ids.includes('note_tool'), `${scenario} 场景清单不重复登记 note_tool`);
     // 视觉 GUI 只属于视觉目标：文本目标无论何种策略都没有 vision_gui
     //（标签页/窗口管理随 browser_tabs 基座对全部目标在场——枚举是纯只读，
@@ -345,7 +345,7 @@ export async function testSiteLearning(check: (condition: boolean, label: string
   }
   const validationIds = validationToolIds(draft);
   check(validationIds.includes('browser_observe') && validationIds.includes('submit_validation') && validationIds.includes('interact'), '验证保留声明工具和必要阶段基础能力');
-  check(!validationIds.includes('browser_page_exec') && !validationIds.includes('browser_tabs') && !validationIds.includes('browser_get_page_html'), '未声明的诊断工具不能掩盖依赖缺漏');
+  check(validationIds.includes('js_run') && !validationIds.includes('browser_page_exec') && !validationIds.includes('browser_tabs') && !validationIds.includes('browser_get_page_html'), '未声明的诊断工具不能掩盖依赖缺漏');
   check(!validationToolIds({ ...draft, mode: 'text', allowedTools: ['vision_gui', 'submit_skill'] }).includes('vision_gui'), '验证边界不被错误模式扩大');
   check(validationToolIds({ ...draft, allowedTools: ['browser_get_page_html', 'data_ref_tool'] }).includes('browser_get_page_html'), '合法声明依赖不因不在预设中被静默剥离，注册表仍由runtime校验');
   for (const patch of [
