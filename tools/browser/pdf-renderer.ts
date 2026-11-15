@@ -72,6 +72,8 @@ export async function renderHtmlToPdf(request: PdfRenderRequest): Promise<PdfRen
     return { ok: false, error: '待渲染的 HTML 为空' };
   }
   if (request.html.length > PDF_MAX_HTML_BYTES) {
+    // 按字符数近似：中日韩字符一字约三字节，因此这里偏宽松，
+    // 真正的兜底是 background 的内存上限与 CDP 命令超时。
     return {
       ok: false,
       error: `待渲染的 HTML 超过上限 ${Math.round(PDF_MAX_HTML_BYTES / (1024 * 1024))}MB，请拆分文档后再导出`,
@@ -101,6 +103,8 @@ export async function renderHtmlToPdf(request: PdfRenderRequest): Promise<PdfRen
 
     // 3. 载入 HTML：Page.setDocumentContent 直接替换文档内容，
     //    比导航到 data: URL 更快，也避免超长 data: URL 的长度问题。
+    //    部分 Chrome 版本要求先启用 Page 域，失败也不影响后续命令。
+    await sendCommand(tabId, 'Page.enable', {}).catch(() => undefined);
     const frameId = await resolveMainFrameId(tabId);
     await sendCommand(tabId, 'Page.setDocumentContent', { frameId, html: request.html });
 

@@ -38,6 +38,7 @@ globalThis.chrome={storage:{local:{
   async get(keys){if(failRead)throw Error('read unavailable');const result=Object.fromEntries((keys==null?Object.keys(storage):Array.isArray(keys)?keys:[keys]).filter(key=>key in storage).map(key=>[key,structuredClone(storage[key])]));if(gate){const wait=gate;gate=null;wait.enter();await wait.promise;}return result;},
   async getKeys(){if(failRead)throw Error('read unavailable');return Object.keys(storage);},
   async set(values){if(failWrite)throw Error('quota unavailable');writeCount++;const changes={};for(const [key,value]of Object.entries(values)){changes[key]={oldValue:structuredClone(storage[key]),newValue:structuredClone(value)};storage[key]=structuredClone(value);}if(notify)queueMicrotask(()=>listeners.forEach(listener=>listener(changes,'local')));},
+  async remove(keys){writeCount++;for(const key of(Array.isArray(keys)?keys:[keys]))delete storage[key];},
 },onChanged:{addListener:listener=>listeners.add(listener),removeListener:listener=>listeners.delete(listener)}}};
 const opened=[],downloads=[],toasts=[];
 globalThis.__recoveryPorts={openHubWithHash:async hash=>{opened.push(hash);return true;},downloadLearnRecovery:()=>downloads.push(true),toast:{error:value=>toasts.push(value),info:value=>toasts.push(value)}};
@@ -105,6 +106,17 @@ try{
   const oldState=await api.readLearnRecovery(draft,'switch-create');assert.equal((await api.readLearnDraft(oldState.transferId)).status,'none','不留下旧会话孤立交接记录');
   failRead=true;const unavailable=mount(source('unavailable'));await until(()=>unavailable.state.syncError.value,'read failure');assert.ok(button(unavailable,'create'),'存储异常仍保留下载入口');
   button(unavailable,'create').click();await tick();await nextTick();assert.equal(opened.length,0,'状态不明禁止再创建');unavailable.host.querySelectorAll('.learn-recover-btn')[1].click();assert.equal(downloads.length,1);failRead=false;
+
+  // 会话删除时按来源彻底清理交接件：不论状态，正文与编辑副本一并移除；
+  // 其它会话的成果与空标识调用都不受影响（避免误删）。
+  const kept=await api.saveLearnDraft({...structuredClone(draft),name:'keep-me'},'keep-chat');
+  const doomed=await api.saveLearnDraft({...structuredClone(draft),name:'doomed'},'doomed-chat');
+  await api.completeLearnDraft(doomed.id,'skill-doomed');
+  assert.equal(await api.purgeLearnDraftsBySource(''),0,'空会话标识不清理任何记录');
+  assert.equal(await api.purgeLearnDraftsBySource('doomed-chat'),1,'只清理目标会话来源的交接件');
+  assert.equal((await api.readLearnDraft(doomed.id)).status,'none','交接件正文彻底移除');
+  assert.equal((await api.readLearnDraft(kept.id)).status,'ok','其它会话成果不受影响');
+
   assert.deepEqual(errors,[]);
   console.log('[chat-ui] Recovery receipt sync, click preflight, persistent ignore, confirmation/cancel/failure/focus, cross-context updates, races and history reopening passed.');
 }finally{for(const ui of mounted)if(ui.host.isConnected)ui.close();assert.equal(listeners.size,0,'unmount removes all storage listeners');dom.window.close();}

@@ -26,6 +26,10 @@ const compaction = (
   type: 'compaction',
   compaction: { status, trigger: 'runtime', ...(status === 'success' ? { originalTokens: 147968, summaryTokens: 2560, summary: '<summary>…</summary>' } : {}) },
 });
+const skill = (name = '京东商品采集'): MessagePart => ({
+  type: 'skill',
+  skills: [{ id: '1001', name }],
+});
 const tool = (id: string, status: ToolCallUI['status'] = 'success', executionTime?: number): MessagePart => ({
   type: 'tool',
   toolCall: {
@@ -253,7 +257,7 @@ const kinds = (entries: ReturnType<typeof buildLivePartSegments>) =>
   const entries = buildLivePartSegments(indexed(image(), reasoning(), tool('t1'), tool('t2')));
   const bar = entries[0];
   assert.equal(bar.kind, 'cluster-bar');
-  assert.deepEqual(bar.counts, { tools: 1, reasoning: 1, images: 1, compactions: 0 });
+  assert.deepEqual(bar.counts, { tools: 1, reasoning: 1, images: 1, compactions: 0, skills: 0 });
   assert.equal(kinds(entries).filter(k => k === 'part').length, 1, '仅最新工具可见');
 }
 
@@ -356,6 +360,32 @@ const kinds = (entries: ReturnType<typeof buildLivePartSegments>) =>
   assert.deepEqual(kinds(buildLivePartSegments(indexed(text('收到'), compaction(), text('继续')))), ['part', 'part', 'part']);
   // 纯压缩单段（中止于压缩轮的极端形态）
   assert.deepEqual(kinds(buildLivePartSegments(indexed(compaction()))), ['part']);
+}
+
+// ════════ 技能激活片段（type='skill'）：运行前的过程事实 ════════
+
+// S1. 结束态：技能片段并入前奏折叠并计入摘要
+{
+  const g = groupAnswerParts(indexed(skill(), text('完成')), { legacyReasoningText: false });
+  assert.deepEqual(g.prelude.map(p => p.part.type), ['skill'], '技能片段随过程内容入前奏');
+  assert.equal(g.skillCount, 1);
+  // 无正文（中止于纯激活轮）：折叠条独立承载
+  const only = groupAnswerParts(indexed(skill()), { legacyReasoningText: false });
+  assert.equal(only.final, null);
+  assert.equal(only.prelude.length, 1);
+  assert.equal(only.skillCount, 1);
+}
+
+// S2. 直播态：技能激活与后续工具连续成簇，技能被取代后收拢、计数单列
+{
+  const entries = buildLivePartSegments(indexed(skill(), tool('t1')));
+  assert.deepEqual(kinds(entries), ['bar', 'grouped', 'part']);
+  const bar = entries[0];
+  assert.equal(bar.kind, 'cluster-bar');
+  assert.equal(bar.counts.skills, 1);
+  assert.equal(bar.counts.tools, 0, '条外可见的最新工具不计入条内');
+  // 单个技能片段（其后是正文）：一行紧凑容器，不立折叠条
+  assert.deepEqual(kinds(buildLivePartSegments(indexed(skill(), text('开始')))), ['part', 'part']);
 }
 
 console.log('[message-collapse] 分组纯函数全部场景通过（结束态前奏折叠 + 连续过程小折叠：正文隔离语义）。');

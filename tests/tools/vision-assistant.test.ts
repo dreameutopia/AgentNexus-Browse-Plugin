@@ -111,7 +111,7 @@ assert.ok(image);
 assert.equal(JSON.stringify(withoutVisionImage(imageResult)).includes('base64'), false);
 assert.equal(imageResult.data.screenshot.includes('base64'), true, 'Extraction must not mutate UI result');
 // noVisionRecapture 策略回调：marked 与注册表契约清单同源（tools.test.ts 有注册表级断言）
-const marked = (name: string) => ['browser_get_page_text','browser_get_page_info',
+const marked = (name: string) => ['read_website','browser_get_page_info',
   'browser_observe','browser_dom_explore','browser_network_capture',
   'plan_tool','interact','note_tool','data_ref_tool','skill_tool'].includes(name);
 const guiCall = (action: string) => [{function:{name:'vision_gui',arguments:JSON.stringify({action, screenshotId:'s'})}}];
@@ -146,23 +146,47 @@ assert.equal(needsVisionRefresh(toolCall('browser_navigation', {action:'open', u
 assert.equal(needsVisionRefresh(toolCall('browser_navigation', {action:'back'}), [], none), true, 'navigation back 改页面 → 重拍');
 assert.equal(needsVisionRefresh([{function:{name:'browser_tabs',arguments:'{'}}], [], none), true, '合并工具参数解析失败 → 保守重拍');
 assert.equal(needsVisionRefresh(['browser_tabs'], [], none), true, '字符串形式调用没有参数（action 未知）→ 保守重拍');
-// browser_get_page_text 带 url = 前台打开（激活标签页、等加载后提取）→ 用户眼前的
+// read_website 带 url = 前台打开（激活标签页、等加载后提取）→ 用户眼前的
 // 页面已经变了，截图身份失效：即便该工具声明了纯读豁免也必须重拍
-assert.equal(needsVisionRefresh(['browser_get_page_text'], [], marked), false,
+assert.equal(needsVisionRefresh(['read_website'], [], marked), false,
   '不带 url 的正文读取是纯读，豁免重拍');
 assert.equal(
-  needsVisionRefresh([{function:{name:'browser_get_page_text',arguments:JSON.stringify({url:'https://x.example/'})}}], [], marked),
+  needsVisionRefresh([{function:{name:'read_website',arguments:JSON.stringify({url:'https://x.example/'})}}], [], marked),
   true,
   '带 url 的前台打开必须重拍（视图已变）',
 );
 assert.equal(
-  needsVisionRefresh([{function:{name:'browser_get_page_text',arguments:JSON.stringify({url:'   '})}}], [], marked),
+  needsVisionRefresh([{function:{name:'read_website',arguments:JSON.stringify({url:'   '})}}], [], marked),
   false,
   '空白 url 不算前台打开',
 );
+// tabId 会先切换标签页（同样改变用户可见页面）→ 必须重拍；空串等于未填
+assert.equal(
+  needsVisionRefresh([{function:{name:'read_website',arguments:JSON.stringify({tabId:5})}}], [], marked),
+  true,
+  'read_website 带 tabId 会切换标签页 → 重拍',
+);
+assert.equal(
+  needsVisionRefresh([{function:{name:'read_website',arguments:JSON.stringify({tabId:'  '})}}], [], marked),
+  false,
+  '空白 tabId 不算切换标签页',
+);
+// 纯读工具带 tabId 同样会先切换标签页：不能沿用旧截图
+for (const name of ['browser_observe', 'browser_dom_explore']) {
+  assert.equal(
+    needsVisionRefresh([{function:{name,arguments:JSON.stringify({tabId:5})}}], [], marked),
+    true,
+    `${name} 带 tabId → 重拍`,
+  );
+  assert.equal(
+    needsVisionRefresh([{function:{name,arguments:JSON.stringify({})}}], [], marked),
+    false,
+    `${name} 不带 tabId → 纯读豁免`,
+  );
+}
 // 混批：任一未豁免调用（含未知工具）保守重拍
-assert.equal(needsVisionRefresh(['browser_get_page_text','unknown_tool'], [], marked), true);
-assert.equal(needsVisionRefresh([{function:{name:'browser_get_page_text',arguments:'{}'}},{function:{name:'vision_gui',arguments:'{"action":"click"}'}}], [], marked), true);
+assert.equal(needsVisionRefresh(['read_website','unknown_tool'], [], marked), true);
+assert.equal(needsVisionRefresh([{function:{name:'read_website',arguments:'{}'}},{function:{name:'vision_gui',arguments:'{"action":"click"}'}}], [], marked), true);
 
 // Execute serialized production payload in an independent realm.
 const dom = new JSDOM('<!doctype html><style>body{opacity:1}</style><button id="pay" disabled>Pay</button><input id="secret" type="password" value="private-secret"><div id="off">OFFSCREEN</div><div id="scroller" style="overflow-y:auto;overflow-x:auto;opacity:1"><button id="inside">Inside</button></div>', {runScripts:'outside-only'} as any);
@@ -226,7 +250,7 @@ const engine = new ConversationEngine({
   requiresApproval: () => { approvals++; return false; },
   sendStream: async () => { throw new Error('Not used'); }, sendVision: async () => { throw new Error('Not used'); },
 } as any) as any;
-const runtime:any = { chatId:'vision-guide-test',toolPolicy:'vision-assistant',toolIds:['screenshot','vision_gui','skill_tool','browser_get_page_text'],vision:null,
+const runtime:any = { chatId:'vision-guide-test',toolPolicy:'vision-assistant',toolIds:['screenshot','vision_gui','skill_tool','read_website'],vision:null,
   limits:{maxDurationMs:60000,toolTimeoutMs:1000} };
 const handle:any = {abortController:new AbortController(),dynamicToolIds:new Set(['browser_page_exec']),record:{toolCalls:[],parts:[]},toolCallCount:0};
 const calls = (name:string,args:any={}) => [{id:'c',type:'function',function:{name,arguments:JSON.stringify(args)}}];
@@ -241,7 +265,7 @@ for (const args of [{action:'click',point:{x:1,y:2}},{action:'check'},{},{action
   const outcome = await engine.executeToolCalls(runtime,handle,calls('vision_gui',args),{},()=>{},Date.now()+60000);
   assert.equal(outcome.anyFailure,true); assert.match(outcome.messages[0].content,/TOOL_NOT_ALLOWED/);
 }
-const targeted = await engine.executeToolCalls(runtime,handle,calls('browser_get_page_text',{tabId:999}),{},()=>{},Date.now()+60000);
+const targeted = await engine.executeToolCalls(runtime,handle,calls('read_website',{tabId:999}),{},()=>{},Date.now()+60000);
 assert.equal(targeted.anyFailure,true);
 assert.equal(executed,0); assert.equal(approvals,0);
 let captures = 0;
@@ -308,7 +332,7 @@ try {
   assert.equal(built.toolIds.every(isVisionAssistantTool),true);
   assert.equal(built.activationContext.length,0);
   assert.ok(built.systemPrompt.includes('已跳过激活'));
-  assert.equal(built.systemPrompt.includes('必须优先调用 browser_get_page_text'),false);
+  assert.equal(built.systemPrompt.includes('必须优先调用 read_website'),false);
   assert.ok(built.systemPrompt.includes('<observation-boundary>'),'观察者获得观察变体规程');
   const action = await runtimeBuilder.build({chatId:'action-build',userInput:'执行',agentName:'视觉通用助手',skillNames:[],priorRecords:[]});
   assert.equal(action.toolPolicy,undefined); assert.ok(action.toolIds.includes('vision_gui'));

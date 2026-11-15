@@ -1,3 +1,4 @@
+import { readPageFrames, PageReadError, addFrameIssue, type FrameReadReport } from '../common/frame-read';
 /**
  * Resource discovery and capture management. download/fetch/export persist deliverables
  * to the current chat's outputs/ and return WorkspaceArtifact descriptors. Capture records
@@ -387,18 +388,24 @@ export class BrowserResourcesTool extends BaseBrowserTool {
     // 用内联函数而非注入文件，保证扫描口径单一（旧的注入脚本与兜底函数
     // 覆盖面不一致：注入脚本不扫 <a> 与 [download]）。
     let resources: ResourceInfo[] = [];
+    let frameDiagnostics: FrameReadReport | undefined;
     try {
-      const results = await chrome.scripting.executeScript({
+      const results = await readPageFrames({
         target: { tabId: tab.id },
         func: sniffResourcesInPage,
         args: [{ fileTypes, maxResults, includeImages }],
       });
+      frameDiagnostics = results.frameDiagnostics;
       const payload = results?.[0]?.result;
       if (Array.isArray(payload)) resources = payload as ResourceInfo[];
+      else {
+        addFrameIssue(frameDiagnostics, { frameId: results[0]?.frameId, stage: 'read', code: 'INVALID_RESULT', message: 'Resource scan did not return an array' });
+        return { ...this.createErrorResponse('INVALID_RESULT：资源扫描未返回有效列表'), data: { frameDiagnostics } };
+      }
     } catch (error) {
-      return this.createErrorResponse(
+      return { ...this.createErrorResponse(
         `在标签页 ${tab.id} 嗅探资源失败：${error instanceof Error ? error.message : String(error)}`,
-      );
+      ), ...(error instanceof PageReadError ? { data: { frameDiagnostics: error.frameDiagnostics } } : {}) };
     }
 
     // 缓存（合并式，保留历史嗅探结果）
@@ -412,6 +419,7 @@ export class BrowserResourcesTool extends BaseBrowserTool {
         count: resources.length,
         totalCached: this.cache.size,
         resources,
+        frameDiagnostics,
         filters: { fileTypes, maxResults, includeImages },
         tabId: tab.id,
         url: tab.url,

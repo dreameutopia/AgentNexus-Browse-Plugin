@@ -43,7 +43,7 @@ await build({
           if (args.path.endsWith('-renderer')) {
             return {
               contents:
-                'export const installDiagramRenderer=()=>{};export const processDiagrams=()=>{};export const installChartRenderer=()=>{};export const processCharts=()=>{};export const installAgentImageRenderer=()=>{};export const processAgentImages=()=>{};',
+                'export const installDiagramRenderer=()=>{};export const processDiagrams=()=>{};export const installChartRenderer=()=>{};export const processCharts=()=>{};export const installAgentImageRenderer=()=>{};export const processAgentImages=()=>{};export const AGENT_IMAGE_OPEN_EVENT="agentnexus:agent-image-open";',
             };
           }
           return { contents: 'export default { render: () => null };' };
@@ -54,7 +54,7 @@ await build({
 });
 
 const dom = new JSDOM('<div id="app"></div>', { url: 'https://example.test/' });
-for (const key of ['window', 'document', 'Element', 'HTMLElement', 'SVGElement', 'Node', 'MutationObserver', 'Event']) {
+for (const key of ['window', 'document', 'Element', 'HTMLElement', 'SVGElement', 'Node', 'MutationObserver', 'Event', 'WheelEvent']) {
   globalThis[key] = dom.window[key];
 }
 const { createApp, h, nextTick, reactive } = await import('vue');
@@ -69,8 +69,8 @@ const fakeScrollGeometry = (el, scrollHeight) => {
   return el;
 };
 
-const mountList = async scrollerStyle => {
-  const state = reactive({ messages: [], showChatMode: true, isAiResponding: false });
+const mountList = async (scrollerStyle, initialMessages = []) => {
+  const state = reactive({ messages: initialMessages, showChatMode: true, isAiResponding: false });
   const container = document.createElement('div');
   document.body.appendChild(container);
   const Parent = {
@@ -176,5 +176,48 @@ const msg = id => ({ id, role: 'assistant', content: `内容${id}`, parts: [{ ty
   unmount();
 }
 
+// ── 4. 会话切换落底：首帧贴底、异步渲染撑高继续跟随、用户翻阅即让位 ──
+{
+  const observers = [];
+  class FakeResizeObserver {
+    constructor(callback) { this.callback = callback; this.disconnected = false; observers.push(this); }
+    observe() {}
+    disconnect() { this.disconnected = true; }
+    trigger() { if (!this.disconnected) this.callback([]); }
+  }
+  globalThis.ResizeObserver = FakeResizeObserver;
+
+  // 组件以 activeChatId 为 key 重建：挂载时消息已是目标会话内容
+  const { container, errors, unmount } = await mountList('overflow-y: auto', [msg('h1'), msg('h2')]);
+  assert.deepEqual(errors, []);
+
+  const scroller = container.querySelector('.chat-content').parentElement;
+  let height = 1000;
+  let top = 0;
+  Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => height });
+  Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 0 });
+  Object.defineProperty(scroller, 'scrollTop', { configurable: true, get: () => top, set: v => { top = v; } });
+
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(scroller.scrollTop, 1000, '切换会话后首帧即贴底');
+  assert.equal(observers.length, 1, '贴底窗口连接内容尺寸观察器');
+
+  // 晚到的异步渲染（图片/图表/排版）撑高内容 → 继续贴底
+  height = 1600;
+  observers[0].trigger();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(scroller.scrollTop, 1600, '异步渲染撑高后继续贴底');
+
+  // 用户向上翻阅 → 立即结束窗口，之后的尺寸变化不再抢位置
+  container.querySelector('.messages-container')
+    .dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }));
+  assert.equal(observers[0].disconnected, true, '用户翻阅即断开贴底窗口');
+  height = 2200;
+  observers[0].trigger();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(scroller.scrollTop, 1600, '让位后不再抢用户阅读位置');
+  unmount();
+}
+
 dom.window.close();
-console.log('[chat-ui] Scroll follow: scroller resolution, takeover/release and programmatic-window regression passed.');
+console.log('[chat-ui] Scroll follow: scroller resolution, takeover/release, programmatic-window and session-switch settle regression passed.');

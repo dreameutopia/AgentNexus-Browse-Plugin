@@ -9,8 +9,9 @@
  *                             零转录，至少含一个数据表，可混排手写公式汇总表）
  *
  * 数据源三类（同一工作表互斥，不同工作表可混用）：
- *   - dataFiles：工作区数据文件路径列表（js_run run/crawl 执行结果与
- *     data_ref_tool 治理产物，results/ 下持久保存；按列表顺序拼接成一张表）；
+ *   - dataFiles：工作区数据文件路径列表（js_run run/crawl 执行结果、
+ *     browser_extract_data 的 saved.path 与 data_ref_tool 治理产物，
+ *     results/ 下持久保存；支持 .json 数组与 .csv 表，按列表顺序拼接成一张表）；
  *   - dataRef：暂存批次 ID（browser_network_capture 等被动捕获，会话内有效）；
  *   - rows：手写数据行。
  *
@@ -236,7 +237,7 @@ const SHEET_SCHEMA = {
     dataFiles: {
       type: "array",
       description:
-        "工作区数据文件路径列表（与 rows/dataRef 互斥）：js_run run/crawl 的执行结果文件（results/*.json，工具响应的 resultFile.path）与 data_ref_tool 治理产物，可混列多个——按列表顺序把各行数据拼接成一张表（对象数组按字段并集成列，二维数组按行拼接）。文件须为 JSON 数组、单文件 ≤10MB；批量数据零转录，禁止手写 rows 复现",
+        "工作区数据文件路径列表（与 rows/dataRef 互斥）：js_run run/crawl 的执行结果文件、browser_extract_data 的 saved.path、data_ref_tool 治理产物，可混列多个——按列表顺序把各行数据拼接成一张表（对象数组按字段并集成列，二维数组按行拼接）。支持 .json（JSON 数组）与 .csv（首行为表头，RFC 4180），单文件 ≤10MB；批量数据零转录，禁止手写 rows 复现",
       items: { type: "string" },
     },
     dataRef: {
@@ -541,7 +542,7 @@ async function resolveDataRefSheet(
 }
 
 /**
- * 解析单个 dataFiles 工作表：逐个读取工作区数据文件（JSON 数组）并按列表
+ * 解析单个 dataFiles 工作表：逐个读取工作区数据文件（JSON 数组 / CSV 表）并按列表
  * 顺序拼接为一张表——多批抓取结果无需预先 merge 即可一次导出。
  */
 async function resolveDataFilesSheet(
@@ -702,7 +703,7 @@ async function resolveWorkbookSheets(
     // 显式拒绝而不是静默忽略（杜绝「传了但没生效」的歧义）
     if (spec.fields !== undefined) {
       throw new XlsxBuildError(
-        `${path}.fields: fields 仅在提供 dataFiles/dataRef 时有效（用于从数据源选列）`,
+        `${path}.fields: 该工作表没有 dataFiles/dataRef，fields 无从选列。两种改法：① 想导入数据 → 加 dataFiles=["results/或 outputs/ 下的 .json|.csv"]（或 dataRef），再保留 fields；② 确实手写 rows → 删除 fields（手写表的列顺序就是 rows 数组顺序）`,
       );
     }
     if (
@@ -748,7 +749,7 @@ export class XlsxTool extends BaseTool {
       description:
         "生成 Excel (.xlsx) 文件并保存为可下载产物。action=create 用声明式结构一次生成完整工作簿（多表/合并单元格/公式/富文本/超链接/冻结表头/自动筛选/样式）；" +
         "action=create_from_markdown 把 Markdown 表格文本（支持多表，标题作表名）转为 xlsx；" +
-        "action=create_from_data 批量数据导出入口：sheets[].dataFiles 引用工作区数据文件（js_run run/crawl 的结果文件 results/*.json 与 data_ref_tool 治理产物，可列多个按序拼接）直接成表（数据零转录，适合电商 SKU、评论、榜单等大批量场景），或 sheets[].dataRef 引用暂存批次，可与手写 rows 表混排——同一次调用产出「批量数据表 + 公式汇总表」。" +
+        "action=create_from_data 批量数据导出入口：sheets[].dataFiles 引用工作区数据文件（js_run run/crawl 的结果文件、browser_extract_data 的 saved.path 与 data_ref_tool 治理产物，.json/.csv 均可，可列多个按序拼接）直接成表（数据零转录，适合电商 SKU、评论、榜单等大批量场景），或 sheets[].dataRef 引用暂存批次，可与手写 rows 表混排——同一次调用产出「批量数据表 + 公式汇总表」。" +
         "每张表的数据来源三选一（dataFiles / dataRef / rows），不同表可混用。" +
         "默认自动美化：表头蓝底白字加粗、全表细边框、自动列宽、冻结表头。产物保存到当前会话 outputs/，按全局工作区规范交付返回的 marker。",
       parameters: {

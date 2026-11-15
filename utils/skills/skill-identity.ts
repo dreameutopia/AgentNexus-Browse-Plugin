@@ -1,6 +1,8 @@
 /** Durable decimal Skill identities. IndexedDB readwrite transactions serialize every context. */
+// ID 1 曾分配给内置 Bilibili 视频总结技能；该技能已迁移到官方插件，
+// 编号刻意保留空缺，不重排其余内置技能（重排会破坏已持久化的技能引用）。
 export const BUILTIN_SKILL_IDS = Object.freeze({
-    'bilibili-video-summary': '1', 'web-research-report': '2', 'xlsx-creator': '3',
+    'web-research-report': '2', 'xlsx-creator': '3',
     'skill-create': '4', 'skill-edit': '5',
 } as const);
 export const BUILTIN_SKILL_MAX_ID = 1000;

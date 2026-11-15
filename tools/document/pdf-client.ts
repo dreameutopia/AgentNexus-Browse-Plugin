@@ -22,6 +22,7 @@ import {
   type PdfRenderResult,
 } from './pdf-protocol';
 
+export { PDF_RENDER_MESSAGE };
 export type { PdfRenderRequest, PdfRenderResult };
 
 /**

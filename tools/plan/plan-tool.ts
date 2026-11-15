@@ -109,6 +109,31 @@ function requireStepsArray(value: unknown): string[] {
   return value;
 }
 
+/** 当前未完成项（pending / in_progress），按计划顺序最多取 limit 个 */
+function nextPending(items: readonly PlanItem[], limit = 2): PlanItem[] {
+  return items
+    .filter(item => item.status === 'pending' || item.status === 'in_progress')
+    .slice(0, limit);
+}
+
+/**
+ * edit 的下一步提醒：只回传「头两个未完成项」。
+ *
+ * 目的：既让模型始终知道接下来做什么，又避免每次状态变更都把整份计划
+ * （含全部已完成项与标注）重新塞进上下文——计划越长，重复载荷越贵。
+ */
+function pendingReminder(items: readonly PlanItem[]): string {
+  const next = nextPending(items);
+  if (next.length === 0)
+    return '当前没有未完成项（计划可能已全部结束）。';
+  return (
+    '接下来优先处理：\n' +
+    next
+      .map(item => `${item.id}. [${STATUS_LABELS[item.status]}] ${item.step}`)
+      .join('\n')
+  );
+}
+
 /** 计划清单的模型可读文本（id + 状态 + 步骤 + 标注信息） */
 function renderItems(items: readonly PlanItem[]): string {
   if (items.length === 0) return '（当前会话没有计划）';
@@ -303,16 +328,25 @@ export class PlanTool extends BaseTool {
   // ── edit：状态标注（failed 必填原因） ──
 
   private handleEdit(chatId: string, args: Record<string, unknown>): ToolResult {
+    // 先取当前计划：失败也回传「接下来做什么」，成功也只回传头两个未完成项
+    const before = getPlan(chatId);
+    const reminder = pendingReminder(before);
+
     const id = typeof args.id === 'string' ? args.id.trim() : '';
     if (!id) {
-      return planFailure('标注状态', '参数错误', '缺少参数 id（目标计划项 id）', 'id 必须来自 create/add/read 的返回值');
+      return planFailure(
+        '标注状态',
+        '参数错误',
+        '缺少参数 id（目标计划项 id）',
+        `id 必须来自 create/add/read 的返回值\n${reminder}`,
+      );
     }
     if (!isPlanItemStatus(args.status)) {
       return planFailure(
         '标注状态',
         '参数错误',
         `status 必须为 pending / in_progress / done / failed 之一，实际收到: ${JSON.stringify(args.status ?? null)}`,
-        '开始执行标 in_progress，成功标 done，失败标 failed（failed 须附 message 原因），重做改回 pending',
+        `开始执行标 in_progress，成功标 done，失败标 failed（failed 须附 message 原因），重做改回 pending\n${reminder}`,
       );
     }
     const status = args.status;
@@ -325,7 +359,7 @@ export class PlanTool extends BaseTool {
         '标注状态',
         '参数错误',
         `message 必须为字符串，实际收到: ${JSON.stringify(rawMessage)}`,
-        '不需要标注信息时省略 message；要清除已有标注传空字符串 message=""',
+        `不需要标注信息时省略 message；要清除已有标注传空字符串 message=""\n${reminder}`,
       );
     }
     const message = typeof rawMessage === 'string' ? rawMessage.trim() : undefined;
@@ -334,7 +368,7 @@ export class PlanTool extends BaseTool {
         '标注状态',
         '参数错误',
         'status="failed" 时 message 必填（记录为什么失败、原因是什么）',
-        '补上 message 后重试：一句话写清失败原因与已尝试的办法',
+        `补上 message 后重试：一句话写清失败原因与已尝试的办法\n${reminder}`,
       );
     }
 
@@ -345,17 +379,30 @@ export class PlanTool extends BaseTool {
     // 单次读取：自纠提示与 data 共用同一快照
     const fullPlan = getPlan(chatId);
     if (!updated) {
-      // 附当前清单供模型自纠（省一次 read 往返）
+      // 附当前清单供模型核对 id（省一次 read 往返）
       return planFailure(
         '标注状态',
         '目标不存在',
-        `计划项 id "${id}" 不存在或当前会话尚无计划`,
-        `核对 id 后重试；当前计划：\n${renderItems(fullPlan)}`,
+        `计划项 id "${id}" 不存在或当前会话尚无计划（可用 id：${
+          before.map(item => item.id).join('、') || '无'
+        }）`,
+        `核对 id 后重试；当前计划：\n${renderItems(fullPlan)}\n${reminder}`,
       );
     }
     return planSuccess(
-      `计划项 ${id} 已标注为 ${STATUS_LABELS[status]}${updated.message ? `（${updated.message}）` : ''}。\n\n${renderItems(fullPlan)}`,
-      { action: 'edit', chatId, id, status, item: updated, items: fullPlan },
+      `计划项 ${id} 已标注为 ${STATUS_LABELS[status]}${
+        updated.message ? `（${updated.message}）` : ''
+      }。\n\n${pendingReminder(fullPlan)}`,
+      {
+        action: 'edit',
+        chatId,
+        id,
+        status,
+        item: updated,
+        // 只回头两个未完成项（提示下一步），不再回传全量清单：
+        // 计划状态已实时反映在 PlanBoard，需要全量时用 action="read"
+        nextPending: nextPending(fullPlan),
+      },
     );
   }
 

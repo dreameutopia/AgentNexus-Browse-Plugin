@@ -7,7 +7,7 @@
  *
  *   browser_page_exec（backend 内联入口，saveResult 默认开启）──┐
  *   browser_network_capture（响应正文落盘）                     ├──▶ dataRef（8 位 ID）
- *   browser_get_page_text（超长正文缓存，ref+page 续读）        ┘      ├─ data_ref_tool：list/info（refs 侧）+ 治理动作（refs/files 双源，产物为工作区结果文件）
+ *   （正文读取主通道 read_website 已改为 content/ 文件，不走暂存区）┘      ├─ data_ref_tool：list/info（refs 侧）+ 治理动作（refs/files 双源，产物为工作区结果文件）
  *                                                                 └─ xlsx_tool(create_from_data)：dataRef 表直接生成 Excel
  *   js_run run/crawl 的执行结果与治理产物 → 工作区 results/ 文件
  *   （python-workspace/data-files.ts，跨重启持久；xlsx dataFiles 消费）。

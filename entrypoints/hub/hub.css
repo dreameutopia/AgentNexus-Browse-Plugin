@@ -886,28 +886,6 @@ body {
   margin-left: auto;
 }
 
-/* 工具区视图切换（按工具 / 按组）：贴在计数右侧，尺寸压紧以适配标题行 */
-.hub-section-head .hub-section-view {
-  flex: none;
-}
-
-.hub-section-head .hub-section-view .hub-seg__btn {
-  padding: 3px 10px;
-  font-size: 11.5px;
-}
-
-.hub-section-head .hub-section-view .hub-seg {
-  padding: 2px;
-  border-radius: 9px;
-}
-
-.hub-section-head .hub-section-view .hub-seg__thumb {
-  top: 2px;
-  bottom: 2px;
-  left: 2px;
-  border-radius: 7px;
-}
-
 /* 关联技能说明问号：轻量圆形按钮，与标题基线对齐 */
 .hub-help-tip {
   flex: none;
@@ -971,70 +949,6 @@ body {
 .hub-help-tip.is-open {
   color: var(--ink-primary, #292824);
   background: rgba(41, 40, 36, 0.1);
-}
-
-/* ──── 工具扁平视图（按工具）：每个工具独立一行可选 ──── */
-
-.hub-tool-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.hub-tool-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.14s ease, border-color 0.14s ease;
-}
-
-.hub-tool-row:hover {
-  background: rgba(41, 40, 36, 0.05);
-}
-
-.hub-tool-row.is-checked {
-  background: rgba(41, 40, 36, 0.09);
-  border-color: rgba(41, 40, 36, 0.18);
-}
-
-.hub-tool-row-main {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.hub-tool-row-id {
-  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  color: var(--ink-secondary, #787671);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.hub-tool-row.is-checked .hub-tool-row-id {
-  color: var(--ink-primary, #292824);
-  font-weight: 600;
-}
-
-/* 所属组：弱化的归属标注，帮助用户在扁平视图里定位 */
-.hub-tool-row-group {
-  flex: none;
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--ink-muted, #9b9790);
-  white-space: nowrap;
-}
-
-.hub-tool-row.is-locked {
-  cursor: not-allowed;
-  opacity: 0.6;
 }
 
 /* 折叠按钮：明确可见的小方块，紧贴标题左侧并与标题垂直居中对齐 */
@@ -1792,7 +1706,7 @@ body {
   opacity: 1;
 }
 
-/* ──── 组内工具清单：逐个勾选（与组复选框共享同一扁平已选集合） ──── */
+/* ──── 组内工具清单：只读芯片（展示组内工具与选中态，不提供逐个勾选） ──── */
 
 .hub-group-tools {
   display: flex;
@@ -1812,35 +1726,14 @@ body {
   border: 1px solid rgba(41, 40, 36, 0.12);
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.65);
-  cursor: pointer;
   user-select: none;
   transition: border-color 0.14s ease, background 0.14s ease,
     color 0.14s ease;
 }
 
-.hub-group-tool:hover {
-  border-color: rgba(41, 40, 36, 0.3);
-  background: #ffffff;
-}
-
 .hub-group-tool.is-checked {
   border-color: rgba(41, 40, 36, 0.4);
   background: rgba(41, 40, 36, 0.1);
-}
-
-.hub-group-tool .hub-check {
-  width: 14px;
-  height: 14px;
-  margin: 0;
-  border-radius: 4px;
-}
-
-/* 14px 复选框的勾按比例内缩 */
-.hub-group-tool .hub-check::after {
-  left: 3.5px;
-  top: 1.5px;
-  width: 3.5px;
-  height: 7.5px;
 }
 
 .hub-group-tool-id {
@@ -1855,7 +1748,6 @@ body {
 }
 
 .hub-group.locked .hub-group-tool {
-  cursor: not-allowed;
   opacity: 0.6;
 }
 

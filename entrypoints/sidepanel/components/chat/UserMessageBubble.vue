@@ -1,5 +1,22 @@
 <template>
   <div class="user-bubble" :class="{ 'is-expanded': expanded, 'is-clamped': clamped }">
+    <!-- 顶部技能标签：本轮发送时预选的技能快照。
+         技能只对单轮生效——随消息落库后输入区即取消选中，本条消息顶部
+         仍是这一轮实际使用能力的唯一可追溯记录。 -->
+    <div
+      v-if="skills.length > 0"
+      class="user-bubble-skills"
+      role="group"
+      :aria-label="t('sidepanel.chat.userMessageSkillsLabel')"
+    >
+      <ul class="user-bubble-skills-list">
+        <li v-for="skill in skills" :key="skill.id" class="user-bubble-skill">
+          <span class="user-bubble-skill-icon" aria-hidden="true"><SkillIcon width="14" height="14" /></span>
+          <span class="user-bubble-skill-name" :title="skill.name">{{ skill.name }}</span>
+        </li>
+      </ul>
+    </div>
+
     <!-- 引用块：用户确认引用的网页原文（落库字段 pageQuote，气泡内唯一来源）。
          独立于正文折叠层——正文再长也不裁剪引用块，引用始终完整可读。 -->
     <blockquote v-if="quote" class="user-bubble-quote">
@@ -29,8 +46,12 @@
       <div v-if="clamped" class="user-bubble-fade" aria-hidden="true"></div>
     </div>
 
-    <!-- 气泡底部操作行：左侧展开/收起入口（仅超长时出现），右侧复制按钮 -->
+    <!-- 气泡底部操作行：左侧 @智能体标识（有绑定时）+ 展开/收起入口（仅超长时出现），右侧复制按钮 -->
     <div class="user-bubble-actions">
+      <!-- 本条消息 @ 的智能体：仅展示名称，保持操作行克制 -->
+      <span v-if="agentLabel" class="user-bubble-agent" :title="`@${agentLabel}`">
+        <span class="user-bubble-agent-name">@{{ agentLabel }}</span>
+      </span>
       <button
         v-if="overflowable"
         type="button"
@@ -94,6 +115,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { TextQuote } from 'lucide-vue-next';
 import { t } from '@/utils/i18n';
+import type { SkillPartEntry } from '../../types/chat';
 import {
   USER_MESSAGE_MAX_LINES,
   computeClampHeightPx,
@@ -103,6 +125,7 @@ import {
 import { useCopyToClipboard } from '../../utils/chat/use-copy-to-clipboard';
 import { pageQuoteSourceDisplay, type PageQuote } from '../../utils/chat/page-quote';
 import MarkdownText from './MarkdownText.vue';
+import SkillIcon from './SkillIcon.vue';
 import './user-message-bubble.css';
 
 const props = defineProps<{
@@ -115,7 +138,40 @@ const props = defineProps<{
    * 缺省 = 无引用（普通消息不渲染引用块）。
    */
   quote?: PageQuote;
+  /**
+   * 本条消息发送时预选的技能快照（id + 名称，以标签展示）。
+   * 缺省 / 空数组 = 本轮未选技能（不渲染技能清单块）。
+   */
+  skills?: SkillPartEntry[];
+  /**
+   * 本条消息 @ 的智能体展示名（已由上层按当前语言与注册表解析）。
+   * 缺省 = 无智能体（不渲染底部 @ 标识）。
+   */
+  agentLabel?: string;
 }>();
+
+/**
+ * 技能清单（顺序即选中顺序；空数组不渲染技能块）。
+ *
+ * 归一化在渲染前兜底：快照虽已在写入侧（transcript-engine）与记录映射侧
+ * （App.recordToUiMessage）收敛，这里仍对非数组 / 空 id / 重复 id / 空名称
+ * 做防御——`:key` 唯一与「每个技能都有可读名称」不依赖上游任何一条路径永不出错。
+ */
+const skills = computed<SkillPartEntry[]>(() => {
+  const raw = props.skills;
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const result: SkillPartEntry[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const id = typeof item.id === 'string' ? item.id.trim() : '';
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const name = typeof item.name === 'string' ? item.name.trim() : '';
+    result.push({ id, name: name || id });
+  }
+  return result;
+});
 
 /** 正文容器（不限高，scrollHeight 即完整正文高度） */
 const textEl = ref<HTMLElement | null>(null);

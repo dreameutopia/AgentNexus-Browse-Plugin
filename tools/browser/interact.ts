@@ -1,5 +1,7 @@
+import { executeScriptBounded } from '../common/frame-read';
 import { withGuiCancellation } from '../vision/gui-cancellation';
 import { BaseBrowserTool } from '../base/browser-tool';
+import { resolveTabTarget } from './tab-target';
 import type { ToolMetadata, ToolExecutionContext } from '../registry';
 import type { OpenAITool } from '@/common/openai-types';
 import {
@@ -44,6 +46,8 @@ interface Params extends SemanticActionOptions {
   clear?: boolean;
   description?: string;
   confirm?: boolean;
+  /** 目标标签页（可选；省略=当前活动页；显式传入会先校验并切换到该页） */
+  tabId?: number | string;
 }
 const fields: Record<Params['action'], string[]> = {
   click: [],
@@ -105,6 +109,12 @@ export class BrowserInteractTool extends BaseBrowserTool {
           elementId: {
             type: 'string',
             description: '原样复制观察结果的 ElementId；只有文档 scroll 可省略',
+          },
+          tabId: {
+            type: 'integer',
+            minimum: 0,
+            description:
+              '目标标签页 ID（可选；省略=当前活动标签页）。显式传入会先核对存在性与可注入性，再切换到该标签页执行。',
           },
           frameId: {
             type: 'number',
@@ -188,6 +198,7 @@ export class BrowserInteractTool extends BaseBrowserTool {
         'action',
         'elementId',
         'frameId',
+        'tabId',
         'description',
         'confirm',
         ...fields[input.action],
@@ -281,9 +292,17 @@ export class BrowserInteractTool extends BaseBrowserTool {
         (signal) =>
           exclusiveText(async () => {
             if (signal?.aborted) throw new Error('CANCELLED：操作尚未开始');
+            const target = await resolveTabTarget({
+              tabId: input.tabId,
+              tool: 'browser_interact',
+            });
+            if (!target.ok) throw new Error(target.error);
             const tab = await textTab();
             if (match && Number(match[1]) !== tab.id)
-              throw new Error('WRONG_TAB：切回来源标签页或重新观察');
+              throw new Error(
+                `WRONG_TAB：该引用属于标签页 ${Number(match[1])}，当前活动页是 ${tab.id}。` +
+                  `传 tabId=${Number(match[1])} 重试（会自动切换到该页），或重新观察后使用新引用。`
+              );
             invalidateAXPages(tab.id);
             await this.focus(tab.id, true);
             const deadline = Date.now() + 20_000;
@@ -302,7 +321,7 @@ export class BrowserInteractTool extends BaseBrowserTool {
               await check();
               if (phase === 'scroll' || phase === 'focus') dispatched = true;
               const results = await boundedText(
-                chrome.scripting.executeScript({
+                executeScriptBounded({
                   target: { tabId: tab.id, frameIds: [p.frameId!] },
                   world: 'ISOLATED',
                   func: textTargetPayload,
@@ -338,7 +357,7 @@ export class BrowserInteractTool extends BaseBrowserTool {
               await check();
               dispatched = true;
               const results = await boundedText(
-                chrome.scripting.executeScript({
+                executeScriptBounded({
                   target: { tabId: tab.id, frameIds: [p.frameId!] },
                   world: 'ISOLATED',
                   func: domActionPayload,
@@ -551,7 +570,7 @@ export class BrowserInteractTool extends BaseBrowserTool {
   }
   private async focus(tabId: number, invalidate = false) {
     const results = await boundedText(
-      chrome.scripting.executeScript({
+      executeScriptBounded({
         target: { tabId, allFrames: true },
         world: 'ISOLATED',
         func: focusedTextPayload,

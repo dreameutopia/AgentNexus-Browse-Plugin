@@ -27,7 +27,7 @@ function visit(node) {
   ts.forEachChild(node, visit);
 }
 visit(ast);
-const functions = ['ensureAssistantMessage', 'applyUiRefresh', 'refreshUiMessage', 'recordMetaOf', 'recordToUiMessage', 'handleConversationEvent'];
+const functions = ['ensureAssistantMessage', 'applyUiRefresh', 'refreshUiMessage', 'normalizedRecordText', 'normalizedRecordSkills', 'recordMetaOf', 'recordToUiMessage', 'handleConversationEvent'];
 for (const name of functions) assert.ok(initializers.has(name), `App.vue 必须存在 ${name}`);
 
 // 片段流装配的真实实现（占位转真实消息要保留首截图片段）
@@ -61,6 +61,8 @@ const frames = [];
 const bindings = {
   messages: ref([]),
   activeChatId: ref('vision-chat'),
+  // 技能单轮生效：用户消息入档后清空输入区技能选中
+  selectedSkills: ref([]),
   isAiResponding: ref(false),
   isCompacting: ref(false),
   contextUsage: ref({ total: 0 }),
@@ -72,6 +74,14 @@ const bindings = {
   requestAnimationFrame: fn => frames.push(fn),
   t: key => key,
   pushSystemNotice: () => {},
+  // 用户上传图片展示口径的语义等价桩（测试记录均无图片引用）
+  userVisibleImageRefs: (record, assistantImageRefs) => {
+    if (record?.uploadImageRefs !== undefined) return record.uploadImageRefs;
+    const refs = record?.imageRefs ?? [];
+    if (refs.length === 0 || !assistantImageRefs || assistantImageRefs.size === 0) return refs;
+    const uploads = refs.filter(ref => !assistantImageRefs.has(ref));
+    return uploads.length > 0 ? uploads : refs;
+  },
   startLiveMessage: liveParts.startLiveMessage,
   beginLiveMessage: liveParts.beginLiveMessage,
   appendLiveImage: liveParts.appendLiveImage,
@@ -229,5 +239,32 @@ assert.equal(bindings.messages.value.length, 1);
 assert.equal((bindings.messages.value[0].content.match(/<api-error>/g) ?? []).length, 2);
 assert.equal(bindings.messages.value[0].durationMs, 60);
 
+// ── 8. 用户消息：智能体绑定与技能快照随消息展示；技能单轮生效（入档即清空选中）──
+const userRecord = content => ({
+  id: `user-${content}`, role: 'user', content, parts: [{ type: 'text', content }],
+  toolCalls: [], reasoning: '', createdAt: 1,
+});
+bindings.messages.value = [];
+bindings.selectedSkills.value = ['skill-a'];
+adapter.event({
+  type: 'user-message', chatId,
+  record: {
+    ...userRecord('请用技能处理'),
+    agentId: 'agent-search', agentName: '检索助手',
+    skills: [{ id: 'skill-a', name: '网页检索' }],
+  },
+});
+const userRow = bindings.messages.value[0];
+assert.equal(userRow.agentId, 'agent-search', '用户消息保留智能体 id');
+assert.equal(userRow.agentName, '检索助手', '用户消息保留智能体名');
+assert.deepEqual(userRow.skills, [{ id: 'skill-a', name: '网页检索' }], '技能快照随用户消息展示');
+assert.deepEqual(bindings.selectedSkills.value, [], '用户消息入档后技能选中立即清空（单轮生效）');
+bindings.selectedSkills.value = ['skill-b'];
+adapter.event({
+  type: 'user-message', chatId,
+  record: { ...userRecord('自动续跑'), id: 'user-synthetic', synthetic: true },
+});
+assert.deepEqual(bindings.selectedSkills.value, ['skill-b'], '隐藏续跑轮不改变输入区技能选中');
+
 dom.window.close();
-console.log('[vision-timeline] App 事件适配器：首截图按序内联、工具后重截图紧跟其轮次、终态不失位、压缩时间线条目（运行中 + 发送前种子）。');
+console.log('[vision-timeline] App 事件适配器：首截图按序内联、工具后重截图紧跟其轮次、终态不失位、压缩时间线条目（运行中 + 发送前种子）、用户消息技能/智能体快照与单轮清除。');

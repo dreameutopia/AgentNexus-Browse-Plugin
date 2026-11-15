@@ -171,6 +171,63 @@
   margin: 0;
 }
 
+/* ══════════ 预置智能体注入 ══════════ */
+
+.hub-python__agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hub-python__agent-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(41 40 36 / 0.1);
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.hub-python__agent-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.hub-python__agent-name {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-primary, #292824);
+}
+
+.hub-python__agent-off {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--ink-secondary, #787671);
+}
+
+.hub-python__agent-desc {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-secondary, #787671);
+}
+
+/* 开关不参与文本收缩，窄屏下仍可点击 */
+.hub-python__agent-row .hub-switch {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 /* 危险操作：中性描边 + 语义红字；待确认态转实心红 */
 .hub-python-btn-danger {
   color: var(--error-color, #ef4444);

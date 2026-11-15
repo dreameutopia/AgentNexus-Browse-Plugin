@@ -24,10 +24,11 @@
  */
 
 import { BaseBrowserTool } from '../base/browser-tool';
-import { ToolMetadata } from '../registry';
+import { ToolMetadata, type ToolExecutionContext } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
 import { TOOL_NAMES } from '@/common/constants';
+import { assertPluginOrigin, resolveTabOrigin } from '../common/plugin-origin';
 import { existingNavigationWindowId } from './navigation-window';
 import {
   checkActionMatrix,
@@ -189,7 +190,10 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     },
   };
 
-  async execute(rawArgs: unknown): Promise<ToolResult> {
+  async execute(
+    rawArgs: unknown,
+    context?: ToolExecutionContext,
+  ): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     const validated = this.validate(rawArgs);
@@ -199,9 +203,13 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     // wait 是只读轮询，不占导航锁；其余四个 action 串行化执行
     if (args.action === 'wait') {
       try {
+        if (context?.pluginKey)
+          await resolveTabOrigin(args.tabId, context);
         return await this.handleWait(args);
       } catch (error) {
         this.log(`Wait failed: ${error}`, 'error');
+        if (context?.pluginKey && error instanceof Error)
+          return this.createErrorResponse(error.message);
         return this.createErrorResponse('Failed to wait for page load', error);
       }
     }
@@ -216,12 +224,47 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     try {
       this.log(`[LOCK ACQUIRED] action=${args.action} target=${args.url ?? args.action}`);
       switch (args.action) {
-        case 'open':
+        case 'open': {
+          if (context?.pluginKey) {
+            let parsed: URL | null = null;
+            try {
+              parsed = new URL(args.url ?? '');
+            } catch {
+              parsed = null;
+            }
+            // 非法 URL 交给 handleOpen 给出更具体的参数错误；能解析就必须过 origin 关
+            if (parsed) {
+              try {
+                assertPluginOrigin(
+                  parsed.protocol === 'https:' ? parsed.origin : null,
+                  context,
+                );
+              } catch (error) {
+                return this.createErrorResponse(
+                  error instanceof Error ? error.message : String(error),
+                );
+              }
+            }
+          }
           return await this.handleOpen(args);
+        }
         case 'refresh':
+          if (context?.pluginKey) {
+            try {
+              await resolveTabOrigin(args.tabId, context);
+            } catch (error) {
+              return this.createErrorResponse(
+                error instanceof Error ? error.message : String(error),
+              );
+            }
+          }
           return await this.handleRefresh(args);
         case 'back':
         case 'forward':
+          if (context?.pluginKey)
+            return this.createErrorResponse(
+              'PLUGIN_NAVIGATION_DENIED：插件调用不允许 back/forward，请使用 action="open" 导航到声明的 origin',
+            );
           return await this.handleHistory(args);
       }
     } catch (error) {
@@ -661,7 +704,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     }
     const detail = `当前 status=${outcome.status ?? 'unknown'}${outcome.consecutive ? `（就绪连续计数 ${outcome.consecutive}/2）` : ''}`;
     return failWith(
-      `页面在 ${timeout}ms 内未完成加载：${detail}。可加大 timeout 重试（上限 ${PAGE_LOAD_TIMEOUT_MAX_MS}ms），或按已渲染内容继续（如 browser_get_page_text）`,
+      `页面在 ${timeout}ms 内未完成加载：${detail}。可加大 timeout 重试（上限 ${PAGE_LOAD_TIMEOUT_MAX_MS}ms），或按已渲染内容继续（如 read_website）`,
       {
         tabId,
         url: latest.url,

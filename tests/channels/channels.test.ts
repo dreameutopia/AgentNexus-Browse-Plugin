@@ -33,6 +33,10 @@ import {
   TOOL_TIMEOUT_DEFAULT_MINUTES,
   TOOL_TIMEOUT_MAX_MINUTES,
   TOOL_TIMEOUT_MIN_MINUTES,
+  resolveUserResponseWaitMs,
+  USER_RESPONSE_TIMEOUT_DEFAULT_MINUTES,
+  USER_RESPONSE_TIMEOUT_MAX_MINUTES,
+  USER_RESPONSE_TIMEOUT_MIN_MINUTES,
   type ChannelConfig,
 } from '../../entrypoints/sidepanel/utils/channels';
 import { driverRegistry } from '../../entrypoints/sidepanel/utils/stream/driver-registry';
@@ -156,16 +160,69 @@ async function testNormalize(): Promise<void> {
 
   // 应用设置归一化（逐字段钳制 / 脏类型回落 / 引用三态化）
   const dirty = normalizeAppSettings({
-    interactTimeoutMinutes: 500,
+    userResponseTimeoutMinutes: 500,
     activeModelRef: { channelId: ' ', modelId: 'x' }, // 非法引用 → null
     retryCount: 'x',
     temperature: 99,
   });
-  eq(dirty.interactTimeoutMinutes, 120, 'interactTimeout 越界钳制');
+  eq(dirty.userResponseTimeoutMinutes, 120, '用户响应等待时长越界钳制');
   eq(dirty.activeModelRef, null, '空 channelId 引用三态化为 null');
   eq(dirty.retryCount, 2, '非数字重试次数回落默认');
   eq(dirty.temperature, 2, '温度越界钳制到上限');
-  eq(normalizeAppSettings(null).interactTimeoutMinutes, 20, 'null → 默认设置');
+  eq(normalizeAppSettings(null).userResponseTimeoutMinutes, 20, 'null → 默认设置');
+
+  // 旧字段（interactTimeoutMinutes）历史回退：老用户已配置的档位不因改名丢失
+  const legacyWait = normalizeAppSettings({ interactTimeoutMinutes: 45 });
+  eq(legacyWait.userResponseTimeoutMinutes, 45, '旧字段回退：已配置的等待时长被继承');
+  // 新字段优先于旧字段（两者并存时取新字段）
+  const bothWait = normalizeAppSettings({
+    userResponseTimeoutMinutes: 30,
+    interactTimeoutMinutes: 45,
+  });
+  eq(bothWait.userResponseTimeoutMinutes, 30, '新字段优先于旧字段');
+
+  // 等待时长换算（单一事实源）：询问弹窗与守卫确认条共用此换算
+  eq(
+    resolveUserResponseWaitMs(20),
+    20 * 60_000,
+    '分钟 → 毫秒换算',
+  );
+  eq(
+    resolveUserResponseWaitMs(USER_RESPONSE_TIMEOUT_DEFAULT_MINUTES),
+    20 * 60_000,
+    '默认档位换算为 20 分钟',
+  );
+  // 脏值防御：越界 / 非数字 / 浮点一律收敛到合法区间，绝不产生 0 或负数等待
+  eq(
+    resolveUserResponseWaitMs(9999),
+    USER_RESPONSE_TIMEOUT_MAX_MINUTES * 60_000,
+    '越界钳制到上限',
+  );
+  eq(
+    resolveUserResponseWaitMs(-5),
+    USER_RESPONSE_TIMEOUT_MIN_MINUTES * 60_000,
+    '负值钳制到下限',
+  );
+  eq(
+    resolveUserResponseWaitMs('x'),
+    USER_RESPONSE_TIMEOUT_DEFAULT_MINUTES * 60_000,
+    '非数字回落默认值',
+  );
+  eq(
+    resolveUserResponseWaitMs(null),
+    USER_RESPONSE_TIMEOUT_DEFAULT_MINUTES * 60_000,
+    'null 回落默认值',
+  );
+  eq(
+    resolveUserResponseWaitMs(Number.NaN),
+    USER_RESPONSE_TIMEOUT_DEFAULT_MINUTES * 60_000,
+    'NaN 回落默认值',
+  );
+  eq(
+    resolveUserResponseWaitMs(2.6),
+    3 * 60_000,
+    '浮点分钟取整',
+  );
 
   // 对话轮次上限与连续失败阈值（越界钳制 / 脏类型回落 / 缺省默认；文本与视觉统一）
   const dirtyRounds = normalizeAppSettings({
@@ -263,7 +320,7 @@ async function testValidate(): Promise<void> {
 
   // 应用设置校验（归一化后恒合法；这里直接喂未归一化的越界值验证校验器本身）
   const settingsErrors = validateAppSettings({
-    interactTimeoutMinutes: 0,
+    userResponseTimeoutMinutes: 0,
     maxIterations: 0,
     defaultAgentId: '',
     maxConsecutiveFailedToolRounds: 999,
@@ -374,10 +431,10 @@ async function testStoresAndRegistry(): Promise<void> {
   // ── 应用设置存储：部分更新 + 钳制 + 引用三态 ──
   const settingsResult = await appSettingsStore.save({
     activeModelRef: { channelId: 'ch_dirty', modelId: 'm1' },
-    interactTimeoutMinutes: 500,
+    userResponseTimeoutMinutes: 500,
   });
   check(settingsResult.ok, '应用设置保存成功');
-  eq(appSettingsStore.get().interactTimeoutMinutes, 120, '保存路径同样钳制越界值');
+  eq(appSettingsStore.get().userResponseTimeoutMinutes, 120, '保存路径同样钳制越界值');
   eq(modelRefKey(appSettingsStore.getActiveModelRef()!), 'ch_dirty/m1', 'activeModelRef 写入成功');
   const cleared = await appSettingsStore.save({ activeModelRef: { channelId: ' ', modelId: '' } as never });
   check(cleared.ok, '非法形状引用保存不报错');

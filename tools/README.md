@@ -11,12 +11,11 @@ tools/
 ├── index.ts                 # 主入口文件，工具注册中心
 ├── base-tool.ts            # 基础工具抽象类
 ├── search/                 # 搜索工具类别
-│   ├── index.ts            # 注册 web_search / platform_search / bilibili_search
-│   ├── search-targets.ts   # 搜索目标注册表（引擎 + 站点平台 + 专属目标）
-│   ├── search-tool-base.ts # 三个搜索工具共用的执行链路（导航 + 解析）
+│   ├── index.ts            # 注册 web_search / platform_search
+│   ├── search-targets.ts   # 搜索目标注册表（引擎 + 站点平台）
+│   ├── search-tool-base.ts # 两个搜索工具共用的执行链路（导航 + 解析）
 │   ├── web-search-tool.ts  # 通用网页检索（engine 枚举）
-│   ├── platform-search-tool.ts # 通用站点平台检索（platform 枚举）
-│   └── bilibili-search-tool.ts # Bilibili 站内视频检索（目标固定）
+│   └── platform-search-tool.ts # 通用站点平台检索（platform 枚举）
 ├── browser/                 # 浏览器工具类别（导航 / 标签页 / 页面读取 / 交互 / 下载与资源）
 │   ├── navigation.ts        # 统一导航（open/refresh/back/forward/wait）
 │   ├── tab-management.ts    # 统一标签页与窗口（list/switch/close/create/windows）
@@ -74,11 +73,8 @@ const result3 = await toolRegistry.executeTool('platform_search', {
   query: 'TypeScript 最佳实践'
 });
 
-// Bilibili 站内视频检索是专属工具：目标固定，schema 里没有目标参数
-const result4 = await toolRegistry.executeTool('bilibili_search', {
-  query: 'TypeScript 教程',
-  waitTime: 5000
-});
+// 站内视频检索（如 Bilibili）不再内置：由官方插件用 host-workflow
+// 组合 browser_navigation / browser_extract_data / browser_page_http 等公开原语实现。
 ```
 
 ### 获取OpenAI格式的工具定义
@@ -96,7 +92,7 @@ const searchSchema = toolRegistry.getTool('web_search')?.openaiSchema;
 ### 1. 选择合适的基类
 
 - `BaseTool`（`tools/base-tool.ts`）: 通用工具基类
-- `BaseSearchTool`（`tools/search/search-tool-base.ts`）: 搜索类工具基类——`web_search` / `platform_search` / `bilibili_search` 共用同一执行链路（导航 → 等待 → 解析 → Markdown 表），子类只声明差异面
+- `BaseSearchTool`（`tools/search/search-tool-base.ts`）: 搜索类工具基类——`web_search` / `platform_search` 共用同一执行链路（导航 → 等待 → 解析 → Markdown 表），子类只声明差异面
 - `BaseNavigationTool`（`tools/base-tool.ts`）: 导航类工具基类
 
 ### 2. 实现工具类
@@ -238,10 +234,10 @@ const workflowResult = await toolRegistry.executeTool('workflow_automation', {
 ### 批量操作
 
 ```typescript
-// 三个搜索工具：web_search（通用网页，engine 枚举 bing/baidu）、
-// platform_search（站点平台，platform 枚举 zhihu/csdn/github/…）与
-// bilibili_search（B 站视频检索，目标固定）——一次调用都完成导航 + 结果解析。
-// 注意：三者都自带页面导航（等同 browser_navigation 的 open action），并发调用会互相争抢
+// 两个搜索工具：web_search（通用网页，engine 枚举 bing/baidu）与
+// platform_search（站点平台，platform 枚举 zhihu/csdn/github/…）——一次调用都完成导航 + 结果解析。
+// 站点专属检索（如 Bilibili）由官方插件用 host-workflow 组合公开原语实现。
+// 注意：两者都自带页面导航（等同 browser_navigation 的 open action），并发调用会互相争抢
 // 活动标签页——多次搜索必须逐个串行执行，禁止 Promise.all 并发。
 const searchQuery = 'React Hooks';
 

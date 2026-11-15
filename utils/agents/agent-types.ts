@@ -343,7 +343,6 @@ export const BUILTIN_AGENT_AVATARS: readonly BuiltinAgentAvatar[] = Object.freez
   { id: 'vision', src: '/agent/vision.png' },
   { id: 'data', src: '/agent/data.png' },
   { id: 'deep_search', src: '/agent/deep_search.png' },
-  { id: 'bilibili', src: '/agent/bilibili.png' },
   { id: 'excalidraw', src: '/agent/excalidraw.png' },
 ]);
 

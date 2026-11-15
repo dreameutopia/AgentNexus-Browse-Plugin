@@ -23,6 +23,14 @@
       </div>
 
       <SkillCapturePrompt ref="skillCapturePrompt" :visible="captureState.eligible" :message-id="captureState.messageId" :scope-key="(chatId ?? '') + ':' + captureState.scope" :disabled="isAiResponding" @create="emit('create-skill', $event)" />
+      <!-- 回答内截图的看图层：点击截图卡片图片时挂载（Teleport 到 body，遮罩覆盖侧边栏） -->
+      <ImageViewer
+        v-if="agentImageViewer"
+        :items="agentImageViewer.items"
+        :index="agentImageViewer.index"
+        @update:index="onAgentImageIndex"
+        @close="agentImageViewer = null"
+      />
       <!-- AI回答时的加载动画 -->
       <div v-if="isAiResponding" class="ai-responding-indicator">
         <div class="typing-dots">
@@ -41,9 +49,11 @@ import { t } from '@/utils/i18n';
 import type { ExtendedChatMessage, MessageFeedback, MessagePart } from '../../types/chat';
 import { installDiagramRenderer, processDiagrams } from '../../utils/chat/diagram-renderer';
 import { installChartRenderer, processCharts } from '../../utils/chat/chart-renderer';
-import { installAgentImageRenderer, processAgentImages } from '../../utils/chat/agent-image-renderer';
+import { installAgentImageRenderer, processAgentImages, AGENT_IMAGE_OPEN_EVENT } from '../../utils/chat/agent-image-renderer';
+import type { AgentImageOpenDetail } from '../../utils/chat/agent-image-renderer';
 import MessageItem from './MessageItem.vue';
 import SkillCapturePrompt from './SkillCapturePrompt.vue';
+import ImageViewer from './ImageViewer.vue';
 import { skillCaptureState } from '../../utils/chat/skill-capture';
 import './chat-message-list.css';
 
@@ -133,14 +143,19 @@ const isNearBottom = (): boolean => {
 
 /**
  * 用户滚动意图入口（wheel / touchmove）。
- * 仅在 AI 输出期间生效：空闲期的滚动浏览不代表对下一次输出的接管意愿。
+ * - AI 输出期间：任何向上翻阅都视为接管，本次任务不再强制滚动；
+ * - 会话切换贴底窗口内：向上翻阅 / 触摸滑动同样让位并结束窗口。
  * wheel 向上要在事件层拦截——容器已在顶部时滚轮向上不产生 scroll 事件，
  * 只有这里能捕捉到该意图；触摸滑动同理（惯性滚动后续由 scroll 事件兜底）。
  */
 const handleUserScrollIntent = (event: WheelEvent | TouchEvent): void => {
-  if (!props.isAiResponding) return;
-  // 滚轮向上（deltaY < 0）或触摸滑动明确是主动翻阅行为 → 接管
+  // 向下滚动与贴底同方向，不属于「翻阅离开」，不打断任何跟随
   if (event instanceof WheelEvent && event.deltaY >= 0) return;
+  if (settleActive) {
+    userTookOver.value = true;
+    stopSwitchSettle();
+  }
+  if (!props.isAiResponding) return;
   userTookOver.value = true;
 };
 
@@ -148,7 +163,25 @@ const handleUserScrollIntent = (event: WheelEvent | TouchEvent): void => {
  * 自己的程序滚动忽略窗口（毫秒）：scrollTop 赋值后的 scroll 事件异步到达，
  * 窗口内的事件不参与接管判定，避免把自己的跟随滚动误判为用户离开底部。
  */
+const PROGRAMMATIC_SCROLL_IGNORE_MS = 64;
 let programmaticScrollUntil = 0;
+
+/**
+ * 会话切换贴底窗口上限（毫秒）。
+ * 内容尺寸可能在首帧之后继续变化（Markdown 异步排版、图片解码、
+ * Mermaid/ECharts 去抖渲染），窗口内每次尺寸变化都重新贴底；
+ * 到达上限后必定收手，避免长任务/异常布局把窗口无限拖长。
+ */
+const SWITCH_SETTLE_MAX_MS = 3000;
+
+/** 贴底窗口是否生效（窗口内尺寸变化持续贴底） */
+let settleActive = false;
+/** 待执行的贴底帧（0 = 无；同一帧内的多次尺寸变化合并为一次写入） */
+let settleFrame = 0;
+/** 窗口到期定时器（解除观察的硬兜底） */
+let settleDeadlineTimer: number | undefined;
+/** 内容节点尺寸观察器（只在窗口内连接，窗口结束即断开） */
+let settleObserver: ResizeObserver | null = null;
 
 /**
  * 滚动容器的 scroll 事件：跟随用户实际位置更新接管状态。
@@ -156,22 +189,96 @@ let programmaticScrollUntil = 0;
  * - 离开底部（滚动条拖动 / 键盘翻页 / 选择拖动等不经容器内 wheel 的路径）
  *   → 接管。内容增长本身不触发 scroll 事件（scrollTop 不变），布局收缩时
  *   浏览器钳制后仍处底部，因此「离开底部」可以安全地等价于用户主动离开。
+ * 贴底窗口内同样适用：用户主动离开底部即结束窗口，不抢阅读位置。
  */
 const handleContainerScroll = (): void => {
-  if (!props.isAiResponding) return;
+  if (!props.isAiResponding && !settleActive) return;
   if (performance.now() < programmaticScrollUntil) return;
-  if (isNearBottom()) userTookOver.value = false;
-  else userTookOver.value = true;
+  if (isNearBottom()) {
+    userTookOver.value = false;
+    return;
+  }
+  userTookOver.value = true;
+  if (settleActive) stopSwitchSettle();
 };
 
-const scrollToBottom = () => {
+/** 贴底写入：一次读 scrollHeight + 一次赋值，尽量落在同一帧 */
+const pinToBottomNow = (): void => {
+  const el = resolveScrollEl();
+  // 软断连（DOM 被替换/卸载）时放弃本次写入，避免操作游离节点
+  if (!el || !el.isConnected) return;
+  el.scrollTop = el.scrollHeight;
+  programmaticScrollUntil = performance.now() + PROGRAMMATIC_SCROLL_IGNORE_MS;
+};
+
+/** 请求下一帧贴底；同一帧内多次请求合并为一次写入（防抖 + 避免布局抖动） */
+const schedulePinToBottom = (): void => {
+  if (settleFrame) return;
+  if (typeof window.requestAnimationFrame === 'function') {
+    settleFrame = window.requestAnimationFrame(() => {
+      settleFrame = 0;
+      if (!userTookOver.value) pinToBottomNow();
+    });
+    return;
+  }
+  // 无 rAF 环境（旧内核 / 无头测试）退回宏任务，语义一致
+  settleFrame = window.setTimeout(() => {
+    settleFrame = 0;
+    if (!userTookOver.value) pinToBottomNow();
+  }, 16);
+};
+
+/** 取消待执行的贴底帧（帧回调与超时回调共用同一个 id 槽位） */
+const cancelSettleFrame = (): void => {
+  if (!settleFrame) return;
+  if (typeof window.cancelAnimationFrame === 'function') window.cancelAnimationFrame(settleFrame);
+  else window.clearTimeout(settleFrame);
+  settleFrame = 0;
+};
+
+/** 结束会话切换贴底窗口：清理帧、定时器与观察器（幂等，可在各类收尾路径重复调用） */
+const stopSwitchSettle = (): void => {
+  settleActive = false;
+  cancelSettleFrame();
+  if (settleDeadlineTimer !== undefined) {
+    window.clearTimeout(settleDeadlineTimer);
+    settleDeadlineTimer = undefined;
+  }
+  settleObserver?.disconnect();
+  settleObserver = null;
+};
+
+/**
+ * 启动（或重置）会话切换贴底窗口。
+ *
+ * 切换会话（含侧边栏启动恢复）时消息列表在同一批更新里整体替换，首帧只保证
+ * 「结构已挂载」；此后异步排版、图片解码、图表渲染与去抖扫描仍会继续撑高内容。
+ * 只滚一次会停在旧高度，因此窗口期内用 ResizeObserver 盯住内容节点：
+ *   - 每次尺寸变化 → 合帧调度一次贴底写入；
+ *   - 用户向上翻阅 → 立即结束窗口（handleUserScrollIntent / handleContainerScroll）；
+ *   - 到期 → 自动断开观察器，窗口外零开销。
+ * 空列表直接跳过（无可滚动内容，也不值得连接观察器）。
+ */
+const startSwitchSettle = (): void => {
+  stopSwitchSettle();
+  // 落到某个会话时重置接管意愿：切换后的默认阅读位置就是底部
+  userTookOver.value = false;
+  if (!props.messages.length) return;
+  settleActive = true;
+  schedulePinToBottom();
+  const content = messagesContainer.value;
+  if (typeof ResizeObserver !== 'undefined' && content) {
+    settleObserver = new ResizeObserver(() => {
+      if (settleActive && !userTookOver.value) schedulePinToBottom();
+    });
+    settleObserver.observe(content);
+  }
+  settleDeadlineTimer = window.setTimeout(stopSwitchSettle, SWITCH_SETTLE_MAX_MS);
+};
+
+const scrollToBottom = (): void => {
   // watch 回调先于 DOM 更新触发（默认 pre flush），待补丁应用后再读 scrollHeight
-  nextTick(() => {
-    const el = resolveScrollEl();
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-    programmaticScrollUntil = performance.now() + 64;
-  });
+  nextTick(pinToBottomNow);
 };
 
 /** 输出期间的跟随滚动：用户已接管时跳过（保持其阅读位置） */
@@ -182,12 +289,32 @@ const followStreamIfNeeded = (): void => {
 
 onMounted(() => {
   resolveScrollEl()?.addEventListener('scroll', handleContainerScroll, { passive: true });
+  // App 以 activeChatId 作为本组件 key：每次切换会话都会重建实例，
+  // 挂载时的消息已是目标会话内容。启动贴底窗口等首帧与异步渲染落地。
+  startSwitchSettle();
 });
 
 onBeforeUnmount(() => {
   scrollEl?.removeEventListener('scroll', handleContainerScroll);
   scrollEl = null;
+  stopSwitchSettle();
 });
+
+// 会话切换兜底：组件按 key 重建时走 onMounted；未来若去掉 key，
+// chatId 变化同样重新进入贴底窗口，保证「切换即回底」的语义不变
+watch(
+  () => props.chatId,
+  () => startSwitchSettle(),
+);
+
+// 从欢迎态进入聊天态：内容可能在隐藏期间完成渲染（隐藏时 scrollHeight 为 0，
+// 贴底写入是空操作），显示后需补一次贴底
+watch(
+  () => props.showChatMode,
+  visible => {
+    if (visible) startSwitchSettle();
+  },
+);
 
 // 新一轮任务开始：重置接管状态，恢复跟随（上一轮的接管意愿不延续到新任务）
 watch(
@@ -222,6 +349,32 @@ watch(
   () => followStreamIfNeeded(),
 );
 
+// ==================== 回答内截图看图层（<agent-image>） ====================
+//
+// 截图卡片由 markdown 渲染成可信 HTML 骨架，图片本体由 agent-image-renderer
+// 异步注入（图片库读取是异步的）。点击图片时渲染层派发文档级事件，本组件
+// 接管并挂载共享看图层 ImageViewer——遮罩在侧边栏内，放大 / 缩小 /
+// 在网页中打开 / 下载由共享组件统一提供（与消息底部图片区同一份实现）。
+
+/** 看图层状态（null = 未打开） */
+const agentImageViewer = ref<{
+  items: { ref: string; url: string; name: string; alt: string }[];
+  index: number;
+} | null>(null);
+
+/** 点击截图 → 打开侧边栏内遮罩看图层 */
+const onAgentImageOpen = (event: Event): void => {
+  const detail = (event as CustomEvent<AgentImageOpenDetail>).detail;
+  if (!detail?.url) return;
+  agentImageViewer.value = { items: [{ ...detail }], index: 0 };
+};
+
+/** 看图层翻页（受控回传） */
+const onAgentImageIndex = (index: number): void => {
+  if (!agentImageViewer.value) return;
+  agentImageViewer.value = { ...agentImageViewer.value, index };
+};
+
 // ==================== 图表渲染（Mermaid / PlantUML / ECharts） ====================
 // 消息 DOM 的重写来源多样（流式 token、前奏折叠展开重建、历史会话加载），
 // 统一用子树 MutationObserver + 去抖扫描驱动 diagram-renderer / chart-renderer；
@@ -245,6 +398,7 @@ onMounted(() => {
   installDiagramRenderer();
   installChartRenderer();
   installAgentImageRenderer();
+  document.addEventListener(AGENT_IMAGE_OPEN_EVENT, onAgentImageOpen);
   if (messagesContainer.value) {
     processDiagrams(messagesContainer.value);
     processCharts(messagesContainer.value);
@@ -265,6 +419,7 @@ onBeforeUnmount(() => {
   diagramObserver?.disconnect();
   diagramObserver = null;
   window.clearTimeout(diagramScanTimer);
+  document.removeEventListener(AGENT_IMAGE_OPEN_EVENT, onAgentImageOpen);
 });
 
 // 流结束双保险：不等 attribute 变更回调，立即调度扫描，

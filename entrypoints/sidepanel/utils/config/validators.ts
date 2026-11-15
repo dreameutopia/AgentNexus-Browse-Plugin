@@ -35,6 +35,8 @@ export function isAppSettingsLike(value: unknown): boolean {
     activeRef === null ||
     (isRecord(activeRef) && isOptionalString(activeRef.channelId) && isOptionalString(activeRef.modelId));
   return (
+    isOptionalNumber(value.userResponseTimeoutMinutes) &&
+    // 旧字段（历史文档）：仍在读取路径上做归一，结构层允许其存在
     isOptionalNumber(value.interactTimeoutMinutes) &&
     isOptionalString(value.defaultAgentId) &&
     isOptionalNumber(value.maxIterations) &&

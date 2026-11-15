@@ -91,7 +91,7 @@ export class BrowserTabsTool extends BaseBrowserTool {
         'windows=窗口树枚举（每个窗口及其标签页）。' +
         'list 与 windows 是纯枚举只读；switch/close/create 会改变用户眼前的页面。' +
         'create 与 browser_navigation 一样绑定现有普通窗口，绝不创建新窗口。' +
-        '需要页面内容/状态时用 browser_get_page_text / browser_get_page_info，本工具只管理标签页本身。',
+        '需要页面内容/状态时用 read_website / browser_get_page_info，本工具只管理标签页本身。',
       parameters: {
         type: 'object',
         additionalProperties: false,

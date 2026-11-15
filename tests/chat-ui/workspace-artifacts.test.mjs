@@ -43,7 +43,7 @@ const api = await import(pathToFileURL(outfile).href);
 const { chatDatabase, saveWorkspaceOutput, readWorkspaceOutput, workspaceArtifact } = api;
 const makeChat = chatId => chatDatabase.createSession({
   chatId, title: chatId, createdAt: 1, updatedAt: 1, messageCount: 0,
-  lastMessagePreview: '', agentName: '', skillNames: [],
+  lastMessagePreview: '', agentName: '',
 });
 await makeChat('a');
 await makeChat('b');
@@ -54,7 +54,7 @@ assert.equal(file.sizeBytes, 3);
 assert.deepEqual(new Uint8Array(await (await readWorkspaceOutput('a', file.path)).arrayBuffer()), new Uint8Array([0, 255, 13]));
 assert.equal(await readWorkspaceOutput('b', file.path), null);
 const repeated = await Promise.all([1, 2, 3].map(() => saveWorkspaceOutput('a', 'outputs/report.csv', bytes)));
-assert.deepEqual(repeated.map(item => item.path), ['outputs/report.csv', 'outputs/report (2).csv', 'outputs/report (3).csv']);
+assert.deepEqual(repeated.map(item => item.path), ['outputs/report.csv', 'outputs/report(1).csv', 'outputs/report(2).csv']);
 for (const path of ['inputs/no.csv', 'outputs/../no.csv', '/outputs/no.csv', 'outputs/C:/../no.csv']) {
   await assert.rejects(saveWorkspaceOutput('a', path, bytes));
   assert.throws(() => workspaceArtifact(path));
@@ -92,7 +92,7 @@ chrome.downloads.download = async () => { throw Error('Downloads blocked'); };
 try {
   const savedWithWarning = await xlsx.execute({ ...request, autoDownload: true }, { chatId: 'a' });
   assert.equal(savedWithWarning.success, true);
-  assert.equal(savedWithWarning.data.file.path, 'outputs/sales (2).xlsx');
+  assert.equal(savedWithWarning.data.file.path, 'outputs/sales(1).xlsx');
   assert.equal(savedWithWarning.data.autoDownloaded, false);
   assert.match(savedWithWarning.data.warnings.join(' '), /Downloads blocked/);
   assert.ok(await readWorkspaceOutput('a', savedWithWarning.data.file.path));
@@ -144,6 +144,28 @@ try {
     assert.equal(card.dataset.workspacePath, file.path);
     assert.equal(card.dataset.workspaceChat, 'a');
     assert.equal(card.querySelector('.file-card-name').textContent, file.name);
+    assert.equal(card.querySelector('.file-card-preview'), null, '非 html/pdf 不提供预览入口');
+  }
+  // html / pdf 在卡片内部右侧多一个预览按钮，指向独立预览页所需的会话 + 路径
+  for (const previewPath of ['outputs/商品清单.html', 'outputs/report.htm', 'outputs/说明书.pdf']) {
+    host.innerHTML = api.markdownRenderer.renderMessage(
+      api.workspaceArtifact(previewPath).marker, { workspaceChatId: 'a' },
+    );
+    const button = host.querySelector('.file-card .file-card-preview');
+    assert.ok(button, previewPath + ' 应该提供预览按钮');
+    assert.equal(button.dataset.previewPath, previewPath);
+    assert.equal(button.dataset.previewChat, 'a');
+  }
+  {
+    let previewAnchorClicks = 0;
+    const originalAnchorClick = dom.window.HTMLAnchorElement.prototype.click;
+    dom.window.HTMLAnchorElement.prototype.click = function () { previewAnchorClicks++; };
+    try {
+      host.querySelector('.file-card-preview').click();
+      assert.equal(previewAnchorClicks, 0, '点击预览不应触发下载');
+    } finally {
+      dom.window.HTMLAnchorElement.prototype.click = originalAnchorClick;
+    }
   }
   host.innerHTML = api.markdownRenderer.renderMessage(excel.data.file.marker, { workspaceChatId: 'a' });
   const downloaded = new Promise(resolve => { dom.window.HTMLAnchorElement.prototype.click = function () { resolve({ name: this.download, href: this.href }); }; });

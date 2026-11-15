@@ -40,7 +40,8 @@
  * - 无法原地"卸载"wasm 实例；uninstallPackages 仅更新清单与缓存，
  *   当前实例中模块残留至下次重载（已在 UI 中说明）。
  * - 彻底删除走 purgePyodideEnvironment：清缓存 + 清 micropip 清单 +
- *   状态回落 + 丢弃本页单例 + 通知离屏宿主回收 Worker，五步齐下方无遗漏。
+ *   状态回落 + 丢弃本页单例 + 通知离屏宿主回收 Worker + 撤销智能体
+ *   python_run 注入，六步齐下方无遗漏。
  */
 
 import type { PyodideInterface } from 'pyodide';
@@ -338,17 +339,39 @@ export function resetPyodideRuntime(): void {
  *    记账面；不清则重装后旧包按清单自动"复活"）；
  * 3. 环境状态回落 idle——已装包清单归零，跨上下文广播；
  * 4. 丢弃本页解释器单例——否则同页重装后旧实例里的包仍可 import；
- * 5. 通知离屏宿主回收 Worker——聊天路径内存残留随回收清空。
+ * 5. 通知离屏宿主回收 Worker——聊天路径内存残留随回收清空；
+ * 6. 撤销全部智能体的 python_run 注入——环境不存在时任何智能体都不得再获得
+ *    该工具（预置智能体的注入表在此清空，自定义 / 插件智能体的存量引用由
+ *    装配层在环境未就绪时静默剔除）。
  *
  * 先发布停用状态，再回收运行时并清缓存。清理异常由调用方展示。
  */
 export async function purgePyodideEnvironment(): Promise<void> {
-  await resetPyodideEnvState(async () => {
-    resetPyodideRuntime();
-    const results = await Promise.allSettled([clearFiles(), clearMicropipManifest(true)]);
-    const failed = results.filter(result => result.status === 'rejected');
-    if (failed.length) throw new Error(failed.map(result => String(result.reason)).join(' / '));
-  });
+  try {
+    await resetPyodideEnvState(async () => {
+      resetPyodideRuntime();
+      const results = await Promise.allSettled([clearFiles(), clearMicropipManifest(true)]);
+      const failed = results.filter(result => result.status === 'rejected');
+      if (failed.length) throw new Error(failed.map(result => String(result.reason)).join(' / '));
+    });
+  } finally {
+    // 无论缓存清理是否成功，环境状态都已回落非就绪：注入必须同步撤销，
+    // 否则会出现「环境已删除、智能体仍挂着 python_run」的不一致状态。
+    await revokeAgentPythonToolLinks();
+  }
+}
+
+/**
+ * 撤销全部 python_run 注入（best-effort：清理失败只记录，不阻断删除流程）。
+ * 动态导入避免把智能体数据层静态打进 Python Worker 的依赖图。
+ */
+async function revokeAgentPythonToolLinks(): Promise<void> {
+  try {
+    const { clearAgentPythonToolLinks } = await import('@/utils/agents/agent-python-links');
+    await clearAgentPythonToolLinks();
+  } catch (error) {
+    console.warn('[Python] 撤销智能体 python_run 注入失败:', error);
+  }
 }
 
 /** 当前是否已在本页面启动（不触发启动动作） */

@@ -85,7 +85,7 @@ async function compileComponent(file, { vueImports = {} } = {}) {
       {
         name: 'heavy-dep-stubs',
         setup(api) {
-          const stubFilter = /\.vue$|@\/utils\/i18n$|markdown-renderer$|note-nav$|chat\/message$/;
+          const stubFilter = /\.vue$|@\/utils\/i18n$|markdown-renderer$|note-nav$|chat\/message$|use-agent-display$|agent-engine$/;
           api.onResolve({ filter: stubFilter }, args => {
             const normalized = args.path.replace(/\\/g, '/');
             for (const [suffix, target] of Object.entries(vueImports)) {
@@ -95,6 +95,13 @@ async function compileComponent(file, { vueImports = {} } = {}) {
           });
           api.onLoad({ filter: /.*/, namespace: 'stub' }, args => {
             if (args.path === '@/utils/i18n') return { contents: 'export const t=(k)=>k;' };
+            // 智能体展示名解析（用户气泡底部 @ 标识）：桩件回落落库名称
+            if (args.path === '@/common/use-agent-display') {
+              return { contents: 'export const useAgentDisplay=()=>({displayNameOf:(a)=>String(a?.name??""),displayOf:(a)=>a});' };
+            }
+            if (args.path.replace(/\\/g, '/').endsWith('core/registry/agent-engine')) {
+              return { contents: 'export const agentEngine={resolveRef:()=>null};' };
+            }
             // 内联截屏容器 / 底部图片区：桩件渲染可断言的标记，
             // 用于验证「截图按发生顺序内联」与「不回退到底部图片区」
             if (args.path.endsWith('MessageImagePart.vue')) {
@@ -115,6 +122,11 @@ async function compileComponent(file, { vueImports = {} } = {}) {
             if (args.path.endsWith('note-nav')) return { contents: 'export const openNoteDetail=()=>{};' };
             if (args.path.endsWith('chat/message')) {
               return { contents: 'export const message={error(){},success(){},info(){}};' };
+            }
+            // 图标组件（SkillIcon.vue）：操作栏断言依赖其渲染出 <svg><path>，
+            // 以同形状桩件顶替，其余未知 .vue 仍渲染空
+            if (args.path.replace(/\\/g, '/').endsWith('SkillIcon.vue')) {
+              return { contents: "import {h} from 'vue';export default {render(){return h('svg',null,[h('path')]);}};" };
             }
             return { contents: 'export default { render: () => null };' };
           });

@@ -2,23 +2,23 @@
  * 输入区附件栏管理（会话级状态 + 上传守卫流程）
  *
  * 职责：
- *   - 持有待发送附件（文本类 + 图片）的响应式列表与增删；
+ *   - 持有待发送附件的响应式列表与增删；
  *   - addFiles 完整守卫链（串行逐文件处理，保证交互与提示的时序正确）：
- *       数量上限 → 分类准入（不支持格式明确拒绝）→
- *       图片（模型视觉能力引导 + 99MB 硬限 + 压缩引擎整理 ≤2MB）→
- *       文本（>15MB 二次确认 → Office 解析 / 编码解码 → 分页元信息）→
- *       入列；
- *   - 弹窗交互全部经 use-app-dialog（Promise 化，绝不阻塞 JS 线程）；
- *     压缩等长时操作的进度反馈经注入的 notify（系统通知条）推送。
+ *       数量上限 → 体积上限 → 图片（模型视觉能力引导 + 99MB 硬限 +
+ *       压缩引擎整理 ≤2MB）/ 其它文件（原样入列）→ 入列。
  *
- * 体积与上下文口径（v2 分页架构）：
- *   - 图片：不再计入任何字符预算（多模态 image_url 直传，上下文成本按
- *     固定 token/张计量）；>2MB 或需转码（BMP/ICO/动画 GIF）的图片一律经
- *     压缩引擎（image-compressor）整理后才可发送；
- *   - 文本：全文在发送时注册进会话文件库（8 位短 id + 确定性分页），
- *     本轮用户消息只内联每个文件的第 1 页预览（信封预算封顶见
- *     utils/conversation-files/upload-file-envelope），不再做「砍头截断」
- *     ——超长文件通过 read_file 分页读取，内容零丢失。
+ * 架构口径（v3：文件即文件）：
+ *   - **上传阶段不再解析任何文件内容**。文本不解码、Office 不解包——
+ *     一切文件都以**原始字节**随消息落进会话工作区的 inputs/ 目录，
+ *     模型按需调用 file_util 读取（文本分页、Office 转 Markdown）。
+ *     这样做消除了「用户手上的文件」与「模型看到的解析产物」两份事实源
+ *     可能不一致的隐患，也免除了上传时解析大文档的等待与失败面；
+ *   - 图片是唯一例外：多模态链路需要 data URL，因此图片仍经压缩引擎
+ *     整理（>2MB 或需转码的形态），但**原始文件同样入库**——模型可以用
+ *     脚本处理原图，用户下载到的也是原图；
+ *   - 体积与上下文口径：
+ *       · 图片：不计入字符预算（多模态 image_url 直传，按固定 token/张计量）；
+ *       · 其它文件：原样入列，模型侧读取时才按 3000 字符/页分页。
  *
  * 图片准入引导：当前生效模型未声明视觉能力时，弹二次确认（仍然上传 /
  * 取消上传 / 前往设置），由宿主注入 confirmImageWithoutVision 实现——
@@ -27,19 +27,12 @@
 
 import { ref } from 'vue';
 import { t } from '@/utils/i18n';
-import {
-  classifyAttachmentFile,
-  decodeTextBuffer,
-  parseOfficeDocument,
-  AttachmentParseError,
-} from '../utils/chat/attachment-parser';
+import { isImageFilePath, fileExtension } from '@/utils/upload-files/file-kinds';
 import {
   prepareImageForUpload,
   IMAGE_COMPRESS_TARGET_BYTES,
   ImageCompressionError,
 } from '../utils/chat/image-compressor';
-import { FILE_MAX_CHARS, FILE_PAGE_TOKEN_BUDGET } from '@/utils/conversation-files/file-store';
-import { countSkillChars, paginateSkillText } from '@/utils/skills/skill-pagination';
 import { showAlert, showConfirm, type AppDialogResult } from './use-app-dialog';
 import { WORKSPACE_MAX_FILE_BYTES } from '@/utils/python-workspace/paths';
 
@@ -52,49 +45,38 @@ import { WORKSPACE_MAX_FILE_BYTES } from '@/utils/python-workspace/paths';
 export const IMAGE_FILE_MAX_BYTES = 99 * 1024 * 1024;
 
 /**
- * 文本类附件的二次确认门槛：超过 15MB 不拒绝（分页架构下全文进文件库、
- * 首屏只带第 1 页），但弹窗确认「上下文有限且无法读取文件内嵌图片」——
- * 超大文件的解析耗时与模型按页续读成本应让用户知情。
+ * 其它文件的二次确认门槛：超过 15MB 弹窗确认「模型按需分页读取，
+ * 读取耗时与上下文成本较高」。不拒绝——工作区本身有 128MB 单文件上限，
+ * 超过上限在上传阶段明确拒绝（见 workspaceFileTooLarge）。
  */
 export const LARGE_TEXT_FILE_CONFIRM_BYTES = 15 * 1024 * 1024;
 
-/** 附件数量上限（防御性：杜绝海量小文件把信封元信息撑成超长消息） */
+/** 附件数量上限（防御性：杜绝海量小文件把清单元信息撑成超长消息） */
 export const MAX_ATTACHMENT_COUNT = 50;
 
 /** 附件形态（决定输入栏图标与气泡标记） */
-export type AttachmentSource = 'plain' | 'office' | 'image' | 'workspace';
+export type AttachmentSource = 'image' | 'file';
 
 /** 输入区待发送附件 */
 export interface ChatAttachment {
   id: string;
   /** 用户可见的原始文件名（保持原格式展示） */
   name: string;
-  /** workspace = only the original file is sent to the local workspace. */
-  kind: 'text' | 'image' | 'workspace';
+  /** image = 走多模态链路（另有一份压缩后的 data URL）；file = 原样入库 */
+  kind: 'image' | 'file';
+  /** 原始文件（发送时按原始字节写入工作区 inputs/） */
   rawFile?: File;
-  previewFile?: { chatId: string; id: string };
   /** 图片 data URL（kind=image 时存在，已过压缩引擎整理） */
   dataUrl?: string;
-  /**
-   * 提取全文（kind=text 时存在；发送时注册进会话文件库）。
-   * 全文只存内存态（发送前移除即丢弃），不再做截断。
-   */
-  text?: string;
-  /** 提取文本的码点总数（kind=text；展示用） */
-  chars: number;
-  /** 全文分页总页数（kind=text；与 read_file 同一算法） */
-  totalPages?: number;
-  /** 第 1 页正文（kind=text；信封内联预览，与 read_file page=1 同源） */
-  page1?: string;
   /** 原始文件体积（字节，展示用） */
   sizeBytes: number;
   /** 图片整理后的最终体积（字节；与 sizeBytes 不同 = 发生了压缩/转码） */
   displayBytes?: number;
-  /** 小写扩展名（发送时注册会话文件库的 file_type 来源） */
+  /** 小写扩展名（无后缀为空串） */
   ext: string;
-  /** 原始 MIME（可能为空串；注册元信息） */
+  /** 原始 MIME（可能为空串） */
   mimeType: string;
-  /** 来源形态：纯文本 / Office 解析 / 图片 */
+  /** 来源形态：图片 / 普通文件 */
   source: AttachmentSource;
 }
 
@@ -141,6 +123,34 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** 多模态链路可处理的栅格图片 MIME（与 IMAGE_FILE_EXTENSIONS 口径一致） */
+const RASTER_IMAGE_MIMES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+  'image/bmp',
+  'image/x-icon',
+  'image/vnd.microsoft.icon',
+]);
+
+/**
+ * 是否走多模态图片链路。
+ *
+ * 判定口径与 file-kinds 的图片后缀表同源（png/jpg/jpeg/gif/webp/bmp/ico）：
+ *   - SVG 明确**不算**图片——主流视觉接口不接受 image/svg+xml，它按文本
+ *     文件处理（可被 file_util 直接读取其源码）；
+ *   - MIME 兜底只认同样这批浏览器可解码的栅格格式——HEIC/AVIF 等虽是
+ *     image/*，但 Chrome 解码不了，走压缩链路必然报错丢件；按普通文件
+ *     原样入库（用户可下载），模型也读不到，行为与能力边界一致。
+ */
+function isImageAttachment(file: File): boolean {
+  if (file.type === 'image/svg+xml') return false;
+  if (isImageFilePath(file.name)) return true;
+  const mime = file.type.split(';')[0].trim().toLowerCase();
+  return RASTER_IMAGE_MIMES.has(mime);
+}
+
 // ==================== 工厂 ====================
 
 /**
@@ -162,9 +172,7 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
 
   /** 错误原因归一（弹窗文案用） */
   const reasonOf = (error: unknown): string =>
-    error instanceof AttachmentParseError || error instanceof ImageCompressionError || error instanceof Error
-      ? error.message
-      : String(error);
+    error instanceof ImageCompressionError || error instanceof Error ? error.message : String(error);
 
   function removeAttachment(id: string): void {
     attachments.value = attachments.value.filter(item => item.id !== id);
@@ -235,7 +243,7 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
     }
   }
 
-  /** 单文件守卫链（数量上限 → 分类 → 图片链 / 文本链 → 入列） */
+  /** 单文件守卫链（数量上限 → 体积上限 → 图片链 / 普通文件链 → 入列） */
   async function addOne(
     file: File,
     /** 批内共享的视觉引导记忆（同批首问复用；缺省 = 每文件独立询问） */
@@ -243,7 +251,7 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
     workspaceOnly: boolean,
     isCurrent: () => boolean,
   ): Promise<void> {
-    // ── 数量上限：防御海量小文件把信封元信息撑成超长消息 ──
+    // ── 数量上限：防御海量小文件把清单元信息撑成超长消息 ──
     if (attachments.value.length >= MAX_ATTACHMENT_COUNT) {
       await showAlert(
         t('sidepanel.attachments.tooManyFiles', { count: MAX_ATTACHMENT_COUNT }),
@@ -253,8 +261,7 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
       return;
     }
 
-    const classification = classifyAttachmentFile(file.name, file.type);
-
+    // ── 体积上限：工作区单文件硬限（超限在上传阶段就拒绝，不留到发送时） ──
     if (file.size > WORKSPACE_MAX_FILE_BYTES) {
       await showAlert(
         t('sidepanel.attachments.workspaceFileTooLarge', { name: file.name, limit: formatBytes(WORKSPACE_MAX_FILE_BYTES) }),
@@ -263,26 +270,13 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
       );
       return;
     }
-    if (workspaceOnly || classification.kind === 'unsupported' || classification.kind === 'legacy-office') {
-      attachments.value.push({
-        id: crypto.randomUUID(),
-        name: file.name,
-        kind: 'workspace',
-        rawFile: file,
-        chars: 0,
-        sizeBytes: file.size,
-        ext: classification.ext,
-        mimeType: file.type,
-        source: 'workspace',
-      });
-      return;
-    }
 
-    if (classification.kind === 'image') {
-      await addImage(file, classification.ext, visionMemo, isCurrent);
+    // 图片走多模态链路（需压缩整理）；其余文件原样入列
+    if (isImageAttachment(file) && !workspaceOnly) {
+      await addImage(file, visionMemo, isCurrent);
       return;
     }
-    await addText(file, classification.kind === 'office' ? 'office' : 'plain', classification.ext, isCurrent);
+    await addFile(file, isCurrent);
   }
 
   // ── 图片链：视觉能力引导 → 99MB 硬限 → 压缩引擎整理（>2MB / 转码形态）→ 入列 ──
@@ -296,7 +290,6 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
   // （理论上不可能，防御）时按新标签重问。
   async function addImage(
     file: File,
-    ext: string,
     visionMemo: BatchVisionMemo,
     isCurrent: () => boolean,
   ): Promise<void> {
@@ -343,7 +336,7 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
       notify(t('sidepanel.attachments.compressing', { name: file.name, size: formatBytes(file.size) }));
     }
 
-    const prepared = await prepareImageForUpload(buffer, ext, file.type);
+    const prepared = await prepareImageForUpload(buffer, fileExtension(file.name), file.type);
     if (!isCurrent()) return;
 
     // 整理结果反馈（压缩 / 转码发生时告知前后体积；直传静默）
@@ -363,23 +356,17 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
       rawFile: file,
       kind: 'image',
       dataUrl: prepared.dataUrl,
-      chars: 0,
       sizeBytes: file.size,
       displayBytes: prepared.byteSize,
-      ext,
+      ext: fileExtension(file.name),
       mimeType: file.type,
       source: 'image',
     });
   }
 
-  // ── 文本链：>15MB 确认 → 解析/解码（Office 含内嵌图片确认与空产物拒绝）→ 分页元信息 → 入列 ──
-  async function addText(
-    file: File,
-    source: 'office' | 'plain',
-    ext: string,
-    isCurrent: () => boolean,
-  ): Promise<void> {
-    // ── 超大文件二次确认：不拒绝（分页架构下内容零丢失），但让用户知情 ──
+  // ── 普通文件链：大文件确认 → 原样入列（**不解析内容**） ──
+  async function addFile(file: File, isCurrent: () => boolean): Promise<void> {
+    // ── 超大文件二次确认：不拒绝（模型按需分页读取，内容零丢失），但让用户知情 ──
     if (file.size > LARGE_TEXT_FILE_CONFIRM_BYTES) {
       const proceed = await showConfirm(
         t('sidepanel.attachments.largeFileConfirm', { name: file.name, size: formatBytes(file.size) }),
@@ -393,88 +380,15 @@ export function createAttachmentManager(ctx: AttachmentHostContext) {
       }
     }
 
-    // ── 提取文本：Office 先解析，纯文本走解码阶梯 ──
-    const buffer = await file.arrayBuffer();
-    if (!isCurrent()) return;
-    let text: string;
-    if (source === 'office') {
-      const parsed = await parseOfficeDocument(buffer, ext);
-      if (!isCurrent()) return;
-      // 空产物防御：无任何文本的 Office 文档（空表 / 纯图片页）入列没有意义
-      if (!parsed.text.trim()) {
-        await showAlert(
-          t('sidepanel.attachments.emptyDocument', { name: file.name }),
-          t('sidepanel.attachments.promptTitle'),
-          'warn',
-        );
-        return;
-      }
-      if (parsed.hasEmbeddedImages) {
-        const proceed = await showConfirm(
-          t('sidepanel.attachments.officeContainsImages', { name: file.name }),
-          t('sidepanel.attachments.promptTitle'),
-          'warn',
-        );
-        if (!isCurrent() || !proceed) return;
-      }
-      text = parsed.text;
-    } else {
-      text = decodeTextBuffer(buffer);
-      // 空产物防御（纯文本侧）：空文件 / 纯空白文件入列没有意义——
-      // 注册层会拒绝空正文，在上传时就拦截比发送时失败可读得多
-      if (!text.trim()) {
-        await showAlert(
-          t('sidepanel.attachments.emptyDocument', { name: file.name }),
-          t('sidepanel.attachments.promptTitle'),
-          'warn',
-        );
-        return;
-      }
-    }
-
-    // ── 提取文本的注册上限前置校验（两条提取路径共用）：超限文件在上传时
-    //    明确拒绝，而不是等到发送时注册失败——码点口径与文件库的
-    //    FILE_MAX_CHARS 同一常量，杜绝两处阈值漂移 ──
-    const charCount = countSkillChars(text);
-    if (charCount > FILE_MAX_CHARS) {
-      await showAlert(
-        t('sidepanel.attachments.textTooLong', {
-          name: file.name,
-          count: charCount,
-          max: FILE_MAX_CHARS,
-        }),
-        t('sidepanel.attachments.promptTitle'),
-        'warn',
-      );
-      return;
-    }
-
-    // ── 分页元信息：第 1 页预览 + 总页数（确定性算法，与 read_file 同源；
-    //    发送时注册进会话文件库并按同一算法复核，页码口径恒一致） ──
-    const first = paginateSkillText(text, 1, FILE_PAGE_TOKEN_BUDGET);
-    if (!first.ok) {
-      // 理论不可达（空文本在上方已被拦截）；防御性兜底不静默入列
-      await showAlert(
-        t('sidepanel.attachments.parseFailed', { name: file.name, reason: '分页计算失败' }),
-        t('sidepanel.attachments.promptTitle'),
-        'error',
-      );
-      return;
-    }
-
     attachments.value.push({
       id: crypto.randomUUID(),
       name: file.name,
       rawFile: file,
-      kind: 'text',
-      text,
-      chars: first.page.totalChars,
-      totalPages: first.page.pageCount,
-      page1: first.page.content,
+      kind: 'file',
       sizeBytes: file.size,
-      ext,
+      ext: fileExtension(file.name),
       mimeType: file.type,
-      source,
+      source: 'file',
     });
   }
 

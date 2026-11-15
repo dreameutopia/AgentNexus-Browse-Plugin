@@ -23,6 +23,8 @@ import { BaseTool } from '../base-tool';
 import { ToolResult } from '@/common/tool-handler';
 import { ToolMetadata } from '../registry';
 import { OpenAITool } from '@/common/openai-types';
+import { RECOMMENDED_OPTION_RULE } from './interact-prompt';
+import { normalizeRecommendedOption } from './interact-options';
 import {
   getInteractHandler,
   type InteractOption,
@@ -81,19 +83,30 @@ function sanitizeOptionItem(item: unknown): InteractOption | null {
   return description !== undefined ? { label, description } : { label };
 }
 
-/** 清洗选项列表：宽容收敛 + 去空 + 按 label 去重 + 数量截断（保留前 MAX_OPTIONS 个） */
+/**
+ * 清洗选项列表：宽容收敛 + 去空 + 按 label 去重 + 推荐项归一 + 数量截断
+ *
+ * 顺序敏感：先归一再截断——推荐项被提到首位后才做数量裁剪，
+ * 保证「被截断时推荐项仍在列表内」（否则模型把推荐项排在第 6 位、
+ * 而上限是 5 时，推荐项会被裁掉，规则随之失效）。
+ *
+ * 扫描上限（MAX_OPTIONS * 10）只为防御异常入参带来的无界数组：模型正常
+ * 输出远少于此，达到上限时按出现顺序截断。
+ */
+const MAX_OPTION_SCAN = MAX_OPTIONS * 10;
+
 function sanitizeOptions(raw: unknown): InteractOption[] {
   if (!Array.isArray(raw)) return [];
-  const options: InteractOption[] = [];
   const seenLabels = new Set<string>();
+  const cleaned: InteractOption[] = [];
   for (const item of raw) {
-    if (options.length >= MAX_OPTIONS) break;
+    if (cleaned.length >= MAX_OPTION_SCAN) break;
     const option = sanitizeOptionItem(item);
     if (!option || seenLabels.has(option.label)) continue;
     seenLabels.add(option.label);
-    options.push(option);
+    cleaned.push(option);
   }
-  return options;
+  return normalizeRecommendedOption(cleaned).slice(0, MAX_OPTIONS);
 }
 
 /** 收敛结果 → 模型可读文案（工具与用户之间唯一的语义翻译层） */
@@ -143,7 +156,7 @@ export class InteractTool extends BaseTool {
     function: {
       name: 'interact',
       description:
-        '向用户提问、请求补充信息或手动处理，界面弹窗等待选项或自定义答复。用于关键需求歧义、缺少必要信息或需要用户亲自登录/完成验证码；后者 sensitive=true，只请用户在网站中处理，不索取明文密码、验证码或密钥。支持 confirm 的执行工具按其统一说明传 confirm=true，由审批回调请求同一操作的授权，不先调用 interact 重复询问。搜索、筛选、导航、读取公开 API 等普通操作不需要授权询问。提供 options 时用户仍可自定义答复；同一问题不重复询问，拒绝或未答复后停止依赖该答复的操作。',
+        '向用户提问、请求补充信息或手动处理，界面弹窗等待选项或自定义答复。用于关键需求歧义、缺少必要信息或需要用户亲自登录/完成验证码；后者 sensitive=true，只请用户在网站中处理，不索取明文密码、验证码或密钥。支持 confirm 的执行工具按其统一说明传 confirm=true，由审批回调请求同一操作的授权，不先调用 interact 重复询问。搜索、筛选、导航、读取公开 API 等普通操作不需要授权询问。提供 options 时用户仍可自定义答复；同一问题不重复询问，拒绝或未答复后停止依赖该答复的操作。提供两个及以上选项时必须给出唯一推荐选项并排在第一位，在该选项的 description 开头标注「（推荐：一句简短理由）」（详见 options 参数说明）。',
       parameters: {
         type: 'object',
         properties: {
@@ -157,18 +170,23 @@ export class InteractTool extends BaseTool {
           },
           options: {
             type: 'array',
-            description: '候选选项（最多 5 个；可省略 = 开放式提问）。每个选项简洁且互斥',
+            description:
+              '候选选项（最多 5 个；可省略 = 开放式提问）。每个选项简洁且互斥。' +
+              RECOMMENDED_OPTION_RULE +
+              ' 标注写在 description 开头（label 保持纯选项文案——它会作为答复原文回传）。',
             maxItems: MAX_OPTIONS,
             items: {
               type: 'object',
               properties: {
                 label: {
                   type: 'string',
-                  description: '选项文本（将作为答复提交）',
+                  description:
+                    '选项文本（将作为答复原文回传，保持纯选项文案，不写推荐标注）',
                 },
                 description: {
                   type: 'string',
-                  description: '选项补充说明（帮助用户理解，不提交）',
+                  description:
+                    '选项补充说明（帮助用户理解，不提交）；推荐选项在此开头写「（推荐：一句简短理由）」',
                 },
               },
               required: ['label'],

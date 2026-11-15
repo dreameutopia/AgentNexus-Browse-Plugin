@@ -23,6 +23,8 @@
         <template v-if="entry.counts.images > 0">{{ t('sidepanel.chat.clusterScreenshots', { count: entry.counts.images }) }}</template>
         <template v-if="(entry.counts.tools > 0 || entry.counts.reasoning > 0 || entry.counts.images > 0) && entry.counts.compactions > 0">&nbsp;·&nbsp;</template>
         <template v-if="entry.counts.compactions > 0">{{ t('sidepanel.chat.clusterCompactions', { count: entry.counts.compactions }) }}</template>
+        <template v-if="(entry.counts.tools > 0 || entry.counts.reasoning > 0 || entry.counts.images > 0 || entry.counts.compactions > 0) && entry.counts.skills > 0">&nbsp;·&nbsp;</template>
+        <template v-if="entry.counts.skills > 0">{{ t('sidepanel.chat.clusterSkills', { count: entry.counts.skills }) }}</template>
       </span>
       <span class="cluster-right">
         <span v-if="entry.durationMs > 0" class="cluster-duration">{{ formatDuration(entry.durationMs) }}</span>
@@ -118,6 +120,13 @@
         />
       </div>
 
+      <!-- 技能激活片段（预选技能自动加载）：内联可折叠「已加载技能」容器，
+           与「查看屏幕」同一设计语言；参与连续过程小折叠 -->
+      <MessageSkillPart
+        v-else-if="entry.item.part.type === 'skill' && entry.item.part.skills?.length"
+        :skills="entry.item.part.skills"
+      />
+
       <!-- 截屏片段（vision 自动截图）：内联「查看屏幕」可折叠容器，
            按截屏发生顺序排列在片段流中（多轮工具调用的截图各居其位） -->
       <MessageImagePart
@@ -150,6 +159,8 @@
  *     系统信息与正文在视觉上分层，不再混用同一气泡样式。
  *   - image 片段由 MessageImagePart 渲染为「查看屏幕」容器（默认收起，
  *     展开见原图，点击进共享看图层），折叠状态是组件本地态，无需回传。
+ *   - skill 片段由 MessageSkillPart 渲染为「已加载技能」容器（默认收起，
+ *     展开看技能清单），同样属于连续过程，可被小折叠收拢。
  */
 import { computed, inject, ref, type Ref } from 'vue';
 import { t } from '@/utils/i18n';
@@ -163,6 +174,7 @@ import ToolCallItem from './ToolCallItem.vue';
 import CompactionItem from './CompactionItem.vue';
 import MarkdownText from './MarkdownText.vue';
 import MessageImagePart from './MessageImagePart.vue';
+import MessageSkillPart from './MessageSkillPart.vue';
 import GuardStopNotice from './GuardStopNotice.vue';
 
 const workspaceChatId = inject<Ref<string | undefined> | undefined>('workspaceChatId', undefined);

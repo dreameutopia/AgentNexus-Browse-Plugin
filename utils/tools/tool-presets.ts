@@ -3,8 +3,10 @@
  *
  * 按场景定义各 Agent 可使用的工具 ID 列表。
  * 每个预设可单独引用，也可通过 scenario 名称获取组合结果。
- * 约定：此处只保留真实调用方引用的场景（预置智能体 + 默认对话），
+ * 约定：此处只保留真实调用方引用的场景（预置智能体 + 默认对话 + 网站学习），
  * 新增场景时同步维护调用方，避免出现无人引用的死预设。
+ * 管理中心（hub）智能体编辑页的工具组是独立的 UI 分组（见 AgentManager 的
+ * toolGroups），不再登记为场景——此处的场景只服务运行时装配。
  */
 
 import { CORE_INTERACT_TOOL_IDS } from '@/tools/interact/interact-prompt';
@@ -12,7 +14,7 @@ import { SKILL_TOOL_ID } from '@/utils/skills/skill-tool-contract';
 import { JS_RUN_TOOL_ID, isHiddenAgentScriptTool } from '@/tools/javascript/js-contract';
 import { PLAN_TOOL_ID } from '@/tools/plan/plan-prompt';
 import { NOTE_TOOL_ID } from '@/tools/note/note-prompt';
-import { READ_FILE_TOOL_ID } from '@/tools/upload-file/upload-file-prompt';
+import { FILE_UTIL_TOOL_ID } from '@/tools/file-util/file-util-prompt';
 import { VISION_GUI_TOOL_ID } from '@/tools/vision/gui-contract';
 
 /** 场景类型 */
@@ -21,7 +23,6 @@ export type ToolScenario =
   | 'visionAssist'
   | 'visionAgent'
   | 'excalidraw'
-  | 'bilibili'
   | 'deepSearch'
   | 'automation'
   | 'dataHarvest'
@@ -30,19 +31,6 @@ export type ToolScenario =
   | 'siteLearnVisionForText'
   | 'siteValidateText'
   | 'siteValidateVision'
-  | 'resource'
-  | 'files'
-  | 'data'
-  // hub 自定义智能体新增工具组（仅在此处登记，供管理页勾选）
-  | 'pageRead'
-  | 'domInteract'
-  | 'tabsWindows'
-  | 'scripting'
-  | 'bookmarkHistory'
-  | 'webSearch'
-  | 'visionTools'
-  | 'networkTools'
-  | 'python'
   | 'all';
 
 // ──── 原子工具集合 ────
@@ -52,8 +40,12 @@ export type ToolScenario =
  * 当前标签页正文读取是浏览器 Agent 的基础能力——用户指令指向当前页面时
  * 模型必须能直接读取（runtime-builder 与 CORE_INTERACT_TOOL_IDS 一并置入
  * 工具集，用户在编辑页不可裁剪）。编辑页各工具组不再包含它。
+ *
+ * 统一规范：正文读取 = read_website（落盘 content/*.md + path+page 分页，
+ * 产物可下载/可被其它工具按路径消费）。历史文本通道保留注册但
+ * 不再注入，全仓不允许再引用它作为默认通道。
  */
-export const CORE_PAGE_TOOL_IDS = ['browser_get_page_text'] as const;
+export const CORE_PAGE_TOOL_IDS = ['read_website'] as const;
 
 /**
  * 会话「无条件注入」核心工具全集——与 runtime-builder 装配时置首的清单严格同源。
@@ -66,8 +58,8 @@ export const CORE_PAGE_TOOL_IDS = ['browser_get_page_text'] as const;
  * 均无条件注入所有会话，任何智能体/场景不可裁剪（vision 策略放行见
  * vision-assistant-policy）。因此下方各场景清单与 hub 工具组一律**不再登记**
  * note_tool——单一事实源在此处，场景清单重复登记会造成两处口径漂移。
- * read_file（上传文件分页读取）同属核心层：用户上传文件的 <upload_file>
- * 信封出现在任意会话，读取入口必须恒定在场（使用准则见 upload-file-prompt）。
+ * file_util（工作区文件读写）同属核心层：用户上传的文件以 <upload_file>
+ * 清单出现在任意会话，读取入口必须恒定在场（使用准则见 file-util-prompt）。
  *
  * 维护约定：新增无条件注入的工具时，必须同时改这里与 runtime-builder 的
  * toolIdSet 初始化（两处口径不一致 = 技能匹配漏判）。
@@ -77,8 +69,26 @@ export const CORE_SESSION_TOOL_IDS: readonly string[] = [
   ...CORE_PAGE_TOOL_IDS,
   PLAN_TOOL_ID,
   NOTE_TOOL_ID,
-  READ_FILE_TOOL_ID,
+  FILE_UTIL_TOOL_ID,
   JS_RUN_TOOL_ID,
+  SKILL_TOOL_ID,
+];
+
+/**
+ * 插件智能体默认可用的核心工具子集。
+ *
+ * 只包含无页面副作用、无任意脚本能力的会话状态工具与工作区文件工具；
+ * 页面型核心工具（read_website / interact / js_run 等）必须在
+ * manifest.capabilities.hostTools 中显式声明后才进入插件智能体工具面。
+ * 这样 manifest 的 network / hostTools 才是真实边界，而不是“声明了但核心工具仍可绕过”。
+ *
+ * file_util 在此集合内：插件智能体同样会收到用户上传的文件（<upload_file>
+ * 清单），若不提供读取入口，它将完全无法查看用户给它的材料。
+ */
+export const PLUGIN_SAFE_CORE_TOOL_IDS: readonly string[] = [
+  PLAN_TOOL_ID,
+  NOTE_TOOL_ID,
+  FILE_UTIL_TOOL_ID,
   SKILL_TOOL_ID,
 ];
 
@@ -94,41 +104,6 @@ const BASIC_BROWSER_TOOLS = [
 ] as const;
 
 /**
- * 通用网页搜索工具（engine 枚举 bing / baidu，一次调用完成导航 + 结果解析）
- */
-const WEB_SEARCH_TOOL_IDS = ['web_search'] as const;
-
-/**
- * 站点平台搜索工具（platform 枚举：知乎 / GitHub / CSDN / MOOC / 小红书 /
- * 知网）——与通用网页搜索共用执行链路，按「站点内检索」单列。
- * Bilibili 不在此列：B 站检索由专属工具 bilibili_search 承载。
- */
-const PLATFORM_SEARCH_TOOL_IDS = ['platform_search'] as const;
-
-/**
- * 搜索工具组（hub 自定义智能体用）：通用网页检索 + 站点平台检索。
- * 原「扩展搜索平台 / 结果抓取 / 集成搜索」三组 27 个平台专属工具已合并于此；
- * 2026-11-10 起按语义拆为两个工具（web_search / platform_search），
- * 2026-11-11 再把 Bilibili 独立成专属工具（bilibili_search）；
- * hub 编辑页仍以「搜索」一组呈现，避免组内再分细粒度勾选。
- * 专属的 bilibili_search 不进本组——它是 Bilibili 搜索助手的专属工具，
- * 不是通用检索能力的一部分。
- */
-const SEARCH_GROUP_TOOL_IDS = [...WEB_SEARCH_TOOL_IDS, ...PLATFORM_SEARCH_TOOL_IDS] as const;
-
-/**
- * Bilibili 专用（检索走专属工具 bilibili_search，视频页导航走浏览器工具）。
- * 不携带 platform_search：B 站检索已从通用站点枚举中独立出来，
- * 避免通用工具背上不属于它的平台清单。
- */
-const BILIBILI_TOOLS = [
-  'bilibili_subtitle_tool',
-  'bilibili_jump_tool',
-  'browser_navigation',
-  'bilibili_search',
-] as const;
-
-/**
  * 网络观察（CDP Network 域被动捕获）。
  *
  * **两个 action agent（文本通用助手 / 视觉通用助手）不携带此工具**：它们的
@@ -139,7 +114,7 @@ const BILIBILI_TOOLS = [
  */
 const NETWORK_CAPTURE_TOOL = 'browser_network_capture';
 
-/** 自动化交互（browser_get_page_text 由核心层无条件注入，此处不重复登记） */
+/** 自动化交互（read_website 由核心层无条件注入，此处不重复登记） */
 const AUTOMATION_TOOLS = [
   'browser_observe',
   'browser_interact',
@@ -186,7 +161,7 @@ const VISION_AGENT_TOOLS = [
 // 验证段只看 targetMode（技能交给谁用就用谁的执行面盲测）。
 //
 // 共同部分（核心层已无条件注入，此处不重复登记）：
-//   browser_get_page_text / plan_tool / interact / note_tool
+//   read_website / plan_tool / interact / note_tool
 //   （学习段逐步留痕、验证段记录卡点的 note_tool 用法由 learn-prompts 的
 //     <recording> 规范约束，工具本身随核心层恒定可用）。
 // 都带 browser_network_capture：观察页面背后数据（learn-prompts 的
@@ -194,7 +169,7 @@ const VISION_AGENT_TOOLS = [
 
 /**
  * 学习/验证共用的 DOM 文本操作基座（学习域自有清单，不引用 AUTOMATION_TOOLS）。
- * browser_get_page_text 由核心层注入，不在此列。
+ * read_website 由核心层注入，不在此列。
  * browser_tabs 同时承载原「窗口树枚举」（action="windows"），视觉/文本目标
  * 统一随基座在场——窗口信息是纯枚举只读，不再是视觉目标专属。
  */
@@ -281,108 +256,6 @@ const DATA_HARVEST_TOOLS = [
   'xlsx_tool',
 ] as const;
 
-/**
- * 资源与下载（hub 自定义智能体工具组）
- * —— browser_resources：页面资源嗅探/下载 + 下载拦截与副本捕获（一个工具八个 action）
- * —— browser_network_capture：被动网络观察（start/read/stop，文本响应正文入 dataRef）
- * —— browser_downloads：浏览器下载管理器（查询/取消/暂停/恢复/清除历史/定位/打开）
- */
-const RESOURCE_GROUP_TOOLS = [
-  'browser_resources',
-  'browser_network_capture',
-  'browser_downloads',
-] as const;
-
-/** 下载与文件上传（本地文件上传；下载管理走「资源与下载」组） */
-const FILES_GROUP_TOOLS = [
-  'file_upload_getter',
-  'file_uploader',
-] as const;
-
-/**
- * 历史与书签（统一工具 browser_history_bookmarks：检索 / 打开 / 增删改 /
- * 最近访问 / 最常访问 / 文件夹结构 / 清理历史，九 action 一个工具）
- */
-const BOOKMARK_HISTORY_GROUP_TOOLS = [
-  'browser_history_bookmarks',
-] as const;
-
-/** 数据处理（结构化抽取 + 表格 + 引用暂存 + 压缩 + 图表渲染） */
-const DATA_GROUP_TOOLS = [
-  'extract_data',
-  'xlsx_tool',
-  'data_ref_tool',
-  'semantic_compressor',
-  'mermaid_renderer',
-] as const;
-
-/** 页面深度读取（HTML 源码 / 可见纯文本 / 页面与标签页元信息；
- *  结构化正文读取 browser_get_page_text 已升级为核心能力无条件注入
- *  （结构化 Markdown + url 直读 + 超长分页），不再占用工具组位；
- *  browser_get_element_info 已下线（由 browser_observe 取代）；
- *  page-source 已并入 browser_get_page_html（format/includeIframes 现已真正生效） */
-const PAGE_READ_GROUP_TOOLS = [
-  'browser_get_page_html',
-  'browser_get_page_info',
-  'browser_vector_search',
-] as const;
-
-/** DOM 元素交互（文本观察、结构探索、节点交互与等待；
- *  点击/填充统一走 browser_interact——内联 payload + frameId 精确定向 iframe，
- *  browser_click / browser_fill（content-script 消息通道）已下线） */
-const DOM_INTERACT_GROUP_TOOLS = [
-  'browser_observe',
-  'browser_dom_explore',
-  'browser_interact',
-  'browser_page_ops',
-] as const;
-
-/** 标签页与窗口（统一枚举/切换/创建/关闭/窗口树，单工具五 action） */
-const TABS_WINDOWS_GROUP_TOOLS = [
-  'browser_tabs',
-] as const;
-
-/** 页面脚本执行（注入 JS、向注入脚本发消息、页面级高权限执行/抽取/清理） */
-const SCRIPTING_GROUP_TOOLS = [
-  'browser_send_command_to_inject_script',
-  'browser_extract_data',
-  'browser_clean_page',
-] as const;
-
-/**
- * 搜索工具组（hub 自定义智能体工具组）：通用网页检索 + 站点平台检索。
- * 直接引用 SEARCH_GROUP_TOOL_IDS，杜绝两份同值清单漂移。
- */
-const SEARCH_GROUP_TOOLS = [...SEARCH_GROUP_TOOL_IDS];
-
-/**
- * 视觉辅助工具组（hub 自定义智能体可勾选面）：截图与 OCR。
- *
- * **刻意不含 vision_gui**：vision_gui 只经「视觉操作」开关（AgentConfig.vision）
- * 注入——hub 编辑器不提供勾选入口，runtime 装配时按开关对智能体工具面做
- * 注入/剔除归一（见 runtime-builder「视觉操作开关注入」），提示词钩子再按
- * 工具面检测注入规程。三条链路共同保证「vision_gui ∈ 工具面 ⇔ 开关开启」。
- */
-const VISION_TOOLS_GROUP = [
-  'screenshot',
-  'ocr',
-] as const;
-
-/** 网络请求与控制台（HTTP 请求发送 + 控制台输出/异常捕获） */
-const NETWORK_TOOLS_GROUP = [
-  'browser_network_request',
-  'browser_console',
-] as const;
-
-/**
- * Python 沙箱计算（hub 自定义智能体工具组）。
- * 环境可用性由运行时守卫：未下载/未核验时 python_run 返回引导错误，
- * 智能体编辑页对该组做可用性门控（见 AgentManager）。
- */
-const PYTHON_GROUP_TOOLS = [
-  'python_run',
-] as const;
-
 // ──── 场景预设映射 ────
 // （导出供 tests/tools 契约测试枚举全部场景——新增场景若漏登记注册名，
 //   测试会立即失败，防止预设与注册表漂移）
@@ -412,9 +285,6 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
   /** 思维导图：Excalidraw 绘图 */
   excalidraw: ['excalidraw_tool'],
 
-  /** Bilibili 检索与视频处理（站点搜索工具按会话动态扩展） */
-  bilibili: [...BILIBILI_TOOLS],
-
   /** Deep Search：多站点深度调研（通用检索 web_search 恒定在场，站点检索
    *  platform_search 由发送装配按已开启站点动态追加，见 deep-search-sites）。
    *  页面深访工具组（observe / interact / page_exec / dom_explore）：
@@ -436,42 +306,6 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
 
   /** 数据采集助手：批量数据采集与导出（脚本抓取 → results/ 结果文件 → xlsx 直出） */
   dataHarvest: [...DATA_HARVEST_TOOLS],
-
-  /** 资源嗅探与下载（hub 自定义智能体工具组） */
-  resource: [...RESOURCE_GROUP_TOOLS],
-
-  /** 下载与文件上传（hub 自定义智能体工具组） */
-  files: [...FILES_GROUP_TOOLS],
-
-  /** 数据处理（hub 自定义智能体工具组） */
-  data: [...DATA_GROUP_TOOLS],
-
-  /** 页面深度读取（hub 自定义智能体工具组） */
-  pageRead: [...PAGE_READ_GROUP_TOOLS],
-
-  /** DOM 元素交互（hub 自定义智能体工具组） */
-  domInteract: [...DOM_INTERACT_GROUP_TOOLS],
-
-  /** 标签页与窗口（hub 自定义智能体工具组） */
-  tabsWindows: [...TABS_WINDOWS_GROUP_TOOLS],
-
-  /** 页面脚本执行（hub 自定义智能体工具组） */
-  scripting: [...SCRIPTING_GROUP_TOOLS],
-
-  /** 书签与历史（hub 自定义智能体工具组） */
-  bookmarkHistory: [...BOOKMARK_HISTORY_GROUP_TOOLS],
-
-  /** 搜索工具组（hub 自定义智能体工具组；通用网页检索 + 站点平台检索） */
-  webSearch: [...SEARCH_GROUP_TOOLS],
-
-  /** 视觉坐标操作（hub 自定义智能体工具组；仅截图/OCR——vision_gui 由「视觉操作」开关注入） */
-  visionTools: [...VISION_TOOLS_GROUP],
-
-  /** 网络请求与控制台（hub 自定义智能体工具组） */
-  networkTools: [...NETWORK_TOOLS_GROUP],
-
-  /** Python 沙箱计算（hub 自定义智能体工具组；须先在设置中启用 Python 环境） */
-  python: [...PYTHON_GROUP_TOOLS],
 };
 
 /**

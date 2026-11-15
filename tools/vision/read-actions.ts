@@ -21,13 +21,18 @@ import { toViewport, relativePoint, finiteRange, type Viewport } from "./coordin
 import { imageRegion, type ImageRegion } from "./observation-model";
 import { validateObservationObject } from "./observation-actions";
 import { visionReadPayload } from "./read-payload";
-import { bounded, GuiError, guiFailure } from "./gui-errors";
+import { GuiError, guiFailure } from "./gui-errors";
+import { injectScript } from "./injection";
 import { withGuiCancellation } from "./gui-cancellation";
 
 export interface ReadActionArgs {
   screenshotId: string;
   point?: { x: number; y: number };
   region?: ImageRegion;
+  /** 意图说明：统一调用形态的一部分；校验合法性后忽略，不参与判定。 */
+  description?: string;
+  /** 观察类动作不需要审批；该字段仅被接受并忽略。 */
+  confirm?: boolean;
 }
 export interface ReadScrollArgs {
   screenshotId: string;
@@ -35,6 +40,10 @@ export interface ReadScrollArgs {
   direction: "up" | "down" | "left" | "right";
   /** 目标容器滚动百分比（1..100，默认 75）——与手势 scroll 的 percent（视口相对）分名 */
   containerPercent?: number;
+  /** 意图说明：统一调用形态的一部分；校验合法性后忽略，不参与判定。 */
+  description?: string;
+  /** 观察类动作不需要审批；该字段仅被接受并忽略。 */
+  confirm?: boolean;
 }
 
 /** 只读观察的 action 名（与工具 schema 的 action 取值一致，用于诊断上下文）。 */
@@ -45,6 +54,8 @@ export function validateReadActionArgs(raw: unknown): ReadActionArgs {
     "screenshotId",
     "point",
     "region",
+    "description",
+    "confirm",
   ]) as unknown as ReadActionArgs;
   if (args.point !== undefined) relativePoint(args.point);
   // 用归一化后的 region 覆盖原值（imageRegion 已核验键集与边界）
@@ -60,6 +71,8 @@ export function validateReadScrollArgs(raw: unknown): ReadScrollArgs {
     "point",
     "direction",
     "containerPercent",
+    "description",
+    "confirm",
   ]) as unknown as ReadScrollArgs;
   if (args.point !== undefined) relativePoint(args.point);
   if (!["up", "down", "left", "right"].includes(args.direction as string))
@@ -69,7 +82,7 @@ export function validateReadScrollArgs(raw: unknown): ReadScrollArgs {
   return structuredClone(args);
 }
 
-/** 只读观察的统一执行体：隔离世界单次脚本 + 2.5s 有界等待。 */
+/** 只读观察的统一执行体：隔离世界单次脚本 + 有界等待。 */
 async function observePayload(
   action: ObservationAction,
   args: ReadActionArgs | ReadScrollArgs,
@@ -77,7 +90,7 @@ async function observePayload(
   viewport: Viewport,
 ): Promise<Record<string, unknown>> {
   const point =
-    "point" in args && args.point ? toViewport(args.point, viewport) : undefined;
+    "point" in args && args.point ? toViewport(args.point, viewport) : null;
   const region =
     action === "read" && "region" in args && args.region
       ? {
@@ -86,25 +99,26 @@ async function observePayload(
           width: (args.region.width / 1000) * viewport.width,
           height: (args.region.height / 1000) * viewport.height,
         }
-      : undefined;
+      : null;
   const direction =
     action === "read_scroll" ? (args as ReadScrollArgs).direction : undefined;
   const containerPercent =
     action === "read_scroll" ? (args as ReadScrollArgs).containerPercent : undefined;
   // 有界等待承担取消语义：超时/取消后结果不再被消费（与原实现一致）。
   // 载荷内的分支名沿用 read/scroll（read_scroll 映射到载荷的 scroll 分支）。
-  const results = await bounded(
-    chrome.scripting.executeScript({
-      target: { tabId, frameIds: [0] },
+  // 注入参数走 JSON 语义：缺省项一律省键或传 null，绝不携带 undefined 属性。
+  const payload: Record<string, unknown> = { point, region };
+  if (direction !== undefined) payload.direction = direction;
+  if (containerPercent !== undefined) payload.containerPercent = containerPercent;
+  const results = await injectScript(
+    {
+      tabId,
+      frameIds: [0],
       world: "ISOLATED",
       func: visionReadPayload,
-      args: [
-        action === "read" ? "read" : "scroll",
-        { point, region, direction, containerPercent },
-      ],
-    }),
-    2500,
-    "Read-only page observation",
+      args: [action === "read" ? "read" : "scroll", payload],
+    },
+    { operation: "Read-only page observation", timeoutMs: 2500 },
   );
   if (!results[0]?.result)
     throw new GuiError("TARGET_UNAVAILABLE", "Observation returned no data");

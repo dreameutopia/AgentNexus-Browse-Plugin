@@ -1,4 +1,8 @@
 import { getPluginSnapshot, onPluginsChange } from '@/utils/plugins/catalog';
+import {
+  grantPluginSessionApproval,
+  hasPluginSessionApproval,
+} from '@/utils/plugins/approvals';
 import { invariant, isPluginRef, ownerOf } from '@/utils/plugins/contracts';
 /**
  * 会话引擎
@@ -80,6 +84,11 @@ import {
   PAGE_EXEC_ENGINE_TIMEOUT_MS,
   pageExecEngineTimeout,
 } from '@/tools/common/page-exec-timeout';
+import {
+  PYTHON_RUN_ENGINE_TIMEOUT_MS,
+  PYTHON_RUN_TOOL_ID,
+  pythonRunEngineTimeout,
+} from '@/tools/python/python-timeout-contract';
 import { TOOL_NAMES } from '@/common/constants';
 import type {
   ChatMessageRecord,
@@ -88,7 +97,7 @@ import type {
   ConversationRuntime,
   RunSummary,
 } from '../types';
-import type { ToolCallUI } from '../../types/chat';
+import type { SkillPartEntry, ToolCallUI } from '../../types/chat';
 import { createErrorResponse, type ToolResult } from '@/common/tool-handler';
 
 // ==================== 依赖注入（可测试性） ====================
@@ -273,7 +282,7 @@ interface ToolBatchOutcome {
  * 插件工具）一律保守重拍。提取为模块级常量供三处调用点共用，杜绝口径漂移。
  */
 const PAGE_TOOL_CATEGORIES = new Set([
-  'browser', 'vision', 'automation', 'search', 'bilibili', 'excalidraw', 'resource',
+  'browser', 'vision', 'automation', 'search', 'excalidraw', 'resource',
 ]);
 
 const visionNoRecapture = (name: string): boolean | undefined =>
@@ -307,11 +316,12 @@ const TOOL_APPROVAL_PREVIEW_MAX_CHARS = 400;
 
 /**
  * 组装发给模型的本轮用户消息（引擎运行与发送前上下文计量共用，保证逐字同源）：
- *   - 转录可见正文（runtime.userInput，含附件摘要标记）+ 网页引用信封
- *     （<page_quote>：来源 URL + 页面标题 + 选区原文）+ <upload_file> 信封
- *     （文件元信息 + 第 1 页预览，全文在会话文件库由 read_file 分页续读）
- *     + 系统注入上下文（<system_context source="auto_injected">：时间时区
- *     <current_time> + 当前激活网页 <active_page>，见 utils/system-context.ts）；
+ *   - 转录可见正文（runtime.userInput，纯用户输入）+ 网页引用信封
+ *     （<page_quote>：来源 URL + 页面标题 + 选区原文）+ <upload_file> 清单
+ *     （每个上传文件的路径与大小；**不含正文**，正文由模型按需调用
+ *     file_util 读取）+ 系统注入上下文（<system_context
+ *     source="auto_injected">：时间时区 <current_time> + 当前激活网页
+ *     <active_page>，见 utils/system-context.ts）；
  *   - activePage 由调用方经 queryActivePageInfo 获取后传入（引擎侧与计量侧
  *     各自取发送时刻的标签页，时间戳本就逐调用取当前时刻，允许亚秒级差异）；
  *   - images 非空时输出多模态数组（text 在前、图片按传入顺序排列），
@@ -353,6 +363,32 @@ export function composeLlmUserMessage(
  * 一起）。图片本体已按固定 1200 token 计量（token-estimate），此处只管文本。
  */
 const VISION_SUMMARY_MAX_CHARS = 600;
+
+/**
+ * 从合成激活轮提取「本轮自动加载的技能」快照（UI 时间线展示用）。
+ *
+ * 数据源与 loadedSkillIds 同源（activationContext 里的 skill_tool(action="load")
+ * 调用）：只读取参数，不重新解析技能正文——技能可能在装配后被停用/删除，
+ * 展示必须忠实反映「当时加载了什么」，不能因当前状态而消失。
+ * 名称取自加载时刻的技能记录；记录已缺失时回落 ID（引用仍可追溯）。
+ */
+function extractActivationSkills(messages: readonly ChatMessage[]): SkillPartEntry[] {
+  const entries = new Map<string, SkillPartEntry>();
+  for (const message of messages) {
+    for (const call of message.tool_calls ?? []) {
+      if (call.function?.name !== SKILL_TOOL_ID) continue;
+      try {
+        const args = JSON.parse(call.function.arguments) as { action?: string; skill_id?: string };
+        if (args.action !== 'load' || typeof args.skill_id !== 'string') continue;
+        const skill = skillEngine.get(args.skill_id);
+        entries.set(args.skill_id, { id: args.skill_id, name: skill?.name ?? args.skill_id });
+      } catch {
+        // 参数由本进程构造；损坏时跳过该条，不影响运行与其它技能展示
+      }
+    }
+  }
+  return [...entries.values()];
+}
 
 // ==================== 引擎 ====================
 
@@ -502,12 +538,23 @@ export class ConversationEngine {
        */
       const viewportDedup = new ViewportImageDeduplicator();
       for (const ref of runtime.priorViewportImageRefs ?? []) viewportDedup.remember(ref);
-      // 本轮入档条件：有用户正文**或**有引用信封——「只引用一段网页原文、
-      // 不另写文字」也是一条完整的请求，必须照常入档与构造模型用户消息
-      if (runtime.userInput.trim() || runtime.pageQuotePrompt) {
+      // 本轮入档条件：有用户正文**或**有引用信封**或**有上传文件——
+      // 「只丢一个文件、不另写文字」也是一条完整的请求，必须照常入档与
+      // 构造模型用户消息
+      const runtimeUploadedFiles = runtime.uploadedFiles ?? [];
+      if (runtime.userInput.trim() || runtime.pageQuotePrompt || runtimeUploadedFiles.length > 0) {
         // 上传图片先入库取引用（失败降级为无引用，绝不阻断发送）
         const userImageRefs =
           runtime.userImages.length > 0 ? await imageStore.putFromDataUrls(runtime.userImages) : [];
+        // 上传文件条目：图片补齐图片库引用（气泡侧放大查看/下载用）。
+        // 引用取自图片库的内容哈希缓存——putFromDataUrls 刚写入，
+        // 此处命中缓存不会产生第二次存储写入。
+        const uploadedFiles = runtimeUploadedFiles.map(file => {
+          if (file.imageIndex === undefined) return { ...file };
+          const dataUrl = runtime.userImages[file.imageIndex];
+          const ref = typeof dataUrl === 'string' ? imageStore.findRefByDataUrl(dataUrl) : undefined;
+          return ref ? { ...file, imageRef: ref } : { ...file };
+        });
         record = await transcriptEngine.appendUserMessage(
           runtime.chatId,
           runtime.userInput,
@@ -516,7 +563,17 @@ export class ConversationEngine {
           // 守卫停止后的「继续」是自动续跑的隐藏轮：转录照常落库（模型上下文
           // 可见），UI 侧按 synthetic 标记不渲染为用户气泡，消息列表仍以它
           // 为「新内容」推进时效判定
-          { synthetic: runtime.hiddenUserInput === true },
+          {
+            synthetic: runtime.hiddenUserInput === true,
+            uploadedFiles,
+            // 本条用户消息绑定的智能体与预选技能快照：供气泡展示
+            // 「@ 的是哪个智能体」与「这一轮用了哪些技能」（技能仅单轮有效）。
+            // 隐藏续跑轮不是用户发起的一轮（且不渲染气泡），不写技能快照，
+            // 避免不可见记录被误读为「这一轮使用过技能」。
+            agentId: runtime.agentId,
+            agentName: runtime.agentName,
+            skills: runtime.hiddenUserInput ? undefined : runtime.selectedSkills,
+          },
         );
         emit({ type: 'user-message', chatId: runtime.chatId, record });
 
@@ -593,6 +650,15 @@ export class ConversationEngine {
       const storedActivation = await storeProtocolMessages(activationContext);
       record.modelMessages = [...(record.modelMessages ?? []), ...storedActivation];
       if (record.modelContext) record.modelContext.push(...storedActivation);
+      // 预选技能的自动激活在时间线上是一个独立事实：以 skill 片段置于流最前
+      // （早于首截图与任何模型输出），UI 渲染为可折叠「已加载技能」容器。
+      // 重试路径的记录已携带上一轮的同名片段，不重复追加（记录是终态事实源）；
+      // 合成轮本身仍不产生工具卡片（见构造器注释）。
+      const activationSkills = runtime.retryTarget ? [] : extractActivationSkills(activationContext);
+      if (activationSkills.length > 0) {
+        record.parts.push({ type: 'skill', skills: activationSkills });
+        await transcriptEngine.flush(record);
+      }
       // vision 首截图引用挂接到助手消息：立即落库保证运行中断/重载后图片不丢；
       // 模型侧由 modelMessages 保留原始图片位置；UI 引用与时间线各司其职：
       //   - imageRefs：引用集合（byImageRef 索引据此计数，删除引擎按它回收）；
@@ -649,7 +715,15 @@ export class ConversationEngine {
       handle.snapshotTimer = globalThis.setInterval(() => {
         void transcriptEngine.flush(handle.record);
       }, SNAPSHOT_INTERVAL_MS);
-      emit({ type: 'assistant-start', chatId: runtime.chatId, messageId: record.id, ...(runtime.retryTarget ? { record: structuredClone(record) } : {}) });
+      emit({
+        type: 'assistant-start',
+        chatId: runtime.chatId,
+        messageId: record.id,
+        ...(runtime.retryTarget ? { record: structuredClone(record) } : {}),
+        // 直播态尚未持有 record（占位由 thinking 建立）：技能片段随事件种子，
+        // 与引擎 record.parts 的首位片段严格同序（终态按索引合并的契约）
+        ...(activationSkills.length > 0 ? { activationSkills } : {}),
+      });
     } catch (setupError) {
       // 准备失败：清理登记后原样抛出，由调用方以可读错误呈现（此时无助手记录可承载）
       this.pendingAborts.delete(runtime.chatId);
@@ -695,10 +769,16 @@ export class ConversationEngine {
         }
 
         // 守卫：轮数 / 时长（经回调交由 UI 决策）
+        //
+        // 时长守卫**仅在运行时长上限被显式给出时生效**（学习/验证等长任务经
+        // limitsOverride 给出）。普通对话不设上限——旧实现的 10 分钟上限会把
+        // 长耗时任务截断成「工具未执行」，这类任务应由「单工具超时」与
+        // 「轮次上限」兜底。
+        const durationLimitMs = runtime.limits.maxDurationMs;
         const limitKind =
           guardIterations > runtime.limits.maxIterations
             ? ('max-iterations' as const)
-            : Date.now() - guardStartMs > runtime.limits.maxDurationMs
+            : durationLimitMs !== undefined && Date.now() - guardStartMs > durationLimitMs
               ? ('max-duration' as const)
               : null;
         if (limitKind) {
@@ -707,8 +787,8 @@ export class ConversationEngine {
             ? await options.onLimitReached(limitKind, {
                 iterations: limitKind === 'max-iterations' ? runtime.limits.maxIterations : undefined,
                 minutes:
-                  limitKind === 'max-duration'
-                    ? Math.round(runtime.limits.maxDurationMs / 60000)
+                  limitKind === 'max-duration' && durationLimitMs !== undefined
+                    ? Math.round(durationLimitMs / 60000)
                     : undefined,
               })
             : false;
@@ -722,7 +802,7 @@ export class ConversationEngine {
                       count: runtime.limits.maxIterations,
                     })
                   : t('sidepanel.chat.guardStoppedDuration', {
-                      minutes: Math.max(1, Math.round(runtime.limits.maxDurationMs / 60000)),
+                      minutes: Math.max(1, Math.round((durationLimitMs ?? 0) / 60000)),
                     }),
               // 学习流程自行管理预算与恢复入口（resetBudgetOnContinue），
               // 不在这里额外提供「继续 / 修改设置」，避免双入口歧义
@@ -953,8 +1033,13 @@ export class ConversationEngine {
         await this.appendModelMessages(handle, [finalMessage, ...placeholderMessages]);
         handle.roundText = '';
         // 本轮工具执行的时长截止点：串行模式下 N 个挂死调用最坏累加 N×单工具
-        // 超时，必须以运行时长上限截断，否则一轮即可超出 maxDurationMs 数倍
-        const toolDeadlineMs = guardStartMs + runtime.limits.maxDurationMs;
+        // 超时，有运行时长上限时必须以它截断，否则一轮即可超出上限数倍。
+        // 普通对话无上限（maxDurationMs 缺省）→ 不设截止点，工具只受单工具
+        // 超时约束。
+        const toolDeadlineMs =
+          runtime.limits.maxDurationMs !== undefined
+            ? guardStartMs + runtime.limits.maxDurationMs
+            : undefined;
         const toolOutcome = await this.executeToolCalls(
           runtime,
           handle,
@@ -998,8 +1083,8 @@ export class ConversationEngine {
 
         // 时长上限在串行执行期间被触及：剩余调用已以「未执行」错误收尾，
         // 跳过本轮后处理，交循环顶部的时长守卫向用户确认（确认继续则下一轮
-        // 重新发起调用；放弃则以停止说明收尾）
-        if (Date.now() > toolDeadlineMs + toolOutcome.waitedMs) {
+        // 重新发起调用；放弃则以停止说明收尾）。无运行时长上限时不适用。
+        if (toolDeadlineMs !== undefined && Date.now() > toolDeadlineMs + toolOutcome.waitedMs) {
           continue;
         }
 
@@ -1470,7 +1555,8 @@ export class ConversationEngine {
    * OpenAI 协议、被网关 400 拒绝。
    *
    * @param deadlineMs 本轮工具执行的时长截止点（毫秒时间戳）：到达后不再启动
-   *   新调用，剩余调用以「已达运行时长上限」错误收尾，交循环顶部时长守卫确认
+   *   新调用，剩余调用以「已达运行时长上限」错误收尾，交循环顶部时长守卫确认。
+   *   缺省（undefined）= 无运行时长上限，不截断任何调用。
    */
   private async executeToolCalls(
     runtime: ConversationRuntime,
@@ -1478,7 +1564,7 @@ export class ConversationEngine {
     toolCalls: NonNullable<ChatMessage['tool_calls']>,
     options: RunOptions,
     emit: (event: ConversationEvent) => void,
-    deadlineMs: number,
+    deadlineMs: number | undefined,
   ): Promise<ToolBatchOutcome> {
     // 轮次 id：本批工具调用的身份标识，按 chatId 缓存于引擎。
     // 结果写入模型上下文前必须校验它仍是该会话的当前轮次。
@@ -1554,7 +1640,7 @@ export class ConversationEngine {
    * 单工具超时上界的按调用解析。
    *
    * 统一上界 = runtime.limits.toolTimeoutMs（应用设置「单工具最长执行时间」，
-   * 默认 30 分钟）。三类调用按语义放宽，放宽都只是**放宽**、不放宽到无界：
+   * 默认 20 分钟）。四类调用按语义放宽，放宽都只是**放宽**、不放宽到无界：
    *   - 显式等待工具：等待秒数本身可以超过统一上界（等待是有意的行为），
    *     上界 = max(统一上界, 等待秒数 + 5s)；
    *   - 交互类工具：等待真实用户答复，窗口由「交互超时」设置决定，
@@ -1562,7 +1648,10 @@ export class ConversationEngine {
    *   - js_run：工具契约的 timeout 上限 300s 必须真实可达——
    *     用户把统一上界调到 1 分钟时，引擎若仍按统一上界掐断，工具说明里的
    *     300s 就是谎言；上界 = max(统一上界, 本次 timeout + 缓冲)，
-   *     且地板恒为 300s + 缓冲（契约见 tools/common/page-exec-timeout.ts）。
+   *     且地板恒为 300s + 缓冲（契约见 tools/common/page-exec-timeout.ts）；
+   *   - python_run：同构——工具契约的 timeoutSeconds 上限 300s 必须真实可达，
+   *     上界 = max(统一上界, 本次 timeoutSeconds + 缓冲)，地板恒为 300s + 缓冲
+   *     （契约见 tools/python/python-timeout-contract.ts）。
    * 解析失败一律回落到统一上界——超时解析异常绝不让调用失去上界。
    */
   private resolveToolTimeout(runtime: ConversationRuntime, plan: ToolCallPlan): number {
@@ -1575,17 +1664,25 @@ export class ConversationEngine {
       }
     }
     if (INTERACTIVE_TOOL_NAMES.has(plan.toolName)) {
-      // 交互类工具等待的是**真实用户**的答复，窗口由「交互超时」设置决定。
-      // 取两者较大者：人类答复窗口更长时以它为准（用户显式设置优先），
-      // 不得被统一上界静默截断——否则「交互超时 60 分钟」会被「单工具 30 分钟」
-      // 悄悄砍半。统一上界仍然兜底（交互超时更短时以它为准）。
-      return Math.max(base, appSettingsStore.getInteractTimeoutMinutes() * 60_000);
+      // 交互类工具等待的是**真实用户**的答复，窗口由「用户响应等待时长」设置
+      // 决定（询问弹窗与守卫确认条共用同一档）。取两者较大者：人类答复窗口
+      // 更长时以它为准（用户显式设置优先），不得被统一上界静默截断——否则
+      // 「用户响应 60 分钟」会被「单工具 20 分钟」悄悄砍半。统一上界仍然兜底
+      // （用户响应更短时以它为准）。
+      return Math.max(base, appSettingsStore.getUserResponseTimeoutMinutes() * 60_000);
     }
     if (plan.toolName === JS_RUN_TOOL_ID) {
       try {
         return pageExecEngineTimeout(parseToolArguments(plan.rawArgs), base);
       } catch {
         return Math.max(base, PAGE_EXEC_ENGINE_TIMEOUT_MS);
+      }
+    }
+    if (plan.toolName === PYTHON_RUN_TOOL_ID) {
+      try {
+        return pythonRunEngineTimeout(parseToolArguments(plan.rawArgs), base);
+      } catch {
+        return Math.max(base, PYTHON_RUN_ENGINE_TIMEOUT_MS);
       }
     }
     return base;
@@ -1647,7 +1744,7 @@ export class ConversationEngine {
       if (!skill || !skill.enabled || !skill.allowedTools.every(id => isSkillToolId(id) || isVisionAssistantTool(id)))
         throw new Error('SKILL_NOT_ALLOWED: 该技能不存在、未启用或需要代操作工具；请切换合适的执行智能体。');
     }
-    if (runtime.toolPolicy === 'vision-assistant' && toolName === 'browser_get_page_text' &&
+    if (runtime.toolPolicy === 'vision-assistant' && toolName === 'read_website' &&
         (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).length > 0))
       throw new Error('TOOL_NOT_ALLOWED: 视觉助手的全文读取仅接受空参数（读取当前活动页），不能指定标签页、URL 或分页引用。');
     // 观察者边界：视觉助手经白名单持有 vision_gui，但只开放只读观察 action——
@@ -1661,7 +1758,21 @@ export class ConversationEngine {
       if (typeof action !== 'string' || !VISION_ASSISTANT_GUI_ACTIONS.has(action))
         throw new Error(`TOOL_NOT_ALLOWED: 视觉助手仅开放只读观察 action（${[...VISION_ASSISTANT_GUI_ACTIONS].join(' / ')}），action="${typeof action === 'string' ? action : String(action)}" 不在观察者能力内；代操作请切换视觉通用助手 / 文本通用助手。`);
     }
-    const needsApproval = this.deps.requiresApproval(toolName, args);
+    const toolMeta = toolRegistry.getTool(toolName)?.metadata;
+    const pluginMeta = toolMeta?.plugin;
+    const approvalLevel = toolMeta?.approvalLevel ?? 'session';
+    let needsApproval = this.deps.requiresApproval(toolName, args);
+    if (pluginMeta) {
+      if (approvalLevel === 'install') needsApproval = false;
+      else if (approvalLevel === 'session') {
+        needsApproval = !(await hasPluginSessionApproval({
+          chatId: runtime.chatId,
+          pluginKey: pluginMeta.key,
+          digest: pluginMeta.digest,
+          epoch: pluginMeta.epoch,
+        }));
+      } else needsApproval = true;
+    }
     if (needsApproval) {
       const approved = options.onToolApproval
         ? await this.awaitToolApproval(options.onToolApproval, {
@@ -1676,6 +1787,14 @@ export class ConversationEngine {
             ? `APPROVAL_NOT_GRANTED：工具 ${toolName} 未获批准（用户拒绝或等待超时），未执行。停止该操作并说明原因，不得换工具、按键或脚本绕过；可继续不依赖该授权的工作。`
             : `APPROVAL_UNAVAILABLE：工具 ${toolName} 需要审批，但当前运行未接入用户审批回调，未执行。这不是用户拒绝；请报告审批通道问题，不得绕过。`,
         );
+      }
+      if (pluginMeta && approvalLevel === 'session') {
+        await grantPluginSessionApproval({
+          chatId: runtime.chatId,
+          pluginKey: pluginMeta.key,
+          digest: pluginMeta.digest,
+          epoch: pluginMeta.epoch,
+        });
       }
     }
 
@@ -1694,6 +1813,17 @@ export class ConversationEngine {
       ((toolName === JS_RUN_TOOL_ID && ['run', 'crawl'].includes(String((args as { action?: unknown })?.action))) || toolName.startsWith('browser_') ||
         (category !== undefined && PAGE_TOOL_CATEGORIES.has(category)));
     const reportTarget = options.beginPageOperation?.(followsForeground);
+    // 页面能力边界：插件工具取自身插件；插件智能体的核心工具在唯一 owner 时
+    // 继承该插件的 network 白名单。多插件自定义智能体不猜测归属，交给工具自身。
+    const capabilityKeys = [...(runtime.pluginOwners ?? [])];
+    const capabilityKey =
+      pluginMeta?.key ??
+      (capabilityKeys.length === 1 ? capabilityKeys[0] : undefined);
+    const capabilityPackage = capabilityKey
+      ? plugins.packages.find(
+          (pkg) => pkg.key === capabilityKey && pkg.enabled && !pkg.blocked,
+        )
+      : undefined;
     let executing = true;
     try {
       return await this.deps.executeTool(toolName,
@@ -1708,6 +1838,8 @@ export class ConversationEngine {
           signal: ctx.signal,
           pluginBindings: runtime.pluginBindings,
           pluginApproved: true,
+          pluginKey: capabilityKey,
+          pluginOrigins: capabilityPackage?.manifest.capabilities.network,
           onTabTarget: reportTarget && (tabId => {
             if (executing && !ctx.signal.aborted) reportTarget(tabId);
           }),

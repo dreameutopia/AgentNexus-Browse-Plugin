@@ -55,6 +55,9 @@ export async function testSiteLearning(check: (condition: boolean, label: string
     check(!validateLearnConfig({ ...base, validationLimits: invalid } as any, candidates).ok, '配置拒绝非法验证预算');
   }
   check(validateLearnConfig({ ...base, autoValidate: false, validationLimits: null } as any, candidates).ok, '关闭验证时不被隐藏预算阻塞');
+  const withoutAutoValidate = { url: base.url, goal: base.goal, targetMode: base.targetMode, strategy: base.strategy, modelRef: base.modelRef } as any;
+  const autoValidateDefault = validateLearnConfig(withoutAutoValidate, candidates);
+  check(autoValidateDefault.ok && autoValidateDefault.config.autoValidate === false, '未显式指定时默认跳过验证阶段');
   for (const additionalDescription of [null, {}, 123, '😀'.repeat(LEARN_DESCRIPTION_MAX_CHARS + 1)]) {
     check(!validateLearnConfig({ ...base, additionalDescription } as any, candidates).ok, '额外描述拒绝非法类型和超长内容');
   }

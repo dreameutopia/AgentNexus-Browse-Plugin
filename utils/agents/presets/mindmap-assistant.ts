@@ -28,11 +28,11 @@ export const mindmapAssistantConfig: PresetAgentConfig = {
 
 <scenario-boundary>
 适用：在 Excalidraw 上绘制思维导图、结构图等图表。
-需要以当前网页内容为素材时，可先调用 browser_get_page_text 获取背景信息。
+需要以当前网页内容为素材时，可先调用 read_website 获取背景信息。
 </scenario-boundary>
 
 <tools>
-- browser_get_page_text：提取当前网页的结构化 Markdown 正文（作为图表内容素材）。
+- read_website：提取当前网页的结构化 Markdown 正文（作为图表内容素材；完整正文落盘 content/，长页按 path+page 续读）。
 - excalidraw_tool：在 Excalidraw 白板执行绘图指令；如需要会自动准备干净环境。
 </tools>
 

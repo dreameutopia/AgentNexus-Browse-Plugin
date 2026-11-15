@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>技能沉淀提醒卡片预览</title>
+<link rel="stylesheet" href="../entrypoints/sidepanel/styles/global.css">
+<link rel="stylesheet" href="../entrypoints/sidepanel/styles/app.css">
+<style>
+  /* 预览页仅用于视觉核对：复刻侧边栏列宽（380px）与宽列（560px）两种场景 */
+  body { margin: 0; padding: 24px; background: var(--bg-secondary, #f8fafc); }
+  .preview-row { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+  .preview-col { background: var(--bg-primary, #fff); border: 1px solid var(--line-soft, #e4e2de); border-radius: 12px; padding: 12px; }
+  .preview-col--narrow { width: 380px; }
+  .preview-col--wide { width: 560px; }
+  .preview-label { font-size: 11px; color: var(--ink-secondary, #787671); margin-bottom: 8px; }
+
+/* ──── 技能沉淀提醒卡片（紧凑排版） ────
+   布局要点：① 图标与标题**同行**，不再单占左栏——左栏空一列是这张卡最大的空白来源；
+   ② 正文与按钮整行铺开（不再被图标挤到右侧窄列），按钮不因换行多占一行高度；
+   ③ 尺寸基调整体下调一档：内边距 11/13、图标 26、正文 11.5/1.55、按钮 5/10。 */
+.skill-practice-card{display:flex;flex-direction:column;gap:6px;margin:10px 0 14px;padding:11px 13px;border:1px solid color-mix(in srgb,var(--primary-color,#3b3934) 23%,transparent);border-radius:13px;background:linear-gradient(125deg,color-mix(in srgb,var(--primary-color,#3b3934) 8%,transparent),color-mix(in srgb,var(--primary-color,#3b3934) 2%,transparent));color:var(--ink-primary,#334155)}
+.skill-practice-head{display:flex;align-items:center;gap:8px;min-width:0}
+.skill-practice-title{font-size:13px;font-weight:650;line-height:1.45;min-width:0}
+.skill-practice-icon{display:grid;place-items:center;flex-shrink:0;width:26px;height:26px;border-radius:8px;color:var(--primary-color,#3b3934);background:color-mix(in srgb,var(--primary-color,#3b3934) 12%,transparent)}
+.skill-practice-icon svg{width:15px;height:15px}
+.skill-practice-intro{margin:0;font-size:11.5px;line-height:1.55;color:var(--ink-secondary,#64748b)}
+.skill-practice-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.skill-capture-dialog-mark{display:grid;place-items:center;flex-shrink:0;width:42px;height:42px;border-radius:13px;color:var(--primary-color,#3b3934);background:color-mix(in srgb,var(--primary-color,#3b3934) 12%,transparent)}
+button{border:1px solid var(--line-soft,#dce1eb);border-radius:9px;background:transparent;color:inherit;padding:7px 12px;font:inherit;font-size:12px;cursor:pointer;transition:background .16s,transform .16s}button:hover{background:color-mix(in srgb,var(--primary-color,#3b3934) 10%,transparent)}button:focus-visible,textarea:focus-visible{outline:2px solid var(--primary-color,#3b3934);outline-offset:3px}button:disabled{opacity:.5;cursor:default}.skill-practice-actions button{padding:5px 10px;font-size:11.5px;border-radius:8px}.skill-practice-primary{background:var(--primary-color,#3b3934)!important;border-color:transparent;color:white;box-shadow:0 2px 7px #3b39341a}.skill-practice-quiet{border-color:transparent;color:var(--ink-secondary,#64748b);font-size:11px;padding:5px 8px}
+.skill-capture-backdrop{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;padding:22px;background:#10162966;backdrop-filter:blur(5px)}.skill-capture-dialog{width:min(100%,480px);box-sizing:border-box;padding:24px;border-radius:20px;border:1px solid var(--line-soft,#dce1eb);background:var(--surface-card,#fff);color:var(--ink-primary,#1e293b);box-shadow:0 24px 90px #10162940;outline:none}.skill-capture-dialog-top{display:flex;align-items:center;gap:12px}.skill-capture-dialog h3{font-size:16px;margin:0}.skill-capture-dialog p{font-size:13px;line-height:1.7;color:var(--ink-secondary,#64748b);white-space:pre-line}.skill-capture-field{display:grid;gap:8px;margin-top:18px;font-size:12px;font-weight:600}.skill-capture-field textarea{box-sizing:border-box;width:100%;resize:vertical;min-height:96px;max-height:260px;padding:11px 12px;border:1px solid var(--line-soft,#dce1eb);border-radius:10px;background:var(--surface-soft,#f7f8fc);color:inherit;font:inherit;font-weight:400;line-height:1.6}.skill-capture-dialog footer{display:flex;justify-content:flex-end;gap:10px;margin-top:22px}.skill-capture-error{color:#d14d53!important}
+@media(prefers-reduced-motion:reduce){button{transition:none}}@media(max-width:360px){.skill-practice-card{padding:10px;gap:6px}.skill-practice-quiet{width:100%;text-align:left}.skill-capture-dialog{padding:18px}}
+
+</style>
+</head>
+<body>
+  <div class="preview-row">
+    <div class="preview-col preview-col--narrow">
+      <div class="preview-label">侧边栏列宽 380px</div>
+      <section  class="skill-practice-card" aria-live="polite">
+    <!-- 图标与标题同行（不再单占左栏）：左下空白消失，正文与按钮可整行铺开 -->
+    <div class="skill-practice-head">
+      <span class="skill-practice-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 4h11a2 2 0 0 1 2 2v5M4 4v16h12M4 4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2m14-7v8m-4-4h8M7 8h6M7 12h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      <strong class="skill-practice-title">把这次实践，留作下一次的经验</strong>
+    </div>
+    <p class="skill-practice-intro">这次任务已经积累了较多操作经验。可以整理成可复用的 Skill，下次从验证过的方法开始。</p>
+    <div class="skill-practice-actions">
+      <button type="button" class="skill-practice-primary">沉淀为 Skill</button>
+      <button type="button">本次先不</button>
+      <button type="button" class="skill-practice-quiet">不再自动提醒</button>
+    </div>
+  </section>
+    </div>
+    <div class="preview-col preview-col--wide">
+      <div class="preview-label">宽列 560px</div>
+      <section  class="skill-practice-card" aria-live="polite">
+    <!-- 图标与标题同行（不再单占左栏）：左下空白消失，正文与按钮可整行铺开 -->
+    <div class="skill-practice-head">
+      <span class="skill-practice-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M4 4h11a2 2 0 0 1 2 2v5M4 4v16h12M4 4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2m14-7v8m-4-4h8M7 8h6M7 12h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      <strong class="skill-practice-title">把这次实践，留作下一次的经验</strong>
+    </div>
+    <p class="skill-practice-intro">这次任务已经积累了较多操作经验。可以整理成可复用的 Skill，下次从验证过的方法开始。</p>
+    <div class="skill-practice-actions">
+      <button type="button" class="skill-practice-primary">沉淀为 Skill</button>
+      <button type="button">本次先不</button>
+      <button type="button" class="skill-practice-quiet">不再自动提醒</button>
+    </div>
+  </section>
+    </div>
+  </div>
+</body>
+</html>

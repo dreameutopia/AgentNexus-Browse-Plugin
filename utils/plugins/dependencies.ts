@@ -15,7 +15,7 @@ function versionSatisfies(version: string, range: string): boolean {
 /**
  * 计算插件可用性（纯函数）。
  *
- * 1.2 的引用边界已在验包期限定为「本插件 + builtin」，因此这里只需要处理
+ * 引用边界已在验包期限定为「本插件 + builtin」，因此这里只需要处理
  * 插件声明依赖（manifest.dependencies）：
  *   - 缺失、版本不满足、被禁用或自身被隔离的依赖 → 依赖者 blocked；
  *   - 环与过深链路标记为稳定原因，不抛错；

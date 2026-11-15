@@ -46,7 +46,7 @@ await asyncio.sleep(0.001)
   for (const chatId of ['chat_a', 'chat_b']) {
     await chatDatabase.createSession({
       chatId, title: chatId, createdAt: 1, updatedAt: 1, messageCount: 0,
-      lastMessagePreview: '', agentName: '', skillNames: [],
+      lastMessagePreview: '', agentName: '',
     });
   }
   const uploads = [
@@ -54,7 +54,7 @@ await asyncio.sleep(0.001)
     { id: 'second', file: new File([new Uint8Array([0, 255, 13])], 'data.csv') },
   ];
   const paths = await importWorkspaceFiles('chat_a', uploads);
-  assert.deepEqual([...paths.values()], ['inputs/data.csv', 'inputs/data (2).csv']);
+  assert.deepEqual([...paths.values()], ['inputs/data.csv', 'inputs/data(1).csv']);
   assert.deepEqual(await importWorkspaceFiles('chat_a', uploads), paths, 'Retry reuses the assigned paths');
 
   await saveWorkspaceOutput('chat_a', 'outputs/tool.bin', new Blob([new Uint8Array([0, 255, 13])]));
@@ -67,7 +67,7 @@ await asyncio.sleep(0.001)
 from pathlib import Path
 import os
 assert os.getcwd() == '/work-space/chat_a'
-assert Path('inputs/data (2).csv').read_bytes() == bytes([0, 255, 13])
+assert Path('inputs/data(1).csv').read_bytes() == bytes([0, 255, 13])
 assert Path('outputs/tool.bin').read_bytes() == bytes([0, 255, 13])
 Path('outputs/nested').mkdir()
 Path('outputs/nested/报告 & data.csv').write_bytes(Path('inputs/data.csv').read_bytes())
@@ -236,7 +236,7 @@ with Image.open('outputs/picture.png') as image:
   await assert.rejects(importWorkspaceFiles('chat_a', uploads), /no longer exists/);
   await chatDatabase.createSession({
     chatId: 'chat_a', title: 'New session', createdAt: 2, updatedAt: 2, messageCount: 0,
-    lastMessagePreview: '', agentName: '', skillNames: [],
+    lastMessagePreview: '', agentName: '',
   });
   assert.equal(await readWorkspaceOutput('chat_a', output), null, 'Deleting the chat removes its files');
   console.log('[python-workspace] Pyodide relative paths, binary imports, persistence, rollback and Markdown downloads passed.');

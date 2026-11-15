@@ -1,0 +1,161 @@
+/* ==================== 消息内上传文件元素区（MessageUploads） ====================
+   用户消息气泡下方的文件元素列表：缩略图（图片）/ 文件图标 / 名称 + 体积 /
+   动作按钮（网页预览 / 下载）。与消息关联图片区（message-images.css）同一套
+   视觉语言：淡描边 + 半透明底 + 紧凑圆角。 */
+
+.message-uploads {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ── 区块标签 ── */
+.message-uploads-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary, #64748b);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* ── 文件列表 ── */
+.message-uploads-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.upload-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.08);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.upload-item:hover {
+  border-color: rgba(148, 163, 184, 0.45);
+  background: rgba(148, 163, 184, 0.14);
+}
+
+/* ── 图片缩略图 ── */
+.upload-thumb {
+  flex: 0 0 auto;
+  position: relative;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 6px;
+  background: rgba(148, 163, 184, 0.12);
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.upload-thumb:hover {
+  border-color: #6366f1;
+  transform: translateY(-1px);
+}
+
+.upload-thumb:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 1px;
+}
+
+.upload-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.upload-thumb-missing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: #94a3b8;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+/* ── 通用文件图标 ── */
+.upload-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: rgba(148, 163, 184, 0.16);
+  color: #64748b;
+}
+
+/* ── 名称与体积 ── */
+.upload-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.upload-name {
+  overflow: hidden;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-size {
+  color: var(--text-secondary, #64748b);
+  font-size: 10px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 动作按钮 ── */
+.upload-action {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 6px;
+  background: rgba(148, 163, 184, 0.1);
+  color: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.upload-action:hover {
+  background: rgba(148, 163, 184, 0.22);
+  border-color: rgba(148, 163, 184, 0.55);
+}
+
+.upload-action:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 1px;
+}
+
+/* ── 瞬时失败提示 ── */
+.upload-notice {
+  margin: 2px 0 0;
+  color: #b3564e;
+  font-size: 11px;
+  line-height: 1.5;
+}

@@ -52,7 +52,7 @@ const finished: ExtendedChatMessage = {
       type: 'tool',
       toolCall: {
         id: 'tc-3',
-        name: 'read_file',
+        name: 'file_util',
         status: 'error',
         arguments: '{"path":"a.txt"}',
         error: '文件不存在',
@@ -145,7 +145,7 @@ const finishedCompaction: ExtendedChatMessage = {
     },
     {
       type: 'tool',
-      toolCall: { id: 'tc-7', name: 'browser_get_page_text', status: 'success', arguments: '{}', result: { summary: '正文已提取' }, executionTime: 2100 },
+      toolCall: { id: 'tc-7', name: 'read_website', status: 'success', arguments: '{}', result: { summary: '正文已提取' }, executionTime: 2100 },
     },
     {
       type: 'compaction',

@@ -177,7 +177,7 @@
   </head>
   <body>
     <div class="stage">
-      <h3>轮次上限（默认 60s 倒计时起点，轨道全宽）</h3>
+      <h3>轮次上限（等待时长取自全局设置，默认 20 分钟 → 轨道全宽）</h3>
       <div class="bottom-section">
         <div class="guard-confirm-bar">
           <div class="guard-bar-main">
@@ -188,7 +188,7 @@
             </span>
             <div class="guard-bar-text">
               <p class="guard-bar-title">已连续执行 30 轮工具调用，是否继续运行本次任务？</p>
-              <p class="guard-bar-hint">60 秒内未确认将自动停止</p>
+              <p class="guard-bar-hint">20 分钟内未确认将自动停止</p>
             </div>
           </div>
           <div class="guard-bar-actions">
@@ -200,6 +200,30 @@
         <div class="input-container">
           <div class="message-input">给 Claude 发送消息…</div>
           <div class="bottom-bar"><span class="pill">工具</span><span class="pill">发送</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <h3>轮次上限（末尾一分钟切回秒数，保留紧迫感）</h3>
+      <div class="bottom-section">
+        <div class="guard-confirm-bar">
+          <div class="guard-bar-main">
+            <span class="guard-bar-mark is-max-iterations">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 5h8"/><path d="M3 12h8"/><path d="M3 19h8"/><path d="M17 9l4 3-4 3V9z"/>
+              </svg>
+            </span>
+            <div class="guard-bar-text">
+              <p class="guard-bar-title">已连续执行 30 轮工具调用，是否继续运行本次任务？</p>
+              <p class="guard-bar-hint">47 秒内未确认将自动停止</p>
+            </div>
+          </div>
+          <div class="guard-bar-actions">
+            <button type="button" class="guard-btn guard-btn-stop">停止</button>
+            <button type="button" class="guard-btn guard-btn-continue">继续运行</button>
+          </div>
+          <div class="guard-bar-track"><span class="guard-bar-track-fill" style="width: 3.92%"></span></div>
         </div>
       </div>
     </div>

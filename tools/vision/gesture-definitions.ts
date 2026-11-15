@@ -4,12 +4,24 @@ const point = {
   type: "object",
   additionalProperties: false,
   properties: {
-    x: { type: "number", minimum: 0, maximum: 1000 },
-    y: { type: "number", minimum: 0, maximum: 1000 },
+    x: {
+      type: "number",
+      minimum: 0,
+      maximum: 1000,
+      description:
+        "x = pixel column ÷ image width × 1000 — normalized, never raw pixels.",
+    },
+    y: {
+      type: "number",
+      minimum: 0,
+      maximum: 1000,
+      description:
+        "y = pixel row ÷ image height × 1000 — normalized, never raw pixels.",
+    },
   },
   required: ["x", "y"],
   description:
-    "Point relative to entire latest screenshot, x from left, y from top; 0..1000, NOT pixels.",
+    "Point relative to entire latest screenshot, x from left, y from top; 0..1000 normalized (convert from pixels by dividing by image width/height × 1000), NOT raw pixels, no scroll offsets.",
 };
 const modifiers = {
   type: "array",

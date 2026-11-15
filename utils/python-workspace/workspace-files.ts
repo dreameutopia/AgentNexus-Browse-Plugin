@@ -39,7 +39,14 @@ function fail(code: string, message: string): never {
 }
 
 /** 保留目录名：只能以目录形态存在，禁止作为文件目标。 */
-const RESERVED_DIRECTORIES = new Set(["inputs", "outputs", "results"]);
+const RESERVED_DIRECTORIES = new Set(["inputs", "outputs", "results", "content"]);
+
+/**
+ * 工具产出的正文/交付文件目录（read_website 的 md、后续可扩展其它正文产物）。
+ * 与 results/ 的区别：content/ 是**可读可编辑**的交付物，模型与用户都可以
+ * 继续修改；results/ 是工具原始数据，只读不可手写。
+ */
+export const WORKSPACE_CONTENT_DIR = "content";
 
 /**
  * 工具自动写入的执行结果目录（js_run run/crawl 与数据治理产物）。
@@ -220,6 +227,57 @@ export async function createWorkspaceFile(
   });
 }
 
+/**
+ * 工具产出的交付文件写入（content/ 等非 results 目录）。
+ *
+ * 与 createWorkspaceFile 的差异：
+ * - 大小按**字节**上限校验（8MB），而不是 200k 字符的手写上限——正文产物
+ *   可能远超手写文件，字节口径才与存储/下载一致；
+ * - 允许任意 MIME（默认 markdown），不写文本模式的 0o644 之外的额外语义；
+ * - 已存在即拒绝（调用方负责生成不冲突的文件名并在冲突时重试），
+ *   绝不静默覆盖用户已有产物。
+ */
+export async function writeToolWorkspaceFile(
+  chatId: string,
+  rawPath: unknown,
+  content: string,
+  options: { mime?: string; signal?: AbortSignal } = {},
+): Promise<WorkspaceFileStat> {
+  const path = parseWorkspaceFilePath(rawPath);
+  if (RESERVED_DIRECTORIES.has(path)) {
+    fail(
+      "INVALID_PATH",
+      `${path}/ 是保留目录，不能作为文件写入（请写到其下，如 ${path}/page.md）`,
+    );
+  }
+  if (isWorkspaceResultPath(path)) {
+    fail(
+      "INVALID_PATH",
+      `${WORKSPACE_RESULTS_DIR}/ 只能由 run/crawl 的结果通道写入，工具产物请写到 ${WORKSPACE_CONTENT_DIR}/ 或 outputs/`,
+    );
+  }
+  if (typeof content !== "string") {
+    fail("INVALID_ARGUMENT", "content 必须是字符串");
+  }
+  const bytes = new Blob([content]).size;
+  if (bytes > WORKSPACE_EDIT_MAX_FILE_BYTES) {
+    fail(
+      "INVALID_ARGUMENT",
+      `文件 ${bytes} 字节，超过单文件上限 ${WORKSPACE_EDIT_MAX_FILE_BYTES} 字节`,
+    );
+  }
+  const mime = options.mime || "text/markdown;charset=utf-8";
+  return mutateWorkspace(chatId, options.signal, (entries) => {
+    if (entries.has(path)) {
+      fail("FILE_EXISTS", `文件已存在：${path}（工具产物不覆盖已有文件）`);
+    }
+    ensureParentDirectories(entries, path);
+    const blob = new Blob([content], { type: mime });
+    entries.set(path, { path, blob, mode: 0o644, mtime: Date.now() });
+    return { path, bytes: blob.size };
+  });
+}
+
 export interface WorkspaceEditInput {
   content?: unknown;
   find?: unknown;
@@ -368,6 +426,69 @@ export async function editWorkspaceFile(
   });
 }
 
+/**
+ * action="append"：在既有文本文件尾部追加内容。
+ *
+ * 与 edit 的同源约束：
+ *   - 目标必须已存在且是普通文件（不静默创建——追加语义的前提是既有文件；
+ *     需要新建请用 create，避免「路径打错却写出一个新文件」的静默副作用）；
+ *   - 既有内容必须是严格 UTF-8（与 edit 同口径）：非 UTF-8 文件（GBK/UTF-16）
+ *     拒绝追加，避免拼出混合编码的损坏文件，此时应改用脚本按真实编码处理；
+ *   - results/ 下的工具结果文件拒绝追加（其可溯性依赖内容不被手写污染）。
+ */
+export async function appendWorkspaceFile(
+  chatId: string,
+  rawPath: unknown,
+  rawContent: unknown,
+  signal?: AbortSignal,
+): Promise<WorkspaceFileStat & { appendedChars: number }> {
+  const path = parseWorkspaceFilePath(rawPath);
+  if (isWorkspaceResultPath(path)) {
+    fail(
+      "INVALID_PATH",
+      `${WORKSPACE_RESULTS_DIR}/ 下的文件是工具产出的原始数据，不接受追加写入——需要整形/变换请用 data_ref_tool，需要修正请重跑脚本`,
+    );
+  }
+  const addition = validateWorkspaceFileContent(rawContent, "content");
+  return mutateWorkspace(chatId, signal, async (entries) => {
+    const entry = entries.get(path);
+    if (!entry)
+      fail(
+        "FILE_NOT_FOUND",
+        "文件不存在：" + path + '（追加的前提是文件已存在；新建请用 action="create"）',
+      );
+    if (entry.link) fail("INVALID_PATH", "不支持追加符号链接：" + path);
+    if (!entry.blob)
+      fail("INVALID_PATH", JSON.stringify(path) + " 是目录，不是文件");
+    if (entry.blob.size > WORKSPACE_EDIT_MAX_FILE_BYTES) {
+      fail(
+        "FILE_TOO_LARGE",
+        "文件超过就地编辑上限，请用脚本处理大文件",
+      );
+    }
+    const buffer = await entry.blob.arrayBuffer();
+    signal?.throwIfAborted();
+    const current = decodeUtf8Text(new Uint8Array(buffer), path);
+    const next = current + addition;
+    if (new Blob([next]).size > WORKSPACE_EDIT_MAX_FILE_BYTES) {
+      fail(
+        "FILE_TOO_LARGE",
+        "追加结果超过就地编辑上限（8MB）",
+      );
+    }
+    const blob = new Blob([next], {
+      type: entry.blob.type || "text/plain;charset=utf-8",
+    });
+    entries.set(path, {
+      ...entry,
+      blob,
+      mode: entry.mode ?? 0o644,
+      mtime: Date.now(),
+    });
+    return { path, bytes: blob.size, appendedChars: addition.length };
+  });
+}
+
 /** ArrayBuffer → 十六进制 SHA-256（read/edit/run 的 expectedHash 契约共用的文件指纹）。 */
 async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", buffer);
@@ -467,10 +588,15 @@ const isLowSurrogate = (code: number): boolean =>
  *
  * 单次线性扫描 O(页数)（每页 O(1) 边界检查），同时求出目标页区间与总页数；
  * index 超界由调用方在拿到 pageCount 后拒绝。
+ *
+ * 导出为**分页定界的唯一实现**：file_util 的读取通道（3000 字符/页）与本
+ * 模块的默认通道（2000 字符/页）必须共用同一套边界算法——各写一份必然
+ * 漂移，而漂移的代价是页边界拆开代理对（严格网关对孤立代理项零容忍）。
  */
-function locateTextPage(
+export function locateTextPage(
   text: string,
   index: number,
+  pageChars: number = WORKSPACE_READ_PAGE_CHARS,
 ): { start: number; end: number; pageCount: number } {
   const total = text.length;
   let start = 0;
@@ -480,7 +606,7 @@ function locateTextPage(
   let hitEnd = -1;
   while (end < total) {
     start = end;
-    let stop = Math.min(start + WORKSPACE_READ_PAGE_CHARS, total);
+    let stop = Math.min(start + pageChars, total);
     if (
       stop < total &&
       isHighSurrogate(text.charCodeAt(stop - 1)) &&
@@ -499,6 +625,45 @@ function locateTextPage(
     start: hitStart >= 0 ? hitStart : total,
     end: hitStart >= 0 ? hitEnd : total,
     pageCount: total === 0 ? 0 : page - 1,
+  };
+}
+
+/**
+ * 原始字节快照读取（不做任何解码）。
+ *
+ * 供两类调用方使用：
+ *   - file_util 的读取通道：文本文件走**容错解码阶梯**（BOM → UTF-8 → GBK），
+ *     Office 文件走**二进制解析**（xlsx/docx/pptx → markdown），两者都要求
+ *     原始字节而非已解码字符串；
+ *   - 任何需要自行判定编码的调用方。
+ *
+ * 与 loadTextSnapshot 的区别：不强制 UTF-8、不计算 sha256——指纹由调用方
+ * 在确实需要时自行计算，避免对大文件做无谓的摘要运算。
+ */
+export async function readWorkspaceFileBytes(
+  chatId: string,
+  rawPath: unknown,
+  signal?: AbortSignal,
+  maxBytes: number = WORKSPACE_READ_MAX_FILE_BYTES,
+): Promise<{ path: string; bytes: Uint8Array; size: number }> {
+  const path = parseWorkspaceFilePath(rawPath);
+  const snapshot = await chatDatabase.readWorkspace(chatId, signal);
+  const entry = snapshot?.entries.find((item) => item.path === path);
+  if (!entry?.blob || entry.link)
+    fail("FILE_NOT_FOUND", "文件不存在或不是普通文件：" + path);
+  if (entry.blob.size > maxBytes) {
+    fail(
+      "FILE_TOO_LARGE",
+      `文件 ${entry.blob.size} 字节超过读取上限 ${maxBytes}——超大文件请用脚本按需处理`,
+    );
+  }
+  signal?.throwIfAborted();
+  const buffer = await entry.blob.arrayBuffer();
+  signal?.throwIfAborted();
+  return {
+    path,
+    bytes: new Uint8Array(buffer),
+    size: entry.blob.size,
   };
 }
 
@@ -572,6 +737,9 @@ export async function readWorkspaceFilePage(
  * 通道的统一上限见 data-files.ts）。与 create 的区别：目标恒在保留目录
  * results/ 下（模型不可手工创建/编辑，保证结果文件可溯）、内容为工具
  * 产出的已校验文本（字符级校验仍在此 choke point 执行）。
+ *
+ * mime 由调用方按实际格式传入（json/csv）：同一目录承载多种格式，
+ * 下载与预览据此决定打开方式；缺省保持 JSON（既有调用方不变）。
  */
 export async function appendWorkspaceResultFile(
   chatId: string,
@@ -579,6 +747,7 @@ export async function appendWorkspaceResultFile(
   content: string,
   maxBytes: number,
   signal?: AbortSignal,
+  mime: string = "application/json;charset=utf-8",
 ): Promise<{ path: string; bytes: number }> {
   if (!isWorkspaceResultPath(path)) {
     fail(
@@ -589,9 +758,9 @@ export async function appendWorkspaceResultFile(
   validateTextCharacters(content, "结果内容");
   return mutateWorkspace(chatId, signal, (entries) => {
     if (entries.has(path)) fail("FILE_EXISTS", "结果文件名冲突：" + path);
-    const blob = new Blob([content], {
-      type: "application/json;charset=utf-8",
-    });
+    // MIME 由调用方按实际格式传入（json/csv）：结果目录同时承载两种格式，
+    // 下载/预览按 MIME 决定打开方式
+    const blob = new Blob([content], { type: mime });
     if (blob.size > maxBytes) {
       fail(
         "FILE_TOO_LARGE",

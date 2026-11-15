@@ -4,7 +4,8 @@
  * 组成：
  *   - interact-ui-bridge  工具 ↔ UI 桥接（上下文无关，sidepanel 外亦可安全引入）
  *   - interact-tool       工具定义与执行（参数清洗 + 结果转写）
- *   - interact-prompt     固定注入契约（系统提示词分区 + 核心工具 ID）
+ *   - interact-prompt     固定注入契约（系统提示词分区 + 核心工具 ID + 推荐项规则文案）
+ *   - interact-options    推荐项归一（多选项唯一 / 首位 / 带标注的执行侧不变量）
  */
 
 import { toolRegistry } from '../registry';
@@ -25,4 +26,10 @@ export {
   type InteractUnansweredStatus,
   type InteractHandler,
 } from './interact-ui-bridge';
-export { CORE_INTERACT_TOOL_IDS, INTERACT_SYSTEM_PROMPT_SECTION } from './interact-prompt';
+export {
+  CORE_INTERACT_TOOL_IDS,
+  INTERACTIVE_TOOL_NAMES,
+  INTERACT_SYSTEM_PROMPT_SECTION,
+  RECOMMENDED_OPTION_RULE,
+} from './interact-prompt';
+export { normalizeRecommendedOption, hasRecommendedMarker } from './interact-options';

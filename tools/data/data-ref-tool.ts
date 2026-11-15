@@ -5,7 +5,7 @@
  *   - refs：数据暂存区批次（dataRef，8 位 ID；browser_network_capture 捕获的
  *     响应正文等，浏览器会话内约 12 小时有效）；
  *   - files：工作区数据文件（js_run run/crawl 的执行结果与既往治理产物，
- *     results/ 下持久保存；也接受脚本产出的任意工作区 JSON 数组文件）。
+ *     results/ 下持久保存；也接受脚本产出的任意工作区 JSON 数组或 CSV 表文件）。
  *
  * 治理动作（产物统一为 results/ 下的新结果文件——持久、可再治理、可导出）：
  *   - list   ：盘点暂存区批次（refs 侧；工作区文件用 js_run action="list"）；
@@ -66,6 +66,106 @@ const ACTION_PARAMS: Record<(typeof ACTION_ENUM)[number], readonly string[]> = {
   dedupe: ["refs", "files", "by", "label"],
   delete: ["ref", "refs"],
 };
+
+/**
+ * 每个 action 的最小可复制调用示例（参数错误信息尾部回显）。
+ * 目的：修正路径必须可直接复用——让模型从「可用参数」反推 JSON 形态，
+ * 会再产生一轮试错（单/复数、数组/字符串的歧义尤其如此）。
+ */
+const ACTION_EXAMPLES: Record<(typeof ACTION_ENUM)[number], string> = {
+  list: '{"action":"list"}',
+  info: '{"action":"info","file":"results/run-xxx.json"}',
+  merge: '{"action":"merge","files":["results/a.json","results/b.json"]}',
+  project: '{"action":"project","file":"results/run-xxx.json","path":"items"}',
+  dedupe: '{"action":"dedupe","files":["results/run-xxx.json"],"by":["sku"]}',
+  delete: '{"action":"delete","refs":["a1b2c3d4"]}',
+};
+
+/** 数据源参数的单/复数写法提示（错误信息与引导文案共用同一份表达式） */
+const SOURCE_EXPRESSION = 'files=["results/run-xxx.json"]（单个文件也可用 file="results/run-xxx.json"）';
+
+/** 单值/数组归一：字符串视为单元素数组；其余形态原样返回给形状校验 */
+function asList(value: unknown): unknown {
+  return typeof value === "string" ? [value] : value;
+}
+
+/**
+ * 数据源参数的容错归一（入口层，先于白名单与语义校验）。
+ *
+ * 模型在扁平 schema 下会自然地在单文件场景沿用单数字段（file/ref），
+ * 而 merge/dedupe 的内部契约是复数数组。这里做**确定性的双向归一**，
+ * 把「同义写法」收敛到该 action 的规范形态，而不是把这类直觉用法判成错误：
+ *   - merge/dedupe：file → files、ref → refs（单值自动包装为数组）；
+ *   - info/project：单元素 files/refs → file/ref（单元素自动解包）；
+ *   - delete：ref/refs 的字符串写法统一为数组。
+ * 同时提供单数与复数视为歧义（同一数据源的两种写法），显式拒绝并给出示例。
+ * 非法形态（对象、空数组等）不在此吞掉，交给下游形状校验输出精确文案。
+ */
+function normalizeSourceArgs(
+  raw: Record<string, unknown>,
+  action: (typeof ACTION_ENUM)[number],
+): { ok: true; args: Record<string, unknown> } | { ok: false; error: string } {
+  const args = { ...raw };
+  // null 与缺省同义：函数调用模型偶尔会显式填 null（「本次不用」），
+  // 若保留会被下游误判成「已提供但形态非法」
+  for (const key of ["file", "files", "ref", "refs"] as const) {
+    if (args[key] === null) delete args[key];
+  }
+  const singleSource = action === "info" || action === "project";
+  const multiSource = action === "merge" || action === "dedupe";
+  const pairs = [
+    { single: "file", plural: "files", label: "工作区数据文件路径" },
+    { single: "ref", plural: "refs", label: "暂存批次 ID" },
+  ] as const;
+  for (const { single, plural, label } of pairs) {
+    const hasSingle = args[single] !== undefined && args[single] !== null;
+    const hasPlural = args[plural] !== undefined && args[plural] !== null;
+    if (hasSingle && hasPlural) {
+      return {
+        ok: false,
+        error:
+          `${action} 同时收到 ${single} 与 ${plural}：两者是同一数据源的两种写法，只能提供一种。` +
+          `示例：${ACTION_EXAMPLES[action]}`,
+      };
+    }
+    if (singleSource && hasPlural) {
+      const list = asList(args[plural]);
+      if (!Array.isArray(list)) {
+        return { ok: false, error: `${plural} 必须是${label}的字符串或字符串数组（收到 ${previewValue(list)}）` };
+      }
+      if (list.length === 0) {
+        return { ok: false, error: `${plural} 不能是空数组；不需要数据源时请不要传该参数` };
+      }
+      if (list.length > 1) {
+        return {
+          ok: false,
+          error:
+            `${action} 一次只处理一个数据源：请用 ${single}=${label}（收到 ${plural}，共 ${list.length} 项）。` +
+            `多个数据源请先用 action="merge" 合并为单个文件，或逐个调用。示例：${ACTION_EXAMPLES[action]}`,
+        };
+      }
+      if (typeof list[0] !== "string") {
+        return { ok: false, error: `${plural} 必须是${label}的字符串或字符串数组（收到 ${previewValue(list[0])}）` };
+      }
+      args[single] = list[0];
+      delete args[plural];
+      continue;
+    }
+    if (multiSource && hasSingle) {
+      const list = asList(args[single]);
+      if (!Array.isArray(list)) {
+        return { ok: false, error: `${single} 必须是${label}的字符串或字符串数组（收到 ${previewValue(list)}）` };
+      }
+      args[plural] = list;
+      delete args[single];
+      continue;
+    }
+    if (args[plural] !== undefined && args[plural] !== null) {
+      args[plural] = asList(args[plural]);
+    }
+  }
+  return { ok: true, args };
+}
 
 /** 首行/单值预览的字符上限（info 场景；全量数据永不回传） */
 const PREVIEW_CHARS = 300;
@@ -137,7 +237,9 @@ function describeShape(shape: ShapeMeta): string {
 function resultFileGuide(path: string): string {
   return (
     `后续：xlsx_tool(action="create_from_data", sheets:[{name, dataFiles:["${path}"], fields, headers}]) 直接导出；` +
-    `继续治理（合并/去重/投影）把 "${path}" 放进 refs/files 即可；分页核对用 js_run(action="read", path="${path}", index=N)。`
+    `继续治理（合并/去重）用 files=["${path}"]（单个文件也可直接 file="…"）；` +
+    `查看结构用 action="info", file="${path}"，投影用 action="project", file="${path}"；` +
+    `分页核对用 js_run(action="read", path="${path}", index=N)。`
   );
 }
 
@@ -168,8 +270,12 @@ function sourceListTypeError(
     kindLabel === "refs"
       ? "files（工作区数据文件路径数组）"
       : "refs（暂存批次 ID 数组）";
+  const example =
+    kindLabel === "refs"
+      ? 'refs=["a1b2c3d4"]（单个批次也可用 ref="a1b2c3d4"）'
+      : SOURCE_EXPRESSION;
   if (!Array.isArray(raw) || raw.length === 0) {
-    return `${verb}需要提供 ${thisDesc} 或 ${otherDesc}，二者互斥（按数据先后顺序排列）`;
+    return `${verb}需要提供 ${thisDesc} 或 ${otherDesc}，二者互斥（按数据先后顺序排列）。示例：${example}`;
   }
   if (raw.length > MAX_MERGE_BATCHES) {
     return `单次最多${verb} ${MAX_MERGE_BATCHES} 个数据源，实际收到 ${raw.length} 个——请分组处理`;
@@ -208,6 +314,7 @@ export class DataRefTool extends BaseTool {
         "两类数据源：refs=暂存批次 ID（browser_network_capture 捕获的响应正文等，浏览器会话内约 12 小时有效）；" +
         "files=工作区数据文件路径（js_run run/crawl 执行结果自动保存于 results/，跨浏览器重启持久；治理产物也是结果文件，可继续串联治理）。" +
         "merge/dedupe 用 refs 或 files（二选一，按数据先后顺序）；project/info 用 ref 或 file（二选一）。" +
+        "单/复数写法互通：merge/dedupe 也接受单数字段 file/ref（自动包装为数组）；project/info 也接受单元素数组（自动解包）——同时提供单数与复数会被拒绝。" +
         '治理产物统一保存为 results/ 下的新结果文件，用 xlsx_tool(action="create_from_data", sheets[].dataFiles=[路径]) 直接导出；' +
         '分页核对数据片段用 js_run(action="read", path=路径, index=N)（每页 ≤2000 字符）。' +
         "action=dedupe 可替代 merge：多源拼接+去重一步完成（滚动增量/多轮抓取出现重复行时优先 dedupe，by 指定主键字段，整行去重省略 by）；" +
@@ -226,23 +333,23 @@ export class DataRefTool extends BaseTool {
           ref: {
             type: "string",
             description:
-              "暂存批次 ID（info、project 的数据源；与 file 二选一；delete 可与 refs 二选一）",
+              "暂存批次 ID（info、project 的数据源；与 file 二选一；delete 可与 refs 二选一）。merge/dedupe 也接受此单数字段（自动包装为 refs 数组）",
           },
           refs: {
             type: "array",
             description:
-              "暂存批次 ID 列表（merge、dedupe 的数据源，与 files 二选一，按数据先后顺序排列；delete 可批量删除）",
+              "暂存批次 ID 列表（merge、dedupe 的数据源，与 files 二选一，按数据先后顺序排列；delete 可批量删除）。也接受单个字符串（自动包装为数组）",
             items: { type: "string" },
           },
           file: {
             type: "string",
             description:
-              '工作区数据文件路径（info、project 的数据源；与 ref 二选一，如 "results/run-20261114-093015-8f2a-样本.json"）',
+              '工作区数据文件路径（info、project 的数据源；与 ref 二选一，如 "results/run-20261114-093015-8f2a-样本.json"）。merge/dedupe 也接受此单数字段（自动包装为 files 数组）',
           },
           files: {
             type: "array",
             description:
-              "工作区数据文件路径列表（merge、dedupe 的数据源，与 refs 二选一，按数据先后顺序排列）",
+              "工作区数据文件路径列表（merge、dedupe 的数据源，与 refs 二选一，按数据先后顺序排列）。接受 .json（数组）与 .csv（首行表头）——js_run 结果、browser_extract_data 的 saved.path、既往治理产物、用户放入 inputs/ 的表格文件均可；也接受单个字符串（自动包装为数组）。info/project 可用单元素数组（自动解包）",
             items: { type: "string" },
           },
           path: {
@@ -282,28 +389,39 @@ export class DataRefTool extends BaseTool {
     args: Record<string, unknown>,
     context?: ToolExecutionContext,
   ): Promise<ToolResult> {
-    const action = args?.action;
+    if (!args || typeof args !== "object" || Array.isArray(args)) {
+      return this.createErrorResponse(
+        `参数必须是 JSON 对象，例如：${ACTION_EXAMPLES.list}`,
+      );
+    }
+    const action = args.action;
     if (
       typeof action !== "string" ||
       !ACTION_ENUM.includes(action as (typeof ACTION_ENUM)[number])
     ) {
       return this.createErrorResponse(
-        `action 必须是 ${ACTION_ENUM.join(" / ")}，实际收到 ${previewValue(action)}`,
+        `action 必须是 ${ACTION_ENUM.join(" / ")}，实际收到 ${previewValue(action)}；示例：${ACTION_EXAMPLES.list}`,
       );
     }
+    // 同义写法归一先于白名单：file/ref 与 files/refs 的互通属于契约能力，
+    // 不应被判成「未知参数」
+    const normalized = normalizeSourceArgs(
+      args,
+      action as (typeof ACTION_ENUM)[number],
+    );
+    if (!normalized.ok) return this.createErrorResponse(normalized.error);
+    const params = normalized.args;
     // 参数白名单先于语义校验：纯参数错误不被数据错误掩盖
     const allowedParams = ACTION_PARAMS[action as (typeof ACTION_ENUM)[number]];
-    if (args && typeof args === "object" && !Array.isArray(args)) {
-      const unexpected = Object.keys(args).filter(
-        (key) => key !== "action" && !allowedParams.includes(key),
+    const unexpected = Object.keys(params).filter(
+      (key) => key !== "action" && !allowedParams.includes(key),
+    );
+    if (unexpected.length) {
+      return this.createErrorResponse(
+        `action=${action} 不接受参数：${unexpected.join(", ")}（可用参数：${
+          allowedParams.length > 0 ? allowedParams.join("、") : "无"
+        }）。示例：${ACTION_EXAMPLES[action as (typeof ACTION_ENUM)[number]]}`,
       );
-      if (unexpected.length) {
-        return this.createErrorResponse(
-          `action=${action} 不接受参数：${unexpected.join(", ")}（可用参数：${
-            allowedParams.length > 0 ? allowedParams.join("、") : "无"
-          }）`,
-        );
-      }
     }
 
     try {
@@ -311,15 +429,15 @@ export class DataRefTool extends BaseTool {
         case "list":
           return this.handleList();
         case "info":
-          return await this.handleInfo(args, context);
+          return await this.handleInfo(params, context);
         case "merge":
-          return await this.handleMerge(args, context);
+          return await this.handleMerge(params, context);
         case "project":
-          return await this.handleProject(args, context);
+          return await this.handleProject(params, context);
         case "dedupe":
-          return await this.handleDedupe(args, context);
+          return await this.handleDedupe(params, context);
         case "delete":
-          return this.handleDelete(args.ref, args.refs);
+          return this.handleDelete(params.ref, params.refs);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -368,7 +486,7 @@ export class DataRefTool extends BaseTool {
     const hasFiles = args.files !== undefined;
     if (hasRefs === hasFiles) {
       return {
-        error: `${verb}需要提供 refs（批次 ID 列表）或 files（工作区数据文件路径列表），二者互斥（同时提供时拼接顺序有歧义）`,
+        error: `${verb}需要提供 refs（批次 ID 列表）或 files（工作区数据文件路径列表），二者互斥（同时提供时拼接顺序有歧义）。示例：${SOURCE_EXPRESSION}`,
       };
     }
     if (hasRefs) {

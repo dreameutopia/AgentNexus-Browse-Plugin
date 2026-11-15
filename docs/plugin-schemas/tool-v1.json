@@ -17,6 +17,11 @@
           "type": "object",
           "additionalProperties": {}
         },
+        "approval": {
+          "type": "string",
+          "enum": ["install", "session", "call"],
+          "description": "三级人审门；缺省 session（首次调用批准后本会话放行）"
+        },
         "executor": {
           "anyOf": [
             {
@@ -66,6 +71,66 @@
                 "url",
                 "remoteName"
               ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "host-workflow"
+                },
+                "steps": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 8,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                      },
+                      "tool": {
+                        "type": "string",
+                        "pattern": "^builtin/[a-z][a-z0-9_]*$"
+                      },
+                      "args": {
+                        "type": "object",
+                        "additionalProperties": {}
+                      },
+                      "optional": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "普通工具失败时继续执行；安全拒绝/超时仍中止"
+                      }
+                    },
+                    "required": ["id", "tool"],
+                    "additionalProperties": false
+                  }
+                },
+                "output": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                    },
+                    "path": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "required": ["from"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["type", "steps"],
               "additionalProperties": false
             }
           ]

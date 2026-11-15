@@ -73,7 +73,8 @@
                   <path d="M10.5 5.5V3.9a1.4 1.4 0 0 0-1.4-1.4H3.9a1.4 1.4 0 0 0-1.4 1.4v5.2a1.4 1.4 0 0 0 1.4 1.4h1.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
                 </svg>
               </button>
-              <button type="button" class="hub-op" @click="exportSkill(skill)">{{ t('hub.exportSkill') }}</button>
+              <!-- 导出仅自定义技能可见：预置技能与内置 skill-create / skill-edit（id 4/5）不支持导出 -->
+              <button v-if="canExportSkill(skill)" type="button" class="hub-op" @click="exportSkill(skill)">{{ t('hub.exportSkill') }}</button>
               <template v-if="skill.source === 'custom'">
                 <button type="button" class="hub-op" @click="startEdit(skill)">{{ t('hub.edit') }}</button>
                 <button type="button" class="hub-op hub-op-danger" @click="removeSkill(skill)">{{ t('hub.delete') }}</button>
@@ -612,7 +613,18 @@ const removeSkill = async (skill: SkillRecord) => {
   } catch (error) { window.alert(t('hub.errorSkillStorageWrite', { detail: String(error) })); }
 };
 
+/**
+ * 导出门禁：仅自定义技能可导出。
+ * 预置技能（source 'preset'，含全部内置技能）一律不支持导出；
+ * skill-create / skill-edit（内置 id 4 / 5）按 id 再拦一道——与启停开关的
+ * ['4', '5'] 特判同源，防止未来数据形态变化时这两个系统技能被导出。
+ */
+function canExportSkill(skill: SkillRecord): boolean {
+  return skill.source !== 'preset' && !['4', '5'].includes(skill.id);
+}
+
 const exportSkill = (skill: SkillRecord) => {
+  if (!canExportSkill(skill)) return;
   downloadSkillZip(skill);
 };
 

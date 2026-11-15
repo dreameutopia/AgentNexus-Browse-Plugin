@@ -48,7 +48,6 @@ await chatDatabase.createSession({
   messageCount: 0,
   lastMessagePreview: "",
   agentName: "",
-  skillNames: [],
 });
 const context = { chatId };
 const xlsxTool = {
@@ -333,6 +332,79 @@ await dataRefStore.remove("all");
   assert.equal(stats.uniqueRows, 3, "保留 3 行");
   const dedupeFile = (dataOf(deduped).file as { path: string }).path;
   assert.match(dedupeFile, /^results\/dedupe-/, "dedupe 产物前缀");
+}
+
+// 2.2b 数据源单/复数容错：同义写法双向归一，歧义显式拒绝
+{
+  const f = await writeDataFile("scripts/single-source-alias.json", [
+    { sku: "A", price: 1 },
+    { sku: "A", price: 1 },
+    { sku: "B", price: 2 },
+  ]);
+  // merge/dedupe：单数字段 file 自动包装为 files 数组
+  const dedupeAlias = await dataTool.execute({
+    action: "dedupe",
+    file: f,
+    by: ["sku"],
+  });
+  assert.equal(
+    dedupeAlias.success,
+    true,
+    "dedupe 接受单数字段 file（自动包装）",
+    dedupeAlias.error,
+  );
+  assert.equal(
+    (dataOf(dedupeAlias).stats as Record<string, number>).removed,
+    1,
+    "单数字段去重统计正确",
+  );
+  const mergeAlias = await dataTool.execute({ action: "merge", file: f });
+  assert.equal(
+    mergeAlias.success,
+    true,
+    "merge 接受单数字段 file（自动包装）",
+    mergeAlias.error,
+  );
+
+  // info/project：单元素数组自动解包为单数字段
+  const infoAlias = await dataTool.execute({ action: "info", files: [f] });
+  assert.equal(
+    infoAlias.success,
+    true,
+    "info 接受单元素 files 数组（自动解包）",
+    infoAlias.error,
+  );
+
+  // 同时提供单数与复数：同一数据源的两种写法，显式拒绝
+  const conflict = await dataTool.execute({
+    action: "dedupe",
+    file: f,
+    files: [f],
+  });
+  assert.equal(conflict.success, false, "file 与 files 同时提供被拒绝");
+  assert.match(
+    String(conflict.error),
+    /同一数据源|只能提供一种/,
+    "歧义错误说明原因",
+  );
+
+  // 多元素数组用于 info/project：保留能力边界但给出合并路径
+  const multi = await dataTool.execute({ action: "info", files: [f, f] });
+  assert.equal(multi.success, false, "info 多源被拒绝");
+  assert.match(
+    String(multi.error),
+    /merge|逐个/,
+    "错误给出多源处理路径",
+  );
+
+  // 未知参数错误附带可复制示例
+  const stray = await dataTool.execute({
+    action: "dedupe",
+    files: [f],
+    carry: ["x"],
+  });
+  assert.equal(stray.success, false, "dedupe 拒绝 project 专属参数");
+  assert.match(String(stray.error), /示例：/, "参数错误回显可复制示例");
 }
 
 // 2.3 dedupe：参数防御与错误优先级（参数错误先于数据错误）

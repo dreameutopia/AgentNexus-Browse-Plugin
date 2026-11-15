@@ -51,6 +51,8 @@ export interface PayloadResult {
   /** Document nonce + action revision + URL; pagination freezes membership rather than re-sorting live DOM. */
   fingerprint?: string;
   error?: string;
+  truncated?: boolean;
+  truncationReason?: string;
 }
 
 /**
@@ -64,6 +66,13 @@ export function elementScanPayload(
   xpathExpr: string,
   tabId = 0,
 ): PayloadResult {
+  const scanStarted = performance.now();
+  let truncated = false;
+  let scanWarning: string | undefined;
+  const overBudget = () => {
+    if (performance.now() - scanStarted > 2000) { truncated = true; return true; }
+    return false;
+  };
   // Persist only in the extension isolated world; never add attributes to page DOM.
   const shadowOf = (el: Element): ShadowRoot | null => {
     try {
@@ -748,14 +757,22 @@ export function elementScanPayload(
     window.addEventListener('hashchange', reset);
   }
   const roots: (Document | ShadowRoot)[] = [document];
+  const seenRoots = new Set<Document | ShadowRoot>(roots);
+  const scanNodes: Element[] = [];
   for (let i = 0; i < roots.length; i++) {
-    roots[i].querySelectorAll('*').forEach((el) => {
+    const walker = document.createTreeWalker(roots[i], 1 /* NodeFilter.SHOW_ELEMENT */);
+    let current: Node | null;
+    while ((current = walker.nextNode())) {
+      if (scanNodes.length >= 20000 || performance.now() - scanStarted > 700) { truncated = true; break; }
+      const el = current as Element;
+      scanNodes.push(el);
       const shadow = shadowOf(el);
-      if (shadow) roots.push(shadow);
-    });
+      if (shadow && !seenRoots.has(shadow)) { roots.push(shadow); seenRoots.add(shadow); }
+    }
+    if (truncated) break;
   }
   const queryAll = (selector: string): Element[] =>
-    roots.flatMap((root) => Array.from(root.querySelectorAll(selector)));
+    scanNodes.filter(el => !overBudget() && (selector === '*' || el.matches(selector)));
   const frameFingerprint = registry.fingerprint();
 
   // —— 过滤条件编译（非法条件立即返回错误，避免整页误判）——
@@ -832,7 +849,10 @@ export function elementScanPayload(
       const y =
         (Math.max(0, rect.top) + Math.min(window.innerHeight, rect.bottom)) / 2;
       let hit = document.elementFromPoint(x, y);
+      const visited = new Set<Element>();
       while (hit && shadowOf(hit)?.elementFromPoint) {
+        if (visited.has(hit) || visited.size >= 256) { truncated = true; scanWarning = 'HIT_TEST_FAILED: cyclic or excessively deep Shadow DOM hit testing; affected controls omitted'; return true; }
+        visited.add(hit);
         const inner = shadowOf(hit)!.elementFromPoint(x, y);
         if (!inner || inner === hit) break;
         hit = inner;
@@ -1629,6 +1649,7 @@ export function elementScanPayload(
       if (!document.body) return [];
 
       const register = (el: Element) => {
+        if (overBudget() || results.size >= 8000) { truncated = true; return; }
         if (
           !el ||
           results.has(el) ||
@@ -1781,6 +1802,7 @@ export function elementScanPayload(
         // React/Vue handlers need not produce onclick attributes. Discover only the
         // outer pointer surface, not every icon/text descendant inheriting its cursor.
         queryAll('*').forEach((el) => {
+          if (overBudget()) return;
           if (results.has(el) || !this.isPotentiallyInteractable(el)) return;
           if (window.getComputedStyle(el).cursor !== 'pointer') return;
           const parent = el.parentElement;
@@ -1818,6 +1840,7 @@ export function elementScanPayload(
 
       const list = Array.from(results.values());
       for (const record of list) {
+        if (overBudget()) break;
         const node = registry!.resolve(record.elementId);
         if (!node) continue;
         const semantics = registry!.describe!(node);
@@ -1874,17 +1897,16 @@ export function elementScanPayload(
   try {
     const analyzer = new PageAnalyzer();
     const elements = analyzer.analyze();
-    if (
-      elements.some((record) => registry!.resolve(record.elementId) === null)
-    ) {
+    const validElements = elements.filter(record => registry!.resolve(record.elementId) !== null);
+    if (validElements.length !== elements.length) {
       return {
-        elements: [],
+        elements: validElements,
         fingerprint: registry!.fingerprint(),
-        error:
-          'STALE_ELEMENTS：采集期间节点失效或超过引用容量，请缩小页面范围或等待稳定后重采。',
+        truncated: true,
+        truncationReason: `STALE_ELEMENTS：采集期间 ${elements.length - validElements.length} 个节点失效，已排除；保留其余有效引用。`,
       };
     }
-    return { elements, fingerprint: registry!.fingerprint() };
+    return { elements, fingerprint: registry!.fingerprint(), ...(truncated ? { truncated: true, truncationReason: scanWarning || 'DOM scan exceeded time, node, or control budget; currently collected nodes preserved' } : {}) };
   } catch (error) {
     console.error(`Error during in-frame ${mode} analysis:`, error);
     let message = 'Unserializable error value';

@@ -13,6 +13,7 @@
 ## 运行链路
 
 `SiteLearnModal.vue` 收集目标站点、自然语言目标、额外描述（可选）、目标操作模式、学习策略、模型和自动验证选项。
+自动验证默认关闭——用户显式开启才进入验证阶段，关闭时学习完成直接落盘；未显式指定 `autoValidate` 的旧配置按关闭处理。
 额外描述按码点限制为 6000 字，保留换行，确认页可核对；返回修改保留，新学习意图清空。旧配置缺该字段仍可用。
 
 `learn-validate.ts` 校验配置：视觉目标固定使用视觉策略；凡需要图片的组合，模型声明与协议都必须支持图片。
@@ -215,7 +216,7 @@ storage 事件即时同步，页面重新获得焦点/可见及点击创建前�
 - `browser_observe`：`controls/buttons/inputs` 枚举；`element` 查询指定节点属性；`structure/accessibility` 处理复杂页面。
 - `browser_interact`：点击、填充、聚焦、键盘、输入和容器滚动。
 - `js_run`：常规观察不足时探测页面结构或组件作用域。
-- `browser_get_page_text`（核心注入）、`browser_get_page_info`、`browser_navigation`（open/refresh/back/forward/wait 五 action，含加载等待）。
+- `read_website`（核心注入）、`browser_get_page_info`、`browser_navigation`（open/refresh/back/forward/wait 五 action，含加载等待）。
 - `browser_tabs`（list/switch/close/create/windows 五 action）、`browser_network_capture`、`web_search`、`generic_wait`。
 - `plan_tool`、`note_tool` 与交互征询工具（同为 CORE_SESSION_TOOL_IDS 核心注入，所有会话恒定可用，学习域逐步留痕/记录卡点的用法由 learn-prompts 约束）、学习终止工具 `submit_skill`。
 

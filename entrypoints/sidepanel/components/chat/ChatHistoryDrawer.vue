@@ -2,7 +2,7 @@
  * 历史会话抽屉
  *
  * 面向用户的会话记录管理入口（数据来自转录引擎 / IndexedDB）：
- *   - 列表展示（标题 / 预览 / 智能体与技能徽标 / 相对时间 / 消息数）
+ *   - 列表展示（标题 / 预览 / 智能体徽标 / 相对时间 / 消息数）
  *   - 点击加载续聊（select 事件，由 App.vue 切换 activeChatId）
  *   - 重命名（行内编辑）、删除（确认后级联删除消息）
  *   - 新会话（new-chat 事件）
@@ -73,11 +73,6 @@
                       v-if="session.agentName || session.agentId"
                       class="history-badge agent"
                     >{{ agentDisplayName(session) }}</span>
-                    <span
-                      v-for="skillName in session.skillNames"
-                      :key="skillName"
-                      class="history-badge skill"
-                    >{{ sessionSkillBadgeLabel(session, skillName) }}</span>
                     <span class="history-item-count">{{ t('sidepanel.app.historyMessages', { count: session.messageCount }) }}</span>
                     <span class="history-item-ops" @click.stop>
                       <button class="item-op" v-tip="t('sidepanel.app.renameSession')" @click="startRename(session)">
@@ -103,13 +98,11 @@ import { ref, watch, nextTick } from 'vue';
 import { t } from '@/utils/i18n';
 import {
   agentEngine,
-  skillEngine,
   transcriptEngine,
   sessionDeletionEngine,
   type ChatSessionMeta,
 } from '../../core';
 import { showConfirm } from '../../composables/use-app-dialog';
-import { findDuplicateSkillNames, type SkillRecord } from '@/utils/skills/skill-types';
 import { useAgentDisplay } from '@/common/use-agent-display';
 
 const { displayNameOf } = useAgentDisplay();
@@ -154,28 +147,6 @@ const agentDisplayName = (session: ChatSessionMeta): string => {
   if (!session.agentName && !session.agentId) return '';
   const agent = agentEngine.resolveRef(session.agentId, session.agentName);
   return agent ? displayNameOf(agent) : session.agentName;
-};
-
-/**
- * 技能徽标显示名：会话可能存技能 id（v2）或技能名（v1），统一解析为当前名称；
- * 技能已被删除时退回原始字符串（展示当时的使用事实，不留空白）。
- */
-const skillDisplayName = (skillRef: string): string => {
-  return skillEngine.get(skillRef)?.name ?? skillRef;
-};
-
-/**
- * 会话徽章展示名：同一会话内重名的技能补显 id 消歧（与选择面同一套规则）。
- * 悬挂引用（技能已删）无从消歧，原样回落 skillDisplayName 的结果。
- */
-const sessionSkillBadgeLabel = (session: ChatSessionMeta, skillRef: string): string => {
-  const name = skillDisplayName(skillRef);
-  const resolved = skillEngine.get(skillRef);
-  if (!resolved) return name;
-  const records = (session.skillNames ?? [])
-    .map(ref => skillEngine.get(ref))
-    .filter((record): record is SkillRecord => !!record);
-  return findDuplicateSkillNames(records).has(name) ? `${name} · ${resolved.id}` : name;
 };
 
 const loadSessions = async () => {

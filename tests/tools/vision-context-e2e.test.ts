@@ -77,8 +77,8 @@ const visionRuntime = (overrides: Record<string, unknown> = {}) => ({
   chatId: 'vision-e2e',
   agentId: 'Vision-Action',
   systemPrompt: 'test',
-  toolIds: ['screenshot', 'browser_get_page_text', 'vision_gui'],
-  advertisedToolIds: ['screenshot', 'browser_get_page_text', 'vision_gui'],
+  toolIds: ['screenshot', 'read_website', 'vision_gui'],
+  advertisedToolIds: ['screenshot', 'read_website', 'vision_gui'],
   model: { contextThreshold: 32000 },
   limits: { maxIterations: 4, maxDurationMs: 60000, toolTimeoutMs: 5000, maxConsecutiveFailedToolRounds: 3 },
   vision: { screenshotTool: 'screenshot', screenshotArgs: {}, reScreenshotAfterTools: true },
@@ -155,10 +155,10 @@ const visionRuntime = (overrides: Record<string, unknown> = {}) => ({
   imageStore.putFromDataUrl = async () => 'a'.repeat(64);
   try {
     const { engine, requests } = makeEngine({
-      toolResults: { browser_get_page_text: { success: true, data: { text: '页面正文' } } },
+      toolResults: { read_website: { success: true, data: { text: '页面正文' } } },
       captureResult: (() => { captureCalls++; return shot; })(),
       rounds: [
-        { toolCall: { id: 'c1', name: 'browser_get_page_text', arguments: '{}' } },
+        { toolCall: { id: 'c1', name: 'read_website', arguments: '{}' } },
         { text: '已读取' },
       ],
     });

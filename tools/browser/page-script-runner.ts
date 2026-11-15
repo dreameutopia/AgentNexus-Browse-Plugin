@@ -1,3 +1,4 @@
+import { executeScriptBounded } from '../common/frame-read';
 /**
  * 页面脚本执行内核（共享实现）
  *
@@ -432,12 +433,12 @@ async function runScripting(params: {
   } = params;
   try {
     onEngineChange?.('scripting');
-    const results = await chrome.scripting.executeScript({
+    const results = await executeScriptBounded({
       target: { tabId, frameIds: [frameId] },
       func: pageConsoleEvaluate,
       args: [expression, timeoutMs, awaitPromise, true, captureLimit],
       world,
-    });
+    }, timeoutMs + 1000);
 
     const payload = results?.[0]?.result as InPageEvalResult | undefined;
     if (payload && payload.success) {

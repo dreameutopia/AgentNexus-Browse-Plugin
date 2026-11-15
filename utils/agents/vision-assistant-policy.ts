@@ -1,18 +1,24 @@
 import { JS_RUN_TOOL_ID } from '@/tools/javascript/js-contract';
 import { SKILL_TOOL_ID } from '@/utils/skills/skill-tool-contract';
+import { FILE_UTIL_TOOL_ID } from '@/tools/file-util/file-util-prompt';
 
 /** Capability ceiling for the built-in guide, including skills and extra tools.
  * Deliberately explicit: registering a new tool must not silently grant it here.
- * note_tool / plan_tool / read_file 与 interact 同属 CORE_SESSION_TOOL_IDS 全局工具：
- * 写笔记、建计划与读取用户上传文件都不触碰页面（观察者边界约束的是对页面的
+ * note_tool / plan_tool / file_util 与 interact 同属 CORE_SESSION_TOOL_IDS 全局工具：
+ * 写笔记、建计划与读写用户上传文件都不触碰页面（观察者边界约束的是对页面的
  * 代操作，不是会话内状态与用户数据文件的读取），故对观察型智能体同样放行。
+ *
+ * python_run：计算类工具（工作区脚本 + Pyodide 沙箱），不触碰页面 DOM，
+ * 与 js_run 同属「会话内执行」而非「代操作页面」。它仅在用户于管理中心
+ * 「Python 环境」页面显式给本智能体注入、且环境就绪时才会出现在工具面
+ * （见 runtime-builder 的注入逻辑），因此不扩大观察型智能体的默认能力。
  *
  * vision_gui：只读观察已并入其 action 面（原 vision_read* 工具随之删除），
  * 因此列入白名单——但观察者边界下沉到 action 级（VISION_ASSISTANT_GUI_ACTIONS），
  * 由会话引擎在执行前拒绝手势类 action（见 conversation-engine 执行闸门）。 */
 export const VISION_ASSISTANT_TOOLS = [
-  'screenshot', 'vision_gui', 'generic_wait', JS_RUN_TOOL_ID,
-  'browser_get_page_text', 'interact', 'plan_tool', 'note_tool', 'read_file', SKILL_TOOL_ID,
+  'screenshot', 'vision_gui', 'generic_wait', JS_RUN_TOOL_ID, 'python_run',
+  'read_website', 'interact', 'plan_tool', 'note_tool', FILE_UTIL_TOOL_ID, SKILL_TOOL_ID,
 ] as const;
 
 /**

@@ -2,7 +2,7 @@
  * 应用设置存储（AppSettingsStore）
  *
  * 管理与渠道无关的全局配置：
- *   - interactTimeoutMinutes（interact 询问弹窗等待时长）
+ *   - userResponseTimeoutMinutes（用户响应等待时长：询问弹窗 + 循环守卫确认条）
  *   - defaultAgentId（新会话默认智能体，输入框未选时自动选中）
  *   - maxIterations（对话轮次上限，文本与视觉策略统一）、连续工具失败阈值（循环守卫参数）
  *   - retryCount / retryInterval / temperature（全局请求参数，不按渠道单独配置）
@@ -113,8 +113,14 @@ class AppSettingsStore {
     return this.settings.activeModelRef ? { ...this.settings.activeModelRef } : null;
   }
 
-  getInteractTimeoutMinutes(): number {
-    return this.settings.interactTimeoutMinutes;
+  /**
+   * 用户响应等待时长（分钟）。
+   *
+   * 「等用户回应」的唯一事实源：询问弹窗与循环守卫确认条都取这一档。
+   * 调用方负责换算成毫秒（经 resolveUserResponseWaitMs），本方法只给原始档位。
+   */
+  getUserResponseTimeoutMinutes(): number {
+    return this.settings.userResponseTimeoutMinutes;
   }
 
   // ==================== 写入 ====================

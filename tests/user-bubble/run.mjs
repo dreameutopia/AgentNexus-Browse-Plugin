@@ -82,7 +82,7 @@ async function compileComponent(file, { vueImports = {} } = {}) {
       {
         name: 'heavy-dep-stubs',
         setup(api) {
-          const stubFilter = /\.vue$|@\/utils\/i18n$|^\.\/message$|markdown-renderer$|note-nav$|chat\/message$/;
+          const stubFilter = /\.vue$|@\/utils\/i18n$|^\.\/message$|markdown-renderer$|note-nav$|chat\/message$|use-agent-display$|agent-engine$/;
           api.onResolve({ filter: stubFilter }, args => {
             const normalized = args.path.replace(/\\/g, '/');
             for (const [suffix, target] of Object.entries(vueImports)) {
@@ -92,6 +92,14 @@ async function compileComponent(file, { vueImports = {} } = {}) {
           });
           api.onLoad({ filter: /.*/, namespace: 'stub' }, args => {
             if (args.path === '@/utils/i18n') return { contents: 'export const t=(k)=>k;' };
+            // 智能体展示名解析依赖注册表与语言包：桩件固定返回落库名称，
+            // 仅验证「有绑定时渲染 @名称、无绑定不渲染」
+            if (args.path === '@/common/use-agent-display') {
+              return { contents: 'export const useAgentDisplay=()=>({displayNameOf:(a)=>String(a?.name??""),displayOf:(a)=>a});' };
+            }
+            if (args.path.replace(/\\/g, '/').endsWith('core/registry/agent-engine')) {
+              return { contents: 'export const agentEngine={resolveRef:()=>null};' };
+            }
             // MarkdownText 桩件：保留 .message-content 类名（承载字号/行高，
             // 折叠高度正是从它测出来的），正文按纯文本输出
             if (args.path.endsWith('MarkdownText.vue')) {
@@ -102,7 +110,7 @@ async function compileComponent(file, { vueImports = {} } = {}) {
             }
             if (args.path.endsWith('UserMessageBubble.vue')) {
               return {
-                contents: `import {h} from 'vue';export default {name:'UserMessageBubble',props:['content','messageId','quote'],setup(p){return()=>h('div',{class:'user-bubble'},[p.quote?h('blockquote',{class:'user-bubble-quote'},String(p.quote.text)):'',String(p.content||'')]);}};`,
+                contents: `import {h} from 'vue';export default {name:'UserMessageBubble',props:['content','messageId','quote','skills','agentLabel'],setup(p){return()=>h('div',{class:'user-bubble'},[p.quote?h('blockquote',{class:'user-bubble-quote'},String(p.quote.text)):'',String(p.content||'')]);}};`,
                 loader: 'js',
               };
             }
@@ -267,6 +275,73 @@ const MessageItem = (await compileComponent(
   empty.unmount();
 }
 
+// ── C2. 技能清单 + @智能体标识：单轮技能快照逐行渲染，智能体落在底部左侧 ──
+{
+  fakeContentHeight = 40;
+  const skills = [
+    { id: 'skill-b', name: '网页检索' },
+    { id: 'skill-a', name: '数据分析' },
+  ];
+  const { container, errors, unmount } = await mount(UserMessageBubble, {
+    content: '带技能与智能体的消息',
+    skills,
+    agentLabel: '通用助手',
+    quote: { text: '引用的网页原文', source: { url: 'https://example.test/a', title: '示例页' } },
+  });
+  assert.deepEqual(errors, [], '技能/智能体渲染不得抛错');
+  const bubble = container.querySelector('.user-bubble');
+  const skillBlock = container.querySelector('.user-bubble-skills');
+  assert.ok(skillBlock, '有技能时渲染技能清单块');
+  assert.equal(bubble.firstElementChild, skillBlock, '技能清单位于气泡最顶部（正文与引用之上）');
+  const rows = [...container.querySelectorAll('.user-bubble-skill')];
+  assert.deepEqual(
+    rows.map(row => row.querySelector('.user-bubble-skill-name').textContent),
+    ['网页检索', '数据分析'],
+    '每个技能独立一行且保持选中顺序',
+  );
+  assert.ok(rows.every(row => row.querySelector('.user-bubble-skill-icon')), '每行带技能图标');
+
+  assert.ok(bubble.querySelector('.user-bubble-agent'), '有绑定时渲染底部 @ 智能体');
+  assert.equal(
+    container.querySelector('.user-bubble-agent').textContent.replace(/\s+/g, ''),
+    '@通用助手',
+    '@ 标识使用解析后的展示名',
+  );
+  assert.ok(
+    container.querySelector('.user-bubble-actions .user-bubble-agent'),
+    '@ 智能体位于底部操作行（左侧）',
+  );
+  unmount();
+
+  const plain = await mount(UserMessageBubble, { content: '普通消息' });
+  assert.equal(plain.container.querySelectorAll('.user-bubble-skills').length, 0, '未选技能不渲染技能块');
+  assert.equal(plain.container.querySelectorAll('.user-bubble-agent').length, 0, '无智能体不渲染 @ 标识');
+  plain.unmount();
+}
+
+// ── C3. 技能快照脏数据：重复 id / 空名称 / 非法项在渲染前收敛 ──
+{
+  fakeContentHeight = 40;
+  const { container, errors, unmount } = await mount(UserMessageBubble, {
+    content: '脏技能快照',
+    skills: [
+      { id: 'skill-a', name: '数据分析' },
+      { id: 'skill-a', name: '重复项' },
+      { id: 'skill-b', name: '   ' },
+      { id: '', name: '无 id' },
+      null,
+    ],
+  });
+  assert.deepEqual(errors, [], '脏技能快照渲染不得抛错');
+  const rows = [...container.querySelectorAll('.user-bubble-skill')];
+  assert.deepEqual(
+    rows.map(row => row.querySelector('.user-bubble-skill-name').textContent),
+    ['数据分析', 'skill-b'],
+    '重复 id 只保留首项、空名称回落 id、空 id 与非法项被丢弃',
+  );
+  unmount();
+}
+
 // ── D. MessageItem 接线：用户消息走气泡渲染，正文不重复渲染 ──
 {
   fakeContentHeight = 40;
@@ -308,6 +383,36 @@ const MessageItem = (await compileComponent(
   assert.deepEqual(errors, [], '带引用的用户消息渲染不得抛错');
   assert.ok(container.querySelector('.user-bubble'), '渲染出用户消息气泡');
   assert.ok(container.querySelector('.user-bubble-quote'), 'MessageItem 的 pageQuote 透传进气泡并渲染引用块');
+  unmount();
+}
+
+// ── D3. MessageItem @智能体：注册表失配时回落到落库名称，绝不渲染空 @ ──
+{
+  fakeContentHeight = 40;
+  const { container, errors, unmount } = await mount(MessageItem, {
+    message: {
+      id: 'm-user-agent',
+      role: 'user',
+      content: '带智能体的消息',
+      parts: [{ type: 'text', content: '带智能体的消息' }],
+      toolCalls: [],
+      agentId: 'deleted-agent',
+      agentName: '已删除的助手',
+      skills: [{ id: 'skill-a', name: '网页检索' }],
+    },
+    isLive: false,
+  });
+  assert.deepEqual(errors, [], '@智能体回落渲染不得抛错');
+  assert.equal(
+    container.querySelector('.user-bubble-agent').textContent.replace(/\s+/g, ''),
+    '@已删除的助手',
+    '智能体已删除（注册表失配）时回落落库名称',
+  );
+  assert.equal(
+    container.querySelectorAll('.user-bubble-skill').length,
+    1,
+    '技能快照随记录透传进气泡',
+  );
   unmount();
 }
 
@@ -441,8 +546,8 @@ const MessageItem = (await compileComponent(
     path.join(root, 'entrypoints/sidepanel/components/chat/user-message-bubble.css'),
     'utf8',
   );
-  // 气泡处在 fit-content 宽度链（.message.user auto 宽 → wrapper 100% → 气泡 100%）
-  // 上：任何 container-type（布局/行内尺寸容器化）都会把气泡的内在宽度贡献
+  // 气泡宽度链：.message.user（固定 80%）→ wrapper 100% → 气泡 100%。
+  // 任何 container-type（布局/行内尺寸容器化）都会把气泡的内在宽度贡献
   // 归零，整条链坍缩成 ~30px 细竖条（2026-11 宽度坍塌事故）。
   // 窄宽度降级必须走 @media（侧边栏文档视口 = 面板宽度）。
   assert.ok(
@@ -454,7 +559,16 @@ const MessageItem = (await compileComponent(
     /@media \(max-width: 360px\)/,
     '引用块窄宽度降级走 @media 断点',
   );
+
+  // 用户消息宽度必须固定（不能 fit-content）：短消息不应把气泡缩窄
+  const listCss = readFileSync(
+    path.join(root, 'entrypoints/sidepanel/components/chat/chat-message-list.css'),
+    'utf8',
+  );
+  const userRule = listCss.match(/\.message\.user\s*\{[^}]*\}/)?.[0] ?? '';
+  assert.match(userRule, /(?<!max-)(?<!min-)width:\s*80%/, '用户消息容器固定宽度 80%');
+  assert.match(userRule, /max-width:\s*80%/, '用户消息宽度上限与固定宽度一致');
 }
 
 dom.window.close();
-console.log('[user-bubble] SFC 挂载渲染（超长自动收起 / 展开交互 / 复制按钮 / 用户消息接线 / 网页引用块）与宽度链防回归全部通过。');
+console.log('[user-bubble] SFC 挂载渲染（超长自动收起 / 展开交互 / 复制按钮 / 用户消息接线 / 网页引用块 / 技能清单与 @智能体标识）与宽度链防回归全部通过。');

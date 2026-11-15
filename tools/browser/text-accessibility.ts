@@ -1,5 +1,7 @@
 import { cdpSession } from './cdp-session';
 import { textCommand, textTab, readableTextError } from './text-runtime';
+import { isRestrictedUrl } from '@/common/constants';
+import { withDeadline } from '../common/frame-read';
 
 interface AXNode {
   nameTruncated?: boolean;
@@ -145,7 +147,9 @@ function forget(id: string) {
     if (entry.snapshotId === id) refs.delete(ref);
 }
 async function tree(tabId: number) {
-  return (await textCommand(tabId, 'Page.getFrameTree')).frameTree;
+  const root = (await textCommand(tabId, 'Page.getFrameTree')).frameTree;
+  if (!root?.frame || typeof root.frame.id !== 'string') throw new Error(`INVALID_RESULT：Page.getFrameTree 未返回标签页 ${tabId} 的有效 frame 树`);
+  return root;
 }
 function frames(root: any): any[] {
   return [root.frame, ...(root.childFrames || []).flatMap(frames)];
@@ -157,10 +161,28 @@ export async function observeAccessibility(input: {
   regex?: string;
   xpath?: string;
   categories?: string[];
+  /** 目标标签页（宿主已校验并切换为激活页；省略=当前活动页） */
+  tabId?: number;
+  signal?: AbortSignal;
 }) {
+  input.signal?.throwIfAborted();
   if (input.xpath)
     throw new Error('XPath 仅适用于 DOM 视图，辅助功能视图请用 regex');
-  const tab = await textTab();
+  const tab =
+    input.tabId !== undefined
+      ? await chrome.tabs
+          .get(input.tabId)
+          .catch(() => {
+            throw new Error(
+              `TAB_NOT_FOUND：标签页 ${input.tabId} 不存在（可能已关闭）。用 browser_tabs(action="list") 查看可用标签页。`
+            );
+          })
+      : await textTab();
+  if (typeof tab?.id !== 'number') throw new Error('TARGET_UNAVAILABLE：未找到可访问的标签页');
+  if (isRestrictedUrl(tab.url))
+    throw new Error(
+      `RESTRICTED_PAGE：辅助功能观察不能用于受限页面（${tab.url || '无 URL'}）。请切换到普通网页。`
+    );
   for (const [id, s] of snapshots)
     if (Date.now() - s.time >= 120_000) forget(id);
   let id = input.snapshotId;
@@ -193,7 +215,17 @@ export async function observeAccessibility(input: {
     const entries: AXEntry[] = [],
       warnings: string[] = [];
     let truncated = false;
-    for (const frame of frames(root)) {
+    const axDeadline = performance.now() + 12000;
+    const allFrames = frames(root);
+    for (const [frameIndex, frame] of allFrames.entries()) {
+      input.signal?.throwIfAborted();
+      if (performance.now() >= axDeadline || frameIndex >= 128) {
+        truncated = true;
+        const message = `AX_READ_BUDGET_EXCEEDED：剩余 ${allFrames.length - frameIndex} 个 frame 未读取：${allFrames.slice(frameIndex, frameIndex + 128).map(f => f.id).join(',')}`;
+        warnings.push(message);
+        console.warn('[accessibility-read]', message);
+        break;
+      }
       if (entries.length >= LIMIT) {
         truncated = true;
         break;
@@ -203,6 +235,7 @@ export async function observeAccessibility(input: {
           tab.id,
           'Accessibility.getFullAXTree',
           { frameId: frame.id },
+          Math.max(1, Math.min(2500, axDeadline - performance.now())),
         );
         for (const raw of result.nodes || []) {
           const node = normalize(raw);
@@ -230,6 +263,7 @@ export async function observeAccessibility(input: {
         warnings.push(
           `frame ${frame.id} 未覆盖：${readableTextError(error)}`,
         );
+        console.warn('[accessibility-read]', { frameId: frame.id, error: readableTextError(error) });
       }
     }
     if (!entries.length && warnings.length)
@@ -242,7 +276,7 @@ export async function observeAccessibility(input: {
     );
     snapshot = {
       tabId: tab.id,
-      url: tab.url,
+      url: tab.url ?? '',
       loaderId: root.frame.loaderId,
       epoch: cdpSession.getEpoch(tab.id),
       time: Date.now(),
@@ -261,35 +295,60 @@ export async function observeAccessibility(input: {
     while (snapshots.size > 8) forget(snapshots.keys().next().value!);
   }
   if (snapshot.consumed) throw new Error('STALE_SNAPSHOT：操作后请重新观察');
+  const totalPages = Math.max(1, Math.ceil(snapshot.entries.length / 40));
+  if (page > totalPages) throw new Error(`PAGE_OUT_OF_RANGE：共 ${totalPages} 页`);
+  input.signal?.throwIfAborted();
   await validateSnapshot(snapshot);
   const delivered = snapshot.entries.slice((page - 1) * 40, page * 40);
+  const invalidEntries = new Set<AXEntry>();
+  const frameFailures: Array<{ frameId: string; stage: string; code: string; message: string }> = [];
+  const deliveryDeadline = performance.now() + 12000;
+  const deliveryFrames = [...new Set(delivered.map(e => e.frameId))];
+  let nextFrame = 0;
   // Refresh each represented frame once; never deliver a removed or repurposed AX node.
-  for (const frameId of new Set(delivered.map((e) => e.frameId))) {
-    const live = await textCommand<{ nodes: AXNode[] }>(
-      tab.id,
+  await Promise.all(Array.from({ length: Math.min(4, deliveryFrames.length) }, async () => {
+  while (nextFrame < deliveryFrames.length) {
+    const frameId = deliveryFrames[nextFrame++];
+    const frameEntries = delivered.filter(e => e.frameId === frameId);
+    try {
+    input.signal?.throwIfAborted();
+    const remaining = deliveryDeadline - performance.now();
+    if (remaining <= 0) throw new Error('AX_READ_BUDGET_EXCEEDED：交付校验预算已用尽');
+    const live = await withDeadline(() => textCommand<{ nodes: AXNode[] }>(
+      tab.id!,
       'Accessibility.getFullAXTree',
       { frameId },
-    );
-    for (const entry of delivered.filter((e) => e.frameId === frameId)) {
+      Math.min(2500, remaining),
+    ), Math.min(2500, remaining), 'Validate AX references', input.signal);
+    if (!Array.isArray(live.nodes)) throw new Error('INVALID_RESULT：辅助功能校验未返回节点列表');
+    for (const entry of frameEntries) {
       const node = live.nodes?.find(
         (n) =>
           n.nodeId === entry.node.nodeId &&
           n.backendDOMNodeId === entry.node.backendDOMNodeId &&
           !n.ignored,
       );
-      if (!node || signature(node) !== signature(entry.node))
-        throw new Error('STALE_ELEMENTS：辅助功能节点变化，请重采');
+      if (!node || signature(node) !== signature(entry.node)) {
+        invalidEntries.add(entry);
+        frameFailures.push({ frameId, stage: 'validation', code: 'STALE_ELEMENTS', message: `AX node ${entry.node.nodeId} changed and was omitted` });
+        continue;
+      }
       entry.node = normalize(node);
       if (
         snapshot.categories.length &&
         !snapshot.categories.includes(categoryOf(entry.node))
       )
-        throw new Error('STALE_ELEMENTS：类别已变化，请重采');
+        { invalidEntries.add(entry); frameFailures.push({ frameId, stage: 'validation', code: 'STALE_ELEMENTS', message: `AX node ${entry.node.nodeId} changed category and was omitted` }); }
+    }
+    } catch (error) {
+      input.signal?.throwIfAborted();
+      frameEntries.forEach(entry => invalidEntries.add(entry));
+      frameFailures.push({ frameId, stage: 'validation', code: 'AX_FRAME_VALIDATION_FAILED', message: readableTextError(error) });
     }
   }
-  const totalPages = Math.max(1, Math.ceil(snapshot.entries.length / 40));
-  if (page > totalPages)
-    throw new Error(`PAGE_OUT_OF_RANGE：共 ${totalPages} 页`);
+  }));
+  const validEntries = delivered.filter(e => !invalidEntries.has(e));
+  if (delivered.length && !validEntries.length) throw new Error(`STALE_ELEMENTS：本页所有 AX 引用校验失败：${JSON.stringify(frameFailures)}`);
   return {
     snapshotId: id,
     view: 'accessibility',
@@ -299,14 +358,17 @@ export async function observeAccessibility(input: {
     totalPages,
     nextPage: page < totalPages ? page + 1 : null,
     totalElements: snapshot.entries.length,
+    omittedElements: invalidEntries.size,
+    partial: snapshot.truncated || snapshot.warnings.length > 0 || invalidEntries.size > 0,
     query: { regex: snapshot.regex, categories: snapshot.categories },
     coverage: {
       source: 'browser accessibility tree',
       complete: false,
       truncated: snapshot.truncated,
       warnings: snapshot.warnings,
+      frameFailures,
     },
-    elements: snapshot.entries.slice((page - 1) * 40, page * 40).map((e) => ({
+    elements: validEntries.map((e) => ({
       elementId: e.ref,
       role: e.node.role?.value,
       category: categoryOf(e.node),
@@ -339,7 +401,9 @@ async function validateSnapshot(snapshot: AXSnapshot) {
     !cdpSession.hasSession(tab.id) ||
     cdpSession.getEpoch(tab.id) !== snapshot.epoch
   )
-    throw new Error('STALE_SNAPSHOT：页面或调试会话变化，请重采');
+    throw new Error(
+      `STALE_SNAPSHOT：页面或调试会话变化，请重采（该快照属于标签页 ${snapshot.tabId}；需要续读请传 tabId=${snapshot.tabId}）`
+    );
   const root = await tree(tab.id);
   if (root.frame.loaderId !== snapshot.loaderId)
     throw new Error('STALE_SNAPSHOT：文档已导航，请重采');

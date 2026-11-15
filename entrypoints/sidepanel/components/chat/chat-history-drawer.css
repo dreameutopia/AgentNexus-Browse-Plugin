@@ -160,13 +160,7 @@
   border-color: var(--ink-secondary, #787671);
 }
 
-.history-badge.skill {
-  color: #0d9488;
-  background: rgba(16, 185, 129, 0.1);
-  border-color: #10b981;
-}
-
-/* 网站学习会话（kind='site-learn'）：琥珀色与智能体/技能徽章三色区分 */
+/* 网站学习会话（kind='site-learn'）：琥珀色与智能体徽章区分 */
 .history-badge.learn {
   color: #d97706;
   background: rgba(245, 158, 11, 0.1);

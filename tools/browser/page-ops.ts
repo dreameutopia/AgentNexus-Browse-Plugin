@@ -1,3 +1,4 @@
+import { executeScriptBounded } from '../common/frame-read';
 /**
  * 页面就绪与滚动工具（browser_page_ops）
  *
@@ -34,6 +35,7 @@ import {
   readNonEmptyStringField,
   readNumberField,
 } from './action-args';
+import { assertPluginOrigin, pluginOriginOf } from '../common/plugin-origin';
 
 /** 两个 action（schema 枚举与运行期校验同源） */
 export const PAGE_OPS_ACTIONS = ['scroll', 'wait_element'] as const;
@@ -142,6 +144,13 @@ export class BrowserPageOpsTool extends BaseBrowserTool {
     if (validated.error) return validated.error;
     const args = validated.args;
 
+    // 插件作用域只放行 wait_element：scroll/clickBox 会把“等待”扩成页面副作用
+    if (context?.pluginKey && args.action !== 'wait_element') {
+      return this.createErrorResponse(
+        'PLUGIN_ACTION_DENIED：插件调用 browser_page_ops 只允许 wait_element',
+      );
+    }
+
     try {
       switch (args.action) {
         case 'scroll':
@@ -225,9 +234,16 @@ export class BrowserPageOpsTool extends BaseBrowserTool {
 
   /** scroll：按视口高度倍数滚动整页 */
   private async handleScroll(args: PageOpsArgs, context?: ToolExecutionContext): Promise<ToolResult> {
-    const tab = args.tabId !== undefined
-      ? await chrome.tabs.get(args.tabId)
-      : await this.getActiveTab();
+    let tab: chrome.tabs.Tab | undefined;
+    try {
+      tab = args.tabId !== undefined
+        ? await chrome.tabs.get(args.tabId)
+        : await this.getActiveTab();
+    } catch (error) {
+      return this.createErrorResponse(
+        `TAB_NOT_FOUND：${args.tabId}（${error instanceof Error ? error.message : String(error)}）`,
+      );
+    }
 
     if (!tab || typeof tab.id !== 'number') {
       return this.createErrorResponse(
@@ -242,7 +258,7 @@ export class BrowserPageOpsTool extends BaseBrowserTool {
     const screens = args.screens ?? 1;
     const clickBox = args.clickBox ?? null;
 
-    const results = await chrome.scripting.executeScript({
+    const results = await executeScriptBounded({
       target: { tabId: tab.id },
       args: [direction, screens, clickBox],
       func: (dir: string, screenCount: number, box: [number, number, number, number] | null) => {
@@ -302,9 +318,16 @@ export class BrowserPageOpsTool extends BaseBrowserTool {
 
   /** wait_element：等待满足 CSS 选择器的元素出现 */
   private async handleWaitElement(args: PageOpsArgs, context?: ToolExecutionContext): Promise<ToolResult> {
-    const tab = args.tabId !== undefined
-      ? await chrome.tabs.get(args.tabId)
-      : await this.getActiveTab();
+    let tab: chrome.tabs.Tab | undefined;
+    try {
+      tab = args.tabId !== undefined
+        ? await chrome.tabs.get(args.tabId)
+        : await this.getActiveTab();
+    } catch (error) {
+      return this.createErrorResponse(
+        `TAB_NOT_FOUND：${args.tabId}（${error instanceof Error ? error.message : String(error)}）`,
+      );
+    }
 
     if (!tab || typeof tab.id !== 'number') {
       return this.createErrorResponse(
@@ -314,11 +337,20 @@ export class BrowserPageOpsTool extends BaseBrowserTool {
       );
     }
     if (args.tabId !== undefined) context?.onTabTarget?.(tab.id);
+    if (context?.pluginKey) {
+      try {
+        assertPluginOrigin(pluginOriginOf(tab.url), context);
+      } catch (error) {
+        return this.createErrorResponse(
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
 
     const selector = args.selector!;
     const timeout = args.timeout ?? 5000;
 
-    const results = await chrome.scripting.executeScript({
+    const results = await executeScriptBounded({
       target: { tabId: tab.id },
       args: [selector, timeout],
       func: async (sel: string, time: number) => {
@@ -342,7 +374,7 @@ export class BrowserPageOpsTool extends BaseBrowserTool {
         }
         return { found: false, waitTime: Date.now() - start };
       },
-    });
+    }, timeout + 1000, context?.signal);
 
     const result = results?.[0]?.result as { found?: boolean; waitTime?: number; elementInfo?: Record<string, unknown> } | undefined;
 

@@ -99,8 +99,18 @@ export async function renderMermaidToSvg(code: string): Promise<string | null> {
     // 尺寸护栏：超大图表在 Word/PDF 里会撑破版面，按上限拒绝
     const width = Number.parseFloat(/width="([\d.]+)/.exec(svg)?.[1] ?? '');
     const height = Number.parseFloat(/height="([\d.]+)/.exec(svg)?.[1] ?? '');
-    if (Number.isFinite(width) && width > MERMAID_MAX_CANVAS_EDGE) return null;
-    if (Number.isFinite(height) && height > MERMAID_MAX_CANVAS_EDGE) return null;
+    if (Number.isFinite(width) && width > MERMAID_MAX_CANVAS_EDGE) {
+      console.warn(
+        `[document] mermaid 图表过宽（${width}px > ${MERMAID_MAX_CANVAS_EDGE}px），已降级为代码块`,
+      );
+      return null;
+    }
+    if (Number.isFinite(height) && height > MERMAID_MAX_CANVAS_EDGE) {
+      console.warn(
+        `[document] mermaid 图表过高（${height}px > ${MERMAID_MAX_CANVAS_EDGE}px），已降级为代码块`,
+      );
+      return null;
+    }
     return svg;
   } catch (error) {
     // 语法错误等：降级为代码块，源码由调用方保留

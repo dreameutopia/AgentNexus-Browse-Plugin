@@ -1,3 +1,4 @@
+import { executeScriptBounded } from '@/tools/common/frame-read';
 /**
  * 屏幕共享信令处理器（稳定版）
  *
@@ -303,7 +304,7 @@ export class ScreenShareSignalHandler {
 
         // 在目标页面执行脚本以 "invoke" 扩展（激活 activeTab 权限）
         try {
-          await chrome.scripting.executeScript({
+          await executeScriptBounded({
             target: { tabId: targetTab.id },
             func: () => { /* noop - 仅用于激活 activeTab */ },
           });

@@ -159,6 +159,17 @@
   transform: scale(0.985);
 }
 
+/* 推荐项：工具层已把它归一为列表第一项并带「（推荐：…）」标注，
+ * 此处用高亮底色 + 主色边框让首选一眼可辨（hover 态仍可覆盖） */
+.interact-option.is-recommended {
+  border-color: #2563eb;
+  background: #f8faff;
+}
+
+.interact-option.is-recommended .interact-option-label {
+  color: #1d4ed8;
+}
+
 .interact-option-label {
   font-size: 13px;
   font-weight: 600;

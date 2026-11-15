@@ -7,8 +7,24 @@ import { ToolExecutor, ToolResult } from '@/common/tool-handler';
 import { OpenAITool } from '@/common/openai-types';
 
 // 工具元数据接口
+export type PluginApprovalLevel = 'install' | 'session' | 'call';
+
 export interface ToolMetadata {
-  plugin?: { key: string; version: string; publisher: string; digest: string };
+  plugin?: {
+    key: string;
+    version: string;
+    publisher: string;
+    digest: string;
+    epoch?: number;
+  };
+  /**
+   * 插件工具的审批级别：
+   * - install：安装审查即授权，调用不再逐次弹窗；
+   * - session：本会话首次调用批准后，该插件后续工具调用放行（默认）；
+   * - call：每次调用都需批准。
+   * 非插件工具忽略该字段，继续使用 requiresApproval* 体系。
+   */
+  approvalLevel?: PluginApprovalLevel;
   name: string;
   description: string;
   category: string;
@@ -105,6 +121,10 @@ export interface ToolExecutionContext {
   toolPolicy?: 'vision-assistant';
   pluginBindings?: Record<string, { digest: string; epoch: number }>;
   pluginApproved?: boolean;
+  /** 当前调用归属的插件 key；存在时页面型工具按 pluginOrigins 做 origin 校验 */
+  pluginKey?: string;
+  /** 插件 manifest 声明的 network origin 列表（页面读取 / 请求 / 导航的白名单） */
+  pluginOrigins?: readonly string[];
   /** In-process cancellation; never serialize AbortSignal through runtime messages. */
   signal?: AbortSignal;
   /** Opaque GUI request ID for background cancellation. */

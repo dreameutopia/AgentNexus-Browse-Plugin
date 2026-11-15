@@ -41,6 +41,8 @@ export interface AnswerGrouping {
   toolCount: number;
   /** 全消息上下文压缩次数（摘要展示用；与 toolCount 同一口径） */
   compactionCount: number;
+  /** 全消息技能激活片段数（摘要展示用；与 toolCount 同一口径） */
+  skillCount: number;
 }
 
 /** 结束态分组选项 */
@@ -91,6 +93,7 @@ export function groupAnswerParts(
     hasReasoning: options.legacyReasoningText || prelude.some(it => it.part.type === 'reasoning'),
     toolCount: options.totalToolCalls ?? indexed.filter(it => it.part.type === 'tool').length,
     compactionCount: indexed.filter(it => it.part.type === 'compaction').length,
+    skillCount: indexed.filter(it => it.part.type === 'skill').length,
   };
 }
 
@@ -102,6 +105,8 @@ export interface ClusterCounts {
   reasoning: number;
   images: number;
   compactions: number;
+  /** 技能激活片段数（预选技能在运行前自动加载，属于过程事实） */
+  skills: number;
 }
 
 /** 「小折叠」摘要条渲染项 */
@@ -128,12 +133,14 @@ export interface LivePartEntry {
 export type LiveRenderEntry = LiveClusterBarEntry | LivePartEntry;
 
 /**
- * 过程片段（参与连续过程簇的片段类型）：工具调用、思考、截图与上下文压缩。
- * 压缩片段与工具调用同一待遇——直播中是当前活动（pending 旋转行），被后续
- * 活动取代后随簇收拢，终态并入前奏折叠；簇摘要计数单列（「N 次压缩」）。
+ * 过程片段（参与连续过程簇的片段类型）：工具调用、思考、截图、上下文压缩
+ * 与技能激活。技能激活是运行前由系统代发的事实（模型尚未输出任何内容），
+ * 与压缩同一待遇——直播中作为当前活动可见，被后续活动取代后随簇收拢，
+ * 终态并入前奏折叠；簇摘要计数单列（「N 个技能」）。
  */
 const isProcessPart = (part: IndexedMessagePart['part']): boolean =>
-  part.type === 'tool' || part.type === 'reasoning' || part.type === 'image' || part.type === 'compaction';
+  part.type === 'tool' || part.type === 'reasoning' || part.type === 'image' ||
+  part.type === 'compaction' || part.type === 'skill';
 
 /**
  * 簇间断片段：**正文文本（正式输出）**与 notice（终态注记）恒可见、绝不
@@ -144,12 +151,13 @@ const isProcessPart = (part: IndexedMessagePart['part']): boolean =>
 const isBreakerPart = (part: IndexedMessagePart['part']): boolean => !isProcessPart(part);
 
 const countParts = (items: IndexedMessagePart[]): ClusterCounts => {
-  const counts: ClusterCounts = { tools: 0, reasoning: 0, images: 0, compactions: 0 };
+  const counts: ClusterCounts = { tools: 0, reasoning: 0, images: 0, compactions: 0, skills: 0 };
   for (const item of items) {
     if (item.part.type === 'tool') counts.tools += 1;
     else if (item.part.type === 'reasoning') counts.reasoning += 1;
     else if (item.part.type === 'image') counts.images += 1;
     else if (item.part.type === 'compaction') counts.compactions += 1;
+    else if (item.part.type === 'skill') counts.skills += 1;
   }
   return counts;
 };

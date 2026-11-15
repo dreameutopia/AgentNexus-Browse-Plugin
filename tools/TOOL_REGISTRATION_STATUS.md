@@ -24,8 +24,6 @@ registerAllTools()                      (tools/index.ts)
  ├─ registerCodeTools()                 tools/code/
  ├─ registerNoteTools()                 tools/note/
  ├─ registerExcalidrawTools()           tools/excalidraw/
- ├─ registerBilibiliTools()             tools/bilibili/
- ├─ registerIntegratedSearchTools()     tools/integrated-search/
  ├─ registerSkillTools()                tools/skill/
  ├─ registerOfficeTools()               tools/office/
  ├─ registerDocumentTools()             tools/document/
@@ -35,7 +33,7 @@ registerAllTools()                      (tools/index.ts)
  ├─ registerPlanTools()                 tools/plan/
  ├─ registerDataTools()                 tools/data/
  ├─ registerLearnTools()                tools/learn/
- └─ registerUploadFileTools()           tools/upload-file/
+ └─ registerFileUtilTools()             tools/file-util/
 ```
 
 - **background 端**：`registerAllTools()` 在 background 启动时调用
@@ -64,14 +62,24 @@ registerAllTools()                      (tools/index.ts)
   4. PDF 渲染是反向的一跳：`document_tool` 在 sidepanel 把 HTML 发给
      background 的 `pdf-channel.ts`（CDP `Page.printToPDF` 只在 background
      可用），渲染在**后台标签页**内完成，用户看不到打印对话框或预览页。
+     两端的消息类型常量、请求/结果类型与纸张几何收敛在
+     `tools/document/pdf-protocol.ts`（零依赖的唯一事实源）：常量各写一份
+     迟早会漂移，漂移后的表现是「PDF 渲染失败」这种指向不明的结果。
+     文档工具目录里的其余模块（docx/katex/markdown-it）仍是重依赖，
+     因此该协议模块是**唯一**允许被 background 引用的文档侧模块。
 
 ## 二、命名约定
 
-- 新一代工具统一 **`browser_` 前缀 + snake_case**：`browser_navigation`、`browser_get_page_text`。
+- 新一代工具统一 **`browser_` 前缀 + snake_case**：`browser_navigation`、`read_website`（正文读取与落盘）。
 - 例外（保持既有调用方兼容）：`task-submit`、`task-result`、`formFiller`、`semantic_compressor`、`interact`。
-- **`getPageMarkdown` 已下线**：结构化 Markdown 提取已并入 `browser_get_page_text`
-  （`tools/base/page-info-tool.ts` + `tools/browser/structured-page-payload.ts`，
-  结构化正文 + url 直读 + 超 15000 字符 ref 分页），预设与 Agent 提示词不要再引用旧名。
+- **`getPageMarkdown` 已下线**：结构化 Markdown 提取已并入 `read_website`
+  （共用引擎 `tools/browser/page-doc-engine.ts` + `tools/browser/structured-page-payload.ts`：
+  结构化正文 + url/tabId 直读 + 单页 3000 字符分页 + `content/*.md` 落盘与 `path + page` 续读），
+  预设与 Agent 提示词不要再引用旧名。
+- **`browser_get_page_text` 不再是默认注入工具**：正文读取统一走 `read_website`
+  （`content/<url-slug>-<4位随机字母>.md` 交付物，CSV 列 `content,page,totalPages,path`）。
+  历史文本通道保留注册（ref 缓存 + `ref + page` 续读）供显式调用，
+  但预设、Agent 提示词、技能 allowed-tools 与插件 hostTools 一律不得再引用它。
 - **`browser_screenshot` 已下线**：视觉截图统一由 `screenshot`（`tools/vision/screenshot-tool.ts`）提供，预设与 Agent 提示词里不要混用两个名字。
 - **导航与标签页工具已按域合并（项目未发布，无兼容别名）**：
   `browser_navigate` / `browser_go_back_or_forward` / `wait_page_load` / `browser_refresh`（原内联）→
@@ -116,21 +124,20 @@ registerAllTools()                      (tools/index.ts)
 | --- | --- | --- |
 | automation | 8 | `ai_action`、`ai_locate`、`check_restricted_url`、`extract_data`、`file_upload_getter`、`file_uploader`、`formFiller`、`xiaozhi_config` |
 | base | 2 | `task-result`、`task-submit` |
-| bilibili | 2 | `bilibili_jump_tool`、`bilibili_subtitle_tool` |
-| browser | 20 | `browser_clean_page`、`browser_console`、`browser_dom_explore`、`browser_downloads`、`browser_extract_data`、`browser_get_page_html`、`browser_get_page_info`、`browser_get_page_text`、`browser_history_bookmarks`、`browser_interact`、`browser_navigation`、`browser_network_capture`、`browser_network_request`、`browser_observe`、`browser_page_exec`、`browser_page_ops`、`browser_resources`、`browser_send_command_to_inject_script`、`browser_tabs`、`browser_vector_search` |
+| browser | 23 | `browser_clean_page`、`browser_console`、`browser_dom_explore`、`browser_downloads`、`browser_extract_data`、`browser_get_page_html`、`browser_get_page_info`、`browser_get_page_text`、`browser_history_bookmarks`、`browser_interact`、`browser_media_control`、`browser_navigation`、`browser_network_capture`、`browser_network_request`、`browser_observe`、`browser_page_exec`、`browser_page_http`、`browser_page_ops`、`browser_resources`、`browser_send_command_to_inject_script`、`browser_tabs`、`browser_vector_search`、`read_website` |
 | code | 3 | `js_run`、`mermaid_renderer`、`python_run` |
 | common | 1 | `generic_wait` |
 | data | 1 | `data_ref_tool` |
 | excalidraw | 3 | `draw_on_canvas`、`excalidraw_tool`、`setup_excalidraw_canvas` |
+| file-util | 1 | `file_util` |
 | interact | 1 | `interact` |
 | learn | 2 | `submit_skill`、`submit_validation` |
 | note | 1 | `note_tool` |
 | office | 2 | `xlsx_tool`, `document_tool` |
 | plan | 1 | `plan_tool` |
-| search | 3 | `web_search`、`platform_search`、`bilibili_search` |
+| search | 2 | `web_search`、`platform_search` |
 | skill | 1 | `skill_tool` |
 | text-processing | 1 | `semantic_compressor` |
-| upload-file | 1 | `read_file` |
 | vision | 3 | `ocr`、`screenshot`、`vision_gui` |
 
 ## 四、消费方

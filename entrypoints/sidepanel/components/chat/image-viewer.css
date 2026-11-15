@@ -1,6 +1,9 @@
 /* ==================== 共享全屏看图层（ImageViewer） ====================
    Teleport 到 body 的模态层样式；根命名空间 .image-viewer，
-   与消息流样式互相隔离（消息内联部件 / 底部图片区共用本层）。 */
+   与消息流样式互相隔离（消息内联部件 / 底部图片区 / 回答内截图共用本层）。
+
+   尺寸约定：侧边栏是窄列（~380px），工具条按「缩小 / 放大 / 在网页中打开 /
+   下载」四键排布，允许换行但不超过视口宽度，绝不横向溢出。 */
 
 .image-viewer {
   position: fixed;
@@ -14,24 +17,29 @@
 
 .viewer-stage {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  max-width: calc(100vw - 120px);
-  max-height: calc(100vh - 96px);
+  /* 交叉轴顶对齐：放大后图片可能高于舞台，flex 居中会让顶部溢出且滚不回去 */
+  align-items: flex-start;
+  justify-content: flex-start;
+  max-width: calc(100vw - 96px);
+  max-height: calc(100vh - 120px);
   margin: 0;
   overflow: auto;
   cursor: zoom-in;
 }
 
+/* 图片用 margin:auto 居中（而非 justify-content:center）：
+   flex 居中在内容溢出时会把左侧裁掉且滚不回去，margin:auto 不会。 */
 .viewer-img {
   display: block;
+  margin: auto;
   max-width: 100%;
-  max-height: calc(100vh - 96px);
+  max-height: calc(100vh - 120px);
   object-fit: contain;
   border-radius: 6px;
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
 }
 
+/* 放大态：宽高由组件按原始像素 × 档位显式给出，这里解除尺寸约束 */
 .viewer-img.zoomed {
   max-width: none;
   max-height: none;
@@ -99,15 +107,18 @@
   right: 16px;
 }
 
-/* 底部工具条（计数 / 缩放 / 下载） */
+/* 底部工具条（计数 / 缩小 / 放大 / 在网页中打开 / 下载） */
 .viewer-toolbar {
   position: absolute;
-  bottom: 20px;
+  bottom: 16px;
   left: 50%;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  max-width: calc(100vw - 24px);
+  padding: 8px 14px;
   border-radius: 999px;
   background: rgba(15, 23, 42, 0.85);
   border: 1px solid rgba(148, 163, 184, 0.25);
@@ -122,16 +133,26 @@
 }
 
 .viewer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   padding: 4px 12px;
   border: 1px solid rgba(148, 163, 184, 0.35);
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.15);
   color: inherit;
   font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
   cursor: pointer;
   transition: background 0.15s ease;
 }
 
-.viewer-btn:hover {
+.viewer-btn:hover:not(:disabled) {
   background: rgba(148, 163, 184, 0.32);
+}
+
+.viewer-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }

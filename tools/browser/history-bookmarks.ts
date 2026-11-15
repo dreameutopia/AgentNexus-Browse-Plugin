@@ -198,7 +198,7 @@ export class BrowserHistoryBookmarksTool extends BaseBrowserTool {
         'top=最常访问站点榜；' +
         'folders=书签文件夹结构（id/标题/路径/条目数，配合 update 的 parentId 把书签搬到目标文件夹）。' +
         '只有书签可增删改，历史只读（历史仅能清理）；检索条目带 id，后续 open/update/delete 可精确寻址不必再猜 URL。' +
-        '需要页面正文用 browser_get_page_text，本工具只管历史与书签本身。',
+        '需要页面正文用 read_website，本工具只管历史与书签本身。',
       parameters: {
         type: 'object',
         additionalProperties: false,

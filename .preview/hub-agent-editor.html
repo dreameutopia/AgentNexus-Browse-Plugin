@@ -138,70 +138,14 @@
 
               <!-- 右卡：工具组 / 外部工具 / 关联技能（三张独立卡片，均可折叠） -->
               <div class="hub-editor-col hub-editor-col--lists">
-                <!-- 工具区（默认「按工具」视图，每个工具独立一行） -->
+                <!-- 工具区（仅按组勾选：固定 8 组，组头三态复选框 + 组内只读芯片） -->
                 <div class="hub-section hub-section--groups">
                   <div class="hub-section-head">
                     <button type="button" class="hub-section-toggle" aria-expanded="true" title="收起">
                       <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-section-toggle__chevron"><path d="M4.5 6.2L8 9.8l3.5-3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
                     </button>
                     <span class="hub-field-label">工具组<span class="hub-required">*</span></span>
-                    <span class="hub-groups-count">已选 12 / 30</span>
-                    <!-- 视图切换：按工具（默认）/ 按组 -->
-                    <div class="hub-seg hub-section-view" role="radiogroup" aria-label="工具组">
-                      <span class="hub-seg__thumb" style="width: calc((100% - 4px) / 2);"></span>
-                      <button type="button" role="radio" class="hub-seg__btn is-active">按工具</button>
-                      <button type="button" role="radio" class="hub-seg__btn">按组</button>
-                    </div>
-                  </div>
-                  <div class="hub-section-body">
-                    <div class="hub-section-body-inner">
-                      <div class="hub-search hub-search--fill">
-                        <svg class="hub-search__icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M11.1 10.2a4.6 4.6 0 1 0-.9.9l3 3 .9-.9-3-3zm-4.1.3a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z" fill="currentColor"/></svg>
-                        <input type="text" class="hub-list-search" placeholder="搜索工具">
-                      </div>
-                      <!-- 按工具视图：每个工具独立一行 -->
-                      <div class="hub-groups-scroll">
-                        <div class="hub-tool-list">
-                          <label class="hub-tool-row is-checked">
-                            <input class="hub-check" type="checkbox" checked>
-                            <span class="hub-tool-row-main"><span class="hub-tool-row-id">web_search</span><span class="hub-tool-row-group">统一网页搜索</span></span>
-                          </label>
-                          <label class="hub-tool-row is-checked">
-                            <input class="hub-check" type="checkbox" checked>
-                            <span class="hub-tool-row-main"><span class="hub-tool-row-id">web_extract</span><span class="hub-tool-row-group">统一网页搜索</span></span>
-                          </label>
-                          <label class="hub-tool-row">
-                            <input class="hub-check" type="checkbox">
-                            <span class="hub-tool-row-main"><span class="hub-tool-row-id">browser_get_page_text</span><span class="hub-tool-row-group">页面深度读取</span></span>
-                          </label>
-                          <label class="hub-tool-row">
-                            <input class="hub-check" type="checkbox">
-                            <span class="hub-tool-row-main"><span class="hub-tool-row-id">browser_dom_explore</span><span class="hub-tool-row-group">页面深度读取</span></span>
-                          </label>
-                          <label class="hub-tool-row is-locked">
-                            <input class="hub-check" type="checkbox" disabled>
-                            <span class="hub-tool-row-main"><span class="hub-tool-row-id">python_exec</span><span class="hub-tool-row-group">Python 计算</span></span>
-                            <span class="hub-group-lock">环境未就绪</span>
-                          </label>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- 按组视图（对照示意：组头三态复选框 + 组内逐个工具） -->
-                <div class="hub-section hub-section--groups">
-                  <div class="hub-section-head">
-                    <button type="button" class="hub-section-toggle" aria-expanded="true" title="收起">
-                      <svg viewBox="0 0 16 16" aria-hidden="true" class="hub-section-toggle__chevron"><path d="M4.5 6.2L8 9.8l3.5-3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                    </button>
-                    <span class="hub-field-label">工具组<span class="hub-required">*</span></span>
-                    <span class="hub-groups-count">已选 12 / 30</span>
-                    <div class="hub-seg hub-section-view" role="radiogroup" aria-label="工具组">
-                      <span class="hub-seg__thumb" style="width: calc((100% - 4px) / 2); transform: translateX(100%);"></span>
-                      <button type="button" role="radio" class="hub-seg__btn">按工具</button>
-                      <button type="button" role="radio" class="hub-seg__btn is-active">按组</button>
-                    </div>
+                    <span class="hub-groups-count">已选 6 / 30</span>
                   </div>
                   <div class="hub-section-body">
                     <div class="hub-section-body-inner">
@@ -216,30 +160,15 @@
                             <div class="hub-group-head">
                               <input class="hub-check" type="checkbox" checked>
                               <button type="button" class="hub-group-body">
-                                <span class="hub-group-name">统一网页搜索</span>
-                                <span class="hub-group-desc">web_search 一次调用：导航 + 多平台结果解析（website 枚举 9 平台）</span>
+                                <span class="hub-group-name">基础网页操作</span>
+                                <span class="hub-group-desc">browser_observe 页面观察、browser_interact 点击与填写、browser_navigation 地址栏导航（打开 / 前进 / 后退 / 刷新）</span>
                               </button>
                               <button type="button" class="hub-group-info"><svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg></button>
                             </div>
                             <div class="hub-group-tools">
-                              <label class="hub-group-tool is-checked"><input class="hub-check" type="checkbox" checked><span class="hub-group-tool-id">web_search</span></label>
-                              <label class="hub-group-tool is-checked"><input class="hub-check" type="checkbox" checked><span class="hub-group-tool-id">web_extract</span></label>
-                            </div>
-                          </div>
-                          <!-- 部分选中态组 -->
-                          <div class="hub-group is-partial">
-                            <div class="hub-group-head">
-                              <input class="hub-check" type="checkbox" indeterminate>
-                              <button type="button" class="hub-group-body">
-                                <span class="hub-group-name">页面深度读取</span>
-                                <span class="hub-group-desc">HTML / 元素信息 / Markdown / 指定区域抓取</span>
-                              </button>
-                              <button type="button" class="hub-group-info"><svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg></button>
-                            </div>
-                            <div class="hub-group-tools">
-                              <label class="hub-group-tool is-checked"><input class="hub-check" type="checkbox" checked><span class="hub-group-tool-id">browser_get_page_text</span></label>
-                              <label class="hub-group-tool"><input class="hub-check" type="checkbox"><span class="hub-group-tool-id">browser_dom_explore</span></label>
-                              <label class="hub-group-tool"><input class="hub-check" type="checkbox"><span class="hub-group-tool-id">browser_get_element_info</span></label>
+                              <span class="hub-group-tool is-checked"><span class="hub-group-tool-id">browser_observe</span></span>
+                              <span class="hub-group-tool is-checked"><span class="hub-group-tool-id">browser_interact</span></span>
+                              <span class="hub-group-tool is-checked"><span class="hub-group-tool-id">browser_navigation</span></span>
                             </div>
                           </div>
                           <!-- 未选中态组 -->
@@ -247,27 +176,83 @@
                             <div class="hub-group-head">
                               <input class="hub-check" type="checkbox">
                               <button type="button" class="hub-group-body">
-                                <span class="hub-group-name">脚本执行</span>
-                                <span class="hub-group-desc">在页面上下文中执行脚本</span>
+                                <span class="hub-group-name">标签页与书签</span>
+                                <span class="hub-group-desc">标签页与窗口枚举切换、页面元信息读取、历史与书签统一检索与增删改</span>
                               </button>
                               <button type="button" class="hub-group-info"><svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg></button>
                             </div>
                             <div class="hub-group-tools">
-                              <label class="hub-group-tool"><input class="hub-check" type="checkbox"><span class="hub-group-tool-id">browser_page_exec</span></label>
+                              <span class="hub-group-tool"><span class="hub-group-tool-id">browser_tabs</span></span>
+                              <span class="hub-group-tool"><span class="hub-group-tool-id">browser_get_page_info</span></span>
+                              <span class="hub-group-tool"><span class="hub-group-tool-id">browser_history_bookmarks</span></span>
                             </div>
                           </div>
+                          <div class="hub-group">
+                            <div class="hub-group-head">
+                              <input class="hub-check" type="checkbox">
+                              <button type="button" class="hub-group-body">
+                                <span class="hub-group-name">搜索</span>
+                                <span class="hub-group-desc">web_search：通用网页检索（bing / baidu），一次调用完成导航 + 结果解析</span>
+                              </button>
+                              <button type="button" class="hub-group-info"><svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg></button>
+                            </div>
+                            <div class="hub-group-tools">
+                              <span class="hub-group-tool"><span class="hub-group-tool-id">web_search</span></span>
+                            </div>
+                          </div>
+                          <div class="hub-group">
+                            <div class="hub-group-head">
+                              <input class="hub-check" type="checkbox">
+                              <button type="button" class="hub-group-body">
+                                <span class="hub-group-name">界面感知</span>
+                                <span class="hub-group-desc">browser_dom_explore：DOM 结构探索（父 / 子 / 兄弟 / 相似元素），理解页面布局与层级</span>
+                              </button>
+                              <button type="button" class="hub-group-info"><svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg></button>
+                            </div>
+                            <div class="hub-group-tools">
+                              <span class="hub-group-tool"><span class="hub-group-tool-id">browser_dom_explore</span></span>
+                            </div>
+                          </div>
+                          <div class="hub-group">
+                            <div class="hub-group-head">
+                              <input class="hub-check" type="checkbox">
+                              <button type="button" class="hub-group-body">
+                                <span class="hub-group-name">文件生成</span>
+                                <span class="hub-group-desc">xlsx_tool 表格生成与导出；document_tool 书写 Markdown 并转换为 Word / PDF 文档</span>
+                              </button>
+                              <button type="button" class="hub-group-info"><svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg></button>
+                            </div>
+                            <div class="hub-group-tools">
+                              <span class="hub-group-tool"><span class="hub-group-tool-id">xlsx_tool</span></span>
+                              <span class="hub-group-tool"><span class="hub-group-tool-id">document_tool</span></span>
+                            </div>
+                          </div>
+                          <div class="hub-group">
+                            <div class="hub-group-head">
+                              <input class="hub-check" type="checkbox">
+                              <button type="button" class="hub-group-body">
+                                <span class="hub-group-name">Excalidraw 画布</span>
+                                <span class="hub-group-desc">在 Excalidraw 画布上绘制思维导图与示意图</span>
+                              </button>
+                              <button type="button" class="hub-group-info"><svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg></button>
+                            </div>
+                            <div class="hub-group-tools">
+                              <span class="hub-group-tool"><span class="hub-group-tool-id">excalidraw_tool</span></span>
+                            </div>
+                          </div>
+                          <!-- Python 运行组（环境未就绪锁定态） -->
                           <div class="hub-group locked">
                             <div class="hub-group-head">
                               <input class="hub-check" type="checkbox" disabled>
                               <button type="button" class="hub-group-body">
-                                <span class="hub-group-name">Python 计算</span>
-                                <span class="hub-group-desc">沙箱内执行 Python</span>
+                                <span class="hub-group-name">Python 运行</span>
+                                <span class="hub-group-desc">Beta：在本地 Python 3.14 沙箱执行数据分析与计算（numpy / pandas 等按需加载），有网络访问与 JS 桥接能力，谨慎开启</span>
                               </button>
-                              <span class="hub-group-lock">环境未就绪</span>
+                              <span class="hub-group-lock">需先在扩展设置的「Python 环境」中下载并核验后可用</span>
                               <button type="button" class="hub-group-info"><svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg></button>
                             </div>
                             <div class="hub-group-tools">
-                              <label class="hub-group-tool"><input class="hub-check" type="checkbox" disabled><span class="hub-group-tool-id">python_exec</span></label>
+                              <span class="hub-group-tool"><span class="hub-group-tool-id">python_run</span></span>
                             </div>
                           </div>
                         </div>
@@ -360,36 +345,28 @@
             <div class="hub-detail-card" role="dialog">
               <div class="hub-detail-card__panel">
                 <div class="hub-detail-card__head">
-                  <strong class="hub-detail-card__title">统一网页搜索</strong>
+                  <strong class="hub-detail-card__title">搜索</strong>
                   <button type="button" class="hub-icon-btn"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.4 4.4l7.2 7.2M11.6 4.4l-7.2 7.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
                 </div>
-                <p class="hub-detail-card__desc">统一多平台集成搜索：一次调用完成「导航到平台搜索结果页 → 等待加载 → 解析结构化结果 → Markdown 表格」。⚠ 自带页面导航（效果等同 browser_navigation 的 open action），禁止同一轮并发调用。</p>
+                <p class="hub-detail-card__desc">web_search：通用网页检索（bing / baidu），一次调用完成导航 + 结果解析。</p>
 
                 <section class="hub-detail-tool">
                   <div class="hub-detail-tool__head">
                     <span class="hub-detail-tool__name">web_search</span>
                     <span class="hub-detail-tool__version">v1.0.0</span>
                   </div>
-                  <p class="hub-detail-tool__desc">统一多平台集成搜索：一次调用完成导航、等待加载、解析结构化结果并返回 Markdown 表格。</p>
+                  <p class="hub-detail-tool__desc">通用网页搜索：一次调用完成「导航到搜索引擎结果页 → 等待加载 → 解析结构化结果 → Markdown 表格」（bing / baidu）。</p>
                   <div class="hub-detail-tool__params">
                     <span class="hub-detail-tool__params-label">输入参数</span>
                     <div class="hub-detail-tool__param">
-                      <span class="hub-detail-tool__param-name">website <span class="hub-detail-tool__param-type">string</span><span class="hub-detail-tool__required">必填</span></span>
-                      <span class="hub-detail-tool__param-desc">目标搜索平台（枚举）：baidu=百度、bing=Bing、zhihu=知乎、github=GitHub、csdn=CSDN、mooc=中国大学MOOC、xiaohongshu=小红书、cnki=中国知网、bilibili=Bilibili</span>
+                      <span class="hub-detail-tool__param-name">engine <span class="hub-detail-tool__param-type">string</span><span class="hub-detail-tool__required">必填</span></span>
+                      <span class="hub-detail-tool__param-desc">目标搜索引擎（枚举）：bing=Bing、baidu=百度</span>
                     </div>
                     <div class="hub-detail-tool__param">
-                      <span class="hub-detail-tool__param-name">maxResults <span class="hub-detail-tool__param-type">number</span></span>
-                      <span class="hub-detail-tool__param-desc">返回结果条数上限，默认 10</span>
+                      <span class="hub-detail-tool__param-name">query <span class="hub-detail-tool__param-type">string</span><span class="hub-detail-tool__required">必填</span></span>
+                      <span class="hub-detail-tool__param-desc">搜索查询关键词（必填，最长 300 字符）</span>
                     </div>
                   </div>
-                </section>
-
-                <section class="hub-detail-tool">
-                  <div class="hub-detail-tool__head">
-                    <span class="hub-detail-tool__name">web_fetch</span>
-                    <span class="hub-detail-tool__version">v1.0.0</span>
-                  </div>
-                  <p class="hub-detail-tool__desc">抓取指定 URL 的正文并转成 Markdown。</p>
                 </section>
               </div>
             </div>

@@ -16,8 +16,11 @@ import { unzipSync, strFromU8 } from 'fflate';
 import { renderMarkdownToHtml, isSafeImageProtocol, isSafeLinkProtocol } from '../../tools/document/markdown-render';
 import { buildDocx } from '../../tools/document/docx-builder';
 import { buildPdfDocument } from '../../tools/document/pdf-document';
-import { isPrivateHost } from '../../tools/document/image-resolver';
-import { DocumentTool } from '../../tools/document/document-tool';
+import { detectImageFormat, isPrivateHost, parseIPv4 } from '../../tools/document/image-resolver';
+import { sanitizeArtifactFilename, DocumentTool } from '../../tools/document/document-tool';
+import { PDF_RENDER_MESSAGE as CLIENT_MESSAGE } from '../../tools/document/pdf-client';
+import { PDF_RENDER_MESSAGE as PROTOCOL_MESSAGE } from '../../tools/document/pdf-protocol';
+import { PDF_RENDER_MESSAGE as CHANNEL_MESSAGE } from '../../tools/browser/pdf-channel';
 
 // ==================== 迷你断言框架 ====================
 
@@ -317,6 +320,166 @@ function resultText(result: { content?: unknown }): string {
   });
   includes(document, '<svg viewBox="0 0 10 10">', '矢量图内联为 SVG');
   excludes(document, 'an-doc-vec-0', '矢量图占位地址已被替换掉');
+}
+
+// ==================== 6. 回归防线：多图占位地址不串号 ====================
+
+{
+  // 回归缺陷：占位地址是 an-doc-raster-N，若按裸地址做子串替换，
+  // 第 2 张图（an-doc-raster-1）会命中第 11 张图（an-doc-raster-10）的
+  // 前缀，把图片数据写错位置。
+  const count = 12;
+  const parts: string[] = [];
+  for (let i = 0; i < count; i++) parts.push(`![图 ${i}](img-${i}.png)`);
+  const rendered = await renderMarkdownToHtml(parts.join('\n\n'), {
+    images: {
+      resolve: async (src) => ({ src, dataUrl: `data:image/png;base64,AAA${src}` }),
+    },
+  });
+  for (let i = 0; i < count; i++) {
+    includes(
+      rendered.html,
+      `src="data:image/png;base64,AAAimg-${i}.png"`,
+      `第 ${i + 1} 张图内联到自己的地址（占位地址不串号）`,
+    );
+  }
+  excludes(rendered.html, 'an-doc-raster', '所有占位地址均已回填');
+}
+
+// ==================== 7. 回归防线：mermaid 围栏与图表一一对应 ====================
+
+{
+  // 回归缺陷：早先用正则扫描源码统计 mermaid 围栏，缩进代码块里的
+  // ```mermaid 也会被计入，导致「第 2 个围栏拿到第 1 张图的 SVG」。
+  const markdown = [
+    '```mermaid',
+    'graph TD',
+    '  A-->B',
+    '```',
+    '',
+    '    ```mermaid',
+    '    graph LR',
+    '    C-->D',
+    '    ```',
+    '',
+    '```mermaid',
+    'graph TD',
+    '  E-->F',
+    '```',
+  ].join('\n');
+
+  let renderedCalls = 0;
+  const rendered = await renderMarkdownToHtml(markdown, {
+    renderMermaid: async (code) => {
+      renderedCalls++;
+      return `<svg data-code="${code.replace(/\s+/g, ' ').trim()}"></svg>`;
+    },
+  });
+
+  eq(renderedCalls, 2, '只有两个真正的 mermaid 围栏被渲染（缩进代码块不算）');
+  eq(rendered.vectorImages.size, 2, '产出 2 张矢量图');
+  const svgs = [...rendered.vectorImages.values()].map((vector) => vector.svg);
+  includes(svgs[0] ?? '', 'graph TD A-->B', '第一张图对应第一个围栏');
+  includes(svgs[1] ?? '', 'graph TD E-->F', '第二张图对应第二个围栏（未被缩进块挤位）');
+  excludes(svgs[1] ?? '', 'graph LR C-->D', '缩进代码块里的伪围栏没有被当作图表');
+}
+
+// ==================== 8. 回归防线：产物文件名后缀 ====================
+
+{
+  // 回归缺陷：早先按「目标后缀长度」截断原名，`报告.docx` 会变成 `报告..pdf`。
+  eq(sanitizeArtifactFilename('报告.docx', '.pdf').name, '报告.pdf', '已有 .docx 后缀被替换为 .pdf');
+  eq(sanitizeArtifactFilename('报告.docx', '.docx').name, '报告.docx', '同后缀保持不变');
+  eq(sanitizeArtifactFilename('报告', '.pdf').name, '报告.pdf', '无后缀直接挂目标后缀');
+  eq(sanitizeArtifactFilename('2024.05 月报', '.pdf').name, '2024.05 月报.pdf', '带点号的名称不被误切');
+  eq(sanitizeArtifactFilename('a/b:c', '.pdf').name, 'abc.pdf', '非法字符被剔除');
+  eq(sanitizeArtifactFilename('', '.pdf').name.includes('.pdf'), true, '空名走默认名');
+  eq(sanitizeArtifactFilename(123 as never, '.pdf').name.includes('.pdf'), true, '非字符串走默认名');
+}
+
+// ==================== 9. 回归防线：SSRF 数字变形写法 ====================
+
+{
+  // 回归缺陷：朴素字符串匹配放过了十进制/八进制/十六进制/缩写/尾点写法，
+  // 而浏览器会把它们全部解析成 127.0.0.1。
+  check(isPrivateHost('2130706433'), '十进制 IPv4 判为私网');
+  check(isPrivateHost('0177.0.0.1'), '八进制 IPv4 判为私网');
+  check(isPrivateHost('0x7f.0.0.1'), '十六进制 IPv4 判为私网');
+  check(isPrivateHost('127.1'), '缩写 IPv4 判为私网');
+  check(isPrivateHost('127.0.0.1.'), '带尾点的 IPv4 判为私网');
+  check(isPrivateHost('0.0.0.0'), '0.0.0.0 判为私网');
+  check(isPrivateHost('100.64.0.1'), 'CGNAT 段判为私网');
+  check(isPrivateHost('metadata.google.internal'), '云元数据主机名判为私网');
+  check(!isPrivateHost('8.8.8.8'), '公网 IPv4 不判为私网');
+  check(!isPrivateHost('example.com'), '公网域名不判为私网');
+  check(!isPrivateHost('1.2.3.4.example.com'), '以 IP 开头的主机名不判为私网');
+
+  eq(parseIPv4('127.0.0.1'), 2130706433, 'parseIPv4 解析标准写法');
+  eq(parseIPv4('2130706433'), 2130706433, 'parseIPv4 解析十进制写法');
+  eq(parseIPv4('127.1'), 2130706433, 'parseIPv4 解析缩写写法');
+  eq(parseIPv4('example.com'), null, '非 IP 返回 null');
+  eq(parseIPv4('1.2.3.4.5'), null, '超过四段返回 null');
+}
+
+// ==================== 10. 回归防线：协议相对地址与图片格式 ====================
+
+{
+  // 协议相对地址是跨源绝对地址：放进 PDF 会触发对外请求
+  check(!isSafeLinkProtocol('//evil.example.com/x'), '协议相对链接判为不安全');
+  check(!isSafeImageProtocol('//evil.example.com/a.png'), '协议相对图片判为不安全');
+  check(isSafeLinkProtocol('/docs/a.md'), '绝对路径链接仍视为安全（同源）');
+
+  // 图片格式按字节魔数判定（不信 Content-Type）
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  eq(detectImageFormat(png), 'png', 'PNG 魔数识别');
+  eq(detectImageFormat(new Uint8Array([0xff, 0xd8, 0xff, 0xe0])), 'jpeg', 'JPEG 魔数识别');
+  eq(detectImageFormat(new Uint8Array([0x47, 0x49, 0x46, 0x38])), 'gif', 'GIF 魔数识别');
+  eq(detectImageFormat(new Uint8Array([0x42, 0x4d, 0x00, 0x00])), 'bmp', 'BMP 魔数识别');
+  eq(detectImageFormat(new TextEncoder().encode('<svg xmlns="x"></svg>')), 'svg', 'SVG 文本识别');
+  eq(detectImageFormat(new TextEncoder().encode('not an image')), null, '非图片返回 null');
+}
+
+// ==================== 11. 回归防线：PDF 通道协议单一事实源 ====================
+
+{
+  eq(CLIENT_MESSAGE, PROTOCOL_MESSAGE, '客户端与协议层消息类型一致');
+  eq(CHANNEL_MESSAGE, PROTOCOL_MESSAGE, '服务端与协议层消息类型一致');
+  includes(PROTOCOL_MESSAGE, 'document-pdf-render', 'PDF 消息类型命名稳定');
+}
+
+// ==================== 12. 回归防线：PDF 纸张与页边距一致 ====================
+
+{
+  const a4 = buildPdfDocument('<p>x</p>', { title: 't', vectorImages: new Map() });
+  includes(a4, 'size: A4', '默认纸张为 A4');
+  const letter = buildPdfDocument('<p>x</p>', {
+    title: 't',
+    paperSize: 'Letter',
+    vectorImages: new Map(),
+  });
+  includes(letter, 'size: Letter', '可指定 Letter 纸张');
+  includes(a4, '@page', 'PDF 文档声明 @page 分页');
+  // @page 的页边距必须与 CDP printToPDF 的 margin 一致（否则版式描述与实际不符）
+  const marginMm = Math.round(0.79 * 25.4);
+  includes(a4, `margin: ${marginMm}mm`, 'CSS 页边距与打印参数一致');
+}
+
+// ==================== 13. 回归防线：未知参数必须报错 ====================
+
+{
+  const tool = new DocumentTool();
+  const unknown = await tool.execute({ action: 'convert', path: 'docs/a.md', style: 'dark' });
+  eq(unknown.success, false, 'convert 的未知参数被拒');
+  includes(resultText(unknown), 'style', '未知参数名出现在回执里');
+  includes(resultText(unknown), '不接受参数', '回执说明是参数不被接受');
+
+  const unknownForCreate = await tool.execute({
+    action: 'create',
+    path: 'docs/a.md',
+    content: '# a',
+    format: 'pdf',
+  });
+  eq(unknownForCreate.success, false, 'create 的未知参数被拒');
 }
 
 // ==================== 汇总 ====================

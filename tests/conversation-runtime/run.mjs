@@ -33,7 +33,7 @@ await build({
             : args.path.endsWith("skill-engine")
               ? "export const skillEngine = {restore: async()=>{}};"
               : args.path.endsWith("app-settings")
-                ? "export const appSettingsStore = {load: async()=>{}, getInteractTimeoutMinutes:()=>20};"
+                ? "export const appSettingsStore = {load: async()=>{}, getUserResponseTimeoutMinutes:()=>20};"
                 : args.path.endsWith("compactor")
                   ? 'export const contextCompactor = {compact: input=>globalThis.compactInput(input), buildSummaryMessage: content=>({role:"system",content})};'
                   : args.path.endsWith("transcript-engine")

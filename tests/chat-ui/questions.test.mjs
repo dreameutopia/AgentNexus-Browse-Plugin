@@ -29,8 +29,9 @@ await build({ stdin: { contents: `
       });
       api.onResolve({ filter: /utils\/channels$/ }, args => ({ path: args.path, namespace: 'settings' }));
       api.onLoad({ filter: /.*/, namespace: 'settings' }, () => ({ contents: `
-        export const INTERACT_TIMEOUT_MIN_MINUTES=1,INTERACT_TIMEOUT_MAX_MINUTES=60,INTERACT_TIMEOUT_DEFAULT_MINUTES=20;
-        export const appSettingsStore={getInteractTimeoutMinutes:()=>1};
+        export const USER_RESPONSE_TIMEOUT_MIN_MINUTES=1,USER_RESPONSE_TIMEOUT_MAX_MINUTES=120,USER_RESPONSE_TIMEOUT_DEFAULT_MINUTES=20;
+        export const resolveUserResponseWaitMs=minutes=>(Number.isFinite(minutes)?Math.min(120,Math.max(1,Math.floor(minutes))):20)*60000;
+        export const appSettingsStore={getUserResponseTimeoutMinutes:()=>1};
       ` }));
     },
   }] });
@@ -61,6 +62,10 @@ try {
   // Exercise the actual textarea -> emitted config -> back-to-edit/reset behavior.
   const fields = document.querySelectorAll('.learn-field__textarea');
   assert.equal(document.querySelector('.learn-advanced').open, false, '高级设置默认折叠');
+  assert.equal(document.querySelector('.learn-toggle').getAttribute('aria-checked'), 'false', '自动验证默认关闭');
+  assert.equal(document.querySelectorAll('.learn-budget').length, 1, '默认只暴露学习预算');
+  document.querySelector('.learn-toggle').click(); await nextTick();
+  assert.equal(document.querySelectorAll('.learn-budget').length, 2, '开启验证暴露两段预算');
   const budgetInputs = document.querySelectorAll('.learn-budget input');
   assert.deepEqual([...budgetInputs].map(input => input.value), ['60', '30', '60', '30']);
   for (const [index, value] of ['12', '7', '8', '4'].entries()) {
@@ -85,7 +90,8 @@ try {
   assert.equal(document.querySelectorAll('.learn-field__textarea')[1].value, submissions[0].additionalDescription, '返回修改保留描述');
   resetEpoch.value++; await nextTick();
   assert.equal(document.querySelectorAll('.learn-field__textarea')[1].value, '', '新学习意图清空旧描述');
-  assert.deepEqual([...document.querySelectorAll('.learn-budget input')].map(input => input.value), ['60', '30', '60', '30'], '新意图恢复默认预算');
+  assert.equal(document.querySelector('.learn-toggle').getAttribute('aria-checked'), 'false', '新意图恢复默认关闭验证');
+  assert.deepEqual([...document.querySelectorAll('.learn-budget input')].map(input => input.value), ['60', '30'], '新意图恢复默认预算');
   visible.value = false; await nextTick();
   for (const phase of ['learning', 'validating']) {
     confirmation.value = { mode: 'limitWrapUp', phase, reason: 'max-duration', iterations: 60, minutes: 30, extraIterations: 15 };

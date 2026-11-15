@@ -74,6 +74,7 @@ assert.ok(result.error?.includes('status 必须为'), '非法 status 给可读�
 result = await planTool.execute({ action: 'edit', id: '1', status: 'failed' }, { chatId });
 assert.equal(result.success, false);
 assert.ok(result.error?.includes('message 必填'), 'failed 必填 message');
+assert.ok(result.error?.includes('接下来优先处理'), 'failed 校验失败也附下一步提醒');
 
 // edit：未知 id → 错误正文回显当前清单（自纠路径）
 result = await planTool.execute({ action: 'edit', id: '99', status: 'done' }, { chatId });
@@ -88,6 +89,13 @@ result = await planTool.execute(
 );
 assert.equal(result.success, true, 'done 标注成功');
 assert.equal((result.data.item as PlanItem).message, '已取得 5 条来源', 'done message 记录成果');
+assert.ok(textOf(result).includes('接下来优先处理'), 'done 回执附下一步提醒');
+assert.equal(
+  (result.data.nextPending as PlanItem[]).length,
+  2,
+  'nextPending 只回头两个未完成项',
+);
+assert.equal('items' in result.data, false, 'edit 不再回传全量计划（省上下文）');
 result = await planTool.execute({ action: 'edit', id: '1', status: 'in_progress' }, { chatId });
 assert.equal(result.success, true);
 assert.equal((result.data.item as PlanItem).status, 'in_progress');

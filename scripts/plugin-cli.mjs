@@ -65,7 +65,7 @@ try {
       license: 'MIT',
       capabilities: {
         network: [],
-        hostTools: ['builtin/browser_get_page_text'],
+        hostTools: ['builtin/read_website'],
         secretSlots: [],
       },
       contributes: {
@@ -91,7 +91,7 @@ try {
           },
           executor: {
             type: 'host-alias',
-            target: 'builtin/browser_get_page_text',
+            target: 'builtin/read_website',
           },
         },
         null,

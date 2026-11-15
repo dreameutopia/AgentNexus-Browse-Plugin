@@ -1,3 +1,4 @@
+import { executeScriptBounded } from '../common/frame-read';
 /**
  * 批量抓取执行器（crawl runner）
  *
@@ -412,7 +413,7 @@ async function crawlOne(params: {
   }
 
   if (target.expectTextIncludes) {
-    const checked = await abortable(chrome.scripting.executeScript({
+    const checked = await abortable(executeScriptBounded({
       target: { tabId, frameIds: [frameId] }, world: 'ISOLATED',
       func: function pageContainsText(needle: string) { return (document.body?.innerText ?? '').includes(needle); },
       args: [target.expectTextIncludes],

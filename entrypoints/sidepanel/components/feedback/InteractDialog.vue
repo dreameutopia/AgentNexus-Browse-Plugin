@@ -62,13 +62,16 @@
         <!-- 背景说明（可选） -->
         <p v-if="context" class="interact-context">{{ context }}</p>
 
-        <!-- 候选选项：点击即提交（对齐 Claude Code AskUserQuestion 交互） -->
+        <!-- 候选选项：点击即提交（对齐 Claude Code AskUserQuestion 交互）
+             工具层已把推荐项归一为列表第一项且 description 带「（推荐：…）」标注，
+             此处只负责呈现：推荐项加高亮底色与边框，让用户一眼看到首选。 -->
         <div v-if="options.length > 0" class="interact-options">
           <button
-            v-for="option in options"
+            v-for="(option, index) in options"
             :key="option.label"
             type="button"
             class="interact-option"
+            :class="{ 'is-recommended': index === 0 && options.length > 1 }"
             @click="submitInteractAnswer(option.label, 'option')"
           >
             <span class="interact-option-label">{{ option.label }}</span>

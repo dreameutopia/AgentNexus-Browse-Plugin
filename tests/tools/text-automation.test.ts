@@ -104,6 +104,10 @@ export async function testTextAutomation(
       },
       tabs: {
         ...saved.tabs,
+        get: async (id: number) => {
+          if (id !== tabId) throw new Error(`No tab with id: ${id}`);
+          return { id, url: 'https://fixture.example/' };
+        },
         query: async () => [{ id: tabId, url: 'https://fixture.example/' }],
       },
       debugger: {

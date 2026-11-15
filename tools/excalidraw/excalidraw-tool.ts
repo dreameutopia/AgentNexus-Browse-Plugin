@@ -1,3 +1,4 @@
+import { executeScriptBounded } from '../common/frame-read';
 /**
  * Excalidraw 绘图工具 (vFinal - Blueprint Architecture)
  * 采用单一、自包含的工具模式，严格遵循经过验证的成功范例。
@@ -122,7 +123,7 @@ export class ExcalidrawTool extends BaseTool {
           if (tab.status === 'complete' && tab.url?.includes('excalidraw.com')) {
             this.log(`页面加载完成，注入桥接脚本...`);
             // 1) 注入通用桥接脚本到隔离世界 (用于与主世界通讯)
-            await chrome.scripting.executeScript({
+            await executeScriptBounded({
               target: { tabId },
               files: ['inject-scripts/core/inject-bridge.js'],
               world: 'ISOLATED',
@@ -130,19 +131,12 @@ export class ExcalidrawTool extends BaseTool {
 
             this.log(`桥接脚本注入成功，注入主世界控制脚本(ui/excalidraw.js)...`);
             // 2) 在主世界注入 Excalidraw 控制脚本
-            await new Promise<void>((res, rej) => {
-              chrome.scripting.executeScript({
+            await executeScriptBounded({
                 target: { tabId },
                 files: ['inject-scripts/ui/excalidraw.js'],
                 // 强制在主世界注入以访问页面API
                 world: 'MAIN',
-              }, () => {
-                if (chrome.runtime.lastError) {
-                  return rej(new Error(`脚本注入失败: ${chrome.runtime.lastError.message}`));
-                }
-                res();
               });
-            });
 
             this.log(`主世界控制脚本注入成功`);
             // 等待一小段时间，确保监听器已准备就绪

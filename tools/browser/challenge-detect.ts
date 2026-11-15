@@ -1,8 +1,9 @@
+import { executeScriptBounded } from '../common/frame-read';
 /**
  * 风控 / 人机验证页探测（共享实现）
  *
- * 从 browser_get_page_text 抽出，供两个工具共用：
- *   - browser_get_page_text：读取正文时识别「这一页是验证页而非正文」；
+ * 从正文读取通道抽出，供多个工具共用：
+ *   - read_website / 正文缓存通道：读取正文时识别「这一页是验证页而非正文」；
  *   - browser_crawl        ：批量抓取时命中验证页即停止（交人处理）。
  *
  * 两份实现必然漂移——特征词表会随站点新增而更新，页内探测与批量探测
@@ -92,7 +93,7 @@ export async function detectChallengePage(
   tabId: number,
 ): Promise<ChallengeDetection> {
   try {
-    const results = await chrome.scripting.executeScript({
+    const results = await executeScriptBounded({
       target: { tabId, frameIds: [0] },
       func: (): { title: string; body: string } => {
         const title = typeof document.title === 'string' ? document.title : '';

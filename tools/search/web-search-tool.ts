@@ -2,14 +2,15 @@
  * 通用网页搜索工具（web_search）
  *
  * 只承载**通用搜索引擎**（engine 枚举：bing / baidu）。通用站点内检索由
- * platform_search 承载（知乎 / GitHub / CSDN / MOOC / 小红书 / 中国知网），
- * Bilibili 站内视频检索由专属工具 bilibili_search 承载——三个工具共用同一
+ * platform_search 承载（知乎 / GitHub / CSDN / MOOC / 小红书 / 中国知网）——
+ * 两个工具共用同一
  * 执行链路（导航 + 等待 + 解析 + Markdown 表，见 search-tool-base.ts），
  * 差异仅在目标集合、参数名与面向模型的文案。
  *
- * 历史沿革：本工具曾以 website 枚举承载全部 9 个搜索目标（通用引擎 + 站点
- * 平台），现按「通用网页检索 / 通用站点内检索 / 专属站点检索」拆为三个工具
- * ——目标集合小到能在工具描述里讲清边界，模型选错工具的空间也随之消失。
+ * 历史沿革：本工具曾以 website 枚举承载全部搜索目标（通用引擎 + 站点平台），
+ * 现按「通用网页检索 / 通用站点内检索」拆为两个工具——目标集合小到能在
+ * 工具描述里讲清边界，模型选错工具的空间也随之消失。专属站点检索（如
+ * Bilibili）由官方插件以 host-workflow 组合公开原语实现。
  *
  * 执行上下文：sidepanel 与 background（service worker）均可运行。
  */
@@ -34,13 +35,13 @@ export class WebSearchTool extends BaseSearchTool {
     'engine 决定用哪个搜索引擎（枚举见参数说明，共 ' + SEARCH_ENGINE_IDS.length + ' 个）。' +
     '⚠ 本工具自带页面导航（效果等同 browser_navigation(action="open") 打开搜索结果页，无需先手动导航）：会真实打开或跳转标签页并改变当前活动页面。' +
     '因此【禁止在同一轮里并发调用本工具】——多个导航会互相争抢活动标签页、解析到错误页面；需要换关键词时逐个串行调用，每次依据上次返回决定下一步。' +
-    '站点内检索（知乎 / GitHub / CSDN / 中国大学MOOC / 小红书 / 中国知网）用 platform_search；Bilibili 站内视频检索用 bilibili_search。本工具只负责通用网页。' +
+    '站点内检索（知乎 / GitHub / CSDN / 中国大学MOOC / 小红书 / 中国知网）用 platform_search。本工具只负责通用网页。' +
     '返回两部分：navigation（是否成功导航 + 当前实际网址）与 results（解析出的条目数与 Markdown 结果表）。' +
     '结果表逐条给出标题、链接与摘要——**可信度由你自己按来源域名判断**：官方/一手站点（机构官网、交易所与监管披露、上市公司公告、通讯社与主流媒体、官方文档）可信度高；' +
     '百科与社区问答、聚合站、自媒体与论坛只是线索入口、不能作为唯一定论。' +
     '凡进入结论的关键事实，必须换到至少一个独立域名（不同注册域）再读一遍原文核对；' +
     '两处说法冲突时如实呈现分歧，不要单选其一。' +
-    'results 解析失败时 navigation 仍有效——页面已就位，用 browser_get_page_text 读取当前页自行解析即可。';
+    'results 解析失败时 navigation 仍有效——页面已就位，用 read_website 读取当前页自行解析即可。';
 
   /** 目标参数选择指引（枚举清单由基类按注册表生成，此处只写「怎么选」） */
   protected readonly paramDescription =

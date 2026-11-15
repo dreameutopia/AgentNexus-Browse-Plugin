@@ -4,7 +4,7 @@ import { chatDatabase } from '@/entrypoints/sidepanel/core/context/chat-database
 import { withNamedLock } from '@/utils/shared/async-lock';
 import { WorkspaceOperationError } from '@/utils/shared/error-details';
 import {
-  checkWorkspaceLimits, indexWorkspaceEntries, isWorkspaceName, isWorkspaceOutput, truncateWorkspaceName,
+  checkWorkspaceLimits, indexWorkspaceEntries, isWorkspaceName, isWorkspaceOutput, isWorkspaceUpload, truncateWorkspaceName,
   WorkspaceMissingChatError, workspaceRoot, type WorkspaceEntry,
 } from './paths';
 
@@ -40,9 +40,9 @@ export async function importWorkspaceFiles(
       const stem = dot > 0 ? name.slice(0, dot) : name;
       const ext = dot > 0 && name.length - dot <= 32 ? name.slice(dot) : '';
       let path = `inputs/${name}`;
-      for (let suffix = 2; entries.has(path); suffix++) {
-        const label = ` (${suffix})`;
-        path = `inputs/${truncateWorkspaceName(stem, label + ext)}`;
+      // 同名不覆盖：按 name(1)、name(2)… 递增改名（与产物通道同一约定）
+      for (let suffix = 1; entries.has(path); suffix++) {
+        path = `inputs/${truncateWorkspaceName(stem, `(${suffix})${ext}`)}`;
       }
       bytes += file.size;
       checkWorkspaceLimits(entries.size + 1, bytes, file.size);
@@ -89,6 +89,27 @@ export async function readWorkspaceOutput(chatId: string, path: string): Promise
   }
 }
 
+/**
+ * 读取用户上传目录（inputs/）下的文件原始字节。
+ *
+ * 供 UI 侧「下载原文件 / 网页预览」使用：用户上传的文件以原始字节存放，
+ * 下载到的必须是用户亲手给的那一份（不是模型侧的压缩副本）。
+ * 路径越界（不在 inputs/ 下）或会话不存在一律返回 null——调用方据此
+ * 静默降级，不向用户抛错。
+ */
+export async function readWorkspaceUpload(chatId: string, path: string): Promise<Blob | null> {
+  if (!chatId || !isWorkspaceUpload(path)) return null;
+  try {
+    const snapshot = await chatDatabase.readWorkspace(chatId);
+    const blob = snapshot?.entries.find(entry => entry.path === path)?.blob;
+    if (blob != null && !(blob instanceof Blob)) throw new Error('The workspace file has invalid stored data');
+    return blob ?? null;
+  } catch (error) {
+    if (error instanceof WorkspaceMissingChatError) return null;
+    throw error;
+  }
+}
+
 /** Atomically persist a deliverable, preserving earlier files and rejecting linked parents.
  * Independent of Python; the transaction verifies ownership against concurrent chat deletion.
  */
@@ -113,8 +134,11 @@ export async function saveWorkspaceOutput(
     const stem = dot > 0 ? name.slice(0, dot) : name;
     const extension = dot > 0 && name.length - dot <= 32 ? name.slice(dot) : '';
     let path = requestedPath;
-    for (let suffix = 2; entries.has(path); suffix++) {
-      path = directory + '/' + truncateWorkspaceName(stem, ' (' + suffix + ')' + extension);
+    // 同名不覆盖：产物通道（outputs/）与上传通道（inputs/）同一约定——
+    // 已存在的名字保持原样，新产物依次改名为 name(1)、name(2)…
+    // （既有的文件永不被覆盖，模型连续两次导出也不会互相顶掉）
+    for (let suffix = 1; entries.has(path); suffix++) {
+      path = directory + '/' + truncateWorkspaceName(stem, `(${suffix})${extension}`);
     }
     for (let end = path.lastIndexOf('/'); end >= 0; end = path.lastIndexOf('/', end - 1)) {
       const parent = path.slice(0, end);

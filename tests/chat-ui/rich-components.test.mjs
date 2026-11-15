@@ -423,14 +423,41 @@ function envelopeOf(json) {
 {
   const stat = buildEnvelopeComponentBlock(
     envelopeOf(
-      '{"type":"stat","title":"周报","columns":["指标","值","环比","说明"],"rows":[["打卡","6 天","+1 天","最长 12 天"],["时长","5.4h","-8.2%","日均 46m"],["正确率","87.5%","持平","均值"]]}',
+      '{"type":"stat","title":"周报","columns":["指标","值","说明","环比"],"rows":[["打卡","6 天","最长 12 天","+1 天"],["时长","5.4h","日均 46m","-8.2%"],["正确率","87.5%","均值","持平"]]}',
     ),
   );
   assert.ok(stat.includes('stat-card-block'));
   assert.ok(stat.includes('stat-card-trend up'), '+ 前缀渲染上升');
   assert.ok(stat.includes('stat-card-trend down'), '- 前缀渲染下降');
+  assert.ok(stat.includes('stat-card-note">最长 12 天'), '说明列渲染');
   // 持平（无 +/- 前缀）不得出现在 trend 容器里
   assert.ok(!/stat-card-trend[^>]*>.{0,80}持平/.test(stat), '中性趋势文本不渲染箭头');
+
+  // 变化列可整列省略：无变化数据就不渲染趋势子元素，说明照常渲染
+  const noTrend = buildEnvelopeComponentBlock(
+    envelopeOf(
+      '{"type":"stat","columns":["指标","当前值","说明"],"rows":[["去重后SKU数","148","原始 150 行"],["店铺数","23","含自营/旗舰店"]]}',
+    ),
+  );
+  assert.ok(noTrend.includes('stat-card-note">原始 150 行'), '无变化列时说明仍渲染');
+  assert.ok(!noTrend.includes('stat-card-trend'), '无变化数据不渲染趋势元素');
+
+  // 占位符 "-" 不是涨跌：不得画成下跌箭头
+  const placeholder = buildEnvelopeComponentBlock(
+    envelopeOf(
+      '{"type":"stat","columns":["指标","当前值","说明","变化"],"rows":[["SKU 数","148","原始 150 行","-"]]}',
+    ),
+  );
+  assert.ok(!placeholder.includes('stat-card-trend'), '"-" 占位不得渲染成下跌');
+
+  // 历史消息旧列序（变化在第 3 列、说明在最后）按列名仍能正确取到
+  const legacy = buildEnvelopeComponentBlock(
+    envelopeOf(
+      '{"type":"stat","columns":["指标","当前值","环比","说明"],"rows":[["新增词汇","214 个","+12.3%","复习掌握 58 个"]]}',
+    ),
+  );
+  assert.ok(legacy.includes('stat-card-trend up'), '旧列序趋势仍渲染');
+  assert.ok(legacy.includes('stat-card-note">复习掌握 58 个'), '旧列序说明不会被误判为趋势');
 
   // >6 行降级
   const tooMany = buildEnvelopeComponentBlock(

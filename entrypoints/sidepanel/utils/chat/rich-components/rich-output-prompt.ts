@@ -68,7 +68,8 @@ const TEACHING: Record<RichComponentId, ComponentTeaching> = {
   stat: {
     scenario: '2~6 个关键指标并列',
     usage:
-      '列：指标名 / 当前值 / 变化（"+12.3%" 式，界面自动判涨跌）/ 可选说明；超过 6 个指标改用 table',
+      '列：指标名 / 当前值 / 可选说明 / 可选变化（"+12.3%" 或 "-8.2%" 形式写最后一列，界面按符号自动判涨跌）；' +
+      '变化没有确切数据就整列省略或该行不写，禁止估算、禁止用 0 / "-" / "—" 占位；超过 6 个指标改用 table',
   },
   table: {
     scenario: '多列数据，需要排序、数值右对齐或状态标注',
@@ -228,7 +229,8 @@ export function buildRichOutputSystemPrompt(allowed?: readonly string[]): string
   );
   lines.push(
     '- 口径随数值走：标明单位与统计时点（如「2026 年 Q3」「截至 6 月 30 日」）；' +
-      '确实拿不到的标「—」或「未获取」，不要用 0 代替；',
+      '确实拿不到的标「—」或「未获取」，不要用 0 代替；' +
+      '变化 / 趋势类数值例外：没有确切数据就省略该项，不估算也不用占位符；',
   );
   lines.push(
     '- 禁止在 JSON 中输出函数、注释、变量、表达式或 HTML 标签；' +

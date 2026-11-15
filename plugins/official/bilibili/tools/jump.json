@@ -1,0 +1,36 @@
+{
+  "description": "跳转当前 Bilibili 视频的播放进度：seek 到指定时间，或读取状态、播放/暂停、设置倍速与音量。time 支持秒数或 mm:ss / hh:mm:ss；seek 会自动夹取到视频时长内。",
+  "approval": "session",
+  "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": ["status", "seek", "play", "pause", "setRate", "setVolume", "mute"]
+      },
+      "time": {
+        "anyOf": [
+          { "type": "string", "minLength": 1, "maxLength": 16 },
+          { "type": "number", "minimum": 0 }
+        ],
+        "description": "seek 目标时间：秒数（数字或字符串）或 mm:ss / hh:mm:ss"
+      },
+      "rate": {
+        "type": "number",
+        "minimum": 0.25,
+        "maximum": 4
+      },
+      "volume": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      }
+    },
+    "required": ["action"]
+  },
+  "executor": {
+    "type": "host-alias",
+    "target": "builtin/browser_media_control"
+  }
+}

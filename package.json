@@ -30,6 +30,7 @@
     "test:tools": "node tests/tools/run.mjs",
     "test:document-dom": "node tests/tools/run-document-dom.mjs",
     "test:text-browser": "node tests/tools/text-browser-probe.mjs",
+    "test:frame-read-browser": "node tests/tools/frame-read-browser-probe.mjs",
     "test:semantic-controls": "node tests/tools/semantic-controls-browser.mjs",
     "test:semantic-controls:unit": "node tests/tools/run-semantic-controls.mjs",
     "test:image-context": "node tests/image-context/run.mjs",

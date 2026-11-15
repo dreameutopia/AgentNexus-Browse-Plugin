@@ -57,7 +57,7 @@
 ## 🔥 核心特性
 
 ### 🧰 丰富的工具体系
-内置 **17 大类、70+ 工具**，覆盖不同抽象层次：标签页 / 窗口 / 导航管理、页面点击填充与滚动、截图与全页截图、网络请求捕获（CDP 调试器）、页面源码 / 正文提取、页面净化（去广告去追踪）、资源嗅探与下载、集成搜索、历史与书签管理、文本压缩、XLSX 读写、Excalidraw 画布绘制、Bilibili 字幕获取、代码执行等。
+内置 **17 大类、70+ 工具**，覆盖不同抽象层次：标签页 / 窗口 / 导航管理、页面点击填充与滚动、截图与全页截图、网络请求捕获（CDP 调试器）、页面源码 / 正文提取、页面净化（去广告去追踪）、资源嗅探与下载、集成搜索、历史与书签管理、文本压缩、XLSX 读写、Excalidraw 画布绘制、代码执行等；Bilibili 检索与字幕等站点专属能力改由官方插件提供。
 
 ### 🔌 多协议模型接入
 原生支持 **OpenAI、OpenAI Responses、Claude、Gemini、Ollama** 五种流式协议适配器，统一归一化为内部消息流；配套 SSE 协议契约测试（`tests/protocol-contract`），保证各厂商协议解析的准确性。
@@ -66,10 +66,10 @@
 自研上下文引擎（上下文计量、转录引擎、上下文窗口守护）自动裁剪与压缩历史消息，配合会话数据库实现聊天记录持久化，长对话不溢出、可回溯。
 
 ### 🤖 智能体系统
-内置 7 个预置智能体：深度搜索（Deep Search）、文本通用助手（General Text Assistant）、视觉助手（Vision Assistant）、视觉通用助手（General Vision Assistant）、数据采集助手（Data Collection Assistant）、Bilibili 搜索助手、思维导图助手；预置智能体的名称、描述、分类与标签随界面语言切换；支持在管理中心自定义智能体（模型、提示词、工具集、技能挂载）。
+内置 6 个预置智能体：深度搜索（Deep Search）、文本通用助手（General Text Assistant）、视觉助手（Vision Assistant）、视觉通用助手（General Vision Assistant）、数据采集助手（Data Collection Assistant）、思维导图助手；Bilibili 搜索助手改由官方 Bilibili 插件提供；预置智能体的名称、描述、分类与标签随界面语言切换；支持在管理中心自定义智能体（模型、提示词、工具集、技能挂载）。
 
 ### 📚 技能系统
-支持技能（Skill）加载与资源读取，内置 3 个技能：Bilibili 视频总结、网页调研报告、XLSX 创建；支持技能导入导出与可用性管理（设计理念详见下文「技能设计」）。
+支持技能（Skill）加载与资源读取，内置网页调研报告、XLSX 创建与技能创作指南（Bilibili 视频总结技能随官方 Bilibili 插件提供）；支持技能导入导出与可用性管理（设计理念详见下文「技能设计」）。
 
 ### 🗂️ 管理中心（Hub）
 独立管理页面，集中管理智能体、技能与配置备份 / 恢复。
@@ -104,7 +104,7 @@ Markdown 渲染支持 Mermaid 图表、KaTeX 公式、PlantUML、代码高亮与
 ### 适合沉淀为技能的内容
 - **工作流经验**：一套完整的方法论，如网络调研报告的「拆解问题 → 多源检索 → 交叉验证 → 过程留痕 → 汇总产出」；
 - **场景解决方案**：特定任务的工具编排与参数要点，如创建 XLSX 表格时各字段的填写规则；
-- **网站使用指导**：针对指定站点的操作手册，如 Bilibili 视频总结——页面特征识别、前置条件（已登录等）、专用工具的调用时机与降级策略。
+- **网站使用指导**：针对指定站点的操作手册，如视频站总结流程——页面特征识别、前置条件（已登录等）、专用工具的调用时机与降级策略。
 
 换言之，技能沉淀的是「怎么做这件事的经验」，而不是「替你执行的代码」。
 
@@ -116,7 +116,7 @@ Markdown 渲染支持 Mermaid 图表、KaTeX 公式、PlantUML、代码高亮与
 | `name` | 技能名（小写字母 / 数字 / 连字符）。**允许重名**——唯一性由下方标识承担 |
 | `description` | 做什么 + 何时使用——模型据此自动匹配任务，用户据此选择启用 |
 | `allowed-tools` | 预授权工具 ID 列表（空格分隔），技能激活后可直接调用 |
-| `compatibility` | 环境要求说明（可选），如「需要已登录 Bilibili」 |
+| `compatibility` | 环境要求说明（可选），如「需要已登录目标站点」 |
 
 ### 渐进式披露（控制上下文占用）
 1. **发现**：系统提示词常驻 `<available-skills>` 清单，每项为技能标识 + 一行描述；
@@ -127,12 +127,14 @@ Markdown 渲染支持 Mermaid 图表、KaTeX 公式、PlantUML、代码高亮与
 
 每个会话默认注入 `skill_tool`，提供 `load/read/copy/create/edit/delete`。资源复制不依赖 Python。调用时只传十进制 `skill_id` 与精确的 `paths`（`["."]` 表示整个技能），保留字节与相对目录；已有文件绝不覆盖，冲突时放入 `<skill_id>/`，再冲突则创建编号副本目录。后续必须使用返回的实际路径。仅执行 Python 时需要安装 Python 运行时。
 
-用 `python_run(action="create", path="scripts/report.py", content=...)` 把脚本写入会话工作区，再用 `action="run"` 执行（path 必须是工作区内已存在的相对路径 `.py`）；`action="edit"` 修改文件（全量重写，或 `find`+`replace` 唯一命中替换），`action="delete"` 删除文件。所有 path 都相对工作区根目录，绝对路径、盘符与 `..` 一律拒绝。上面复制出的技能脚本从其复制根目录用同样的方式运行。`AGENTNEXUS_WORKSPACE` 指向会话工作区，上传文件在 `inputs/`，交付物写到 `outputs/`。用 `argv`、`stdin` 和 `env` 分别传入参数、输入和非敏感配置。包内入口可额外传入点分隔的 `module`。回复中用 `<workspace-file path="outputs/report.csv" />` 引用已保存的产物。
+用 `python_run(action="create", path="scripts/report.py", content=...)` 把脚本写入会话工作区，再用 `action="run"` 执行（path 必须是工作区内已存在的相对路径 `.py`）；`action="edit"` 修改文件（全量重写，或 `find`+`replace` 唯一命中替换），`action="delete"` 删除文件，`action="read"` 分页读取工作区文本文件，`action="list"` 盘点工作区目录。所有 path 都相对工作区根目录，绝对路径、盘符与 `..` 一律拒绝。上面复制出的技能脚本从其复制根目录用同样的方式运行。`AGENTNEXUS_WORKSPACE` 指向会话工作区，上传文件在 `inputs/`，交付物写到 `outputs/`。用 `argv`、`stdin` 和 `env` 分别传入参数、输入和非敏感配置。包内入口可额外传入点分隔的 `module`。回复中用 `<workspace-file path="outputs/report.csv" />` 引用已保存的产物。
+
+依赖分三条通道：脚本同目录/项目根的 `requirements.txt`、PEP 723 元数据块、`pyproject.toml` 自动发现；官方目录内的包（numpy、pandas 等）按 import 自动加载；官方目录没有的纯 Python 包需显式声明 `requirements=["包名"]` **并同时**给 `dependencyMode="pypi"`——两者缺一不可，只给 `requirements` 在默认 catalog 模式下必然失败。该模式会请求用户审批，且只支持纯 Python wheel；含 C 扩展的包只能用官方目录内的版本或自备兼容 `.whl`（`wheels` 参数）。
 
 先用 `preflight: true` 检查静态导入、PEP 723 元数据、`requirements.txt` 或静态 `pyproject.toml` 声明，以及环境变量引用。默认使用 Pyodide 官方包目录和显式指定的本地 wheel。通过会话审批后才会解析公开 PyPI wheel。依赖 Bash、子进程、系统程序或缺少兼容 wheel 的技能，需要改用等效 Python 实现或其他可用工具。
 
 ### 上手参考
-内置的三个技能（`skills/web-research-report`、`skills/bilibili-video-summary`、`skills/xlsx-creator`）即为官方模板，可直接阅读仿写；技能的启用 / 停用、导入 / 导出均可在管理中心完成。
+内置技能（如 `skills/web-research-report`、`skills/xlsx-creator`）即为官方模板，可直接阅读仿写；技能的启用 / 停用、导入 / 导出均可在管理中心完成。
 
 ## 📦 实现阶段
 

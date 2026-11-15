@@ -25,7 +25,12 @@ export async function textTargetPayload(
   };
   const active = () => {
     let el = document.activeElement;
-    while (el && shadow(el)?.activeElement) el = shadow(el)!.activeElement;
+    const seen = new Set<Element>();
+    while (el && shadow(el)?.activeElement) {
+      if (seen.has(el) || seen.size >= 256) return null;
+      seen.add(el);
+      el = shadow(el)!.activeElement;
+    }
     return el;
   };
   if (phase === 'scroll') {
@@ -102,8 +107,12 @@ export function focusedTextPayload(invalidate = false) {
       return el.shadowRoot;
     }
   };
-  while (node && shadow(node)?.activeElement)
+  const seen = new Set<Element>();
+  while (node && shadow(node)?.activeElement) {
+    if (seen.has(node) || seen.size >= 256) return { error: 'FOCUS_TRAVERSAL_FAILED：Shadow DOM 焦点链循环或层级超限' };
+    seen.add(node);
     node = shadow(node)!.activeElement;
+  }
   if (
     !node ||
     node === document.body ||

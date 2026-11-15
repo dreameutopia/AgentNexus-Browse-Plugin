@@ -33,12 +33,14 @@ const parameters = tool.openaiSchema.function.parameters as {
 };
 assert.deepEqual(
   parameters.properties.action.enum,
-  ['create', 'edit', 'delete', 'run'],
+  ['create', 'edit', 'delete', 'read', 'list', 'run'],
+  '六个 action：文件读写 + 目录盘点 + 脚本运行',
 );
-assert.ok(parameters.required?.includes('action') && parameters.required?.includes('path'));
+assert.deepEqual(parameters.required, ['action'], 'path 只在需要它的 action 里必填（list 可省略）');
 assert.equal(parameters.additionalProperties, false);
-assert.equal(parameters.anyOf?.length, 4, 'four action-specific required branches');
+assert.equal(parameters.anyOf?.length, 6, '六个 action-specific required 分支');
 assert.ok(parameters.properties.content && parameters.properties.find && parameters.properties.replace);
+assert.ok(parameters.properties.index && parameters.properties.offset && parameters.properties.limit, 'read/list 分页参数已声明');
 
 // ──── 2. 参数门（先于存储） ────
 const gate: Array<[unknown, RegExp, string]> = [
@@ -63,11 +65,22 @@ const gate: Array<[unknown, RegExp, string]> = [
   [{ action: 'edit', path: 'a.py', content: 'x', replaceAll: true }, /PY_INVALID_ARGUMENTS/, 'replaceAll 缺 find/replace'],
   [{ action: 'create', path: 'a.txt', content: 'x', typo_key: 1 }, /未知参数.*typo_key/, '未知键严格拒绝'],
   [{ action: 'run', path: 'notes.txt' }, /PY_INVALID_SCRIPT/, 'run 非 .py（解析期，不触存储）'],
+  [{ action: 'read', path: 'a.py', timeoutSeconds: 5 }, /PY_INVALID_ARGUMENTS/, 'read 夹带运行参数'],
+  [{ action: 'list', path: 'a.py', content: 'x' }, /PY_INVALID_ARGUMENTS/, 'list 夹带文件参数'],
+  [{ action: 'read', path: 'a.py', index: 0 }, /PY_INVALID_ARGUMENTS|越界|页码/, 'read 页码非法'],
+  [{ action: 'list', path: 'a.py', limit: -1 }, /PY_INVALID_ARGUMENTS|安全整数/, 'list limit 非法'],
 ];
 for (const [args, expected, label] of gate) {
   const context = label === '无会话上下文' ? {} : { chatId: CHAT };
   assert.match(text(await tool.execute(args, context)), expected, label);
 }
+
+// 跨 action 串参的错误必须回传该 action 的合法参数集（模型据此无需猜测即可改对）
+const crossAction = text(
+  await tool.execute({ action: 'run', path: 'a.py', content: 'x' }, { chatId: CHAT }),
+);
+assert.match(crossAction, /该 action 仅接受/, '串参错误回传合法参数集');
+assert.match(crossAction, /timeoutSeconds/, '合法参数集包含 run 专属参数');
 
 // ──── 3. 路径穿越矩阵（纯函数） ────
 const escapeAttempts = [
@@ -92,7 +105,7 @@ assert.equal(validateWorkspaceFileContent('', 'content'), '', '空文件合法')
 // ──── 5. 端到端文件操作（真实存储事务） ────
 await chatDatabase.createSession({
   chatId: CHAT, title: 'files', createdAt: 1, updatedAt: 1,
-  messageCount: 0, lastMessagePreview: '', agentName: '', skillNames: [],
+  messageCount: 0, lastMessagePreview: '', agentName: '',
 });
 
 const deliverable = await tool.execute({ action: 'create', path: 'outputs/manual.csv', content: 'name,count\na,2' }, { chatId: CHAT });
@@ -174,6 +187,67 @@ assert.match(
   text(await tool.execute({ action: 'run', path: 'scripts/hello.py', dependencyMode: 'pypi' }, { chatId: CHAT })),
   /PY_DEPENDENCY_APPROVAL_REQUIRED/,
   'pypi 未审批先于存在性之后、环境之前拦截',
+);
+
+// ──── 5a. read / list：与 js_run 同构的读写盘点语义 ────
+await tool.execute({ action: 'create', path: 'docs/note.md', content: '第一页内容'.repeat(500) }, { chatId: CHAT });
+const readResult = await tool.execute({ action: 'read', path: 'docs/note.md' }, { chatId: CHAT });
+assert.equal(readResult.success, true, text(readResult));
+assert.match(text(readResult), /已读取 docs\/note\.py|第 1\//, 'read 回传页码信息');
+assert.equal((readResult.data as { pageCount: number }).pageCount >= 1, true, 'read 回传 pageCount');
+assert.ok((readResult.data as { sha256: string }).sha256, 'read 回传 sha256（供 expectedHash 使用）');
+
+const listResult = await tool.execute({ action: 'list', path: 'docs' }, { chatId: CHAT });
+assert.equal(listResult.success, true, text(listResult));
+const listed = (listResult.data as { entries: { path: string }[] }).entries;
+assert.ok(listed.some((entry) => entry.path === 'docs/note.md'), 'list 列出目录内文件');
+assert.ok(
+  (listResult.data as { total: number }).total >= 1,
+  'list 回传 total',
+);
+
+// list 省略 path → 列根目录（path 在 list 下可省略）
+const rootList = await tool.execute({ action: 'list' }, { chatId: CHAT });
+assert.equal(rootList.success, true, text(rootList));
+assert.ok(
+  (rootList.data as { entries: { path: string }[] }).entries.some((e) => e.path === 'docs'),
+  'list 省略 path 列根目录',
+);
+
+// 不存在的目录显式报错并给出下一步（不静默返回空列表）
+assert.match(
+  text(await tool.execute({ action: 'list', path: 'not-created-yet' }, { chatId: CHAT })),
+  /不存在/,
+  'list 缺失目录显式报错',
+);
+assert.match(
+  text(await tool.execute({ action: 'list', path: 'not-created-yet' }, { chatId: CHAT })),
+  /根目录/,
+  'list 缺失目录给出下一步',
+);
+
+// ──── 5a-2. 依赖契约前置判定（工具层，不等 worker 跑完） ────
+// catalog 模式 + 官方目录外的包 → 工具层直接给出带包名与下一步的结论
+const unresolved = text(
+  await tool.execute(
+    { action: 'run', path: 'scripts/hello.py', requirements: ['definitely-not-in-catalog-pkg>=1'] },
+    { chatId: CHAT },
+  ),
+);
+assert.match(unresolved, /PY_DEPENDENCY_UNRESOLVABLE/, '目录外包在 catalog 模式下前置判定');
+assert.match(unresolved, /definitely-not-in-catalog-pkg/, '前置判定点名具体包名');
+assert.match(unresolved, /dependencyMode="pypi"/, '前置判定给出具体参数（不是"检查依赖"这类空指引）');
+
+// 官方目录内的包不触发前置判定（不误伤正常路径）
+assert.doesNotMatch(
+  text(
+    await tool.execute(
+      { action: 'run', path: 'scripts/hello.py', requirements: ['numpy'] },
+      { chatId: CHAT },
+    ),
+  ),
+  /PY_DEPENDENCY_UNRESOLVABLE/,
+  '官方目录内的包不被前置判定拦下',
 );
 
 // ──── 5b. 编辑体验深挖（对齐 Claude Code Edit 语义） ────

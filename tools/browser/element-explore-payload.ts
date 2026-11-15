@@ -87,6 +87,35 @@ export interface ExplorePayloadResult {
   /** similar 专用 */
   pattern?: ExplorePattern;
   noPattern?: boolean;
+  /** 种子解析信息：selector/xpath 实际匹配数（>1 时已按 matchIndex 取用） */
+  seedMatchCount?: number;
+  /** 解析后的种子元素引用：可直接交给后续工具（selector/xpath 冷启动时尤其有用） */
+  seedElementId?: string;
+}
+
+/** selector/xpath 种子在多匹配场景下的候选（宿主补 frameId） */
+export interface ExploreSeedCandidate {
+  /** 从 1 起的选择序号（回填 matchIndex 用） */
+  index: number;
+  elementId: string;
+  tag: string;
+  classes?: string;
+  id?: string;
+  text?: string;
+  attrs?: string;
+  childCount: number;
+  visible: boolean;
+}
+
+/** 种子查找荷载结果（只做匹配与候选摘要，不做关系探索） */
+export interface ExploreSeedLookupResult {
+  error?: string;
+  /** 匹配总数（截断前） */
+  total?: number;
+  matches?: ExploreSeedCandidate[];
+  truncated?: boolean;
+  /** 是否至少有一个匹配位于 Shadow DOM（选择器不跨 shadow 时的关键诊断） */
+  shadowHit?: boolean;
 }
 
 /**
@@ -95,7 +124,10 @@ export interface ExplorePayloadResult {
  */
 export function elementExplorePayload(
   action: 'parent' | 'children' | 'siblings' | 'similar',
-  elementId: string,
+  seedKind: 'element' | 'selector' | 'xpath',
+  seedValue: string,
+  /** selector/xpath 多匹配时取第几个（1 起；element 种子忽略） */
+  matchIndex: number,
   levels: number,
   depth: number,
   visibleOnly: boolean,
@@ -105,25 +137,225 @@ export function elementExplorePayload(
   const COLLECT_LIMIT = 400;
   const CONTAINER_LIMIT = 500;
   const SCAN_LIMIT = 300;
-  const PARENT_MAX_LEVELS = 8;
+  const PARENT_MAX_LIMIT = 8;
+  const SHADOW_ROOT_LIMIT = 2_000;
 
-  // —— 注册表必须已由 browser_observe 建立：绝不自行创建（会覆盖既有引用表） ——
-  const registry = (document as { __agentNexusReferences?: any })
-    .__agentNexusReferences;
-  if (!registry) {
-    return {
-      error:
-        'NO_REGISTRY：当前 frame 尚未建立元素引用——请先 browser_observe 枚举（任意视图），再基于返回的 ElementId + frameId 探索。',
-    };
-  }
+  // —— 注册表：优先复用 observe 建立的共享注册表；不存在时创建契约兼容的最小
+  // 注册表（selector/xpath 冷启动场景，允许不先 observe）。
+  // 注册表格式与 element-scan-payload 完全一致（anx:tabId:nonce:seq），所以
+  // 两者产出的引用可互相解析；observe 再次扫描时会整体替换注册表，属既有语义。
+  const refDocument = document as { __agentNexusReferences?: any };
+  const registry = refDocument.__agentNexusReferences ?? createRegistry();
   const fingerprint: string = registry.fingerprint();
-  const seed: Element | null = registry.resolve(elementId);
-  if (!seed) {
-    return {
-      fingerprint,
-      error:
-        'STALE_ELEMENT：引用已失效、属其它 frame 或页面已变化——请 browser_observe 重新枚举，原样复制同行 ElementId 与 FrameId。',
+
+  // —— 种子解析：elementId 走注册表；selector/xpath 支持跨开放 shadow root ——
+  let seed: Element | null = null;
+  let seedMatchCount = 1;
+  if (seedKind === 'element') {
+    seed = registry.resolve(seedValue);
+    if (!seed) {
+      return {
+        fingerprint,
+        error:
+          'STALE_ELEMENT：引用已失效、属其它 frame 或页面已变化——请 browser_observe 重新枚举，原样复制同行 ElementId 与 FrameId，或改用 selector/xpath 作为种子。',
+      };
+    }
+  } else {
+    let matches: Element[];
+    try {
+      matches = seedKind === 'selector' ? deepQuery(seedValue) : deepXPath(seedValue);
+    } catch (error) {
+      return {
+        fingerprint,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    seedMatchCount = matches.length;
+    if (matches.length === 0) {
+      return {
+        fingerprint,
+        seedMatchCount,
+        error:
+          `SEED_NOT_FOUND：${seedKind} 未匹配到任何元素（已包含开放 Shadow DOM）。` +
+          (seedKind === 'selector'
+            ? '常见原因：类名是构建哈希（随版本变化）、选择器层级过深、目标在未开放 shadow root/iframe 内。可先用 browser_observe 或 browser_dom_explore(selector="*") 缩小范围。'
+            : '常见原因：XPath 仅支持 1.0 语法、目标在未开放 shadow root/iframe 内、路径基于错误的根节点。可改用 CSS selector。'),
+      };
+    }
+    const pick = Number.isInteger(matchIndex) && matchIndex >= 1 ? matchIndex : 1;
+    if (pick > matches.length) {
+      return {
+        fingerprint,
+        seedMatchCount,
+        error: `SEED_INDEX_OUT_OF_RANGE：${seedKind} 共匹配 ${matches.length} 个元素，matchIndex=${pick} 超出范围（1..${matches.length}）。省略 matchIndex 取第 1 个。`,
+      };
+    }
+    seed = matches[pick - 1];
+  }
+
+  // 种子引用登记：selector/xpath 解析出的元素也必须有 ElementId，
+  // 否则模型拿到「匹配成功」却无法继续 children/interact。
+  const seedElementId: string = registry.register(seed);
+
+  // ─────────── 注入内注册表（与 element-scan-payload 契约一致） ───────────
+  function createRegistry() {
+    const nonce = Math.random().toString(16).slice(2, 10);
+    let counter = 0;
+    let revision = 0;
+    const entries = new Map<
+      string,
+      { node: WeakRef<Element>; expires: number; url: string }
+    >();
+    const nodes = new Map<Element, string>();
+    const resolve = (id: unknown): Element | null => {
+      if (typeof id !== 'string') return null;
+      const entry = entries.get(id);
+      if (!entry) return null;
+      if (entry.expires <= Date.now() || entry.url !== document.URL) {
+        entries.delete(id);
+        return null;
+      }
+      const node = entry.node.deref();
+      if (!node || !node.isConnected) {
+        entries.delete(id);
+        return null;
+      }
+      return node;
     };
+    const api = {
+      register(element: Element): string {
+        const previous = nodes.get(element);
+        if (previous && resolve(previous) === element) {
+          entries.get(previous)!.expires = Date.now() + 120_000;
+          return previous;
+        }
+        if (counter % 256 === 0)
+          for (const [id, entry] of entries)
+            if (entry.expires <= Date.now() || !entry.node.deref()?.isConnected)
+              entries.delete(id);
+        const id = `anx:${tabId}:${nonce}:${++counter}`;
+        entries.set(id, {
+          node: new WeakRef(element),
+          expires: Date.now() + 120_000,
+          url: document.URL,
+        });
+        nodes.set(element, id);
+        while (entries.size > 20_000) {
+          const oldest = entries.keys().next().value;
+          if (oldest === undefined) break;
+          entries.delete(oldest);
+        }
+        return id;
+      },
+      resolve,
+      invalidate() {
+        revision++;
+      },
+      fingerprint() {
+        return `${nonce}|${revision}|${document.URL}`;
+      },
+    };
+    refDocument.__agentNexusReferences = api;
+    window.addEventListener('pagehide', () => {
+      entries.clear();
+      revision++;
+    });
+    return api;
+  }
+
+  // ─────────── 深度查询（开放 Shadow DOM 感知，有界） ───────────
+  /** 收集文档 + 开放 shadow root 森林（BFS，上限 SHADOW_ROOT_LIMIT） */
+  function collectRoots(): Array<Document | ShadowRoot> {
+    const roots: Array<Document | ShadowRoot> = [document];
+    for (let index = 0; index < roots.length && roots.length < SHADOW_ROOT_LIMIT; index++) {
+      let elements: Element[];
+      try {
+        elements = Array.from(roots[index].querySelectorAll('*'));
+      } catch {
+        continue;
+      }
+      for (const element of elements) {
+        if (roots.length >= SHADOW_ROOT_LIMIT) break;
+        let shadow: ShadowRoot | null = null;
+        try {
+          shadow =
+            element.shadowRoot ??
+            (globalThis as any).chrome?.dom?.openOrClosedShadowRoot?.(element) ??
+            null;
+        } catch {
+          shadow = element.shadowRoot;
+        }
+        if (shadow) roots.push(shadow);
+      }
+    }
+    return roots;
+  }
+
+  /** CSS 选择器深度匹配（去重；语法错误抛 INVALID_SELECTOR） */
+  function deepQuery(selector: string): Element[] {
+    const roots = collectRoots();
+    const seen = new Set<Element>();
+    for (const root of roots) {
+      let matched: Element[];
+      try {
+        matched = Array.from(root.querySelectorAll(selector));
+      } catch (error) {
+        throw new Error(
+          `INVALID_SELECTOR：CSS 选择器语法无效（${selector.slice(0, 120)}）：${
+            error instanceof Error ? error.message : String(error)
+          }。请改用合法 CSS，或换 xpath。`
+        );
+      }
+      for (const element of matched) seen.add(element);
+    }
+    return [...seen];
+  }
+
+  /** XPath 1.0 深度匹配（仅元素节点；标量结果显式报错） */
+  function deepXPath(expression: string): Element[] {
+    const roots = collectRoots();
+    const seen = new Set<Element>();
+    let syntaxError: unknown;
+    for (const root of roots) {
+      const isDocumentRoot = root === document;
+      let result: XPathResult;
+      try {
+        result = document.evaluate(
+          expression,
+          root as Node,
+          null,
+          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+          null
+        );
+      } catch (error) {
+        // 绝对路径（/html/...）在 shadow root 上无意义——只记录文档根的语法错误
+        if (isDocumentRoot) syntaxError = error;
+        continue;
+      }
+      if (
+        result.resultType !== XPathResult.UNORDERED_NODE_SNAPSHOT_TYPE &&
+        result.resultType !== XPathResult.ORDERED_NODE_SNAPSHOT_TYPE
+      ) {
+        if (isDocumentRoot) {
+          throw new Error(
+            `SEED_TYPE_MISMATCH：XPath 返回的是标量（字符串/数字/布尔），无法作为元素种子。请让表达式选中元素节点，例如 //div[@class="item"] 或 (//button)[1]。`
+          );
+        }
+        continue;
+      }
+      for (let i = 0; i < result.snapshotLength; i++) {
+        const node = result.snapshotItem(i);
+        if (node && node.nodeType === 1) seen.add(node as Element);
+      }
+    }
+    if (seen.size === 0 && syntaxError) {
+      throw new Error(
+        `INVALID_XPATH：XPath 表达式无效或不是 1.0 语法（${expression.slice(0, 120)}）：${
+          syntaxError instanceof Error ? syntaxError.message : String(syntaxError)
+        }。可改用 CSS selector。`
+      );
+    }
+    return [...seen];
   }
 
   // ═══════════ 共享工具（自包含，不引用模块绑定） ═══════════
@@ -278,7 +510,7 @@ export function elementExplorePayload(
   if (action === 'parent') {
     const maxLevels = Math.min(
       Math.max(1, Math.floor(levels) || 3),
-      PARENT_MAX_LEVELS
+      PARENT_MAX_LIMIT
     );
     const out: ExploreElementSummary[] = [];
     // 第 0 层：种子自身（同构兄弟数即「种子是否处于重复组」的最直接信号；
@@ -312,7 +544,7 @@ export function elementExplorePayload(
       if (current === document.body) break; // body 之上（html）无探索价值
       current = parent;
     }
-    return { fingerprint, levels: out };
+    return { fingerprint, levels: out, seedMatchCount, seedElementId };
   }
 
   // ═══════════ action=children：BFS 子元素（深度 1..3） ═══════════
@@ -347,6 +579,8 @@ export function elementExplorePayload(
       fingerprint,
       elements: out,
       total: out.length,
+      seedMatchCount,
+      seedElementId,
       ...(truncated ? { truncated: true } : {}),
       note:
         (truncated
@@ -394,6 +628,8 @@ export function elementExplorePayload(
       fingerprint,
       elements: out,
       total: out.length,
+      seedMatchCount,
+      seedElementId,
       ...(truncated ? { truncated: true } : {}),
       note:
         (truncated ? `兄弟元素超过采集上限 ${COLLECT_LIMIT}，已截断。` : '') +
@@ -640,6 +876,8 @@ export function elementExplorePayload(
     elements: out,
     total: out.length,
     pattern,
+    seedMatchCount,
+    seedElementId,
     ...(groupTruncated || out.length >= COLLECT_LIMIT
       ? { truncated: true }
       : {}),
@@ -651,8 +889,208 @@ export function elementExplorePayload(
         ? `${hiddenSkipped} 个隐藏匹配被过滤；需要模板/隐藏节点时传 visibleOnly=false。`
         : '') +
       (pattern.combinedSelector
-        ? `生成选择器实测匹配 ${pattern.selectorMatchCount ?? '?'} 个、容器组 ${totalContainers} 个——匹配数明显偏大说明选择器过宽（按容器遍历更稳）；偏小或为 0 常见于 Shadow DOM 结构（选择器不跨 shadow，需在 js_run 中逐 host 读 shadowRoot 后查询）。`
+        ? (() => {
+            const matchCount = pattern.selectorMatchCount ?? 0;
+            if (matchCount === totalContainers) {
+              return `生成选择器实测匹配 ${matchCount} 个，与容器组一致——可直接写进批量抓取脚本（querySelectorAll 后逐项取字段）。`;
+            }
+            if (matchCount > totalContainers) {
+              return `生成选择器实测匹配 ${matchCount} 个，多于容器组 ${totalContainers} 个——选择器同时命中了容器内部/同层其它元素，按容器引用遍历更稳，或在脚本里按容器 selector 收窄。`;
+            }
+            if (matchCount === 0) {
+              return `生成选择器实测匹配 0 个、容器组 ${totalContainers} 个——常见于 Shadow DOM（选择器不跨 shadow）：请在 js_run 中逐 host 读 shadowRoot 后在其内部查询，或用容器 ElementId 逐个探索。`;
+            }
+            return `生成选择器实测匹配 ${matchCount} 个，少于容器组 ${totalContainers} 个——部分容器类名不同（或分处 Shadow DOM）。脚本中请以匹配到的选择器为基准，并对此差值做缺口核对；需要全量时按容器引用逐个取。`;
+          })()
         : '结构无稳定公共 class，未生成选择器——可在 js_run 中按 tag+class 交集过滤，或对代表容器逐个 children 探索。'),
+  };
+}
+
+/**
+ * selector/xpath 种子查找荷载：只做「匹配 + 候选摘要」，不做关系探索。
+ *
+ * 用途：宿主在未指定 frameId 时对全部 frame 各注入一次，聚合匹配数；
+ * 唯一匹配 → 直接进入探索；多匹配 → 返回候选（每个带可用的 ElementId），
+ * 由模型回填 matchIndex 或直接选用某个 ElementId。
+ *
+ * 自包含约束同 elementExplorePayload：不得引用模块级绑定；注册表/查询
+ * 能力在函数内重建（注入序列化只携带函数体）。
+ */
+export function exploreSeedLookupPayload(
+  seedKind: 'selector' | 'xpath',
+  seedValue: string,
+  limit: number,
+  tabId: number
+): ExploreSeedLookupResult {
+  const SHADOW_ROOT_LIMIT = 2_000;
+  const MAX_TEXT = 80;
+  const MAX_ATTRS = 120;
+
+  const refDocument = document as { __agentNexusReferences?: any };
+
+  /** 最小注册表（与 element-scan-payload 的 id 格式一致） */
+  const registry = (() => {
+    if (refDocument.__agentNexusReferences) return refDocument.__agentNexusReferences;
+    const nonce = Math.random().toString(16).slice(2, 10);
+    let counter = 0;
+    const entries = new Map<string, { node: WeakRef<Element>; expires: number; url: string }>();
+    const resolve = (id: unknown): Element | null => {
+      if (typeof id !== 'string') return null;
+      const entry = entries.get(id);
+      if (!entry) return null;
+      if (entry.expires <= Date.now() || entry.url !== document.URL) return null;
+      const node = entry.node.deref();
+      return node && node.isConnected ? node : null;
+    };
+    const api = {
+      register(element: Element): string {
+        for (const [id, entry] of entries) {
+          if (entry.node.deref() === element) {
+            entry.expires = Date.now() + 120_000;
+            return id;
+          }
+        }
+        const id = `anx:${tabId}:${nonce}:${++counter}`;
+        entries.set(id, { node: new WeakRef(element), expires: Date.now() + 120_000, url: document.URL });
+        return id;
+      },
+      resolve,
+      invalidate() {},
+      fingerprint() {
+        return `${nonce}|0|${document.URL}`;
+      },
+    };
+    refDocument.__agentNexusReferences = api;
+    return api;
+  })();
+
+  const collectRoots = (): Array<Document | ShadowRoot> => {
+    const roots: Array<Document | ShadowRoot> = [document];
+    for (let index = 0; index < roots.length && roots.length < SHADOW_ROOT_LIMIT; index++) {
+      let elements: Element[];
+      try {
+        elements = Array.from(roots[index].querySelectorAll('*'));
+      } catch {
+        continue;
+      }
+      for (const element of elements) {
+        if (roots.length >= SHADOW_ROOT_LIMIT) break;
+        let shadow: ShadowRoot | null = null;
+        try {
+          shadow =
+            element.shadowRoot ??
+            (globalThis as any).chrome?.dom?.openOrClosedShadowRoot?.(element) ??
+            null;
+        } catch {
+          shadow = element.shadowRoot;
+        }
+        if (shadow) roots.push(shadow);
+      }
+    }
+    return roots;
+  };
+
+  let matches: Element[];
+  const roots = collectRoots();
+  if (seedKind === 'selector') {
+    const seen = new Set<Element>();
+    for (const root of roots) {
+      try {
+        for (const element of Array.from(root.querySelectorAll(seedValue))) seen.add(element);
+      } catch (error) {
+        return {
+          error: `INVALID_SELECTOR：CSS 选择器语法无效（${seedValue.slice(0, 120)}）：${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        };
+      }
+    }
+    matches = [...seen];
+  } else {
+    const seen = new Set<Element>();
+    let syntaxError: unknown;
+    for (const root of roots) {
+      let result: XPathResult;
+      try {
+        result = document.evaluate(
+          seedValue,
+          root as Node,
+          null,
+          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+          null
+        );
+      } catch (error) {
+        if (root === document) syntaxError = error;
+        continue;
+      }
+      if (
+        result.resultType !== XPathResult.UNORDERED_NODE_SNAPSHOT_TYPE &&
+        result.resultType !== XPathResult.ORDERED_NODE_SNAPSHOT_TYPE
+      ) {
+        if (root === document)
+          return {
+            error:
+              'SEED_TYPE_MISMATCH：XPath 返回的是标量（字符串/数字/布尔），无法作为元素种子。请让表达式选中元素节点。',
+          };
+        continue;
+      }
+      for (let i = 0; i < result.snapshotLength; i++) {
+        const node = result.snapshotItem(i);
+        if (node && node.nodeType === 1) seen.add(node as Element);
+      }
+    }
+    if (seen.size === 0 && syntaxError)
+      return {
+        error: `INVALID_XPATH：XPath 表达式无效或不是 1.0 语法（${seedValue.slice(0, 120)}）：${
+          syntaxError instanceof Error ? syntaxError.message : String(syntaxError)
+        }`,
+      };
+    matches = [...seen];
+  }
+
+  const cap = Math.min(Math.max(1, limit || 20), 100);
+  const text = (element: Element): string => {
+    const value = (element.textContent || '').replace(/\s+/g, ' ').trim();
+    return value.length > MAX_TEXT ? value.slice(0, MAX_TEXT) + '…' : value;
+  };
+  const attrs = (element: Element): string => {
+    const parts: string[] = [];
+    for (const name of ['href', 'src', 'value', 'name', 'type', 'role', 'data-sku', 'data-id', 'data-testid']) {
+      const value = element.getAttribute(name);
+      if (value) parts.push(`${name}="${value.replace(/\s+/g, ' ').slice(0, 40)}"`);
+    }
+    const joined = parts.join(' ');
+    return joined.length > MAX_ATTRS ? joined.slice(0, MAX_ATTRS) + '…' : joined;
+  };
+  const isVisible = (element: Element): boolean => {
+    if (!element.getClientRects().length) return false;
+    const style = window.getComputedStyle(element);
+    return style.visibility !== 'hidden' && style.display !== 'none';
+  };
+
+  return {
+    total: matches.length,
+    truncated: matches.length > cap,
+    shadowHit: matches.some((element) => {
+      try {
+        return element.getRootNode() instanceof ShadowRoot;
+      } catch {
+        return false;
+      }
+    }),
+    matches: matches.slice(0, cap).map((element, index) => ({
+      index: index + 1,
+      elementId: registry.register(element),
+      tag: element.localName,
+      ...(element.className && typeof element.className === 'string'
+        ? { classes: element.className.replace(/\s+/g, ' ').trim().slice(0, 120) }
+        : {}),
+      ...(element.id ? { id: element.id.slice(0, 80) } : {}),
+      ...(text(element) ? { text: text(element) } : {}),
+      ...(attrs(element) ? { attrs: attrs(element) } : {}),
+      childCount: element.children.length,
+      visible: isVisible(element),
+    })),
   };
 }
 

@@ -211,7 +211,7 @@ export function validateLearnConfig(
   const errors: Partial<Record<LearnConfigField, LearnConfigErrorCode>> = {};
   const input = raw ?? {};
   const learningLimits = parseStageLimits(input.learningLimits);
-  const validationLimits = input.autoValidate === false ? { ...LEARN_DEFAULT_STAGE_LIMITS } : parseStageLimits(input.validationLimits);
+  const validationLimits = input.autoValidate === true ? parseStageLimits(input.validationLimits) : { ...LEARN_DEFAULT_STAGE_LIMITS };
   if (!learningLimits) errors.learningLimits = 'limits-invalid';
   if (!validationLimits) errors.validationLimits = 'limits-invalid';
 
@@ -266,7 +266,7 @@ export function validateLearnConfig(
       targetMode: targetMode as LearnTargetMode,
       strategy,
       modelRef: { channelId: matched!.ref.channelId, modelId: matched!.ref.modelId },
-      autoValidate: input.autoValidate !== false,
+      autoValidate: input.autoValidate === true,
       learningLimits: learningLimits!,
       validationLimits: validationLimits!,
     },

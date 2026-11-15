@@ -2153,7 +2153,7 @@ async function main() {
     const guardedTool = ContextWindowGuard.protect(
       [
         { role: 'user', content: 'hi' },
-        { role: 'tool', tool_call_id: 'c1', name: 'browser_get_page_text', content: emojiAtBoundary },
+        { role: 'tool', tool_call_id: 'c1', name: 'read_website', content: emojiAtBoundary },
       ] as any,
       1_000_000,
     );

@@ -25,7 +25,11 @@
           :content="userTextContent"
           :message-id="message.id"
           :quote="message.pageQuote"
+          :skills="message.skills"
+          :agent-label="userAgentLabel"
         />
+        <!-- 上传文件元素：图片可放大查看与下载，html/pdf 可网页打开，其余仅下载 -->
+        <MessageUploads v-if="uploadedFiles.length > 0" :files="uploadedFiles" />
       </template>
 
       <!-- ════ 直播态（流式进行中 / 无末段正文的记录）：
@@ -88,12 +92,14 @@
                 <path d="M12,3L9.9,8.2L4.5,9.4L8.3,13.3L7.4,18.7L12,16.2L16.6,18.7L15.7,13.3L19.5,9.4L14.1,8.2L12,3Z" fill="currentColor"/>
               </svg>
             </span>
-            <span v-if="groups.hasReasoning || groups.toolCount > 0 || groups.compactionCount > 0" class="prelude-summary">
+            <span v-if="groups.hasReasoning || groups.toolCount > 0 || groups.compactionCount > 0 || groups.skillCount > 0" class="prelude-summary">
               <template v-if="groups.hasReasoning">{{ t('sidepanel.chat.preludeReasoning') }}</template>
               <template v-if="groups.hasReasoning && groups.toolCount > 0">&nbsp;·&nbsp;</template>
               <template v-if="groups.toolCount > 0">{{ t('sidepanel.chat.preludeTools', { count: groups.toolCount }) }}</template>
               <template v-if="groups.toolCount > 0 && groups.compactionCount > 0">&nbsp;·&nbsp;</template>
               <template v-if="groups.compactionCount > 0">{{ t('sidepanel.chat.preludeCompactions', { count: groups.compactionCount }) }}</template>
+              <template v-if="(groups.hasReasoning || groups.toolCount > 0 || groups.compactionCount > 0) && groups.skillCount > 0">&nbsp;·&nbsp;</template>
+              <template v-if="groups.skillCount > 0">{{ t('sidepanel.chat.preludeSkills', { count: groups.skillCount }) }}</template>
             </span>
             <!-- 前奏仅含中间文本（无推理无工具）时的兜底摘要，避免空标题行 -->
             <span v-else class="prelude-summary">
@@ -268,7 +274,7 @@
           </svg>
         </button>
         <button type="button" class="message-action-btn" :title="t('sidepanel.chat.skillCaptureCreate')" :aria-label="t('sidepanel.chat.skillCaptureCreate')" @click="message.id && emit('create-skill', message.id)">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 3h13v7M4 3v18h11M7 7h6M7 11h5m6 2v8m-4-4h8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <SkillIcon width="15" height="15" />
         </button>
         <button
           type="button"
@@ -356,6 +362,8 @@
  */
 import { computed, ref } from 'vue';
 import { t } from '@/utils/i18n';
+import { useAgentDisplay } from '@/common/use-agent-display';
+import { agentEngine } from '../../core/registry/agent-engine';
 import type { ExtendedChatMessage, IndexedMessagePart, MessageFeedback, MessagePart } from '../../types/chat';
 import { markdownRenderer } from '../../utils/chat/markdown-renderer';
 import { groupAnswerParts, type AnswerGrouping } from '../../utils/chat/part-grouping';
@@ -366,7 +374,9 @@ import { buildExecutionTraceText } from '../../utils/chat/message-copy-payload';
 import ToolCallItem from './ToolCallItem.vue';
 import MessageParts from './MessageParts.vue';
 import MessageImages from './MessageImages.vue';
+import MessageUploads from './MessageUploads.vue';
 import UserMessageBubble from './UserMessageBubble.vue';
+import SkillIcon from './SkillIcon.vue';
 
 const props = defineProps<{
   message: ExtendedChatMessage;
@@ -391,8 +401,18 @@ const emit = defineEmits<{
 const renderMessage = (content: string) => markdownRenderer.renderMessage(content);
 
 /**
+ * 本条用户消息携带的上传文件条目（气泡下方的「文件元素」区）。
+ *
+ * 缺省 = 本轮无上传文件（旧记录天然缺此字段）；条目内容与工作区实际
+ * 路径同源——装配层在文件入库后才生成清单，UI 只渲染不做路径推导。
+ */
+const uploadedFiles = computed(() => props.message.uploadedFiles ?? []);
+
+/**
  * 是否渲染底部图片区（MessageImages）：
- *   - 用户消息：上传图片恒在消息底部展示（原有行为）；
+ *   - 用户消息：**旧记录**（无上传文件条目）沿用底部图片区展示用户上传图；
+ *     新记录的上传图片一律由「上传文件元素」区承载（缩略图 + 放大查看 +
+ *     下载），底部图片区必须让位——否则同一张图在一条消息里出现两次；
  *   - 助手消息：新记录的截图一律以内联「查看屏幕」片段呈现，只有
  *     「有引用但没有任何 image 片段」的旧记录（截图早于内联部件形态）
  *     才兜底走底部图片区，避免旧会话的截图彻底失去展示入口。
@@ -400,7 +420,7 @@ const renderMessage = (content: string) => markdownRenderer.renderMessage(conten
 const showBottomImages = computed<boolean>(() => {
   const refs = props.message.imageRefs;
   if (!refs || refs.length === 0) return false;
-  if (props.message.role === 'user') return true;
+  if (props.message.role === 'user') return uploadedFiles.value.length === 0;
   return !(props.message.parts ?? []).some(part => part.type === 'image');
 });
 
@@ -409,6 +429,30 @@ const showBottomImages = computed<boolean>(() => {
  * 不参与模型消息的过程分组 / 折叠条渲染。
  */
 const isUserMessage = computed(() => props.message.role === 'user');
+
+/**
+ * 本条用户消息 @ 的智能体展示名（气泡底部标识）。
+ *
+ * 解析口径与历史抽屉一致：优先按稳定 ID 取当前记录（智能体改名后跟随
+ * 最新命名、预置智能体按当前语言渲染），ID 失配（已被删除）时退回
+ * 落库名称，两者皆无则不展示——旧记录/无智能体会话天然没有该标识。
+ * 名称解析放在渲染期（displayNameOf 依赖当前 locale），语言切换后即时跟随。
+ */
+const { displayNameOf } = useAgentDisplay();
+const userAgentLabel = computed<string>(() => {
+  // 记录字段来自持久化层：非字符串脏数据一律按「无值」处理，避免 .trim 抛错
+  const agentId = typeof props.message.agentId === 'string' ? props.message.agentId.trim() : '';
+  const agentName = typeof props.message.agentName === 'string' ? props.message.agentName.trim() : '';
+  if (!agentId && !agentName) return '';
+  const agent = agentEngine.resolveRef(agentId, agentName);
+  if (agent) {
+    // 当前语言展示名优先；展示名为空（自定义智能体未命名等脏数据）时依次回落到
+    // 规范名 / 记录名 / id——绝不渲染出一个没有名称的空「@」
+    const display = (displayNameOf(agent) || '').trim() || (agent.name ?? '').trim();
+    if (display) return display;
+  }
+  return agentName || agentId;
+});
 
 /**
  * 用户消息正文（气泡渲染的源文）。
@@ -464,6 +508,7 @@ function collectParts(parts: MessagePart[], stripThink: boolean): IndexedMessage
     if (part.type === 'tool' && !part.toolCall) return;
     if (part.type === 'image' && !part.imageRef) return;
     if (part.type === 'compaction' && !part.compaction) return;
+    if (part.type === 'skill' && !part.skills?.length) return;
     result.push({ index, part });
   });
   return result;

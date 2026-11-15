@@ -6,11 +6,15 @@
  * 验包、启动对账与运行时三层同时生效，不能只依赖某一条链路。
  */
 export const PUBLIC_HOST_TOOLS: ReadonlySet<string> = new Set([
-  'browser_get_page_text',
+  'read_website',
   'browser_get_page_info',
   'browser_tabs',
   'browser_navigation',
   'browser_history_bookmarks',
+  'browser_extract_data',
+  'browser_page_ops',
+  'browser_page_http',
+  'browser_media_control',
 ]);
 
 /** 判断 `builtin/<name>` 是否命中公开宿主工具白名单 */

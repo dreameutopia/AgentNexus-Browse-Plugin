@@ -141,7 +141,7 @@ export const LEARN_WORKFLOW = section(
    （按本次目标细分，如进入搜索页 → 输入关键词 → 搜索 → 遍历结果 → 核对覆盖范围）。计划列的是
    **要探明的知识点**、最小成功证据与停止条件。只在阶段完成、受阻或计划变更时更新状态，
    不把每次观察/点击拆成计划项，不为同一次状态变化连续维护计划。
-2. 用 browser_navigation(action="open"，waitForLoad=true) 打开目标站点，browser_get_page_text 确认可达；
+2. 用 browser_navigation(action="open"，waitForLoad=true) 打开目标站点，read_website 确认可达；
    需要用户手动处理才能继续时调用 interact，等待答复后重采页面（见 constraints）。
 3. 按 <exploration> 规定的手段逐步推进。每完成一个**关键步骤**立即用
    note_tool(action="append") 追加一条记录（格式见 <recording>），不要凭记忆攒到结束再写——
@@ -175,7 +175,7 @@ export const LEARN_WORKFLOW = section(
 export const LEARN_DOM_GUIDANCE = `<dom-locating>
 按本阶段实际提供的工具选择观察与操作方式；未提供的工具不调用，也不靠经验补出可用能力：
 【观察】browser_observe 的枚举、节点详情与分页参数以工具说明为准。普通控件不足以理解复杂界面时换 structure/accessibility；需取得可复用 XPath、核对属性或状态时读取节点详情。
-browser_get_page_text 读取页面正文；需要加载诊断且该工具可用时再读 browser_get_page_info，不每步机械读取整页与URL。
+read_website 读取页面正文（结果落盘 content/，按 path+page 续读）；需要加载诊断且该工具可用时再读 browser_get_page_info，不每步机械读取整页与URL。
 【消歧】用 Context、role、行列索引、选区和节点属性区分同名目标，无法区分时继续观察，禁止随意选第一个；引用必须来自当前观察结果，不能猜测或构造。
 【交互】参数与输入/焦点生命周期以 browser_interact 说明为准；一次只派发一个有依赖的动作。本工具没有 hover；纯文本模式优先已验证的键盘展开/可见入口，必要时验证站点导航参数，不能用普通点击或脚本事件冒充真实悬停。确需能力外动作时记录缺口或 interact。
 【反馈与恢复】动作前明确目标业务对象与预期变化，动作后优先核对一个对应业务后置条件，如详情所属记录、输入值或保存回执；有界等待异步状态，不把派发成功、页面load、固定睡眠当业务成功。not_dispatched 按错误修正；unknown/超时先读现状，禁止重放不确定的写操作。引用/焦点失效再重采；WRONG_TAB 切回已记录的来源 tabId，不猜当前标签。
@@ -196,7 +196,7 @@ browser_get_page_text 读取页面正文；需要加载诊断且该工具可用�
 export function learnVisionGuiGuide(): string {
   return `<vision-gui-tool>
 本阶段唯一视觉手势入口是 vision_gui（参数明细以工具 schema 为准）：
-【调用形态】每次只选一个 action；action、screenshotId 与该 action 的字段全部放在同一顶层对象，不嵌套 parameters，不混入其它 action 的字段。坐标为最新完整截图的 x/y 0..1000（支持小数），不是像素、不加页面滚动偏移。
+【调用形态】每次只选一个 action；action、screenshotId 与该 action 的字段全部放在同一顶层对象，不嵌套 parameters，不混入其它 action 的字段。坐标为最新完整截图的 x/y 0..1000（支持小数），不是像素、不加页面滚动偏移；从截图像素位置估算时先做「像素 ÷ 图像宽/高 × 1000」换算再发出。
 【截图生命周期】click/drag/input/hover/keyboard/scroll、read_scroll 与 mark 消耗源截图，工具结束后系统等待并回传新截图；inspect/zoom/check/read 不消耗源图、不触发重拍；截图失效时调用 screenshot 恢复，禁止用旧 screenshotId 重放动作，禁止用数字 ID 点击。
 【手势纪律】一次只执行一个交互手势，等待新截图再继续；DOM 操作也会改变界面，下一手势必须用操作后的新图。工具 success 只表示调用完成，不能据此宣称业务完成。
 【打标核对（按需）】仅当视觉区域与 DOM 候选难以对应、无文字图标或同名控件难消歧时，才 vision_gui(action="mark") 请求下一张自动截图绘制数字框，再 vision_gui(action="inspect", id) 反查 CSS/XPath、frameId、属性与状态；不是每一步都打标。数字只用于核对，不用于点击，也不得作为长期定位写入技能。
@@ -422,7 +422,7 @@ export const LEARN_SELF_RESCUE = section(
    （两者同时传是 AND，不是 OR）；同名目标 → 用 role、所属区域、上下文消歧，不要盲选第一个。
 3. 换操作通道：点不到 → 先滚动容器 / 展开折叠 / 关掉遮挡层；仅在实际工具支持时悬停；
    输入没生效 → 先 focus 再 fill，填完回读值确认；页面没加载 → browser_navigation(action="wait") 等就绪后重读状态。
-4. 换信息通道：正文读不到 → browser_get_page_info 诊断加载状态、browser_get_page_text 读正文、
+4. 换信息通道：正文读不到 → browser_get_page_info 诊断加载状态、read_website 读正文、
    structure / accessibility 读表格与语义；怀疑数据来自接口且该工具可用 → browser_network_capture
    被动观察（start 后由页面操作触发请求，再 read 读取——只收 start 之后的新请求）。
 5. 换路径：同一目标换已验证可用的入口或参数；先记录来源标签，再明确选择当前页导航或独立标签核验；必要时用可用的 js_run 探测组件作用域。

@@ -18,8 +18,12 @@
 }
 
 .message.user {
+  /* 固定宽度（而非 fit-content）：短消息不再收缩成窄条，气泡宽度在
+     同一会话内保持稳定；80% 沿用既有右侧留白比例，与模型消息 92% 区分 */
   align-self: flex-end;
+  width: 80%;
   max-width: 80%;
+  min-width: 0;
 }
 
 .message.assistant {
@@ -51,15 +55,9 @@
   overflow-x: clip;
 }
 
-.message.user .message-content {
-  /* 中性灰气泡（对齐主流聊天客户端）：浅灰底 + 深色文字，
-     代码块/链接等浅色系内嵌元素无需反色适配 */
-  background: var(--surface-user, #eeece7);
-  color: var(--ink-primary, #292824);
-  border-bottom-right-radius: 18px;
-  border-radius: 18px;
-  padding: 10px 14px;
-}
+/* 用户消息的底色 / 内边距 / 圆角由 UserMessageBubble 的唯一气泡容器
+   （.user-bubble，见 user-message-bubble.css）承担；正文节点只保留
+   .message-content 的基础排版，避免两套样式源各自漂移。 */
 
 .message.assistant .message-content {
   background: transparent;
@@ -1855,6 +1853,39 @@
   line-height: 1.4;
 }
 
+/* 预览按钮（html / pdf 产物）：卡片右侧的独立交互目标，点击只开预览、不触发下载 */
+.file-card-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  margin-left: 2px;
+  padding: 0;
+  color: #2e7d32;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.file-card-preview:hover {
+  color: #1f5d27;
+  background: #e3efe4;
+  border-color: #bcd9bf;
+}
+
+.file-card-preview:focus-visible {
+  outline: 2px solid var(--focus-ring, #a5a09a);
+  outline-offset: 1px;
+}
+
+.file-card-preview svg {
+  display: block;
+}
+
 .file-card.is-downloading {
   opacity: 0.75;
   cursor: wait;
@@ -2019,9 +2050,13 @@
 /* ==================== 回答内截图引用（<agent-image id="..." />） ====================
    结构契约见 markdown-renderer.buildAgentImageCard / agent-image-renderer.ts：
    .agent-image-card[data-agent-image-id][data-agent-image-state]
-     └─ .agent-image-body（占位文本 → 异步注入 <img> + .agent-image-caption）
+     └─ .agent-image-body（占位文本 → 异步注入 <img>）
    状态机：pending → loading → done | missing | error。
-   图片本体来自图片库（与 vision loop 自动截图同一处存储），按短 id 反查。 */
+   图片本体来自图片库（与 vision loop 自动截图同一处存储），按短 id 反查。
+
+   卡片只展示图片本身：短 id 是存储层凭据，不在底部重复展示（用户明确要求）；
+   画面说明（alt）移到图片的 title 悬浮提示上，信息不丢。点击图片在侧边栏内
+   打开共享看图层 ImageViewer（遮罩 + 缩放 / 打开 / 下载）。 */
 
 .agent-image-card {
   margin: 12px 0;
@@ -2045,13 +2080,6 @@
   border-radius: 4px;
   background: var(--surface-soft, #f3f1ed);
   cursor: zoom-in;
-}
-
-.agent-image-card .agent-image-caption {
-  font-size: 11px;
-  color: var(--ink-secondary, #787671);
-  text-align: center;
-  word-break: break-all;
 }
 
 .agent-image-card .agent-image-placeholder,

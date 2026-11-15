@@ -24,6 +24,18 @@
       "url": "http://localhost:4173/.preview/hub-agent-editor.html"
     },
     {
+      "name": "skill-capture-card",
+      "url": "http://localhost:4173/.preview/skill-capture-card.html"
+    },
+    {
+      "name": "agent-image-card",
+      "url": "http://localhost:4173/.preview/agent-image-card.html"
+    },
+    {
+      "name": "message-uploads-preview",
+      "url": "http://localhost:4173/.preview/message-uploads.html"
+    },
+    {
       "name": "hub-agent-list",
       "url": "http://localhost:4173/.preview/hub-agent-list.html"
     },
@@ -42,6 +54,16 @@
     {
       "name": "guard-confirm-preview",
       "url": "http://localhost:4173/.preview/guard-confirm.html"
+    },
+    {
+      "name": "interact-preview-server",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [".preview/server.mjs", ".", "4174"],
+      "port": 4174
+    },
+    {
+      "name": "interact-dialog-preview",
+      "url": "http://localhost:4174"
     },
     {
       "name": "asr-config-prompt",

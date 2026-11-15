@@ -109,7 +109,10 @@ export async function domActionPayload(
     const y =
       (Math.max(0, rect.top) + Math.min(window.innerHeight, rect.bottom)) / 2;
     let hit = document.elementFromPoint(x, y);
+    const visited = new Set<Element>();
     while (hit && shadowOf(hit)?.elementFromPoint) {
+      if (visited.has(hit) || visited.size >= 256) throw new Error('HIT_TEST_FAILED：Shadow DOM 命中测试出现循环或层级超限，未继续派发操作');
+      visited.add(hit);
       const inner = shadowOf(hit)!.elementFromPoint(x, y);
       if (!inner || inner === hit) break;
       hit = inner;

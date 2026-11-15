@@ -10,6 +10,7 @@ import {
   getPageHTMLTool,
   getCurrentPageInfoTool,
 } from './page-info-tool';
+import { readWebsiteTool } from './read-website-tool';
 
 // 导出基类
 export { BaseBrowserTool } from './browser-tool';
@@ -19,6 +20,7 @@ function createBaseTools() {
   return [
     new TaskSubmitTool(),
     new TaskResultTool(),
+    readWebsiteTool,
     getPageTextTool,
     getPageHTMLTool,
     getCurrentPageInfoTool,
@@ -36,6 +38,7 @@ export function registerBaseTools() {
 export {
   TaskSubmitTool,
   TaskResultTool,
+  readWebsiteTool,
   getPageTextTool,
   getPageHTMLTool,
   getCurrentPageInfoTool,

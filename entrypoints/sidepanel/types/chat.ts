@@ -5,6 +5,7 @@
 
 import type { ChatMessage } from '../utils/ai/ai-chat-api';
 import type { PageQuote } from '../utils/chat/page-quote';
+import type { UploadedFileEntry } from '@/utils/upload-files/upload-file-manifest';
 
 /**
  * 工具调用 UI 状态
@@ -51,20 +52,34 @@ export interface CompactionPartState {
 }
 
 /**
+ * 技能激活片段中的单个技能（加载时刻的快照）。
+ * id 是稳定引用（重载后仍可回查当前记录），name 是加载时刻的展示名——
+ * 技能随后被改名/删除时，历史消息仍准确展示「当时加载了什么」。
+ */
+export interface SkillPartEntry {
+  id: string;
+  name: string;
+}
+
+/**
  * 消息片段 - 按顺序存储文字、工具调用、推理与截屏图片
  *
  * 片段流即时间线：vision 自动截图以 type='image' 片段按**截屏发生顺序**
  * 插入流中（首截图位于消息最前、每轮工具后的重截图紧跟其轮次），
  * 渲染层据此把截图内联为可折叠「查看屏幕」容器，而不是统一堆在消息尾部。
+ * 预选技能的自动激活以 type='skill' 片段置于流最前（发生在任何模型输出
+ * 之前），渲染为可折叠的「已加载技能」容器并参与连续过程小折叠。
  */
 export interface MessagePart {
-  type: 'text' | 'tool' | 'image' | 'reasoning' | 'notice' | 'compaction';
+  type: 'text' | 'tool' | 'image' | 'reasoning' | 'notice' | 'compaction' | 'skill';
   content?: string;
   toolCall?: ToolCallUI;
   /** 仅用于 compaction 类型：压缩进度状态（见 CompactionPartState） */
   compaction?: CompactionPartState;
   /** 仅用于 image 类型：图片内容哈希（本体在独立图片库，片段只持引用） */
   imageRef?: string;
+  /** 仅用于 skill 类型：本轮开始前自动加载的技能（快照，随记录持久化） */
+  skills?: SkillPartEntry[];
   /**
    * 仅用于 notice 类型：可交互语义。
    * - 'guard-stop'：循环守卫停止说明（轮次 / 时长上限未确认继续），
@@ -134,10 +149,30 @@ export interface ExtendedChatMessage extends ChatMessage {
    */
   imageRefs?: string[];
   /**
+   * 本条用户消息携带的**上传文件条目**（路径 / 名称 / 大小 / 后缀）。
+   * 气泡据此渲染「文件元素」：图片可放大查看与下载，html/pdf 可网页打开，
+   * 其余格式仅下载。文件本体在会话工作区 inputs/ 下（原始字节）。
+   * 缺省 = 本轮无上传文件。
+   */
+  uploadedFiles?: UploadedFileEntry[];
+  /**
    * 本条用户消息携带的网页引用（用户在页面选中文本并确认引用）。
    * 用户气泡据此渲染引用块（原文 + 来源页面）；缺省 = 无引用。
    */
   pageQuote?: PageQuote;
+  /**
+   * 本条用户消息发送时绑定的智能体（稳定 ID + 可读名）。
+   * 用户气泡底部据此展示「@的是哪个智能体」：渲染时优先按 id 解析当前
+   * 记录（改名后跟随最新命名），id 失配时退回落库名称。
+   * 缺省 = 无智能体。
+   */
+  agentId?: string;
+  agentName?: string;
+  /**
+   * 本条用户消息发送时预选的技能快照（id + 加载时刻名称）。
+   * 用户气泡顶部逐行展示「这一轮用了哪些技能」；缺省 = 未选技能。
+   */
+  skills?: SkillPartEntry[];
   /** 仅用于向后兼容的 reasoning_content 收起状态 */
   _reasoningContentCollapsed?: boolean;
   /**

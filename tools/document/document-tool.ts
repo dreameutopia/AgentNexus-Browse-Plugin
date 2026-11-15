@@ -137,10 +137,13 @@ const ACTION_PARAMS: Record<(typeof ACTIONS)[number], readonly string[]> = {
  * 后缀处理必须「先剥后挂」：直接按目标后缀的长度截断会把 `报告.docx` 变成
  * `报告..pdf` 这种畸形名。这里先去掉原有的任何后缀，再统一挂上目标后缀。
  *
+ * 导出为具名函数：产物命名是「Word 与 PDF 同名不同后缀」这条契约的落点，
+ * 需要能被单测直接钉住。
+ *
  * @param raw 原始文件名（可含后缀）
  * @param extension 目标后缀（含点，如 '.pdf'）
  */
-function sanitizeArtifactFilename(raw: unknown, extension: string): { name: string; note?: string } {
+export function sanitizeArtifactFilename(raw: unknown, extension: string): { name: string; note?: string } {
   const fallback = `文档_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}${extension}`;
   if (raw === undefined || raw === null || raw === '') return { name: fallback };
   if (typeof raw !== 'string') {
@@ -234,7 +237,7 @@ export class DocumentTool extends BaseTool {
       name: DOCUMENT_TOOL_ID,
       description:
         'Markdown 文档工具。create 创建 .md 源文件；edit 编辑 .md（content 全量重写 / find+replace 精确定位 / edits 批量替换，三者互斥）；delete 删除 .md；' +
-        'convert 把已有 .md 渲染为 Word(.docx) 与/或 PDF 并保存到当前会话工作区 outputs/（可下载）。' +
+        'convert 把已有 .md 渲染为 Word(.docx) 与/或 PDF 并保存到当前会话工作区 outputs/（可下载；同名自动改名，不覆盖既有文件）。' +
         '转换支持标题、多级/任务列表、表格、引用块、代码块（带语法高亮）、GFM 语法、LaTeX 公式（Word 中为可编辑原生公式）、' +
         '图片与 Mermaid 图表（渲染为矢量图嵌入）。' +
         '图片写法：远程 URL（https://…）、工作区相对路径（outputs/report.png、inputs/photo.jpg）、' +
@@ -280,7 +283,8 @@ export class DocumentTool extends BaseTool {
           filename: {
             type: 'string',
             description:
-              'convert 产物文件名（不含后缀；已有后缀会被替换为目标格式的后缀）。缺省用源 .md 的文件名。',
+              'convert 产物文件名（不含后缀；已有后缀会被替换为目标格式的后缀）。' +
+              '产物固定落在当前会话工作区的 outputs/ 下；若同名文件已存在，自动改名为 name(1)、name(2)…，既有文件不会被覆盖。',
           },
           title: {
             type: 'string',

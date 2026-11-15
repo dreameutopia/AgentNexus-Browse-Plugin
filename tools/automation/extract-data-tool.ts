@@ -1,3 +1,4 @@
+import { executeScriptBounded } from '../common/frame-read';
 /**
  * 数据提取工具
  * 使用AI视觉能力从页面提取结构化数据
@@ -211,7 +212,7 @@ export class ExtractDataTool extends BaseTool {
       }
       
       console.log('💉 [数据提取工具-DOM] 向页面注入提取脚本...');
-      const result = await chrome.scripting.executeScript({
+      const result = await executeScriptBounded({
         target: { tabId: tabs[0].id! },
         func: (sel: string, type: string, multi: boolean) => {
           console.log('🔍 [页面脚本-DOM] 开始DOM提取脚本');

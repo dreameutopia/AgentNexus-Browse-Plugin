@@ -1,0 +1,76 @@
+{
+  "description": "提取当前 Bilibili 视频页的字幕：从页面 URL 提取 BV 号，调用视频信息与播放器接口定位字幕地址，再下载字幕 JSON 并返回 body 分段。必须在视频播放页调用；无字幕、登录受限或接口失败会返回明确错误，不编造内容。",
+  "approval": "session",
+  "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "executor": {
+    "type": "host-workflow",
+    "steps": [
+      {
+        "id": "page",
+        "tool": "builtin/browser_page_http",
+        "args": {
+          "location": "/video/(?<bvid>BV[0-9A-Za-z]+)",
+          "requests": []
+        }
+      },
+      {
+        "id": "view",
+        "tool": "builtin/browser_page_http",
+        "args": {
+          "requests": [
+            {
+              "url": "https://api.bilibili.com/x/web-interface/view?bvid={{steps.page.data.location.bvid}}",
+              "credentials": "include",
+              "response": "json",
+              "project": {
+                "aid": "data.aid",
+                "cid": "data.cid",
+                "title": "data.title"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "id": "player",
+        "tool": "builtin/browser_page_http",
+        "args": {
+          "requests": [
+            {
+              "url": "https://api.bilibili.com/x/player/wbi/v2?aid={{steps.view.data.responses.0.data.aid}}&cid={{steps.view.data.responses.0.data.cid}}",
+              "credentials": "include",
+              "response": "json",
+              "project": {
+                "subtitleUrl": "data.subtitle.subtitles.0.subtitle_url",
+                "language": "data.subtitle.subtitles.0.lan",
+                "languageName": "data.subtitle.subtitles.0.lan_doc"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "id": "subtitle",
+        "tool": "builtin/browser_page_http",
+        "args": {
+          "requests": [
+            {
+              "url": "{{steps.player.data.responses.0.data.subtitleUrl}}",
+              "credentials": "omit",
+              "response": "json",
+              "maxBytes": 524288,
+              "project": "body"
+            }
+          ]
+        }
+      }
+    ],
+    "output": {
+      "from": "subtitle"
+    }
+  }
+}

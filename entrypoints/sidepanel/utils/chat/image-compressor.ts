@@ -34,10 +34,8 @@
  *   - 全路径失败抛 ImageCompressionError（用户可读），绝不返回半成品。
  *
  * DOM 依赖约定：本模块只在 sidepanel 页面上下文可用（background service
- * worker 无 DOM），不得被 background 引用（同 attachment-parser）。
+ * worker 无 DOM），不得被 background 引用（同 vision 截图链路）。
  */
-
-import { AttachmentParseError } from './attachment-parser';
 
 // ==================== 策略常量 ====================
 

@@ -53,14 +53,14 @@ export function startLiveMessage(imageRefs: readonly string[] = []): LiveMessage
 /**
  * 首个内容事件（正文 / 推理 / 工具调用）到达：占位转为真实消息。
  *
- * 空正文占位片段必须丢弃（正文由内容事件重新写入），**截图片段与压缩
- * 片段必须保留**——首截图与发送前压缩（pre-run 种子片段）都是这一轮
- * 之前已经发生的事实，丢弃等于把它们从时间线上抹掉：截图只能靠
+ * 空正文占位片段必须丢弃（正文由内容事件重新写入），**截图片段、压缩
+ * 片段与技能激活片段必须保留**——首截图、发送前压缩与预选技能激活都是
+ * 这一轮之前已经发生的事实，丢弃等于把它们从时间线上抹掉：截图只能靠
  * imageRefs 兜底呈现（挂在消息最后），压缩则彻底失去时间线入口。
  */
 export function beginLiveMessage(state: LiveMessageState): LiveMessageState {
   return {
-    parts: state.parts.filter(part => part.type === 'image' || part.type === 'compaction'),
+    parts: state.parts.filter(part => part.type === 'image' || part.type === 'compaction' || part.type === 'skill'),
     imageRefs: state.imageRefs,
   };
 }
@@ -85,7 +85,8 @@ export function appendLiveImage(state: LiveMessageState, imageRef: string): Live
  * 截图片段算可见内容——只截了屏还没来得及说话就被中止的轮次，截图本身
  * 就是这一轮唯一的产出，移除消息等于把截图连同记录一起丢掉。压缩片段
  * 同理：中止发生在压缩期间/之后的轮次，压缩行（含其中断结算态）是唯一
- * 产出，保留它才不丢「这一轮发生过什么」的事实。
+ * 产出，保留它才不丢「这一轮发生过什么」的事实。技能激活片段同理——
+ * 用户显式选择的技能已在运行前自动加载，是「这一轮确实开始了」的证据。
  */
 export function hasVisibleLiveContent(state: {
   content?: string;
@@ -96,5 +97,7 @@ export function hasVisibleLiveContent(state: {
   if (typeof state.content === 'string' && state.content.trim()) return true;
   if (typeof state.reasoningContent === 'string' && state.reasoningContent.trim()) return true;
   if ((state.toolCallCount ?? 0) > 0) return true;
-  return (state.parts ?? []).some(part => part.type === 'image' || part.type === 'compaction');
+  return (state.parts ?? []).some(
+    part => part.type === 'image' || part.type === 'compaction' || part.type === 'skill',
+  );
 }

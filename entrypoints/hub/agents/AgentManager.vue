@@ -243,18 +243,10 @@
               </button>
               <span class="hub-field-label">{{ t('hub.fieldToolGroups') }}<span class="hub-required" aria-hidden="true">*</span></span>
               <span class="hub-groups-count">{{ t('hub.selectedToolCount', { count: selectedToolCount, max: MAX_TOOLS_PER_AGENT }) }}</span>
-              <!-- 视图切换：按工具（默认，每个工具独立一个元素）/ 按组（批量选择） -->
-              <HubSegmented
-                class="hub-section-view"
-                :model-value="toolView"
-                :options="toolViewOptions"
-                :aria-label="t('hub.fieldToolGroups')"
-                @update:model-value="onToolViewChange"
-              />
             </div>
             <div class="hub-section-body">
               <div class="hub-section-body-inner">
-                <!-- 搜索：按工具视图搜工具名 / 按组视图搜组名与描述 -->
+                <!-- 搜索：按组名与描述过滤 -->
                 <div class="hub-search hub-search--fill">
                   <svg class="hub-search__icon" viewBox="0 0 16 16" aria-hidden="true">
                     <path d="M11.1 10.2a4.6 4.6 0 1 0-.9.9l3 3 .9-.9-3-3zm-4.1.3a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z" fill="currentColor" />
@@ -263,39 +255,13 @@
                     v-model="groupQuery"
                     type="text"
                     class="hub-list-search"
-                    :placeholder="toolView === 'tools' ? t('hub.toolSearchPlaceholder') : t('hub.groupSearchPlaceholder')"
+                    :placeholder="t('hub.groupSearchPlaceholder')"
                   />
                 </div>
 
-                <!-- 按工具视图（默认）：每个工具独立一个可选元素 -->
-                <div v-if="toolView === 'tools'" class="hub-groups-scroll" :class="{ 'is-invalid': groupsInvalid }">
-                  <div v-if="!filteredToolEntries.length" class="hub-hint">{{ t('hub.toolSearchEmpty') }}</div>
-                  <div v-else class="hub-tool-list">
-                    <label
-                      v-for="entry in filteredToolEntries"
-                      :key="entry.toolId"
-                      class="hub-tool-row"
-                      :class="{ 'is-checked': isToolSelected(entry.toolId), 'is-locked': entry.locked }"
-                      :title="entry.toolId"
-                    >
-                      <input
-                        class="hub-check"
-                        type="checkbox"
-                        :checked="isToolSelected(entry.toolId)"
-                        :disabled="entry.locked"
-                        @change="toggleGroupTool(entry.groupId, entry.toolId)"
-                      />
-                      <span class="hub-tool-row-main">
-                        <span class="hub-tool-row-id">{{ entry.toolId }}</span>
-                        <span class="hub-tool-row-group">{{ t(entry.groupNameKey) }}</span>
-                      </span>
-                      <span v-if="entry.locked" class="hub-group-lock">{{ t('hub.pythonNotReady') }}</span>
-                    </label>
-                  </div>
-                </div>
-
-                <!-- 按组视图：组头三态复选框 + 组内逐个工具 -->
-                <div v-else class="hub-groups-scroll" :class="{ 'is-invalid': groupsInvalid }">
+                <!-- 工具组清单：仅按组勾选（组头三态复选框为唯一勾选入口，
+                     组内工具为只读芯片，展示已选状态不提供逐个勾选） -->
+                <div class="hub-groups-scroll" :class="{ 'is-invalid': groupsInvalid }">
                   <div v-if="!filteredToolGroups.length" class="hub-hint">{{ t('hub.groupSearchEmpty') }}</div>
                   <div v-else class="hub-groups">
                     <div
@@ -338,24 +304,17 @@
                           <svg viewBox="0 0 16 16"><path d="M2 8s2.6-4.4 6-4.4S14 8 14 8s-2.6 4.4-6 4.4S2 8 2 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="1.9" fill="currentColor"/></svg>
                         </button>
                       </div>
-                      <!-- 组内工具：逐个勾选（与组复选框共享同一扁平集合） -->
+                      <!-- 组内工具：只读芯片（勾选状态随组联动高亮，不提供逐个勾选） -->
                       <div class="hub-group-tools">
-                        <label
+                        <span
                           v-for="toolId in groupToolSets.get(group.id)"
                           :key="toolId"
                           class="hub-group-tool"
                           :class="{ 'is-checked': isToolSelected(toolId) }"
                           :title="toolId"
                         >
-                          <input
-                            class="hub-check"
-                            type="checkbox"
-                            :checked="isToolSelected(toolId)"
-                            :disabled="isGroupLocked(group.id)"
-                            @change="toggleGroupTool(group.id, toolId)"
-                          />
                           <span class="hub-group-tool-id">{{ toolId }}</span>
-                        </label>
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -555,8 +514,8 @@
  * 智能体管理：预置（只读展示）+ 自定义（新建/编辑/删除）。
  * 编辑器为左右两张等高卡片：左卡（整卡内部滚动）头像 / 名称 / 描述 / 视觉操作 /
  * 分类 / 标签 / 系统提示词（各占整行，左端共用同一条文本基准线）；右卡（各区占比限高、
- * 区内滚动）工具组（带搜索，上限 30 个工具）/ 外部插件工具 / 关联技能。emoji 头像选择为
- * 悬浮卡片，选中或点击外部自动收起；图片头像可点开放大查看并下载。
+ * 区内滚动）工具组（固定 8 组、仅按组勾选，带搜索，上限 30 个工具）/ 外部插件工具 /
+ * 关联技能。emoji 头像选择为悬浮卡片，选中或点击外部自动收起；图片头像可点开放大查看并下载。
  * 采样参数（temperature / maxTokens）与流式开关已移除——统一取用户全局 API 配置，流式恒开。
  * 写入经 utils/agents/agent-store（chrome.storage 权威源），跨上下文实时同步到 sidepanel。
  */
@@ -570,7 +529,6 @@ import { useAgentDisplay } from '@/common/use-agent-display';
 import CategorySelect from '../components/CategorySelect.vue';
 // Hub 共享自定义控件：玻璃选择框与 iOS 形态开关（设计语言统一，见 hub.css）
 import HubSelect from '../components/HubSelect.vue';
-import HubSegmented from '../components/HubSegmented.vue';
 import HubSwitch from '../components/HubSwitch.vue';
 import ExternalToolsPicker from './ExternalToolsPicker.vue';
 import TagInput from '../components/TagInput.vue';
@@ -602,7 +560,6 @@ import {
   type AgentConfig,
   type AgentWriteResult,
 } from '@/utils/agents/agent-store';
-import { getPresetToolIds, type ToolScenario } from '@/utils/tools/tool-presets';
 // vision_gui 身份常量：工具组不提供勾选，编辑入口对存量勾选残留做剔除归一
 //（运行时装配另有一道同口径归一，见 runtime-builder「视觉操作开关注入」）
 import { VISION_GUI_TOOL_ID } from '@/tools/vision/gui-contract';
@@ -617,40 +574,31 @@ import {
   type PyodideEnvState,
 } from '@/utils/pyodide/pyodide-env';
 
-// ──── 工具组（仅暴露对自定义智能体有意义的场景；特殊流程场景不开放） ────
+// ──── 工具组（固定清单：仅这 8 组可选，其余组已删除；仅按组勾选） ────
 
 interface ToolGroupMeta {
-  id: ToolScenario;
+  /** 组 id（UI 内部键，不落库——保存的始终是扁平工具 id 列表） */
+  id: string;
   nameKey: MessageKey;
   descKey: MessageKey;
+  /** 组内工具清单（显式登记，不再引用运行时场景预设——运行时场景归预置智能体与默认对话所有） */
+  tools: readonly string[];
 }
 
 const toolGroups: ReadonlyArray<ToolGroupMeta> = [
-  { id: 'chat', nameKey: 'hub.groupChat', descKey: 'hub.groupChatDesc' },
-  { id: 'automation', nameKey: 'hub.groupAutomation', descKey: 'hub.groupAutomationDesc' },
-  // note 组已移除：note_tool 与 plan_tool 同为 CORE_SESSION_TOOL_IDS 无条件注入的
-  // 核心工具，对所有智能体恒定可用，作为可选工具组展示只会制造「勾选才有」的歧义；
-  // 存量自定义智能体 tools 里的 note_tool 依然有效（扁平已选集合原样往返，
-  // 不属于任何组也不会被丢弃）
-  { id: 'webSearch', nameKey: 'hub.groupWebSearch', descKey: 'hub.groupWebSearchDesc' },
-  { id: 'pageRead', nameKey: 'hub.groupPageRead', descKey: 'hub.groupPageReadDesc' },
-  { id: 'domInteract', nameKey: 'hub.groupDomInteract', descKey: 'hub.groupDomInteractDesc' },
-  { id: 'tabsWindows', nameKey: 'hub.groupTabsWindows', descKey: 'hub.groupTabsWindowsDesc' },
-  { id: 'scripting', nameKey: 'hub.groupScripting', descKey: 'hub.groupScriptingDesc' },
-  { id: 'bookmarkHistory', nameKey: 'hub.groupBookmarkHistory', descKey: 'hub.groupBookmarkHistoryDesc' },
-  { id: 'resource', nameKey: 'hub.groupResource', descKey: 'hub.groupResourceDesc' },
-  { id: 'files', nameKey: 'hub.groupFiles', descKey: 'hub.groupFilesDesc' },
-  { id: 'data', nameKey: 'hub.groupData', descKey: 'hub.groupDataDesc' },
-  { id: 'networkTools', nameKey: 'hub.groupNetworkTools', descKey: 'hub.groupNetworkToolsDesc' },
-  { id: 'visionTools', nameKey: 'hub.groupVisionTools', descKey: 'hub.groupVisionToolsDesc' },
-  { id: 'python', nameKey: 'hub.groupPython', descKey: 'hub.groupPythonDesc' },
-  { id: 'excalidraw', nameKey: 'hub.groupExcalidraw', descKey: 'hub.groupExcalidrawDesc' },
-  { id: 'bilibili', nameKey: 'hub.groupBilibili', descKey: 'hub.groupBilibiliDesc' },
+  // Python 运行：环境未就绪时整组锁定（见 isGroupLocked），就绪后可勾选
+  { id: 'python', nameKey: 'hub.groupPython', descKey: 'hub.groupPythonDesc', tools: ['python_run'] },
+  { id: 'basicWeb', nameKey: 'hub.groupBasicWeb', descKey: 'hub.groupBasicWebDesc', tools: ['browser_observe', 'browser_interact', 'browser_navigation'] },
+  { id: 'tabsBookmarks', nameKey: 'hub.groupTabsBookmarks', descKey: 'hub.groupTabsBookmarksDesc', tools: ['browser_tabs', 'browser_get_page_info', 'browser_history_bookmarks'] },
+  { id: 'webSearch', nameKey: 'hub.groupWebSearch', descKey: 'hub.groupWebSearchDesc', tools: ['web_search'] },
+  { id: 'perception', nameKey: 'hub.groupPerception', descKey: 'hub.groupPerceptionDesc', tools: ['browser_dom_explore'] },
+  { id: 'fileGen', nameKey: 'hub.groupFileGen', descKey: 'hub.groupFileGenDesc', tools: ['xlsx_tool', 'document_tool'] },
+  { id: 'excalidraw', nameKey: 'hub.groupExcalidraw', descKey: 'hub.groupExcalidrawDesc', tools: ['excalidraw_tool'] },
 ];
 
 /** 场景组工具集合缓存（避免每次比较重复计算） */
 const groupToolSets = new Map<string, readonly string[]>(
-  toolGroups.map(group => [group.id, getPresetToolIds(group.id)]),
+  toolGroups.map(group => [group.id, group.tools]),
 );
 
 /** 单个智能体的工具总数上限（组工具并集去重后计数） */
@@ -750,7 +698,7 @@ onMounted(async () => {
 onUnmounted(() => unsubscribePythonEnv());
 
 /** 工具组是否被锁（当前仅 python 组：环境未下载或未通过核验时不可勾选） */
-function isGroupLocked(groupId: ToolScenario): boolean {
+function isGroupLocked(groupId: string): boolean {
   return groupId === 'python' && !pythonReady.value;
 }
 
@@ -767,49 +715,8 @@ function toggleSkill(skillId: string): void {
 
 // ──── 工具组 / 关联技能搜索（按当前语言的显示名 / 描述过滤；搜索词不参与保存） ────
 
-/** 工具区视图：tools = 每个工具独立元素（默认）/ groups = 按组批量选择 */
-const toolView = ref<'tools' | 'groups'>('tools');
-
-/** 视图切换选项（随界面语言刷新显示名） */
-const toolViewOptions = computed(() => [
-  { value: 'tools', label: t('hub.toolViewTools') },
-  { value: 'groups', label: t('hub.toolViewGroups') },
-]);
-
-/** 分段控件 → 视图状态桥接（HubSegmented 的 value 为 string） */
-function onToolViewChange(value: string): void {
-  toolView.value = value === 'groups' ? 'groups' : 'tools';
-}
-
-/** 扁平工具条目：每个工具带上所属组（用于扁平视图展示归属与锁定态传递）
- *  同一工具可能出现在多个组（如 browser_observe 同属多个场景预设），
- *  扁平列表按工具去重（取首个所属组），避免重复 key 与重复行。 */
-interface ToolEntry {
-  toolId: string;
-  groupId: ToolScenario;
-  groupNameKey: MessageKey;
-  locked: boolean;
-}
-
-const allToolEntries = computed<ToolEntry[]>(() => {
-  const entries: ToolEntry[] = [];
-  const seen = new Set<string>();
-  for (const group of toolGroups) {
-    for (const toolId of groupToolSets.get(group.id) ?? []) {
-      if (seen.has(toolId)) continue;
-      seen.add(toolId);
-      entries.push({
-        toolId,
-        groupId: group.id,
-        groupNameKey: group.nameKey,
-        locked: isGroupLocked(group.id),
-      });
-    }
-  }
-  return entries;
-});
-
 const groupQuery = ref('');
+/** 工具组过滤：按组名与描述匹配（组清单固定，搜索只做展示层过滤） */
 const filteredToolGroups = computed(() => {
   const query = groupQuery.value.trim().toLowerCase();
   if (!query) return toolGroups;
@@ -817,17 +724,6 @@ const filteredToolGroups = computed(() => {
     group =>
       t(group.nameKey).toLowerCase().includes(query) ||
       t(group.descKey).toLowerCase().includes(query),
-  );
-});
-
-/** 扁平视图的过滤：按工具 id 或所属组名匹配 */
-const filteredToolEntries = computed(() => {
-  const query = groupQuery.value.trim().toLowerCase();
-  if (!query) return allToolEntries.value;
-  return allToolEntries.value.filter(
-    entry =>
-      entry.toolId.toLowerCase().includes(query) ||
-      t(entry.groupNameKey).toLowerCase().includes(query),
   );
 });
 
@@ -1016,7 +912,8 @@ const form = reactive({
  * 工具选择的唯一事实源：扁平的已选工具 id 列表。
  * 直接对应 AgentConfig.tools —— 保存原样落库、编辑原样回填，
  * 「只选组内一部分工具」的往返不丢失（旧的组派生模型会把部分选降级成散装工具）。
- * 组复选框是它的批量入口（全选 / 取消全选，三态），组内每个工具各有独立复选框。
+ * 组复选框是唯一勾选入口（全选 / 取消全选，三态）：存量部分选原样保留，
+ * 组内工具芯片只读展示选中态、不提供逐个勾选。
  */
 const selectedToolIds = ref<string[]>([]);
 
@@ -1108,7 +1005,7 @@ const missingSkillRefs = computed(() => form.skills.filter(ref => !skills.value.
 const selectedToolCount = computed(() => selectedToolIds.value.length);
 
 /** 组勾选状态（三态）：all=组内全部已选、some=部分选、none=全未选 */
-function groupSelectionState(groupId: ToolScenario): 'none' | 'some' | 'all' {
+function groupSelectionState(groupId: string): 'none' | 'some' | 'all' {
   const tools = groupToolSets.get(groupId) ?? [];
   if (!tools.length) return 'none';
   let count = 0;
@@ -1174,7 +1071,6 @@ function resetForm(): void {
   // 外部插件工具与关联技能默认收起（多数智能体不涉及，先让出空间给工具组）
   collapsedSections.external = true;
   collapsedSections.skills = true;
-  toolView.value = 'tools';
   activeHelpPop.value = null;
 }
 
@@ -1253,8 +1149,12 @@ function cancelEdit(): void {
   resetForm();
 }
 
-/** 勾选/取消工具组；勾选前校验并集工具数不超过上限（取消不受限）；锁定的组不可操作 */
-function toggleGroup(groupId: ToolScenario): void {
+/**
+ * 勾选/取消工具组（唯一勾选入口：整组全选 / 整组取消）。
+ * 勾选前校验并集工具数不超过上限（取消不受限）；锁定的组不可操作。
+ * 存量部分选（三态 some）点击后补齐为全选，再次点击整组取消。
+ */
+function toggleGroup(groupId: string): void {
   if (isGroupLocked(groupId)) return;
   const tools = groupToolSets.get(groupId) ?? [];
   if (groupSelectionState(groupId) === 'all') {
@@ -1274,26 +1174,6 @@ function toggleGroup(groupId: ToolScenario): void {
   }
   showLimitHint.value = false;
   selectedToolIds.value = next;
-}
-
-/**
- * 组内单个工具的勾选 / 取消（逐个勾选）。
- * 与整组勾选共用同一份扁平已选集合，因此「只选组内一部分」会被原样保留，
- * 重新打开时仍是部分选状态（旧派生规则会把部分选降级成散装工具而丢失组信息）。
- */
-function toggleGroupTool(groupId: ToolScenario, toolId: string): void {
-  if (isGroupLocked(groupId)) return;
-  if (selectedToolIds.value.includes(toolId)) {
-    selectedToolIds.value = selectedToolIds.value.filter(id => id !== toolId);
-    showLimitHint.value = false;
-    return;
-  }
-  if (selectedToolIds.value.length + 1 > MAX_TOOLS_PER_AGENT) {
-    showLimitHint.value = true;
-    return;
-  }
-  showLimitHint.value = false;
-  selectedToolIds.value = [...selectedToolIds.value, toolId];
 }
 
 /** 工具是否已选（组内外统一口径） */
@@ -1354,7 +1234,10 @@ async function save(): Promise<void> {
 
   // 工具集合归一后落库（扁平事实源，组内部分选中也原样保留；
   // vision_gui 残留最后防线——正常路径回填时已剔除，此处防御未来新增入口）
-  const tools = sanitizeAgentTools(selectedToolIds.value);
+  let tools = sanitizeAgentTools(selectedToolIds.value);
+  // python_run 与环境就绪强绑定：环境未就绪时该组被锁定，保存时同步收敛，
+  // 避免环境中止/删除后仍把「不可用的工具」写进智能体记录（装配层亦会跳过它）
+  if (!pythonReady.value) tools = tools.filter(toolId => toolId !== 'python_run');
 
   // ID 生命周期：新建时由名称生成唯一 ASCII slug；编辑时恒等保留原 ID。
   // ID 被会话元信息（agentId）等处引用，改名不应让既有引用失配

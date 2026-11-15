@@ -1,3 +1,4 @@
+import { executeScriptBounded } from '../common/frame-read';
 /**
  * 浏览器工具基类
  * 继承自 BaseTool，并集成 BaseBrowserToolExecutor 的核心功能
@@ -75,7 +76,7 @@ export abstract class BaseBrowserTool extends BaseTool {
 
     // 注入脚本
     try {
-      await chrome.scripting.executeScript({
+      await executeScriptBounded({
         target: { tabId },
         files,
         injectImmediately,

@@ -18,11 +18,13 @@ import {
   invariant,
   persistedPackages,
   pluginKey,
+  publicHttpsProblem,
   validatePluginKey,
   type InstalledPlugin,
 } from './contracts';
 import { computeAvailability } from './dependencies';
 import { isPublicHostTool } from './host-tools';
+import { validateWorkflow } from './workflow';
 import { codeOfReason } from './operations';
 
 export interface ReconcileIssue {
@@ -41,15 +43,18 @@ function safeMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** `https://host` 形式的源，用于引用/执行地址匹配 */
+/**
+ * `https://host` 形式的源，用于引用/执行地址匹配。
+ *
+ * 与验包期的 manifest 网络声明复用同一策略（拒绝 localhost / 私有 IP /
+ * IP 字面量）：持久化记录可能被旧版本或外部工具篡改，启动对账不能比导入
+ * 期更宽松，否则 `https://localhost` 会重新进入 pluginOrigins。
+ */
 function networkOriginOf(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   try {
     const url = new URL(value);
-    return url.protocol === 'https:' &&
-      !url.username &&
-      !url.password &&
-      !url.hash
+    return publicHttpsProblem(url) === null && url.origin === value
       ? url.origin
       : null;
   } catch {
@@ -176,12 +181,7 @@ function packageProblems(
       continue;
     }
     for (const item of items) {
-      // 早期 1.2 记录可能没有把 path 复制进贡献对象，回退到 manifest 声明。
-      const declared = contributes?.[group];
-      const declaredPath = Array.isArray(declared)
-        ? declared.find((entry: any) => entry && entry.id === item?.id)?.path
-        : undefined;
-      const path = item?.path ?? declaredPath;
+      const path = item?.path;
       const label = typeof item?.id === 'string' ? item.id : '<missing>';
       if (
         typeof item?.id !== 'string' ||
@@ -222,6 +222,15 @@ function packageProblems(
         else if (executor.type === 'host-alias') {
           if (!isPublicHostTool(executor.target))
             problems.push(`HOST_TOOL_NOT_PUBLIC: ${String(executor.target)}`);
+          // 与运行时网关一致：公开工具也必须在本插件的 capabilities.hostTools 里声明
+          else if (!hostTools.includes(executor.target))
+            problems.push(`UNDECLARED_HOST_TOOL: ${executor.target}`);
+        } else if (executor.type === 'host-workflow') {
+          try {
+            validateWorkflow(plugin.manifest, item);
+          } catch (error) {
+            problems.push(safeMessage(error));
+          }
         } else if (executor.type === 'mcp') {
           const origin = networkOriginOf(executor.url);
           if (!origin)

@@ -112,4 +112,4 @@ tags: excel 表格 导出
 
 - 用户只说"导出"没给内容：先从当前对话/页面数据整理出表格再生成，不要生成空文件。
 - 数据来自批量抓取（results/ 结果文件或 dataRef 批次）：一律用 `create_from_data` 直接引用导出，禁止把数据行抄进参数；多个结果文件按序合成一个——可能重复时用 `data_ref_tool(action="dedupe", files=[...])` 拼接+去重一步完成（无重复时直接 `action="merge", files=[...]`，或不预先合并把路径列表直接放进 dataFiles）；信封包装的响应或「一格两表」的复合数据先 `data_ref_tool(action="project")` 投影为关系表（path 指向对象/数组，carry 携带父键列）。
-- 用户要求 CSV：本技能只做 xlsx；可先说明并生成 xlsx，或按用户坚持提供 Markdown 表格文本。
+- 用户要求 CSV：本技能只做 xlsx。数据已在工作区时（`results/*.csv` 或脚本写出的 csv），直接说明该文件即 CSV 并给出文件卡片；需要新建时用 `js_run` 写 `outputs/*.csv`（首行表头，标准库 csv 即可），或 `browser_extract_data(saveTo="outputs/xxx.csv")` 直接导出 DOM 抓取结果。不要用 Markdown 表格冒充 CSV 文件。

@@ -22,6 +22,7 @@ Firefox、不允许调试的页面、浏览器地址栏/菜单、操作系统对
 所有位置均为 `{x,y}`，x 从左至右、y 从上至下，独立归一化到 **0–1000**。
 原点为整张最新可见视口截图左上角，不是文档全文、元素内部、设备像素或裁剪图。
 例如中心为 `{x:500,y:500}`。输入允许小数；1000 边界会定位到最后一个 CSS 像素内部。
+从截图像素位置估算目标时必须先换算：`x = 像素列 / 图像宽 * 1000`、`y = 像素行 / 图像高 * 1000`——直接把像素值当 0..1000 坐标发出，在高度超过 1000px 的截图上会系统性下偏（曾把侧栏「存储和数据库」点成下一行的 Realtime）。
 映射：`cssX = x / 1000 * window.innerWidth`，y 使用 `window.innerHeight`。
 这里的视口**包含滚动条占用的区域**，与未裁剪 PNG 一致；不能用排除滚动条的 `cssVisualViewport.clientWidth/clientHeight` 代替。
 真实 Chromium 回归复现过：PNG 对应 1000×700 CSS 像素，但内容视口为 985×685，旧公式会使右下方目标出现约 14px 偏移。
@@ -39,7 +40,7 @@ Firefox、不允许调试的页面、浏览器地址栏/菜单、操作系统对
 ## 工具
 
 GUI 仅注册一个工具 `vision_gui`，共12个 action：click/drag/input/hover/keyboard/scroll/mark/inspect/zoom/check/read/read_scroll——原只读工具 `vision_read`/`vision_read_scroll` 已并入 read/read_scroll action，`vision_read_zoom` 由 zoom action 覆盖，`vision_read_wait` 已下线；`screenshot` 与 OCR 保持各自能力边界。
-调用使用同一个顶层对象：`vision_gui({action:"click", screenshotId, point:{x:500,y:500}})`，不嵌套 parameters。所有 GUI action 都需最新 screenshotId；每个 action 有独立封闭 schema 分支与运行时校验，未知字段、跨 action 参数、非有限数和互斥滚动模式在访问浏览器前拒绝。
+调用使用同一个顶层对象：`vision_gui({action:"click", screenshotId, point:{x:500,y:500}})`，不嵌套 parameters。所有 GUI action 都需最新 screenshotId；每个 action 有独立封闭 schema 分支与运行时校验，未知字段、跨 action 参数、非有限数和互斥滚动模式在访问浏览器前拒绝。顶层 schema 只声明全 action 通用字段（action/screenshotId/description/confirm），其余字段只出现在各自分支内——顶层不做分支字段并集，避免把 A 分支字段谎报成 B 分支的合法参数。`description`（意图说明，≤2000 字符）与 `confirm` 在全部 12 个 action 统一接受：手势类按审批策略处理 confirm，观察类（read/zoom/check/inspect/mark）接受但忽略（只读、永不暂停审批）。
 手势与mark/read_scroll触发新图；inspect/zoom/check/read保留源图。缩略图通过独立图片通道返回，不能冒充新视口截图。不可逆审批只适用于click/drag/input/keyboard/scroll，read_scroll 属阅读式滚动不进审批清单，保留confirm与意图关键词兜底。
 旧的10个工具与已下线的 vision_read* 均不再注册、没有执行别名；存量数据中的旧工具ID 由运行时「未注册工具告警」剔除（与拼错工具名同路径），不做兼容迁移。自定义agent与动态技能的 <vision-gui-tool> XML引导段由 prompt-hooks 按工具面自动注入一次（学习域自有分区照常防重）。智能体面携带 vision_gui 的唯一入口是管理中心的「视觉操作」开关（AgentConfig.vision）：工具组不提供勾选，装配时按开关注入/剔除 vision_gui（runtime-builder「视觉操作开关注入」），随后钩子检测工具面注入规程——开关注入工具 → 检测工具 → 注入规程三步以同一份归一工具面传递。
 工具设计参考：[减少选择歧义与明确工具契约](https://www.anthropic.com/engineering/writing-tools-for-agents)、[JSON Schema组合](https://json-schema.org/understanding-json-schema/reference/combining)。
@@ -56,7 +57,7 @@ GUI 仅注册一个工具 `vision_gui`，共12个 action：click/drag/input/hove
 | `vision_gui(action="mark")` | 请求**下一次自动截图**绘制元素框和数字，不直接截图、不点击 |
 | `vision_gui(action="inspect")` | `id`：检查该截图数字元素的 CSS/XPath、frameId、shadow scope、属性、文字、状态、选项和祖先信息 |
 | `vision_gui(action="zoom")` | `region` 原图范围，`scale:1..4`（默认2），返回父截图绑定的 viewId 与局部图 |
-| `vision_gui(action="check")` | 可选 point/viewId、expect、timeoutMs:0..5000、stableMs:0..500，有界只读检查并可生成 guardId |
+| `vision_gui(action="check")` | 不带 point 即页面级条件核验（expect.urlIncludes/textIncludes）；带可选 point/viewId 时检查命中目标本身（nameIncludes/enabled/editable/checked/valueEquals 需要 point）。expect、`timeoutMs:0..5000`、`stableMs:0..500`，有界只读检查；稳定目标返回 guardId 供下一次同点手势按下前复核 |
 | `vision_gui(action="read")` | 可选 region/point（point 与 region 二选一，point 连同最多4层祖先），有界读取可见 DOM 文字与控件状态与覆盖度元数据；不返回输入值、不执行动作，保留源截图 |
 | `vision_gui(action="read_scroll")` | `direction`（必填）+ `containerPercent:1..100`（默认75，按**目标容器**尺寸；手势 scroll 的 `percent` 才是视口相对，两者不可混用），可选 point 定向组件/同源 iframe；报告 before/after 真实位移与边界，到边界不改滚父容器；不发点击/滚轮事件，源图即刻消耗 |
 
@@ -71,6 +72,8 @@ GUI 仅注册一个工具 `vision_gui`，共12个 action：click/drag/input/hove
 ```
 
 渲染链路与 `<api-error>`/`<think>` 同构：markdown-it 解析前摘出标签、解析后回填成截图引用卡片，再由 `agent-image-renderer.ts` 按短 id 反查 object URL 注入图片本体；图片缺失（已回收 / id 不存在）时显示占位而不是破图。代码块里的同名标签是字面量，不还原。
+
+卡片只展示图片本体：短 id 是存储层凭据，不再在图片底部重复显示（画面说明移到图片的悬浮提示里，信息不丢）。点击图片在侧边栏内打开共享看图层遮罩（放大 / 缩小 / 在网页中打开 / 下载），短 id 继续作为下载文件名的一部分（`screenshot-<短id>.png`）。
 
 短 id 随备份一起保存与恢复（图片分区条目含 `shortId`），因此历史回答里的引用在备份还原后仍然有效。视觉助手（观察+指导）不参与该机制：它不代替用户操作，也不引用截图。
 
@@ -120,6 +123,8 @@ text 模式支持 Unicode，但不模拟输入法候选窗或 composition 流程
 
 失败结果保留 `success:false`、可读 `error`，并在 `data.diagnostic` 和文本内容中返回结构化诊断。
 `code` 区分参数错误、目标不可用、截图过期、几何变化、焦点变化、取消、超时、传输、打标及清理错误。
+参数类错误的 `error` 字符串内联列出该 action 允许的全部字段、被拒字段与一句话修复指引（`hint`）——模型只看 error 一行也能直接修正下一次调用；诊断 `details` 同时保留结构化 `allowedFields`/`fields`/`argIndex`。
+脚本注入失败经统一注入安全层分类（参数不可序列化、页面不可注入、frame 被移除、标签页消失、权限/受保护页面、注入函数页面内抛错、无结果帧），映射为对应错误码并附恢复建议；注入参数在发出前归一为纯 JSON 值（缺省传 null 而非 undefined），杜绝 Chrome 序列化拒绝。
 诊断包含 `action`、`screenshotId`/`correlationId`（适用时）、恢复建议与 `retryAutomatically:false`。
 交互中途失败的 details 还包含 `outcomeUncertain`、最后 CSS 坐标与 `progress`：已释放的点击数、已输入 UTF-16 长度、已发送的滚轮累计量、拖拽阶段。
 进度只表示已确认派发的浏览器事件，不宣称页面业务流程完成；超时中的最后一条命令是否生效可能未知。

@@ -51,12 +51,15 @@ function installSnapshot(next: PluginSnapshot, ids: Map<string, string>): void {
           description: t.description,
           category: 'external-plugins',
           version: p.manifest.version,
-          requiresApproval: true,
+          // 逐次审批由会话引擎按 approvalLevel + 会话授权缓存决定；
+          // 这里不再写死 requiresApproval，避免 session 级授权后仍被拦截。
+          approvalLevel: t.approval ?? 'session',
           plugin: {
             key: p.key,
             version: p.manifest.version,
             publisher: p.manifest.publisher.displayName,
             digest: p.digest,
+            epoch: p.epoch,
           },
         },
         openaiSchema: {
@@ -139,7 +142,7 @@ export function pluginToolCeiling(key?: string): string[] | undefined {
   );
   if (!owner) return [];
   // 与导入期边界一致：插件智能体只能使用已声明的公开宿主工具 + 本插件工具；
-  // 不再把依赖插件的工具并入上限，避免旧状态绕过 1.2 的引用限制。
+  // 不把依赖插件的工具并入上限，避免持久化状态绕过引用边界。
   return [
     ...owner.manifest.capabilities.hostTools
       .filter(isPublicHostTool)

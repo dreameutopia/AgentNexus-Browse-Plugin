@@ -16,9 +16,11 @@
  *   4. 上传文件库（AgentNexusFileDB）：会话注册的全部文件整会话回收
  *      （文件解析出的正文即文件记录的 text 字段，随文件一并消失）；
  *   5. 学习交接件（learn-draft-store）：会话作为来源产出的技能草稿交接件
- *      置为「已丢弃」，否则删除的会话仍会向管理中心投递成果；
- *   6. 活跃会话指针（chrome.storage.session）：指针指向被删会话时清空，
- *      否则下次打开侧边栏会试图恢复一个已不存在的会话；
+ *      **连同正文与编辑副本彻底删除**——只把状态翻成 discarded 会让
+ *      无主正文永久留在 chrome.storage.local；
+ *   6. 会话级运行态（chrome.storage.session）：活跃会话指针指向被删会话时
+ *      清空（否则下次打开侧边栏会试图恢复一个已不存在的会话）；侧边栏本地
+ *      运行登记中的本会话条目一并剔除（覆盖面板崩溃 / 收尾失败留下的陈旧项）；
  *   7. 运行中会话：先中止在跑的对话（否则运行会话删除后继续写入，
  *      产生孤儿图片与被丢弃的快照）；
  *   8. 孤儿回收（sweepOrphanImages）：覆盖「图片已入库但消息落库失败 /
@@ -29,20 +31,20 @@
  *   - data-ref 暂存（utils/data-ref-store）：全局暂存板，当前无会话维度；
  *   - 技能 / 智能体 / 用量统计 / Python 包缓存：全局资源，与会话无关。
  *
- * 顺序即正确性：先中止运行 → 采集引用 → 删除转录 → 清计划 → 清上传文件 →
- * 清学习交接件 → 清活跃指针 → 按引用回收图片。每步独立容错（单步失败只告警
- * 并继续），最终以结果值汇总——删除会话这个用户意图必须尽量完成，残留在
- * 后续 sweep 中兜底。
+ * 顺序即正确性：先中止运行 → 清本地运行登记 → 采集引用 → 删除转录 →
+ * 清计划 → 清上传文件 → 清学习交接件 → 清活跃指针 → 按引用回收图片。
+ * 每步独立容错（单步失败只告警并继续），最终以结果值汇总——删除会话这个
+ * 用户意图必须尽量完成，残留在后续 sweep 中兜底。
  */
 
 import { backgroundConversation } from '../conversation/runtime-client';
+import { ACTIVE_CHAT_KEY } from '../conversation/runtime-protocol';
 import { transcriptEngine } from './transcript-engine';
 import { chatDatabase } from './chat-database';
 import { imageStore, isImageRef } from '../images/image-store';
 import { dropPlan } from '@/utils/plan/plan-store';
-import { conversationFileStore } from '@/utils/conversation-files/file-store';
-import { clearLearnDraft, listLearnDrafts } from '@/utils/learn/learn-draft-store';
-import { readSidepanelLocalRunningChats } from '@/utils/sessions/session-bridge';
+import { purgeLearnDraftsBySource } from '@/utils/learn/learn-draft-store';
+import { readSidepanelLocalRunningChats, setLocalRunningChat } from '@/utils/sessions/session-bridge';
 
 /** 删除结果汇总（供调用方展示与埋点） */
 export interface SessionDeleteResult {
@@ -50,12 +52,14 @@ export interface SessionDeleteResult {
   transcriptDeleted: boolean;
   /** 按引用判定回收的图片数 */
   imagesDeleted: number;
-  /** 整会话回收的上传文件数（AgentNexusFileDB） */
+  /** 整会话回收的工作区文件数（用户上传文件与工具产物均在工作区内） */
   filesDeleted: number;
-  /** 置为「已丢弃」的学习交接件数 */
-  learnDraftsDiscarded: number;
+  /** 彻底删除的学习交接件数（含正文与编辑副本） */
+  learnDraftsPurged: number;
   /** 是否清掉了指向本会话的活跃会话指针 */
   activePointerCleared: boolean;
+  /** 是否剔除了侧边栏本地运行登记中的本会话（陈旧条目兜底） */
+  localRunRegistryCleared: boolean;
   /** 是否中止了正在运行的会话 */
   runAborted: boolean;
   /** 各步骤的非致命失败原因（只告警，不阻断） */
@@ -64,9 +68,6 @@ export interface SessionDeleteResult {
 
 /** 孤儿回收的创建宽限期：在途图片（刚入库、消息尚未落库）不在回收范围 */
 const SWEEP_GRACE_MS = 2 * 60 * 1000;
-
-/** 活跃会话指针键（chrome.storage.session；与 sidepanel/core/conversation/active-session 同源） */
-const ACTIVE_CHAT_KEY = 'sidepanel.activeChatId';
 
 /**
  * 本地引擎（学习 / 验证类运行的持有者）的最小接口。
@@ -80,12 +81,17 @@ interface LocalConversationEngine {
 class SessionDeletionEngine {
   /**
    * 删除会话及其全部关联回收（转录 / 图片 / 计划 / 上传文件 / 学习交接件 /
-   * 活跃指针 / 运行中止 / 孤儿兜底）。
+   * 活跃指针 / 本地运行登记 / 运行中止 / 孤儿兜底）。
    *
    * 不抛错于预期内的单步失败（记入 issues 继续），仅转录删除本身失败时上抛
    * （那是用户意图的主体，失败必须让调用方感知）。
    */
   async deleteSession(chatId: string): Promise<SessionDeleteResult> {
+    // 边界校验：空标识会让后续每一步都作用在「不存在的会话」上，
+    // 其中计划墓碑 / 活跃指针清理还可能误伤空键记录——在入口直接拒绝。
+    if (typeof chatId !== 'string' || !chatId.trim()) {
+      throw new Error('删除会话失败：缺少有效的会话标识');
+    }
     const issues: string[] = [];
 
     // 1) 中止运行中的对话（幂等：无运行时为 no-op）
@@ -97,12 +103,32 @@ class SessionDeletionEngine {
       issues.push(`中止运行失败: ${this.describe(error)}`);
     }
 
+    // 1.5) 剔除本地运行登记中的陈旧条目（面板崩溃 / 收尾失败会留下它，
+    // 不清理会让管理中心把已删会话当成「运行中」而永久拒绝对它的后续操作）。
+    // 必须在中止之后执行：中止判定依赖这份清单来触发本地引擎加载。
+    let localRunRegistryCleared = false;
+    try {
+      localRunRegistryCleared = await this.clearLocalRunRegistry(chatId);
+    } catch (error) {
+      issues.push(`清理本地运行登记失败: ${this.describe(error)}`);
+    }
+
     // 2) 删除前采集本会话引用过的图片（删除后这些引用将不复存在）
     let candidateRefs: string[] = [];
     try {
       candidateRefs = await chatDatabase.getImageRefsOfChat(chatId);
     } catch (error) {
       issues.push(`采集图片引用失败: ${this.describe(error)}`);
+    }
+
+    // 2.5) 删除前采集工作区条目数（上传文件与工具产物都在工作区里；
+    // 工作区随会话在同一事务中删除，此处只用于回报回收规模）
+    let workspaceFileCount = 0;
+    try {
+      const snapshot = await chatDatabase.readWorkspace(chatId);
+      workspaceFileCount = (snapshot?.entries ?? []).filter(entry => !!entry.blob || !!entry.link).length;
+    } catch (error) {
+      issues.push(`采集工作区文件失败: ${this.describe(error)}`);
     }
 
     // 3) 转录级联删除（会话 + 消息 + 工作区，同一事务）——用户意图主体，失败上抛
@@ -115,19 +141,15 @@ class SessionDeletionEngine {
       issues.push(`清理任务计划失败: ${this.describe(error)}`);
     }
 
-    // 4.5) 上传文件清理（会话文件库按会话隔离，整会话直接回收）
-    let filesDeleted = 0;
-    try {
-      filesDeleted = await conversationFileStore.deleteByChat(chatId);
-    } catch (error) {
-      issues.push(`清理上传文件失败: ${this.describe(error)}`);
-    }
+    // 4.5) 上传文件已随会话工作区一并回收（见步骤 2.5 / 3）——此处不再
+    // 有独立的文件库需要清理，filesDeleted 汇报工作区回收的文件数
+    const filesDeleted = workspaceFileCount;
 
-    // 4.6) 学习交接件清理：会话作为来源产出的技能草稿交接件置为「已丢弃」，
-    // 否则删除会话后管理中心仍会收到一份没有载体会话的成果。
-    let learnDraftsDiscarded = 0;
+    // 4.6) 学习交接件清理：彻底删除来源为本会话的技能草稿交接件（含正文与
+    // 编辑副本）。只置「已丢弃」会让无主正文永久留在 chrome.storage.local。
+    let learnDraftsPurged = 0;
     try {
-      learnDraftsDiscarded = await this.discardLearnDrafts(chatId);
+      learnDraftsPurged = await purgeLearnDraftsBySource(chatId);
     } catch (error) {
       issues.push(`清理学习交接件失败: ${this.describe(error)}`);
     }
@@ -163,8 +185,9 @@ class SessionDeletionEngine {
       transcriptDeleted: true,
       imagesDeleted,
       filesDeleted,
-      learnDraftsDiscarded,
+      learnDraftsPurged,
       activePointerCleared,
+      localRunRegistryCleared,
       runAborted,
       issues,
     };
@@ -209,18 +232,19 @@ class SessionDeletionEngine {
   }
 
   /**
-   * 置为「已丢弃」的学习交接件数量。
+   * 剔除侧边栏本地运行登记中的本会话条目（陈旧条目兜底）。
    *
-   * clearLearnDraft 只翻转状态而非删除键（交接件的 id 由草稿内容派生，
-   * 无法按会话 id 直接定位到存储键），因此这里返回的是**本次实际翻转的条数**
-   * ——由引擎自行列举后逐条计数。
+   * 正常收尾由运行结束时的 setLocalRunningChat(chatId, false) 完成；但面板
+   * 崩溃 / 收尾失败会留下一条永不清除的登记，让管理中心把已删会话当成
+   * 「运行中」而拒绝后续操作。这里在删除时强制清一次，并**回读确认**——
+   * setLocalRunningChat 内部吞错，不能仅凭调用成功就认为已清掉。
    */
-  private async discardLearnDrafts(chatId: string): Promise<number> {
-    const result = await listLearnDrafts(true);
-    if (!result.ok) throw new Error(result.error);
-    const matched = result.transfers.filter(item => item.sourceChatId === chatId);
-    await clearLearnDraft(chatId);
-    return matched.length;
+  private async clearLocalRunRegistry(chatId: string): Promise<boolean> {
+    if (typeof chrome === 'undefined' || !chrome.storage?.session) return false;
+    const registered = await readSidepanelLocalRunningChats();
+    if (!registered.includes(chatId)) return false;
+    await setLocalRunningChat(chatId, false);
+    return !(await readSidepanelLocalRunningChats()).includes(chatId);
   }
 
   /**

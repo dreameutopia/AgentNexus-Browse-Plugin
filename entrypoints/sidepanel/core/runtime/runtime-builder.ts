@@ -1,4 +1,8 @@
 import { restoreAgentSkillLinks } from '@/utils/agents/agent-skill-links';
+import {
+  isPythonToolLinked,
+  restoreAgentPythonToolLinks,
+} from '@/utils/agents/agent-python-links';
 import { SKILL_SYSTEM_PROMPT_SECTION } from '@/tools/skill/skill-prompt';
 import { pluginBindings, pluginToolCeiling } from '@/utils/plugins/catalog';
 import { isPluginRef, ownerOf } from '@/utils/plugins/contracts';
@@ -34,11 +38,15 @@ import { imageStore, normalizeImageRefs } from '../images/image-store';
 import { INTERACT_SYSTEM_PROMPT_SECTION } from '@/tools/interact/interact-prompt';
 import { PLAN_SYSTEM_PROMPT_SECTION } from '@/tools/plan/plan-prompt';
 import { NOTE_SYSTEM_PROMPT_SECTION } from '@/tools/note/note-prompt';
-import { UPLOAD_FILE_SYSTEM_PROMPT_SECTION } from '@/tools/upload-file/upload-file-prompt';
+import { FILE_UTIL_SYSTEM_PROMPT_SECTION } from '@/tools/file-util/file-util-prompt';
 import { JS_SYSTEM_PROMPT_SECTION } from '@/tools/javascript/js-prompt';
-import { BACKEND_PAGE_EXEC_TOOL_ID } from '@/tools/javascript/js-contract';
+import { PYTHON_SYSTEM_PROMPT_SECTION, PYTHON_RUN_TOOL_ID } from '@/tools/python/python-prompt';
+import { BACKEND_PAGE_EXEC_TOOL_ID, JS_RUN_TOOL_ID } from '@/tools/javascript/js-contract';
 import { WORKSPACE_SYSTEM_PROMPT_SECTION } from '@/utils/python-workspace/workspace-prompt';
-import { CORE_SESSION_TOOL_IDS } from '@/utils/tools/tool-presets';
+import {
+  CORE_SESSION_TOOL_IDS,
+  PLUGIN_SAFE_CORE_TOOL_IDS,
+} from '@/utils/tools/tool-presets';
 import { VISION_GUI_TOOL_ID } from '@/tools/vision/gui-contract';
 import { isVisionAssistantTool } from '@/utils/agents/vision-assistant-policy';
 import { collectPromptInjections } from './prompt-hooks';
@@ -53,6 +61,8 @@ import type {
   VisionRuntimeConfig,
 } from '../types';
 import type { ChatMessage } from '../../utils/ai/ai-chat-api';
+import type { UploadedFileEntry } from '@/utils/upload-files/upload-file-manifest';
+import type { SkillPartEntry } from '../../types/chat';
 
 export interface RuntimeBuildInput {
   chatId: string;
@@ -62,6 +72,14 @@ export interface RuntimeBuildInput {
   userImages?: string[];
   /** 附件文本块（已格式化；拼入 LLM 用户消息，不落转录，空串 = 无附件） */
   attachmentPrompt?: string;
+  /**
+   * 本轮上传文件清单（工作区相对路径 + 大小 + 图片下标）。
+   *
+   * 装配层只交**元信息**：正文一律由模型按需调用 file_util 读取。
+   * 该清单随用户消息落库（消息气泡据此渲染「文件元素」），图片条目另带
+   * imageIndex 供引擎回填图片库引用（放大查看 / 下载用）。
+   */
+  uploadedFiles?: UploadedFileEntry[];
   /**
    * 网页引用（原文 + 来源页面）。
    *
@@ -127,16 +145,28 @@ export interface RuntimeBuildInput {
   contextSummaryAt?: number;
 }
 
-/** 对话循环限制的固定部分（轮次上限与连续失败阈值来自应用设置，见 build 内读取） */
+/**
+ * 对话循环限制的固定部分（轮次上限与连续失败阈值来自应用设置，见 build 内读取）
+ *
+ * **maxDurationMs 缺省**：普通对话不设会话运行时长上限。旧实现的 10 分钟
+ * 上限会把长耗时任务（数据采集、Python 计算、页面等待）截断成「工具未执行」，
+ * 而这类任务本就该由「单工具超时」与「轮次上限」兜底。学习/验证等长任务
+ * 经 limitsOverride 显式给出时长预算（见 learn-types 的 LEARN_LIMITS）。
+ */
 const DEFAULT_LIMITS: RuntimeLimits = {
   maxIterations: MAX_ITERATIONS_DEFAULT,
-  maxDurationMs: 10 * 60 * 1000,
   // 单工具最长执行时间的**兜底**值（真实值取应用设置「单工具最长执行时间」，
-  // 默认 30 分钟）。此处不再是 2 分钟——那个值只反映旧实现里「工具超时」与
+  // 默认 20 分钟）。此处不再是 2 分钟——那个值只反映旧实现里「工具超时」与
   // 「用户交互超时」被混为一谈的年代。
   toolTimeoutMs: TOOL_TIMEOUT_DEFAULT_MINUTES * 60_000,
   maxConsecutiveFailedToolRounds: FAILED_TOOL_ROUNDS_DEFAULT,
 };
+
+/**
+ * 核心工具缺口告警去重：装配每轮都会执行，安装损坏时不应把同一份缺口
+ * 刷满日志。只有缺口集合变化（修复或出现新缺口）时才重新告警一次。
+ */
+let lastReportedMissingCoreTools: string | null = null;
 
 /**
  * 工具集交付前终态归一化（runtime 交付的最后防线）。
@@ -237,10 +267,14 @@ class RuntimeBuilder {
     }
     await skillEngine.restore();
     await restoreAgentSkillLinks();
+    await restoreAgentPythonToolLinks();
     // 单次解析：agent 本体 + 去重工具列表（避免 get/resolve 双重查找造成的不一致窗口）
     const { agent, toolIds: resolvedAgentToolIds } = agentEngine.resolve(input.agentName);
     const pluginCeiling = pluginToolCeiling(agent?.plugin?.key);
-    const allowedByPlugin = (id: string) => !pluginCeiling || pluginCeiling.includes(id) || CORE_SESSION_TOOL_IDS.includes(id) || id === SKILL_TOOL_ID;
+    const allowedByPlugin = (id: string) =>
+      !pluginCeiling ||
+      pluginCeiling.includes(id) ||
+      PLUGIN_SAFE_CORE_TOOL_IDS.includes(id);
     const isVisionGuide = agent?.id === 'Vision-Assistant';
     if (input.agentName && !agent) {
       throw new Error(`智能体 "${input.agentName}" 不存在`);
@@ -255,8 +289,8 @@ class RuntimeBuilder {
 
     // ── 视觉操作开关注入（注入时序第 1 步：开关 → 工具面 → 提示词钩子）──
     // hub 编辑器「视觉操作」开关 = AgentConfig.vision 声明，它是智能体工具面
-    // 携带 vision_gui 的**唯一**入口（工具组不提供勾选，见 tool-presets 的
-    // VISION_TOOLS_GROUP）。归一规则与分层见 applyVisionToggleToolSurface：
+    // 携带 vision_gui 的**唯一**入口（工具组固定清单从不登记 vision_gui，
+    // 见 AgentManager 的 toolGroups）。归一规则与分层见 applyVisionToggleToolSurface：
     // 数据层（normalizeAgentConfig）已剔除自定义记录的残留，此处是装配边界
     // 兜底并完成「开关开启 → 注入」；归一后「vision_gui ∈ 智能体声明工具面
     // ⇔ 开关开启」恒成立，下游 sessionToolIds（技能可用性 + 提示词钩子检测）
@@ -264,14 +298,28 @@ class RuntimeBuilder {
     // 规程（见下方 collectPromptInjections）。注入不受 normalizeToolIds 上限
     // 约束（与无条件注入的核心工具同级：开关能力不算用户勾选配额）。
     const visionDeclared = !!agent?.vision;
-    const { toolIds: agentToolIds, strippedResidue } = applyVisionToggleToolSurface(
+    const normalizedVisionTools = applyVisionToggleToolSurface(
       resolvedAgentToolIds,
       visionDeclared,
     );
+    const strippedResidue = normalizedVisionTools.strippedResidue;
+    let agentToolIds = normalizedVisionTools.toolIds;
     if (strippedResidue) {
       console.warn(
         `[RuntimeBuilder] 智能体 "${agent?.name ?? input.agentName ?? '(无智能体)'}" 未开启视觉操作，已剔除其工具面中的 vision_gui 残留（该工具仅经「视觉操作」开关注入；自定义记录的数据层归一见 normalizeAgentConfig）`,
       );
+    }
+
+    // ── 预置智能体的 python_run 注入（管理中心「Python 环境」页面配置）──
+    // 预置智能体不可编辑，工具面来自冻结的预置表，注入关联是它们获得
+    // python_run 的唯一入口（见 utils/agents/agent-python-links）。
+    // 只有环境已核验就绪时才注入；未就绪时既不注入、也不报错——
+    // 与下方 allowsSessionTool 的 python_run 校验构成同一不变量：
+    // 「python_run 进入会话工具面 ⇒ Python 环境就绪」。
+    // 自定义 / 导入 / 插件智能体不走本分支：它们的 python_run 来自工具组勾选，
+    // 存量引用由 allowsSessionTool 在装配边界统一剔除。
+    if (pythonReady && agent && agentEngine.isPreset(agent.id) && isPythonToolLinked(agent.id)) {
+      agentToolIds = [...new Set([...agentToolIds, 'python_run'])];
     }
 
     // ── 可用技能（三通道并经承载校验：显式关联 ∪ 工具映射兜底 ∪ 自定义自适应；
@@ -288,15 +336,50 @@ class RuntimeBuilder {
       ...agentToolIds,
       ...(input.extraToolIds ?? []),
     ].filter(allowsSessionTool);
+    // ── 能力自检：核心工具缺失时不得继续向模型宣称这些能力可用 ──
+    // 核心工具 ID 是「无条件注入」的声明面，注册表才是真实交付面。两者不一致
+    // （版本漂移/安装损坏/构建产物过期）时，旧实现只是静默少工具，模型仍会按
+    // 提示词反复调用不存在的工具并空转整轮——这里把缺口显式交给模型与日志。
+    const registeredToolNames = new Set(toolRegistry.getAllTools().map((tool) => tool.name));
+    const unavailableCoreToolIds = CORE_SESSION_TOOL_IDS.filter(
+      (id) => !registeredToolNames.has(id) && allowsSessionTool(id),
+    );
+    const missingCoreSignature = unavailableCoreToolIds.join(',');
+    if (missingCoreSignature && missingCoreSignature !== lastReportedMissingCoreTools) {
+      lastReportedMissingCoreTools = missingCoreSignature;
+      console.error(
+        `[RuntimeBuilder] 核心工具未注册，本轮能力降级：${missingCoreSignature}。` +
+          '请核对扩展版本与构建产物（同一版本号不代表同一构建），必要时重新加载扩展。',
+      );
+    } else if (!missingCoreSignature) {
+      lastReportedMissingCoreTools = null;
+    }
+    const jsToolAvailable =
+      registeredToolNames.has(JS_RUN_TOOL_ID) && allowsSessionTool(JS_RUN_TOOL_ID);
     const globalSkills = skillEngine.list().filter(skill => ['4', '5'].includes(skill.id));
     const availableSkills = input.disableSkillDiscovery
       ? globalSkills
       : skillEngine.resolveAvailableSkills(agent, sessionToolIds)
         .filter(skill => skill.allowedTools.every(allowsSkillDependency));
-    const selectedSkillNames = input.disableSkillDiscovery ? [] : input.skillNames.filter(ref => {
-      const skill = skillEngine.get(ref);
-      return skill?.enabled && skill.allowedTools.every(allowsSkillDependency);
-    });
+    // 预选技能快照（id + 加载时刻名称）：随用户消息落库，供气泡展示
+    // 本轮实际使用了哪些技能；与激活轮同源，但用户体验面不依赖运行期状态。
+    // 归一化在此一次收敛：仅保留可用技能、按 id 去重保序、名称去空白并回落 id——
+    // 快照会被直接渲染（气泡顶部的技能清单），不能让重复项或空名称漏到展示层。
+    const selectedSkillNames: string[] = [];
+    const selectedSkills: SkillPartEntry[] = [];
+    if (!input.disableSkillDiscovery) {
+      const seenSkillIds = new Set<string>();
+      for (const ref of input.skillNames) {
+        if (typeof ref !== 'string') continue;
+        const skill = skillEngine.get(ref.trim());
+        if (!skill?.enabled || !skill.allowedTools.every(allowsSkillDependency)) continue;
+        if (seenSkillIds.has(skill.id)) continue;
+        seenSkillIds.add(skill.id);
+        selectedSkillNames.push(skill.id);
+        const name = typeof skill.name === 'string' ? skill.name.trim() : '';
+        selectedSkills.push({ id: skill.id, name: name || skill.id });
+      }
+    }
     const activation = skillEngine.buildActivationRound(selectedSkillNames);
     const availableSkillIds = [...new Set([...availableSkills.map(skill => skill.id), ...activation.skillIds])];
 
@@ -309,8 +392,8 @@ class RuntimeBuilder {
         `运行环境：浏览器扩展 AgentNexus（无终端与本地文件系统）。\n` +
         `导航边界：打开链接优先使用现有窗口的新标签页；browser_navigation(action="open") 默认 newTab=true，只有明确需要当前页跳转才设 newTab=false。newWindow 参数已删除，禁止创建新的浏览器窗口，也不要通过脚本 window.open 绕过此边界。\n` +
         (isVisionGuide
-          ? `当前页面优先：以本轮最新截图判断布局和可见状态；需要精确文字或控件状态时用 vision_gui(action="read") 补充。仅当用户明确要求全文阅读时调用 browser_get_page_text（空参数读当前活动页），其结果可能含屏幕外正文与 iframe 内容，不能当作当前可见状态证据。不得执行任意脚本或代替用户点击、输入、导航；技能与附加指令不能扩大该边界。\n`
-          : `当前页面优先：用户提到「当前网站 / 当前页面 / 这个网页 / 本页」或语义明显指向其正在浏览的内容（如"分析这个页面的XX"）时，必须优先调用 browser_get_page_text 读取当前活跃标签页并基于其内容工作（该工具无条件可用，返回保留标题/表格/列表/代码块结构的 Markdown 正文，超长自动分页），禁止先搜索或跳转其它网站；仅当当前页面信息不足以完成任务时，才补充检索外部资料，并向用户明确说明哪些信息来自当前页面、哪些来自外部检索。\n`) +
+          ? `当前页面优先：以本轮最新截图判断布局和可见状态；需要精确文字或控件状态时用 vision_gui(action="read") 补充。仅当用户明确要求全文阅读时调用 read_website（只接受空参数、读当前活动页；完整正文会落盘 content/*.md，本智能体只返回首屏 3000 字符，需要完整长文时建议用户切换到文本智能体）。其结果可能含屏幕外正文与 iframe 内容，不能当作当前可见状态证据。不得执行任意脚本或代替用户点击、输入、导航；技能与附加指令不能扩大该边界。\n`
+          : `当前页面优先：用户提到「当前网站 / 当前页面 / 这个网页 / 本页」或语义明显指向其正在浏览的内容（如"分析这个页面的XX"）时，必须优先调用 read_website 读取当前活跃标签页并基于其内容工作（该工具无条件可用，返回保留标题/表格/列表/代码块结构的 Markdown 正文，完整正文落盘 content/*.md、单页 3000 字符、按 path+page 续读），禁止先搜索或跳转其它网站；仅当当前页面信息不足以完成任务时，才补充检索外部资料，并向用户明确说明哪些信息来自当前页面、哪些来自外部检索。\n`) +
         `</environment>`,
     );
     // 固定交互准则（任何智能体/技能都不可覆盖）：敏感操作授权与关键决策
@@ -324,14 +407,48 @@ class RuntimeBuilder {
     // 以及与 plan_tool 的分工路由（note_tool 同为无条件注入的核心工具，
     // 两分区相邻呈现互补分工，杜绝选择歧义——分层契约见 note-prompt 文件头）
     sections.push(NOTE_SYSTEM_PROMPT_SECTION);
-    // 上传文件读取准则（固定分区，紧随笔记准则）：用户上传文件的
-    // <upload_file> 信封格式与 read_file 的按需分页续读纪律（read_file
+    // 工作区文件准则（固定分区，紧随笔记准则）：用户上传文件的
+    // <upload_file> 清单格式与 file_util 的按需读取/写入纪律（file_util
     // 同为无条件注入的核心工具；何时读页的决策协议唯一权威在
-    // upload-file-prompt，信封与工具描述只携带摘要句）
-    sections.push(UPLOAD_FILE_SYSTEM_PROMPT_SECTION);
+    // file-util-prompt，清单与工具描述只携带摘要句）
+    sections.push(FILE_UTIL_SYSTEM_PROMPT_SECTION);
     sections.push(WORKSPACE_SYSTEM_PROMPT_SECTION);
     sections.push(SKILL_SYSTEM_PROMPT_SECTION);
-    sections.push(JS_SYSTEM_PROMPT_SECTION);
+    // JS 规程只在 js_run 真实注册时注入：提示词与工具面不一致会让模型
+    // 按规程调用一个不存在的工具（见上方能力自检）
+    if (jsToolAvailable) sections.push(JS_SYSTEM_PROMPT_SECTION);
+    // Python 规程同理：只在 python_run 真实进入本轮工具面时注入。
+    // 判定用最终工具面（sessionToolIds ∪ 技能携带工具）——规程必须与
+    // 工具面严格一致，否则模型会照规程去调用一个本轮拿不到的工具。
+    const pythonToolAvailable =
+      registeredToolNames.has(PYTHON_RUN_TOOL_ID) &&
+      [...new Set([
+        ...sessionToolIds,
+        ...activation.toolIds,
+        ...availableSkills.flatMap(skill => skill.allowedTools),
+      ])].some(id => id === PYTHON_RUN_TOOL_ID && allowsSessionTool(id));
+    if (pythonToolAvailable) sections.push(PYTHON_SYSTEM_PROMPT_SECTION);
+    // 缺失核心工具时的降级说明：明确「不可调用 + 替代路径 + 何时该停下问用户」，
+    // 避免模型用不存在的工具空转，或谎称已完成对应操作
+    if (unavailableCoreToolIds.length > 0) {
+      const fallback: string[] = [];
+      if (unavailableCoreToolIds.includes(JS_RUN_TOOL_ID)) {
+        fallback.push(
+          'js_run 不可用：页面数据抓取改用 browser_extract_data（table/list 模式，超过 20 行自动落盘 results/），控件操作改用 browser_observe + browser_interact，签名接口数据用 browser_network_capture，数据治理用 data_ref_tool。',
+        );
+      }
+      if (unavailableCoreToolIds.includes('python_run')) {
+        fallback.push('python_run 不可用：计算与文件整形改用 js_run 或数据工具（data_ref_tool / xlsx_tool）。');
+      }
+      sections.push(
+        `<capability-limits>\n` +
+          `本轮以下核心工具未注册、无法调用：${unavailableCoreToolIds.join('、')}。\n` +
+          `不得调用这些工具，也不得声称完成了它们对应的操作。\n` +
+          (fallback.length ? fallback.join('\n') + '\n' : '') +
+          `若用户目标必须依赖缺失能力，直接说明该能力在当前版本不可用，并建议更新或重新加载扩展后重试；不要用其它工具伪造结果。\n` +
+          `</capability-limits>`,
+      );
+    }
     // 富内容输出准则（固定分区，按智能体能力协商裁剪）：教模型在合适场景
     // 输出 ```component 信封 / 原生 DSL 围栏，由侧边栏可信渲染管线消费。
     // 分区正文由 rich-components/rich-output-prompt.ts 维护（能力清单来自
@@ -397,7 +514,7 @@ class RuntimeBuilder {
     const systemPrompt = sections.join('\n\n');
 
     // ── 工具合并（Set 去重保序；核心工具无条件置首，用户不可裁剪） ──
-    // 核心层 = interact 交互征询 + 页面正文读取（browser_get_page_text）+
+    // 核心层 = interact 交互征询 + 页面正文读取（read_website）+
     // 任务计划（plan_tool）+ 工作笔记（note_tool）：
     //   前者保证关键决策必须征询用户的基线；页面读取保证「读取用户正在看的
     //   页面」这一浏览器 Agent 的基础能力对任何智能体/场景恒定可用（编辑页
@@ -491,9 +608,23 @@ class RuntimeBuilder {
       availableSkillIds,
 
       pluginBindings: pluginBindings(),
-      ...(pluginCeiling ? { pluginToolCeiling: [...new Set([...pluginCeiling.filter(id => !isSkillToolId(id)), ...CORE_SESSION_TOOL_IDS, SKILL_TOOL_ID])] } : {}),
+      ...(pluginCeiling
+        ? {
+            pluginToolCeiling: [
+              ...new Set([
+                ...pluginCeiling.filter((id) => !isSkillToolId(id)),
+                ...PLUGIN_SAFE_CORE_TOOL_IDS,
+              ]),
+            ],
+          }
+        : {}),
       pluginOwners: [...new Set([agent?.id ?? '', ...input.skillNames].filter(isPluginRef).map(ownerOf))],
       agentId: agent?.id ?? '',
+      // 智能体名同样取解析结果：用户消息气泡据此展示「@的是哪个智能体」，
+      // 与 agentId 一同落库（id 优先生效，名称作为被删除后的可读兜底）
+      ...(agent ? { agentName: agent.name } : {}),
+      // 预选技能快照（单轮生效；渲染在用户消息顶部，每条消息独立可追溯）
+      ...(selectedSkills.length > 0 ? { selectedSkills } : {}),
       advertisedToolIds,
       systemPrompt,
       // 交付前终态归一化（上方已算好：去重保序 + 脏数据过滤 + 未注册 ID 剔除告警）
@@ -505,6 +636,7 @@ class RuntimeBuilder {
       userInput: input.userInput,
       userImages: input.userImages ? [...input.userImages] : [],
       attachmentPrompt: input.attachmentPrompt ?? '',
+      uploadedFiles: input.uploadedFiles ? input.uploadedFiles.map(file => ({ ...file })) : [],
       // 引用信封由装配层从引用数据派生（单一事实源：调用方只交数据，
       // 不交信封字符串——信封与落库数据因此永不脱节）
       pageQuotePrompt: input.pageQuote ? buildPageQuoteEnvelope(input.pageQuote) : '',

@@ -21,7 +21,7 @@ async function test(name: string, action: () => unknown) { await action(); conso
 const document = (name: string, body = 'Reusable workflow', description = 'Use for fixture operations at https://example.com/reports') => composeSkillDocument({ name, description }, body);
 const write = async (name: string, body?: string) => { const result = await setCustomSkill({ name, files: { 'SKILL.md': document(name, body) } }); assert.ok(result.ok, JSON.stringify(result)); return result.skill; };
 const chatId = 'skill-authoring-test';
-await chatDatabase.createSession({chatId,title:'Skills',createdAt:1,updatedAt:1,messageCount:0,lastMessagePreview:'',agentName:'default',skillNames:[]});
+await chatDatabase.createSession({chatId,title:'Skills',createdAt:1,updatedAt:1,messageCount:0,lastMessagePreview:'',agentName:'default'});
 const ctx = { chatId, agentId: 'default-agent-id', loadedSkillIds: ['4','5'] };
 const call = (args: unknown, context = ctx) => skillTool.execute(args, context);
 await test('built-ins use a protected explicit numeric mapping; guides always discoverable', async () => {

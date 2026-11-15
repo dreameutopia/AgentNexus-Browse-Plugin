@@ -143,7 +143,8 @@ export const sessionDeletionEngine = {
     fireChange('deleted');
     return {
       transcriptDeleted: true, imagesDeleted: 0, filesDeleted: 0,
-      learnDraftsDiscarded: 0, activePointerCleared: false, runAborted: false, issues: [],
+      learnDraftsPurged: 0, activePointerCleared: false, localRunRegistryCleared: false,
+      runAborted: false, issues: [],
     };
   },
 };
@@ -207,7 +208,6 @@ export const __hooks = {
       messageCount: 0,
       lastMessagePreview: '',
       agentName: '',
-      skillNames: [],
       ...partial,
     };
     state.sessions.push(session);

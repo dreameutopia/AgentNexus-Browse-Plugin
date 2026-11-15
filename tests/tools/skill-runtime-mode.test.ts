@@ -20,11 +20,19 @@ try {
   for(const id of ['4','5']) assert.ok(bare.availableSkillIds?.includes(id));
   assert.equal(bare.systemPrompt.split('<session-workspace>').length-1,1);
   assert.equal(bare.systemPrompt.split('<skill-lifecycle>').length-1,1);
+  // Python 规程分区必须与工具面一致：没有 python_run 时不得注入
+  // （否则模型会按规程去调用一个本轮拿不到的工具）
+  assert.equal(bare.systemPrompt.split('<python-scripting>').length-1,0,'无 python_run 时不注入 Python 规程分区');
   assert.equal(bare.activationContext[0]?.tool_calls?.length,2);
   const schema=openaiToolsConverter.getToolsByIds(['skill_tool'],bare)[0];
   assert.deepEqual(schema.function.parameters.properties.action.enum,['load','read','copy','create','edit','delete']);
   await updatePyodideEnvState({status:'ready'});
   const installed=await runtimeBuilder.build({...input,extraToolIds:['python_run']}); assert.ok(installed.toolIds.includes('python_run'));
+  // 工具面含 python_run 时必须注入 Python 规程分区（决策协议进系统提示词，
+  // 而非只塞进工具描述——描述会被读到但不生效）
+  assert.equal(installed.systemPrompt.split('<python-scripting>').length-1,1,'有 python_run 时注入 Python 规程分区');
+  assert.match(installed.systemPrompt,/先 action="create"[\s\S]*再 action="run"/,'规程写明先产出脚本再运行');
+  assert.match(installed.systemPrompt,/dependencyMode="pypi"/,'规程点明依赖解析参数');
   assert.deepEqual(openaiToolsConverter.getToolsByIds(['skill_tool'],installed)[0],schema);
   const learning=await runtimeBuilder.build({...input,disableSkillDiscovery:true});
   assert.ok(learning.toolIds.includes('skill_tool')); assert.deepEqual(learning.availableSkillIds,['4','5']); assert.equal(learning.activationContext.length,0);

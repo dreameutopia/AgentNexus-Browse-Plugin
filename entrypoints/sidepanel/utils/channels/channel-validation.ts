@@ -26,9 +26,9 @@ import {
   FAILED_TOOL_ROUNDS_DEFAULT,
   FAILED_TOOL_ROUNDS_MAX,
   FAILED_TOOL_ROUNDS_MIN,
-  INTERACT_TIMEOUT_MAX_MINUTES,
-  INTERACT_TIMEOUT_MIN_MINUTES,
-  INTERACT_TIMEOUT_DEFAULT_MINUTES,
+  USER_RESPONSE_TIMEOUT_MAX_MINUTES,
+  USER_RESPONSE_TIMEOUT_MIN_MINUTES,
+  USER_RESPONSE_TIMEOUT_DEFAULT_MINUTES,
   TOOL_TIMEOUT_MAX_MINUTES,
   TOOL_TIMEOUT_MIN_MINUTES,
   TOOL_TIMEOUT_DEFAULT_MINUTES,
@@ -136,15 +136,17 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
   }
   const value = raw as Record<string, unknown>;
   return {
-    interactTimeoutMinutes: clampInt(
-      value.interactTimeoutMinutes,
-      INTERACT_TIMEOUT_MIN_MINUTES,
-      INTERACT_TIMEOUT_MAX_MINUTES,
-      INTERACT_TIMEOUT_DEFAULT_MINUTES,
+    // 用户响应等待时长（分钟）：新字段优先，旧字段（interactTimeoutMinutes）
+    // 作为历史回退——老用户已配置的档位不因改名而丢失。
+    userResponseTimeoutMinutes: clampInt(
+      value.userResponseTimeoutMinutes ?? value.interactTimeoutMinutes,
+      USER_RESPONSE_TIMEOUT_MIN_MINUTES,
+      USER_RESPONSE_TIMEOUT_MAX_MINUTES,
+      USER_RESPONSE_TIMEOUT_DEFAULT_MINUTES,
     ),
     // 默认智能体存稳定 id；脏类型 / 空串一律回落内置默认（Auto-Action）
     defaultAgentId: normalizeText(value.defaultAgentId) || DEFAULT_SESSION_AGENT_ID,
-    // 文本与视觉策略统一的轮次上限（单一字段，默认 30）
+    // 文本与视觉策略统一的轮次上限（单一字段，默认 60）
     maxIterations: clampInt(
       value.maxIterations,
       ITERATIONS_MIN,
@@ -157,7 +159,7 @@ export function normalizeAppSettings(raw: unknown): AppSettings {
       FAILED_TOOL_ROUNDS_MAX,
       FAILED_TOOL_ROUNDS_DEFAULT,
     ),
-    // 单工具最长执行时间（分钟）：引擎级硬上界，默认 30
+    // 单工具最长执行时间（分钟）：引擎级硬上界，默认 20
     toolTimeoutMinutes: clampInt(
       value.toolTimeoutMinutes,
       TOOL_TIMEOUT_MIN_MINUTES,
@@ -298,13 +300,13 @@ export function validateChannelState(state: ChannelState): string[] {
 /** 校验应用设置（保存前调用） */
 export function validateAppSettings(settings: AppSettings): string[] {
   const errors: string[] = [];
-  const minutes = settings.interactTimeoutMinutes;
+  const minutes = settings.userResponseTimeoutMinutes;
   if (
     !Number.isInteger(minutes) ||
-    minutes < INTERACT_TIMEOUT_MIN_MINUTES ||
-    minutes > INTERACT_TIMEOUT_MAX_MINUTES
+    minutes < USER_RESPONSE_TIMEOUT_MIN_MINUTES ||
+    minutes > USER_RESPONSE_TIMEOUT_MAX_MINUTES
   ) {
-    errors.push(t('sidepanel.apiConfig.validateInteractTimeoutRange'));
+    errors.push(t('sidepanel.apiConfig.validateUserResponseTimeoutRange'));
   }
   if (
     !Number.isInteger(settings.maxIterations) ||

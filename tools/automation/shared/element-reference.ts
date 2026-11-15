@@ -89,38 +89,43 @@ export function validateElementReferences(
   fingerprint: string;
   valid: boolean;
   semantics?: Array<{ elementId: string; semantics: ControlSemantics }>;
+  validElementIds?: string[];
+  invalidElementIds?: string[];
+  errors?: Array<{ elementId: string; message: string }>;
 } {
   const registry = (document as ReferenceDocument).__agentNexusReferences;
+  const validElementIds: string[] = [];
+  const invalidElementIds: string[] = [];
+  const semantics: Array<{ elementId: string; semantics: ControlSemantics }> = [];
+  const errors: Array<{ elementId: string; message: string }> = [];
+  for (const elementId of ids) {
+    try {
+      const node = registry?.resolve(elementId);
+      if (!node) { invalidElementIds.push(elementId); continue; }
+      const current = registry?.describe?.(node);
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      const rendered = registry?.isRendered ? registry.isRendered(node) : style.display !== 'none';
+      const actionable = !requireActionable || (!current?.states.disabled && !node.matches(':disabled') && !node.closest('[inert],[aria-disabled="true"],[data-disabled]:not([data-disabled="false"])'));
+      if (!rendered || style.visibility === 'hidden' || style.visibility === 'collapse' || Number.parseFloat(style.opacity) < 0.1 || rect.width < 1 || rect.height < 1 || !actionable) {
+        invalidElementIds.push(elementId);
+        continue;
+      }
+      validElementIds.push(elementId);
+      if (current) semantics.push({ elementId, semantics: current });
+    } catch (error) {
+      invalidElementIds.push(elementId);
+      let message = 'Unserializable reference validation error';
+      try { message = (error instanceof Error ? error.message : String(error)).slice(0, 300); } catch { /* Keep the fallback. */ }
+      errors.push({ elementId, message });
+    }
+  }
   return {
     fingerprint: registry?.fingerprint() ?? '',
-    semantics: registry?.describe
-      ? ids.flatMap((elementId) => {
-          const node = registry.resolve(elementId);
-          return node
-            ? [{ elementId, semantics: registry.describe!(node) }]
-            : [];
-        })
-      : undefined,
-    valid:
-      !!registry &&
-      ids.every((id) => {
-        const node = registry.resolve(id);
-        if (!node) return false;
-        const style = window.getComputedStyle(node);
-        const rect = node.getBoundingClientRect();
-        return (
-          (registry.isRendered ? registry.isRendered(node) : style.display !== 'none') &&
-          style.visibility !== 'hidden' &&
-          !(Number.parseFloat(style.opacity) < 0.1) &&
-          rect.width >= 1 &&
-          rect.height >= 1 &&
-          (!requireActionable ||
-            (!registry.describe?.(node).states.disabled &&
-              !node.matches(':disabled') &&
-              !node.closest(
-                '[inert],[aria-disabled="true"],[data-disabled]:not([data-disabled="false"])',
-              )))
-        );
-      }),
+    semantics: registry?.describe ? semantics : undefined,
+    valid: !!registry && invalidElementIds.length === 0,
+    validElementIds,
+    invalidElementIds,
+    ...(errors.length ? { errors } : {}),
   };
 }

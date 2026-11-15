@@ -64,7 +64,7 @@ const form = reactive({
   targetMode: 'text' as LearnTargetMode,
   strategy: 'text' as LearnStrategy,
   modelKey: '',
-  autoValidate: true,
+  autoValidate: false,
   learningLimits: { ...LEARN_DEFAULT_STAGE_LIMITS },
   validationLimits: { ...LEARN_DEFAULT_STAGE_LIMITS },
 });
@@ -91,7 +91,7 @@ watch(
     form.targetMode = 'text';
     form.strategy = 'text';
     form.modelKey = '';
-    form.autoValidate = true;
+    form.autoValidate = false;
     form.learningLimits = { ...LEARN_DEFAULT_STAGE_LIMITS };
     form.validationLimits = { ...LEARN_DEFAULT_STAGE_LIMITS };
     advancedOpen.value = false;

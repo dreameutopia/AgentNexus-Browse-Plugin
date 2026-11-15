@@ -1,4 +1,5 @@
-import { bounded, GuiError } from './gui-errors';
+import { GuiError } from './gui-errors';
+import { injectScript } from './injection';
 import { finiteRange, type Viewport } from './coordinates';
 
 /** Serialized into the extension's isolated world. No debugger and no DOM writes.
@@ -19,8 +20,9 @@ export function observationViewportPayload(candidate: string) {
 }
 
 export async function observationViewport(tabId: number): Promise<{ viewport: Viewport; documentId: string }> {
-  const rows = await bounded(chrome.scripting.executeScript({ target: { tabId, frameIds: [0] },
-    world: 'ISOLATED', func: observationViewportPayload, args: [crypto.randomUUID()] }), 3000, 'Read observation viewport');
+  const rows = await injectScript(
+    { tabId, frameIds: [0], world: 'ISOLATED', func: observationViewportPayload, args: [crypto.randomUUID()] },
+    { operation: 'Read observation viewport', timeoutMs: 3000 });
   const value = rows[0]?.result;
   if (!value || typeof value.documentId !== 'string' || !value.documentId)
     throw new GuiError('TARGET_UNAVAILABLE', 'Observation document unavailable');

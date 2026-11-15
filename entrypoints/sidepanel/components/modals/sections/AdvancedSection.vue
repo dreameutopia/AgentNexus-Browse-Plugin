@@ -83,19 +83,19 @@
       <p class="config-form-hint">{{ t('sidepanel.apiConfig.contextThresholdHint') }}</p>
     </div>
 
-    <!-- interact 询问等待时长（全局应用级） -->
+    <!-- 用户响应等待时长（全局应用级）：询问弹窗与循环守卫确认条共用同一档 -->
     <div class="config-form-group">
-      <label class="config-form-label">{{ t('sidepanel.apiConfig.interactTimeout') }}</label>
+      <label class="config-form-label">{{ t('sidepanel.apiConfig.userResponseTimeout') }}</label>
       <input
         type="number"
         class="config-form-input config-form-input-sm"
-        v-model.number="draft.interactTimeoutMinutes"
-        min="1"
-        max="120"
+        v-model.number="draft.userResponseTimeoutMinutes"
+        :min="USER_RESPONSE_TIMEOUT_MIN_MINUTES"
+        :max="USER_RESPONSE_TIMEOUT_MAX_MINUTES"
         step="1"
         placeholder="20"
       />
-      <p class="config-form-hint">{{ t('sidepanel.apiConfig.interactTimeoutHint') }}</p>
+      <p class="config-form-hint">{{ t('sidepanel.apiConfig.userResponseTimeoutHint') }}</p>
     </div>
 
     <!-- 对话轮次上限（全局应用级，文本与视觉策略统一）。
@@ -109,7 +109,7 @@
         :min="ITERATIONS_MIN"
         :max="ITERATIONS_MAX"
         step="1"
-        placeholder="30"
+        placeholder="60"
       />
       <p class="config-form-hint">{{ t('sidepanel.apiConfig.maxIterationsHint') }}</p>
     </div>
@@ -139,7 +139,7 @@
         :min="TOOL_TIMEOUT_MIN_MINUTES"
         :max="TOOL_TIMEOUT_MAX_MINUTES"
         step="1"
-        placeholder="30"
+        placeholder="20"
       />
       <p class="config-form-hint">{{ t('sidepanel.apiConfig.toolTimeoutMinutesHint') }}</p>
     </div>
@@ -153,8 +153,9 @@
  *     删除后运行期回落预置 Auto-Action）
  *   - 重试 / 温度 / 新建模型上下文阈值 = 全局请求参数（对所有渠道生效，
  *     渠道编辑器不再单独配置这三项）
- *   - interact 询问等待时长 / 对话轮次上限（文本与视觉策略统一）/ 连续工具失败阈值
- *     = 全局应用设置（轮次与失败阈值经 runtime 装配注入会话引擎的循环守卫）
+ *   - 用户响应等待时长 / 对话轮次上限（文本与视觉策略统一）/ 连续工具失败阈值
+ *     = 全局应用设置（轮次与失败阈值经 runtime 装配注入会话引擎的循环守卫；
+ *     等待时长经 resolveUserResponseWaitMs 同时供询问弹窗与守卫确认条使用）
  * 与渠道分区共享同一份表单草稿，由底部「保存」统一持久化。
  * 数值边界引用 channel-types 常量（校验 / 钳制 / UI 三处共用，永不漂移）。
  */
@@ -169,6 +170,8 @@ import {
   ITERATIONS_MIN,
   TOOL_TIMEOUT_MAX_MINUTES,
   TOOL_TIMEOUT_MIN_MINUTES,
+  USER_RESPONSE_TIMEOUT_MAX_MINUTES,
+  USER_RESPONSE_TIMEOUT_MIN_MINUTES,
 } from '../../../utils/channels';
 import { settingsFormKey, type SettingsFormApi } from '../composables/use-settings-form';
 

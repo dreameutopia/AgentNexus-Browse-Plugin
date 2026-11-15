@@ -1,3 +1,4 @@
+import { executeScriptBounded } from '../common/frame-read';
 /**
  * 搜索工具共享基类（web_search / platform_search）
  *
@@ -14,12 +15,12 @@
  *   data.target     —— 实际检索的目标 id（工具的枚举参数名对应：engine / platform；
  *                      专属工具没有目标参数时，这里记录它固定的站点）；
  *   data.query      —— 归一化后的关键词；
- *   data.searchEngine —— 目标来源标识（Baidu / Bing / Zhihu / Bilibili …）；
+ *   data.searchEngine —— 目标来源标识（Baidu / Bing / Zhihu / GitHub …）；
  *   data.navigation —— 是否成功导航 + 当前实际网址（重定向后的最终 URL）+ 标签页；
  *   data.results    —— 解析产物（success/count/hint）；条目本体只经 content 的
  *                      Markdown 表承载一份（data 里不再重复，避免模型上下文双份
  *                      回传）；失败时 success=false 并给出提示（页面已就位，模型
- *                      可用 browser_get_page_text 自行读取解析），不影响 navigation
+ *                      可用 read_website 自行读取解析），不影响 navigation
  *                      的封装与整体 success。
  *   content[0].text —— 解析成功时为 Markdown 结果表（唯一一份），否则为状态消息。
  *                      条目本体只在这里承载（data.results 不重复条目），
@@ -330,7 +331,7 @@ export abstract class BaseSearchTool extends BaseTool {
       ? parse.outcome.count > 0
         ? `已在${target.label}完成搜索「${query}」：导航成功（${navigation.url}），解析出 ${parse.outcome.count} ${target.itemNoun}`
         : `已在${target.label}完成搜索「${query}」：导航成功（${navigation.url}），未解析到结果条目（${parse.outcome.hint ?? '页面可能无匹配或结构变化'}）`
-      : `已在${target.label}完成搜索「${query}」：导航成功（${navigation.url}），但结果解析失败（${parse.outcome.hint ?? '未知原因'}）——页面已就位，可用 browser_get_page_text 读取当前页自行解析`;
+      : `已在${target.label}完成搜索「${query}」：导航成功（${navigation.url}），但结果解析失败（${parse.outcome.hint ?? '未知原因'}）——页面已就位，可用 read_website 读取当前页自行解析`;
 
     this.log(message);
     // Markdown 表（条目本体）与结构化条目只保留一份：表经 content 承载，
@@ -521,7 +522,7 @@ export abstract class BaseSearchTool extends BaseTool {
             success: true,
             count: 0,
             items: [],
-            hint: `未解析到${target.itemNoun}：可能无匹配结果、遇到登录墙/验证码或页面结构变化；页面已就位，可用 browser_get_page_text 读取当前页确认`,
+            hint: `未解析到${target.itemNoun}：可能无匹配结果、遇到登录墙/验证码或页面结构变化；页面已就位，可用 read_website 读取当前页确认`,
           },
           aborted: false,
         };
@@ -549,7 +550,7 @@ export abstract class BaseSearchTool extends BaseTool {
           success: false,
           count: 0,
           items: [],
-          hint: `${reason}。若标签页仍在，可用 browser_get_page_text 读取当前页自行解析（若已被关闭则重新调用本工具）`,
+          hint: `${reason}。若标签页仍在，可用 read_website 读取当前页自行解析（若已被关闭则重新调用本工具）`,
         },
         aborted: false,
       };
@@ -568,7 +569,7 @@ export abstract class BaseSearchTool extends BaseTool {
         throw new Error(`目标 ${target.id} 的 inline 解析函数缺失（配置缺陷）`);
       }
       const injection = await this.withAbort(
-        chrome.scripting.executeScript({ target: { tabId }, func: extractor.func }),
+        executeScriptBounded({ target: { tabId }, func: extractor.func }),
         signal,
         '注入解析函数期间被中断',
       );
@@ -605,7 +606,7 @@ export abstract class BaseSearchTool extends BaseTool {
   ): Promise<void> {
     try {
       await this.withAbort(
-        chrome.scripting.executeScript({ target: { tabId }, files: [file] }),
+        executeScriptBounded({ target: { tabId }, files: [file] }),
         signal,
         '注入内容脚本期间被中断',
       );

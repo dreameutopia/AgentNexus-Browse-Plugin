@@ -10,12 +10,13 @@
  */
 
 import type { ChatMessageRecord, ChatSessionMeta, ChatSessionKind } from '../types';
-import type { MessageFeedback } from '../../types/chat';
+import type { MessageFeedback, SkillPartEntry } from '../../types/chat';
 import { chatDatabase, chatPreviewOf, type SessionListOptions } from './chat-database';
 import { normalizeModelRef, type ModelRef } from '../../utils/channels';
 import { imageStore, normalizeImageRefs } from '../images/image-store';
 import { prepareProtocolHistory } from './protocol-history';
 import type { PageQuote } from '../../utils/chat/page-quote';
+import type { UploadedFileEntry } from '@/utils/upload-files/upload-file-manifest';
 import { notifySessionsChanged, type SessionChangeReason } from '@/utils/sessions/session-bridge';
 
 /** 自动标题取用户消息前缀长度 */
@@ -37,20 +38,21 @@ function normalizeOptionalText(value: unknown): string {
 }
 
 /**
- * 名称列表归一化：去空白项 + 去重保序 + 防御非字符串脏数据。
- * 持久化层不校验字段形状（跨版本/外部写入皆可能），写入前统一收敛，
- * 保证下游（技能装配、徽标渲染）拿到的永远是干净的 string[]。
+ * 技能快照归一化：去空白项 + 按 id 去重保序 + 防御非字符串脏数据。
+ * 快照随用户消息落库并直接呈现给用户（气泡顶部的技能清单），
+ * 写入前统一收敛，保证展示侧拿到的永远是 { id, name } 干净结构。
  */
-function normalizeNameList(value: readonly unknown[] | undefined): string[] {
+function normalizeSkillSnapshot(value: readonly SkillPartEntry[] | undefined): SkillPartEntry[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
-  const result: string[] = [];
+  const result: SkillPartEntry[] = [];
   for (const item of value) {
-    if (typeof item !== 'string') continue;
-    const name = item.trim();
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    result.push(name);
+    if (!item || typeof item !== 'object') continue;
+    const id = typeof item.id === 'string' ? item.id.trim() : '';
+    if (!id || seen.has(id)) continue;
+    const name = typeof item.name === 'string' ? item.name.trim() : '';
+    seen.add(id);
+    result.push({ id, name: name || id });
   }
   return result;
 }
@@ -59,7 +61,6 @@ export interface CreateSessionInput {
   /** 智能体 ID（稳定引用；与 agentName 一同落库，恢复时优先按 id 解析） */
   agentId?: string;
   agentName?: string;
-  skillNames?: string[];
   /** 模型引用（稳定 id 对；写入前经 normalizeModelRef 清洗，脏引用落 null） */
   modelRef?: ModelRef | null;
   /** 系统提示词补充段（如 Deep Search 的笔记信息），随会话持久化以便重建同源 systemPrompt */
@@ -155,7 +156,6 @@ class TranscriptEngine {
       lastMessagePreview: '',
       agentId: normalizeOptionalText(input.agentId),
       agentName: normalizeOptionalText(input.agentName),
-      skillNames: normalizeNameList(input.skillNames),
       modelRef: normalizeModelRef(input.modelRef),
       systemPromptSuffix: normalizeOptionalText(input.systemPromptSuffix),
       // 会话类型：只接受合法枚举值，其余（脏数据 / 旧版本）一律归一为 'chat'
@@ -259,7 +259,7 @@ class TranscriptEngine {
    * 读取「模型面有效上下文」：会话存在压缩摘要时，返回摘要 + 压缩点之后的记录
    * （seq > compactionUpToSeq）；无压缩时等价于全量记录。
    *
-   * 同时返回会话持久化的 systemPrompt 补充段——它与 agentName/skillNames 共同构成
+   * 同时返回会话持久化的 systemPrompt 补充段——它与 agentName 等选择共同构成
    * systemPrompt 的全部派生输入，调用方据此即可在不重新请求模型的情况下重建出
    * 与真实请求同源的系统提示词（会话切换后的上下文预算估算依赖这一点）。
    *
@@ -345,7 +345,10 @@ class TranscriptEngine {
   }
 
   /**
-   * 更新会话最近使用的智能体/技能/模型/系统提示词补充段（每次发送调用）。
+   * 更新会话最近使用的智能体/模型/系统提示词补充段（每次发送调用）。
+   *
+   * 技能选择不进本方法：技能只对单轮生效，随用户消息落库后即取消选中，
+   * 不作为会话级设置持久化。
    *
    * 语义约定：字段为 undefined 表示「本次不更新该项」；空字符串是合法值
    * （表示用户移除了智能体 / 没有补充段），因此判空一律用 !== undefined，
@@ -356,7 +359,6 @@ class TranscriptEngine {
     usage: {
       agentId?: string;
       agentName?: string;
-      skillNames?: string[];
       /** 模型引用（undefined = 本次不更新；null = 清除会话模型选择） */
       modelRef?: ModelRef | null;
       systemPromptSuffix?: string;
@@ -365,7 +367,6 @@ class TranscriptEngine {
     const patch: Partial<ChatSessionMeta> = {};
     if (usage.agentId !== undefined) patch.agentId = normalizeOptionalText(usage.agentId);
     if (usage.agentName !== undefined) patch.agentName = normalizeOptionalText(usage.agentName);
-    if (usage.skillNames !== undefined) patch.skillNames = normalizeNameList(usage.skillNames);
     if (usage.modelRef !== undefined) patch.modelRef = normalizeModelRef(usage.modelRef);
     if (usage.systemPromptSuffix !== undefined) {
       patch.systemPromptSuffix = normalizeOptionalText(usage.systemPromptSuffix);
@@ -382,17 +383,31 @@ class TranscriptEngine {
    *   独立图片库；此处只落引用。缺省 = 无图片）
    * @param pageQuote 本轮用户确认引用的网页原文（落库后用户气泡据此渲染
    *   引用块；缺省 = 无引用。引用内容只落用户面转录，模型面另走信封）
+   * @param options.binding 本条消息绑定的智能体（id + 可读名）与预选技能快照；
+   *   仅用于用户气泡展示「@的是哪个智能体」「用了哪些技能」，不参与模型上下文
    */
   async appendUserMessage(
     chatId: string,
     content: string,
     imageRefs: readonly string[] = [],
     pageQuote?: PageQuote,
-    options?: { synthetic?: boolean },
+    options?: {
+      synthetic?: boolean;
+      uploadedFiles?: readonly UploadedFileEntry[];
+      /** 本条消息绑定的智能体引用（缺省 = 无智能体） */
+      agentId?: string;
+      agentName?: string;
+      /** 本条消息发送时的预选技能快照（缺省 = 未选技能） */
+      skills?: readonly SkillPartEntry[];
+    },
   ): Promise<ChatMessageRecord> {
     const seq = await this.nextSeq(chatId);
     const now = Date.now();
     const synthetic = options?.synthetic === true;
+    const uploadedFiles = options?.uploadedFiles ?? [];
+    const agentId = normalizeOptionalText(options?.agentId);
+    const agentName = normalizeOptionalText(options?.agentName);
+    const skills = normalizeSkillSnapshot(options?.skills);
     const record: ChatMessageRecord = {
       id: generateId('msg'),
       chatId,
@@ -409,8 +424,15 @@ class TranscriptEngine {
       // 只把用户上传展示为气泡底部图片；vision 首截图等引擎注入的引用
       // 仅进 imageRefs（落库归一化补入），不进本字段
       uploadImageRefs: [...imageRefs],
+      // 上传文件条目随用户消息落库：气泡据此渲染「文件元素」（放大/预览/下载）
+      ...(uploadedFiles.length > 0 ? { uploadedFiles: uploadedFiles.map(file => ({ ...file })) } : {}),
       // 用户确认的网页引用随本条消息落库（气泡引用块的唯一来源）
       ...(pageQuote ? { pageQuote } : {}),
+      // 智能体绑定随消息落库（气泡底部 @ 标识的唯一来源；无智能体不写键）
+      ...(agentId ? { agentId } : {}),
+      ...(agentName ? { agentName } : {}),
+      // 预选技能快照随消息落库（气泡顶部技能清单的唯一来源）
+      ...(skills.length > 0 ? { skills } : {}),
       createdAt: now,
       updatedAt: now,
     };

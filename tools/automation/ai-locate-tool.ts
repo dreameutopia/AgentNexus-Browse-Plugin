@@ -1,3 +1,4 @@
+import { executeScriptBounded } from '../common/frame-read';
 /**
  * AI定位工具
  * 使用AI视觉能力定位页面元素
@@ -327,7 +328,7 @@ export class AILocateTool extends BaseTool {
       
       console.log('💉 [AI定位工具-高亮] 注入AI高亮脚本...');
       // 注入AI高亮脚本
-      await chrome.scripting.executeScript({
+      await executeScriptBounded({
         target: { tabId: tabs[0].id! },
         files: ['inject-scripts/vision/ai-highlight.js']
       });

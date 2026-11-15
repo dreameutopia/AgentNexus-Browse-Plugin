@@ -120,31 +120,82 @@ function wrapBlock(extraClass: string, title: string, inner: string, source = ''
 // ==================== stat（信封 → 复用统计卡 DOM 契约） ====================
 
 /**
+ * stat 列语义：指标 / 当前值 / 可选说明 / 可选变化（变化约定放**最后一列**）。
+ * 变化列可整列省略——没有确切变化数据就不渲染趋势元素，不用占位符顶替。
+ * 列名识别优先于位置：历史消息的旧列序「指标 / 当前值 / 变化 / 说明」仍能
+ * 正确取到趋势与说明，不会把说明误画成涨跌。
+ */
+const STAT_TREND_COLUMN_RE = /变化|环比|同比|涨跌|增幅|趋势|trend|delta|change/i;
+const STAT_NOTE_COLUMN_RE = /说明|备注|注释|note|remark|desc/i;
+
+/**
+ * 解析 stat 列角色（列名优先，未标注时按位置约定回落）。返回 -1 = 该角色不存在。
+ * 位置约定：第 1/2 列固定为指标与当前值，第 3 列是说明，最后一列是变化；
+ * 最后一列已被列名标注为说明时不再猜它是变化。
+ */
+function resolveStatColumns(columns: readonly string[]): { trend: number; note: number } {
+  const trendByLabel = columns.findIndex(col => STAT_TREND_COLUMN_RE.test(col));
+  const noteByLabel = columns.findIndex(col => STAT_NOTE_COLUMN_RE.test(col));
+
+  let trend = trendByLabel;
+  if (trend < 0 && columns.length >= 3 && noteByLabel !== columns.length - 1) {
+    trend = columns.length - 1;
+  }
+
+  let note = noteByLabel;
+  if (note < 0) {
+    for (let i = 2; i < columns.length; i++) {
+      if (i !== trend) {
+        note = i;
+        break;
+      }
+    }
+  }
+  return { trend, note };
+}
+
+/**
+ * 趋势单元格 → 方向 + 展示文本；不构成趋势（空 / 占位符 / 中性文本 / 0）返回 null。
+ * 只有「符号 + 数字」才算涨跌（"+12.3%" / "-8.2%" / -8）：单独的 "-"、"—"、
+ * "持平" 这类占位或中性值一律不渲染箭头，避免把缺失数据画成下跌。
+ */
+function trendOf(value: RichCell): { direction: 'up' | 'down'; text: string } | null {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value === 0) return null;
+    return { direction: value < 0 ? 'down' : 'up', text: `${value > 0 ? '+' : ''}${value}` };
+  }
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!/^[+-]\s*[\d.]/.test(text)) return null;
+  return { direction: text.startsWith('-') ? 'down' : 'up', text };
+}
+
+/**
  * 信封 stat → 统计卡组。产出与 stat-card.ts 完全一致的 DOM
  * （.stat-card-block / .stat-cards / .stat-card…），零新增样式。
- * 列语义：1=指标名 2=当前值 3=变化（+/- 前缀驱动涨跌方向）4=可选说明。
+ * 变化与说明子元素按数据有无渲染：取不到就不输出（指标 / 当前值仍必填）。
  * 超过 6 行判建模错误（>6 个指标应改用 table），降级源码。
  */
 function buildStatBlock(env: NormalizedEnvelope): string | null {
   if (env.rows.length > STAT_MAX_ROWS) return null;
 
+  const roles = resolveStatColumns(env.columns);
   const cards: string[] = [];
   for (const row of env.rows) {
     const label = row[0] === null ? '' : String(row[0]).trim();
     const value = row[1] === null ? '' : String(row[1]).trim();
     if (!label || !value) continue;
-    const trendText = typeof row[2] === 'string' ? row[2].trim() : '';
-    const note = typeof row[3] === 'string' ? row[3].trim() : '';
+    const trend = roles.trend >= 0 ? trendOf(row[roles.trend]) : null;
+    const noteCell = roles.note >= 0 ? row[roles.note] : null;
+    const note = noteCell === null ? '' : String(noteCell).trim();
 
     const parts: string[] = ['<div class="stat-card">'];
     parts.push(`<div class="stat-card-label">${escapeHtml(label)}</div>`);
     parts.push(`<div class="stat-card-value">${escapeHtml(value)}</div>`);
-    // 涨跌方向只由 +/- 前缀驱动；「持平」等中性文本不渲染箭头
-    if (trendText && (trendText.startsWith('+') || trendText.startsWith('-'))) {
-      const direction = trendText.startsWith('-') ? 'down' : 'up';
+    if (trend) {
       parts.push(
-        `<div class="stat-card-trend ${direction}">${TREND_ARROW_SVG}` +
-          `<span>${escapeHtml(trendText)}</span></div>`,
+        `<div class="stat-card-trend ${trend.direction}">${TREND_ARROW_SVG}` +
+          `<span>${escapeHtml(trend.text)}</span></div>`,
       );
     }
     if (note) {

@@ -1,3 +1,4 @@
+import { executeScriptBounded } from '../common/frame-read';
 /**
  * Excalidraw画布初始化工具 (Final Production Version)
  */
@@ -109,35 +110,19 @@ export class SetupExcalidrawCanvasTool extends BaseTool {
       
       // 注入通用桥接脚本至隔离世界
       this.log('正在注入通用桥接脚本 (core/inject-bridge.js)...');
-      await new Promise<void>((resolve, reject) => {
-        chrome.scripting.executeScript({
+      await executeScriptBounded({
           target: { tabId: targetTabId },
           files: ['inject-scripts/core/inject-bridge.js'],
           world: 'ISOLATED'
-        }, () => {
-          if (chrome.runtime.lastError) {
-            reject(new Error(`桥接脚本注入失败: ${chrome.runtime.lastError.message}`));
-          } else {
-            resolve();
-          }
         });
-      });
 
       // 注入主世界控制脚本
       this.log('正在注入Excalidraw主世界控制脚本 (ui/excalidraw.js)...');
-      await new Promise<void>((resolve, reject) => {
-        chrome.scripting.executeScript({
+      await executeScriptBounded({
           target: { tabId: targetTabId },
           files: ['inject-scripts/ui/excalidraw.js'],
           world: 'MAIN'
-        }, () => {
-          if (chrome.runtime.lastError) {
-            reject(new Error(`控制脚本注入失败: ${chrome.runtime.lastError.message}`));
-          } else {
-            resolve();
-          }
         });
-      });
       this.log('脚本注入命令已发送。');
 
       const isReady = await this._waitForScriptReady(targetTabId);

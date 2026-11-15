@@ -187,7 +187,7 @@ export async function buildDocx(
       : { data: svgBytes };
   }
 
-  let content: import('docx').FileChild[];
+  let content: readonly import('docx').FileChild[];
   try {
     content = htmlToContent(html, {
       stylesheet: DOCX_STYLESHEET,

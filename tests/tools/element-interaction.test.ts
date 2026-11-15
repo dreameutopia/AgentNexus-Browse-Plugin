@@ -111,6 +111,20 @@ export async function testElementInteraction(
       interact.execute({ action: 'fill', description: '填写测试控件', ...p }),
   };
   try {
+    const cycleDom = create('<button>cycle hit target</button><div id="host-a"></div><div id="host-b"></div>');
+    const cycleDocument = cycleDom.window.document;
+    const hostA = cycleDocument.querySelector('#host-a')!;
+    const hostB = cycleDocument.querySelector('#host-b')!;
+    const rootA = hostA.attachShadow({ mode: 'open' });
+    const rootB = hostB.attachShadow({ mode: 'open' });
+    Object.defineProperty(rootA, 'elementFromPoint', { value: () => hostB });
+    Object.defineProperty(rootB, 'elementFromPoint', { value: () => hostA });
+    (cycleDocument as any).elementFromPoint = () => hostA;
+    install(cycleDom);
+    try {
+      const cycleScan = elementScanPayload('buttons', '', '', tabId);
+      check(cycleScan.truncated === true && /HIT_TEST_FAILED/.test(cycleScan.truncationReason ?? ''), '循环 Shadow DOM 命中链有界退出并报告缺失');
+    } finally { restore(); }
     globalThis.chrome = {
       ...savedChrome,
       tabs: {
@@ -234,8 +248,8 @@ export async function testElementInteraction(
     );
     eq(
       Object.keys(element.properties),
-      ['view', 'elementId', 'frameId'],
-      '详情 schema 不暴露过滤和分页参数',
+      ['tabId', 'view', 'elementId', 'frameId'],
+      '详情 schema 只暴露目标/引用参数（tabId 可选，不含过滤分页）',
     );
     check(
       element.additionalProperties === false,
@@ -407,6 +421,29 @@ export async function testElementInteraction(
       first.success && second.success,
       '默认枚举和省略 view 的快照续读继续正常工作',
     );
+    // includeDetails 只影响载荷体积（不改变结果集）：续读省略时沿用快照值
+    const compact = await getter.execute({ includeDetails: false });
+    check(
+      compact.success && data(compact).details === undefined,
+      'includeDetails=false 时不回传 details',
+    );
+    const compactNext = await getter.execute({
+      snapshotId: data(compact).snapshotId,
+      page: 2,
+    });
+    check(
+      compactNext.success && data(compactNext).details === undefined,
+      '续读省略 includeDetails 时沿用快照值（false）',
+    );
+    const compactOn = await getter.execute({
+      snapshotId: data(compact).snapshotId,
+      page: 1,
+      includeDetails: true,
+    });
+    check(
+      compactOn.success && Array.isArray(data(compactOn).details),
+      '续读显式 includeDetails=true 可临时打开详情',
+    );
     check(
       data(first).hint.includes('枚举不传 elementId/frameId') &&
         !data(first).hint.includes('操作时原样传'),
@@ -436,10 +473,10 @@ export async function testElementInteraction(
       '无关 DOM 变化不使冻结分页重排或失效',
     );
     frames.set(9, create('<button>新增 frame</button>'));
+    const frameAdded = await getter.execute({ snapshotId: data(first).snapshotId, page: 2 });
     check(
-      !(await getter.execute({ snapshotId: data(first).snapshotId, page: 2 }))
-        .success,
-      '新增 frame 使跨文档快照失效',
+      frameAdded.success && data(frameAdded).partial && data(frameAdded).frameDiagnostics.some((r: any) => r.issues.some((i: any) => i.code === 'NEW_FRAME_NOT_IN_SNAPSHOT' && i.frameId === 9)),
+      '新增 frame 明确标注不属于冻结快照，并保留原 frame 的有效分页',
     );
     frames.delete(9);
     eq(data(third).nextPage, null, '末页明确 nextPage=null');
@@ -484,7 +521,7 @@ export async function testElementInteraction(
     eq(data(unfiltered).filtered, false, '省略快照和条件执行全新无过滤采集');
     const count = scanCount;
     await getter.execute();
-    eq(scanCount, count + 1, '新请求始终新采集，不读取隐式查询缓存');
+    eq(scanCount, count + frames.size, '新请求逐 frame 重新采集，不读取隐式查询缓存');
     const noHit = await getter.execute({ regex: '不存在的文本' });
     eq(data(noHit).totalHits, 0, '零命中保留候选并明确统计');
     eq(ids(noHit).length, 40, '零命中仍有候选');

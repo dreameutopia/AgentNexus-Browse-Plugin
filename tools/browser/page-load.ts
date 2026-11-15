@@ -1,3 +1,4 @@
+import { executeScriptBounded } from '../common/frame-read';
 /**
  * 页面加载就绪等待（单一实现）
  *
@@ -103,7 +104,7 @@ async function pollTabReady(
       let ready: boolean;
       let confirmed = false;
       try {
-        const probe = await abortable(chrome.scripting.executeScript({
+        const probe = await abortable(executeScriptBounded({
           target: { tabId },
           func: () => document.readyState,
         }), options.signal);

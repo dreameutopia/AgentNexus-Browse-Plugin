@@ -1,3 +1,4 @@
+import { executeScriptBounded } from '@/tools/common/frame-read';
 import { initPluginHost } from './plugins/host';
 import { backgroundWebSocket } from './ws/websocket-background';
 import { initToolsManagerListener } from './tools/tools-manager-listener';
@@ -531,7 +532,7 @@ export default defineBackground(() => {
             return;
           }
 
-          await chrome.scripting.executeScript({
+          await executeScriptBounded({
             target: { tabId },
             files: [file],
             world: 'MAIN'

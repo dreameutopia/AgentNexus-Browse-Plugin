@@ -33,6 +33,11 @@ function includes(haystack: string, needle: string, message: string): void {
   check(haystack.includes(needle), message, { needle, sample: haystack.slice(0, 200) });
 }
 
+/** 断言严格相等 */
+function eq(actual: unknown, expected: unknown, message: string): void {
+  check(actual === expected, message, { actual, expected });
+}
+
 /** 取工具结果里的文本内容（ToolResult.content 是多形态联合） */
 function resultText(result: { content?: unknown }): string {
   const content = result.content;
@@ -160,8 +165,123 @@ const context = { chatId };
   await tool.execute({ action: 'delete', path: 'docs/with-image.md' }, context);
 }
 
-// ==================== 3. 非法输入与失败路径 ====================
+// ==================== 3. 编辑模式与指纹 ====================
 
+{
+  // 三种编辑模式与工作区引擎一致：content 全量重写 / find+replace / edits 批量替换
+  const created = await tool.execute(
+    { action: 'create', path: 'docs/modes.md', content: ['# 标题', '', '甲', '', '乙', '', '丙'].join('\n') },
+    context,
+  );
+  check(created.success, 'create（编辑模式用）成功');
+  const createdData = created.data as { sha256?: string } | undefined;
+  check(typeof createdData?.sha256 === 'string' && createdData.sha256.length === 64, 'create 回传 sha256 指纹');
+
+  // 模式一：find + replace
+  const replaced = await tool.execute(
+    { action: 'edit', path: 'docs/modes.md', find: '甲', replace: '甲改' },
+    context,
+  );
+  check(replaced.success, 'find+replace 编辑成功');
+
+  // 模式二：edits 批量替换（任一失败则整次不保存）
+  const batch = await tool.execute(
+    {
+      action: 'edit',
+      path: 'docs/modes.md',
+      edits: [
+        { find: '乙', replace: '乙改' },
+        { find: '丙', replace: '丙改' },
+      ],
+    },
+    context,
+  );
+  check(batch.success, 'edits 批量替换成功');
+  includes(resultText(batch), '替换 2 处', '批量替换回显替换次数');
+
+  // 模式三：content 全量重写
+  const rewritten = await tool.execute(
+    { action: 'edit', path: 'docs/modes.md', content: '# 全新内容' },
+    context,
+  );
+  check(rewritten.success, 'content 全量重写成功');
+  includes(resultText(rewritten), '已整体重写', '全量重写回显模式');
+
+  // expectedHash：与当前文件不符时必须拒绝保存
+  const staleHash = 'a'.repeat(64);
+  const conflicted = await tool.execute(
+    { action: 'edit', path: 'docs/modes.md', content: '# 冲突写入', expectedHash: staleHash },
+    context,
+  );
+  check(!conflicted.success, 'expectedHash 不匹配时拒绝保存');
+  includes(resultText(conflicted), 'DOCUMENT_EDIT_CONFLICT', '冲突错误码可识别');
+
+  // 三种模式互斥
+  const exclusive = await tool.execute(
+    { action: 'edit', path: 'docs/modes.md', content: '# a', edits: [{ find: 'a', replace: 'b' }] },
+    context,
+  );
+  check(!exclusive.success, 'content 与 edits 互斥被拒');
+
+  await tool.execute({ action: 'delete', path: 'docs/modes.md' }, context);
+}
+
+// ==================== 4. 产物命名 ====================
+
+{
+  await tool.execute(
+    { action: 'create', path: 'docs/naming.md', content: '# 命名测试' },
+    context,
+  );
+  const converted = await tool.execute(
+    { action: 'convert', path: 'docs/naming.md', format: 'docx', filename: '季度报告.docx' },
+    context,
+  );
+  check(converted.success, '带 filename 的转换成功', resultText(converted));
+  const data = converted.data as { files?: { path: string }[] } | undefined;
+  const artifactPath = data?.files?.[0]?.path ?? '';
+  // 已有 .docx 后缀不应叠加出畸形名（早先会得到「季度报告..docx」）
+  eq(artifactPath, 'outputs/季度报告.docx', '产物文件名后缀正确');
+  await tool.execute({ action: 'delete', path: 'docs/naming.md' }, context);
+}
+
+// ==================== 5. 同名产物不覆盖 ====================
+
+{
+  // 契约：产物一律落在当前会话工作区的 outputs/ 下；同名时不覆盖既有文件，
+  // 而是自动改名为 name(1).docx、name(2).docx…
+  await tool.execute(
+    { action: 'create', path: 'docs/dup-artifact.md', content: '# 重复导出' },
+    context,
+  );
+  const first = await tool.execute(
+    { action: 'convert', path: 'docs/dup-artifact.md', format: 'docx', filename: '重复导出' },
+    context,
+  );
+  check(first.success, '首次导出成功', resultText(first));
+  const firstData = first.data as { files?: { path: string; marker: string }[] } | undefined;
+  eq(firstData?.files?.[0]?.path, 'outputs/重复导出.docx', '首次导出用原名');
+  includes(resultText(first), 'outputs/重复导出.docx', '回执给出产物在 outputs/ 下的路径');
+
+  const second = await tool.execute(
+    { action: 'convert', path: 'docs/dup-artifact.md', format: 'docx', filename: '重复导出' },
+    context,
+  );
+  check(second.success, '再次导出成功', resultText(second));
+  const secondData = second.data as { files?: { path: string; marker: string }[] } | undefined;
+  eq(secondData?.files?.[0]?.path, 'outputs/重复导出(1).docx', '再次导出自动加序号（不覆盖）');
+  includes(resultText(second), 'outputs/重复导出(1).docx', '回执给出改名后的产物路径');
+
+  const { readWorkspaceOutput } = await import('../../utils/python-workspace/store');
+  const original = await readWorkspaceOutput(chatId, 'outputs/重复导出.docx');
+  check(!!original && original.size > 0, '既有产物未被覆盖且仍可读');
+  const renamed = await readWorkspaceOutput(chatId, 'outputs/重复导出(1).docx');
+  check(!!renamed && renamed.size > 0, '改名后的产物可读');
+
+  await tool.execute({ action: 'delete', path: 'docs/dup-artifact.md' }, context);
+}
+
+// ==================== 6. 非法输入与失败路径 ====================
 {
   const missing = await tool.execute(
     { action: 'convert', path: 'docs/report.md', format: 'docx' },

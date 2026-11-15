@@ -46,7 +46,7 @@ try {
   for (const chatId of ['chat_a', 'chat_b']) {
     await chatDatabase.createSession({
       chatId, title: chatId, createdAt: 1, updatedAt: 1, messageCount: 0,
-      lastMessagePreview: '', agentName: '', skillNames: [],
+      lastMessagePreview: '', agentName: '',
     });
   }
   const run = (chatId, code) => withPythonWorkspace(py.FS, chatId, async () => {

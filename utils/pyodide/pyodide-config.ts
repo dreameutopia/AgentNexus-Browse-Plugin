@@ -71,9 +71,18 @@ export const PYODIDE_ENV_STORAGE_KEY = 'pyodide_env_state';
 /** 单次执行代码长度上限（字符） */
 export const PYODIDE_MAX_CODE_LENGTH = 200_000;
 
-/** python_run 工具默认/最大执行超时（毫秒） */
+/**
+ * python_run 工具默认/最大执行超时（毫秒）
+ *
+ * 上限 300 秒（5 分钟）：数据清洗、批量解析、训练这类脚本常常需要跑好几分钟，
+ * 180 秒的上限会让「再等一会儿就好」的脚本被中途掐断，而用户只能靠拆脚本
+ * 绕开——拆碎脚本反而更容易出错。
+ *
+ * 默认仍是 60 秒：模型若不显式指定 timeoutSeconds，就按默认跑（绝大多数
+ * 脚本远快于此，不必占住预算）。
+ */
 export const PYTHON_RUN_DEFAULT_TIMEOUT_MS = 60_000;
-export const PYTHON_RUN_MAX_TIMEOUT_MS = 180_000;
+export const PYTHON_RUN_MAX_TIMEOUT_MS = 300_000;
 
 /** 单路输出（stdout / stderr）捕获上限（字节），超出截断并标注 */
 export const PYODIDE_OUTPUT_CAP_BYTES = 64 * 1024;

@@ -45,7 +45,7 @@ await build({
 });
 const fixtureDir = path.join(
   root,
-  'node_modules/.cache/agentnexus-plugins/ui-fixture-v14',
+  'node_modules/.cache/agentnexus-plugins/ui-fixture-v15',
 );
 const pluginDir = path.join(fixtureDir, 'plugin-example'),
   fixture = path.join(fixtureDir, 'plugin-example-1.0.0.anplugin');

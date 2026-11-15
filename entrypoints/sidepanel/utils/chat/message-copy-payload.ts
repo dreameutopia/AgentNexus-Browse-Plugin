@@ -16,6 +16,7 @@
  *   </tool_call>
  *   <notice>…</notice>                终态注记
  *   <compaction …>…</compaction>       上下文压缩
+ *   <skills>…</skills>                运行前自动加载的技能清单
  *   <screenshot />                    截屏标记（图片本体不可复制）
  *   裸文本                            正式输出（不加标签）
  *
@@ -243,6 +244,13 @@ export function buildExecutionTraceText(input: ExecutionTraceInput): string {
     if (part.type === 'image') {
       // 截图只留标记：知道此处发生过截屏即可，图片本体不进剪贴板
       sections.push('<screenshot />');
+      continue;
+    }
+    if (part.type === 'skill') {
+      // 运行前自动加载的技能：轨迹里保留当时加载的清单（名称 + 稳定 ID）
+      if (!part.skills?.length) continue;
+      const block = wrap('skills', part.skills.map(skill => `${skill.name} (#${skill.id})`).join('\n'));
+      if (block) sections.push(block);
     }
   }
 

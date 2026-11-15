@@ -1,3 +1,4 @@
+import { readPageFrames, PageReadError, withDeadline, addFrameIssue, type FrameReadReport } from '../common/frame-read';
 import { BaseTool } from '../base-tool';
 import { ToolResult } from '@/common/tool-handler';
 import { ToolMetadata } from '../registry';
@@ -18,6 +19,8 @@ interface FileUploadElement {
 
 // 缓存接口
 interface CachedUploadElements {
+  tabId: number;
+  frameDiagnostics?: FrameReadReport;
   url: string;
   timestamp: number;
   elements: FileUploadElement[];
@@ -879,18 +882,20 @@ export class FileUploadGetterTool extends BaseTool {
   /**
    * 检查缓存是否有效
    */
-  private async isCacheValid(tabId: number): Promise<boolean> {
-    if (!this.cache) return false;
+  private async isCacheValid(tabId: number, url: string): Promise<boolean> {
+    if (!this.cache || this.cache.tabId !== tabId || this.cache.url !== url) return false;
     
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab || tab.id !== tabId || tab.url !== this.cache.url) return false;
-      
       // 缓存5分钟内有效
       const cacheAge = Date.now() - this.cache.timestamp;
       if (cacheAge > 5 * 60 * 1000) return false;
       
-      return true;
+      const expected = this.cache.frameDiagnostics?.documents;
+      if (!expected?.length || this.cache.frameDiagnostics?.status !== 'complete' || expected.some(f => !f.documentId)) return false;
+      const current = await readPageFrames({ target: { tabId, allFrames: true }, func: () => document.URL },
+        { operation: 'upload-cache-validation', timeoutMs: 2500, frameTimeoutMs: 1000, discoveryTimeoutMs: 500 });
+      return current.frameDiagnostics.status === 'complete' && current.length === expected.length &&
+        expected.every(f => current.some(row => row.frameId === f.frameId && row.documentId === f.documentId));
     } catch {
       return false;
     }
@@ -899,36 +904,44 @@ export class FileUploadGetterTool extends BaseTool {
   async execute(args: { page?: number } = {}): Promise<ToolResult> {
     const startTime = Date.now();
     try {
-      const page = args.page || 1;
+      const page = args.page ?? 1;
+      if (!Number.isSafeInteger(page) || page < 1) return this.createErrorResponse('INVALID_ARGUMENT：page 必须是从 1 开始的安全整数');
       const pageSize = 20;
 
       this.log(`开始获取文件上传控件 (v1.0)...`);
       
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tabs[0] || !tabs[0].id) {
+      const tabs = await withDeadline(() => chrome.tabs.query({ active: true, currentWindow: true }), 5000, 'Find upload-control target');
+      if (!tabs[0] || typeof tabs[0].id !== 'number') {
         return this.createErrorResponse('No active tab with ID found');
       }
       const tabId = tabs[0].id;
       const url = tabs[0].url || '';
       
       let allElements: FileUploadElement[] = [];
+      let frameDiagnostics: FrameReadReport | undefined;
       
       // 尝试使用缓存
-      const cacheValid = await this.isCacheValid(tabId);
+      const cacheValid = page > 1 && await this.isCacheValid(tabId, url);
       if (cacheValid && this.cache) {
         this.log('使用缓存数据...');
         allElements = this.cache.elements;
+        frameDiagnostics = this.cache.frameDiagnostics;
       } else {
         // 从页面获取数据
         this.log('从页面分析文件上传控件...');
         
-        const injectionResults = await chrome.scripting.executeScript({
+        const injectionResults = await readPageFrames({
           target: { tabId, allFrames: true },
           func: getFileUploadElementsPayload,
         });
+        frameDiagnostics = injectionResults.frameDiagnostics;
 
         const rawElements: any[] = [];
         for (const frameResult of injectionResults) {
+          if (!Array.isArray(frameResult.result)) {
+            addFrameIssue(frameDiagnostics, { frameId: frameResult.frameId, stage: 'read', code: 'INVALID_RESULT', message: 'Upload-control scan did not return an array' });
+            continue;
+          }
           if (frameResult.result && frameResult.result.length > 0) {
             const elementsWithFrameId = frameResult.result.map((el: any) => ({
               ...el,
@@ -967,16 +980,19 @@ export class FileUploadGetterTool extends BaseTool {
         
         // 保存到缓存
         this.cache = {
+          tabId,
           url,
           timestamp: Date.now(),
-          elements: allElements
+          elements: allElements,
+          frameDiagnostics,
         };
         this.log('结果已缓存');
       }
 
       // 分页处理
       const totalElements = allElements.length;
-      const totalPages = Math.ceil(totalElements / pageSize);
+      const totalPages = Math.max(1, Math.ceil(totalElements / pageSize));
+      if (page > totalPages) return this.createErrorResponse(`PAGE_OUT_OF_RANGE：当前快照共 ${totalPages} 页；新查询请从 page=1 开始。`);
       const startIndex = (page - 1) * pageSize;
       const pagedElements = allElements.slice(startIndex, startIndex + pageSize);
 
@@ -989,7 +1005,10 @@ export class FileUploadGetterTool extends BaseTool {
         page,
         pageSize,
         totalPages,
-        cached: cacheValid
+        cached: cacheValid,
+        frameDiagnostics,
+        cacheTimestamp: this.cache?.timestamp,
+        coverage: { complete: false, source: cacheValid ? 'Frozen upload-control snapshot in verified documents' : 'Rendered DOM upload controls', refresh: 'page=1 starts a fresh scan' },
       };
       
       return this.createSuccessResponse(
@@ -1000,7 +1019,7 @@ export class FileUploadGetterTool extends BaseTool {
     } catch (error) {
       const duration = Date.now() - startTime;
       this.log(`操作失败，耗时: ${duration}ms`, 'error');
-      return this.createErrorResponse('获取文件上传控件失败', error);
+      return { ...this.createErrorResponse('获取文件上传控件失败', error), ...(error instanceof PageReadError ? { data: { frameDiagnostics: error.frameDiagnostics } } : {}) };
     }
   }
 }

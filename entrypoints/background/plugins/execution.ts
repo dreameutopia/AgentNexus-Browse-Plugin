@@ -16,7 +16,11 @@ import { PUBLIC_HOST_TOOLS } from '@/utils/plugins/host-tools';
 import { describeOperationError } from '@/utils/plugins/operations';
 import { publicHttps } from '@/utils/plugins/network';
 import { strictJson } from '@/utils/plugins/json';
+import { runWorkflow, validateWorkflow } from '@/utils/plugins/workflow';
 import type { PluginService } from '@/utils/plugins/service';
+
+/** 单个插件同时执行的工具数上限，防止一个插件占满后台消息通道 */
+const MAX_CONCURRENT_PER_PLUGIN = 4;
 
 export class PluginExecutionGateway {
   private running = new Map<string, Set<AbortController>>();
@@ -50,9 +54,11 @@ export class PluginExecutionGateway {
         context?.pluginApproved && context.pluginBindings?.[key],
         'PLUGIN_APPROVAL_REQUIRED',
       );
+      invariant(!context.signal?.aborted, 'CAPABILITY_REVOKED');
       invariant(
-        !context.signal?.aborted && running.size < 4,
-        'PLUGIN_BUSY_OR_CANCELLED',
+        running.size < MAX_CONCURRENT_PER_PLUGIN,
+        'PLUGIN_BUSY',
+        `${running.size} tools already running for ${key}`,
       );
       const snapshot = await this.service.snapshot(),
         installed = snapshot.packages.find((p) => p.key === key),
@@ -71,25 +77,77 @@ export class PluginExecutionGateway {
       );
       const tool = installed.tools.find((t) => t.ref === ref);
       invariant(tool, 'TOOL_NOT_FOUND');
-      const argumentText = JSON.stringify(args ?? {});
-      invariant(argumentText.length <= LIMITS.args, 'ARGUMENT_LIMIT');
+      let argumentText: string;
+      try {
+        argumentText = JSON.stringify(args ?? {});
+      } catch {
+        invariant(false, 'INVALID_ARGUMENT', 'arguments are not JSON-serializable');
+      }
+      const argumentBytes = new TextEncoder().encode(argumentText).length;
+      invariant(
+        argumentBytes <= LIMITS.args,
+        'ARGUMENT_LIMIT',
+        `${argumentBytes} > ${LIMITS.args}`,
+      );
       const cleanArgs = strictJson(argumentText);
       validateArguments(tool.inputSchema, cleanArgs);
       running.add(controller);
       this.running.set(key, running);
+      // 准入检查与 add 之间隔着 await，必须在 add 后复检才能真正约束并发
+      invariant(
+        running.size <= MAX_CONCURRENT_PER_PLUGIN,
+        'PLUGIN_BUSY',
+        `${running.size} tools already running for ${key}`,
+      );
+      const pluginContext: ToolExecutionContext = {
+        ...(context ?? {}),
+        pluginKey: key,
+        pluginOrigins: installed.manifest.capabilities.network,
+        signal: controller.signal,
+      };
       const operation = async () => {
         if (tool.executor.type === 'host-alias') {
           const target = tool.executor.target.slice('builtin/'.length);
           invariant(PUBLIC_HOST_TOOLS.has(target), 'HOST_TOOL_NOT_PUBLIC', target);
+          // 防御性复检：篡改过的快照不能绕过 manifest 的能力声明
+          invariant(
+            installed.manifest.capabilities.hostTools.includes(
+              tool.executor.target,
+            ),
+            'UNDECLARED_HOST_TOOL',
+            tool.executor.target,
+          );
           const host = toolRegistry.get(target);
           invariant(host && !host.metadata.plugin, 'HOST_TOOL_NOT_FOUND');
-          return host.execute(cleanArgs, {
-            ...context,
-            signal: controller.signal,
-          });
+          return host.execute(cleanArgs, pluginContext);
+        }
+        if (tool.executor.type === 'host-workflow') {
+          validateWorkflow(installed.manifest, tool);
+          if (!cleanArgs || typeof cleanArgs !== 'object' || Array.isArray(cleanArgs))
+            invariant(false, 'INVALID_ARGUMENT', 'workflow input must be an object');
+          return runWorkflow(
+            tool,
+            cleanArgs as Record<string, unknown>,
+            pluginContext,
+            async (stepTool, stepArgs, stepSignal) => {
+              const target = stepTool.slice('builtin/'.length);
+              invariant(
+                PUBLIC_HOST_TOOLS.has(target),
+                'HOST_TOOL_NOT_PUBLIC',
+                stepTool,
+              );
+              const host = toolRegistry.get(target);
+              invariant(host && !host.metadata.plugin, 'HOST_TOOL_NOT_FOUND');
+              return host.execute(stepArgs, {
+                ...pluginContext,
+                signal: stepSignal,
+              });
+            },
+          );
         }
         return this.mcp(key, tool, cleanArgs, controller.signal);
       };
+      let cancelListener: (() => void) | undefined;
       const cancelled = new Promise<never>((_, reject) => {
         const rejectAborted = () => {
           const timedOut = controller.signal.reason === 'timeout';
@@ -102,29 +160,56 @@ export class PluginExecutionGateway {
             ),
           );
         };
+        cancelListener = rejectAborted;
         if (controller.signal.aborted) rejectAborted();
         else
           controller.signal.addEventListener('abort', rejectAborted, {
             once: true,
           });
       });
-      const result = await Promise.race([operation(), cancelled]);
+      let result: ToolResult;
+      try {
+        result = await Promise.race([operation(), cancelled]);
+      } finally {
+        // 正常完成时 abort 监听器不会触发，必须显式摘除，避免长生命周期
+        // signal 上残留闭包（60s 定时器与大量调用叠加会造成可观泄漏）。
+        if (cancelListener)
+          controller.signal.removeEventListener('abort', cancelListener);
+      }
       const latest = (await this.service.snapshot()).packages.find(
         (p) => p.key === key,
       );
+      // 超时与撤销都会 abort，但两者的运营诊断与模型自纠路径完全不同：
+      // 不能把超时误报成“能力被撤销”。
       invariant(
-        !controller.signal.aborted &&
-          latest?.enabled &&
-          !latest.blocked &&
-          latest.epoch === binding.epoch,
-        'CAPABILITY_REVOKED',
+        !controller.signal.aborted,
+        controller.signal.reason === 'timeout'
+          ? 'PLUGIN_HOST_TIMEOUT'
+          : 'CAPABILITY_REVOKED',
       );
       invariant(
-        result &&
-          typeof result === 'object' &&
-          !Array.isArray(result) &&
-          JSON.stringify(result).length <= LIMITS.result,
+        latest?.enabled && !latest.blocked && latest.epoch === binding.epoch,
+        'CAPABILITY_REVOKED',
+        latest
+          ? `plugin ${key} was disabled or replaced`
+          : `plugin ${key} was removed`,
+      );
+      invariant(
+        result && typeof result === 'object' && !Array.isArray(result),
         'INVALID_TOOL_RESULT',
+        'tool result must be an object',
+      );
+      let resultText = '';
+      try {
+        resultText = JSON.stringify(result);
+      } catch {
+        invariant(false, 'INVALID_TOOL_RESULT', 'tool result is not JSON-serializable');
+      }
+      const resultBytes = new TextEncoder().encode(resultText).length;
+      invariant(
+        resultBytes <= LIMITS.result,
+        'RESULT_LIMIT',
+        `${resultBytes} > ${LIMITS.result}`,
       );
       return {
         ...result,
@@ -143,7 +228,9 @@ export class PluginExecutionGateway {
       clearTimeout(timer);
       context?.signal?.removeEventListener('abort', onContextAbort);
       running.delete(controller);
-      if (!running.size) this.running.delete(key);
+      // 仅删除自己的条目：并发执行可能已把同一个 Set 重新登记回 map
+      if (this.running.get(key) === running && !running.size)
+        this.running.delete(key);
     }
   }
   private async mcp(
@@ -187,6 +274,9 @@ export class PluginExecutionGateway {
         },
       },
     );
+    // 流式读取超限的错误经 SDK 后未必保留原始类型，用本地标记兜底，
+    // 避免被统一收敛成 MCP_FAILED（错误码是运营诊断的唯一稳定入口）。
+    let responseLimitHit = false;
     const transport = new StreamableHTTPClientTransport(new URL(executor.url), {
       reconnectionOptions: {
         maxRetries: 0,
@@ -195,9 +285,24 @@ export class PluginExecutionGateway {
         reconnectionDelayGrowFactor: 1,
       },
       fetch: async (input, init) => {
-        const url = publicHttps(String(input));
+        // SDK 可能传 Request / URL / string：必须取真实 URL，不能 String(Request)
+        const rawUrl =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+              ? input.href
+              : typeof (input as { url?: unknown }).url === 'string'
+                ? (input as { url: string }).url
+                : String(input);
+        const url = publicHttps(rawUrl);
         invariant(url.origin === origin, 'MCP_ORIGIN_MISMATCH');
-        const headers = new Headers(init?.headers);
+        // 若 SDK 把请求头放在 Request 上，init.headers 为空不能把它们覆盖掉
+        const headers = new Headers(
+          (input as { headers?: HeadersInit }).headers,
+        );
+        new Headers(init?.headers).forEach((value, key) =>
+          headers.set(key, value),
+        );
         if (token) headers.set('Authorization', `Bearer ${token}`);
         const response = await fetch(input, {
           ...init,
@@ -220,7 +325,17 @@ export class PluginExecutionGateway {
                 return;
               }
               count += chunk.value.length;
-              invariant(count <= LIMITS.result, 'MCP_RESPONSE_LIMIT');
+              if (count > LIMITS.result) {
+                responseLimitHit = true;
+                await reader.cancel();
+                c.error(
+                  new PluginError(
+                    'MCP_RESPONSE_LIMIT',
+                    `MCP response exceeds ${LIMITS.result} bytes`,
+                  ),
+                );
+                return;
+              }
               c.enqueue(chunk.value);
             } catch (error) {
               await reader.cancel();
@@ -274,6 +389,11 @@ export class PluginExecutionGateway {
     } catch (error) {
       // MCP SDK 的异常类型不稳定：统一收敛为稳定错误码，同时保留原始 message。
       if (error instanceof PluginError) throw error;
+      if (responseLimitHit)
+        throw new PluginError(
+          'MCP_RESPONSE_LIMIT',
+          `MCP response exceeds ${LIMITS.result} bytes`,
+        );
       throw new PluginError(
         'MCP_FAILED',
         error instanceof Error ? error.message : String(error),

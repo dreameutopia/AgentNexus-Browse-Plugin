@@ -41,12 +41,14 @@ export function withoutVisionImage(result: ToolResult): ToolResult {
  *      截图 → 重拍；inspect/zoom/check/read 保留源图 → 不重拍；
  *   4. 其余工具由 noRecapture 回调判定：true（纯读豁免）不改变批次状态，
  *      false / 未声明（含未知与插件工具）一律保守重拍。
- *   5. 「前台打开」例外：纯读豁免的前提是**不改变用户可见的页面**。
- *      browser_get_page_text 带 url 时会在前台新建并激活标签页打开目标页
+ *   5. 「前台打开/切换」例外：纯读豁免的前提是**不改变用户可见的页面**。
+ *      read_website 带 url 时会在前台新建并激活标签页打开目标页
  *      （等同 browser_navigation(action="open")；后台打开拿不到真实浏览上下文、
- *      容易触发人机验证），用户眼前的页面已经变了 —— 截图身份失效，必须重拍。
- *      参数无法解析时**按「可能带 url」处理**（保守重拍）：解析失败不等于
- *      没有 url，猜错会让模型拿着一张过期截图继续操作。
+ *      容易触发人机验证）；read_website / browser_observe / browser_dom_explore /
+ *      browser_interact 带 tabId 时，统一引擎也会先切换到该标签页。两种情况下
+ *      用户眼前的页面都已经变了 —— 截图身份失效，必须重拍。
+ *      参数无法解析时**按「可能改变前台」处理**（保守重拍）：解析失败不等于
+ *      没有 url/tabId，猜错会让模型拿着一张过期截图继续操作。
  *   6. 合并型多语义工具的纯读 action 例外（见 PURE_READ_ACTIONS）：
  *      browser_tabs / browser_navigation 各自混有纯读与改视图两类 action，
  *      工具级 noVisionRecapture 无法表达——按 action 精确豁免；参数解析
@@ -57,8 +59,21 @@ export function withoutVisionImage(result: ToolResult): ToolResult {
  */
 type VisionCall = string | { function: { name: string; arguments?: string } };
 
-/** 「前台打开」型纯读工具：带 url 参数时会切换用户可见页面，豁免重拍失效 */
-const FOREGROUND_OPENING_TOOLS = new Set(['browser_get_page_text']);
+/**
+ * 会改变用户眼前页面的「纯读」工具：
+ *   - read_website / browser_get_page_text：带 url 时前台新建并激活标签页；
+ *   - browser_observe / browser_dom_explore / browser_interact：带 tabId 时
+ *     统一引擎会先校验再切换到该标签页。
+ * 这些工具即使声明 noVisionRecapture（纯读），一旦命中上述参数，截图身份
+ * 也会失效，必须重拍。`browser_get_page_text` 仅是注册保留通道，不属推荐链路。
+ */
+const FOREGROUND_SWITCHING_TOOLS = new Set([
+  'read_website',
+  'browser_get_page_text',
+  'browser_observe',
+  'browser_dom_explore',
+  'browser_interact',
+]);
 
 /**
  * 合并型工具的纯读 action（与 registry 的 noVisionRecapture 并列的 action 级豁免）：
@@ -83,10 +98,16 @@ function isPureReadMergedAction(name: string, argsKnown: boolean, args: unknown)
 }
 
 /** 调用参数里是否带非空 url（url 模式 = 前台打开目标页） */
-function hasUrlArgument(args: unknown): boolean {
+/**
+ * 「改变用户可见页面」的参数判定：url 会新建并激活标签页，tabId 会先切换到
+ * 该页——两种都会让上一步的截图身份失效（与 read_website 的 tabId 语义配套）。
+ */
+function changesForeground(args: unknown): boolean {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
-  const url = (args as { url?: unknown }).url;
-  return typeof url === 'string' && url.trim().length > 0;
+  const { url, tabId } = args as { url?: unknown; tabId?: unknown };
+  if (typeof url === 'string' && url.trim().length > 0) return true;
+  if (typeof tabId === 'number' && Number.isFinite(tabId)) return true;
+  return typeof tabId === 'string' && tabId.trim().length > 0;
 }
 
 export function needsVisionRefresh(calls: VisionCall[], images: VisionToolImage[], noRecapture: (name: string) => boolean | undefined): boolean {
@@ -94,8 +115,8 @@ export function needsVisionRefresh(calls: VisionCall[], images: VisionToolImage[
   calls.forEach((call, index) => {
     const name=typeof call==='string'?call:call.function.name;
     let args:unknown;
-    // argsKnown：参数是否**确定**不含 url。字符串形式的调用没有参数（确定没有）；
-    // 对象形式但 JSON 解析失败时不确定 → 保守按「可能带 url」处理。
+    // argsKnown：参数是否**确定**不含 url/tabId。字符串形式的调用没有参数
+    // （确定没有）；对象形式但 JSON 解析失败时不确定 → 保守按「可能改变前台」处理。
     let argsKnown = true;
     if(typeof call!=='string') {
       try { args=JSON.parse(call.function.arguments??''); }
@@ -104,7 +125,7 @@ export function needsVisionRefresh(calls: VisionCall[], images: VisionToolImage[
     if (images.some(image => image.callIndex === index && image.kind === 'viewport')) refresh = false;
     else if (name === 'screenshot') refresh = true;
     else if (name === 'vision_gui') { if(visionGuiRefresh(args)==='after') refresh=true; }
-    else if (FOREGROUND_OPENING_TOOLS.has(name) && (!argsKnown || hasUrlArgument(args))) refresh = true;
+    else if (FOREGROUND_SWITCHING_TOOLS.has(name) && (!argsKnown || changesForeground(args))) refresh = true;
     else if (isPureReadMergedAction(name, argsKnown, args)) { /* 纯枚举/等待 action：不改变批次状态 */ }
     else if (!noRecapture(name)) refresh = true;
   });

@@ -1,3 +1,4 @@
+import { readPageFrames } from '../common/frame-read';
 /**
  * 跨标签页内容检索工具（browser_vector_search）
  *
@@ -72,7 +73,7 @@ export class VectorSearchTabsContentTool extends BaseBrowserTool {
         '哪一页提到了某产品」这类跨页面回忆。' +
         '只扫描普通网页（chrome:// 等受限页面会被跳过并计入 skipped）；单页读取上限 20000 字符，' +
         '关键词落在截断之外时该页不会命中（响应中标注 scanned 便于判断覆盖范围）。' +
-        '要看某个页面的完整正文请用 browser_get_page_text。',
+        '要看某个页面的完整正文请用 read_website。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -124,38 +125,42 @@ export class VectorSearchTabsContentTool extends BaseBrowserTool {
       const skipped: Array<{ tabId: number; url: string; reason: string }> = [];
       let scanned = 0;
 
-      for (const tab of candidates) {
-        const text = await this.readTabText(tab.id!);
-        if (text === null) {
-          skipped.push({ tabId: tab.id!, url: tab.url!, reason: '页面文本读取失败（受限页面或注入被拒）' });
-          continue;
+      const deadline = Date.now() + 12000;
+      let cursorIndex = 0;
+      await Promise.all(Array.from({ length: Math.min(4, candidates.length) }, async () => {
+        while (cursorIndex < candidates.length) {
+          const tab = candidates[cursorIndex++];
+          if (Date.now() >= deadline) { skipped.push({ tabId: tab.id!, url: tab.url!, reason: 'READ_BUDGET_EXCEEDED：本轮检索预算用尽，此标签页未读取' }); continue; }
+          let text: string;
+          try { text = await this.readTabText(tab.id!, Math.min(1800, deadline - Date.now())); }
+          catch (error) { skipped.push({ tabId: tab.id!, url: tab.url!, reason: error instanceof Error ? error.message : String(error) }); continue; }
+          scanned += 1;
+
+          const haystack = includeTitles ? `${tab.title ?? ''}\n${text}` : text;
+          const lower = haystack.toLowerCase();
+
+          const firstHit = lower.indexOf(needle);
+          if (firstHit < 0) continue;
+          let hits = 0;
+          let cursor = firstHit;
+          while (cursor >= 0 && hits < 100) {
+            hits += 1;
+            cursor = lower.indexOf(needle, cursor + needle.length);
+          }
+
+          const start = Math.max(0, firstHit - SNIPPET_CONTEXT);
+          const snippet = haystack.slice(start, firstHit + needle.length + SNIPPET_CONTEXT).replace(/\s+/g, ' ').trim();
+
+          matches.push({
+            tabId: tab.id!,
+            title: tab.title ?? tab.url!,
+            url: tab.url!,
+            hits,
+            firstHit,
+            snippet,
+          });
         }
-        scanned += 1;
-
-        const haystack = includeTitles ? `${tab.title ?? ''}\n${text}` : text;
-        const lower = haystack.toLowerCase();
-
-        const firstHit = lower.indexOf(needle);
-        if (firstHit < 0) continue;
-        let hits = 0;
-        let cursor = firstHit;
-        while (cursor >= 0 && hits < 100) {
-          hits += 1;
-          cursor = lower.indexOf(needle, cursor + needle.length);
-        }
-
-        const start = Math.max(0, firstHit - SNIPPET_CONTEXT);
-        const snippet = haystack.slice(start, firstHit + needle.length + SNIPPET_CONTEXT).replace(/\s+/g, ' ').trim();
-
-        matches.push({
-          tabId: tab.id!,
-          title: tab.title ?? tab.url!,
-          url: tab.url!,
-          hits,
-          firstHit,
-          snippet,
-        });
-      }
+      }));
 
       matches.sort((a, b) => b.hits - a.hits || a.firstHit - b.firstHit);
 
@@ -186,25 +191,22 @@ export class VectorSearchTabsContentTool extends BaseBrowserTool {
 
   /**
    * 读取标签页的可见文本（只取可见正文，不做结构化解析）。
-   * 读取失败返回 null（受限页面、注入被拒、页面已关闭）——由调用方计入 skipped。
+   * 失败保留具体原因，由调用方计入 skipped；等待受本轮剩余预算约束。
    */
-  private async readTabText(tabId: number): Promise<string | null> {
-    try {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId },
-        func: (limit: number) => {
-          const body = document.body;
-          if (!body) return '';
-          const text = body.innerText || body.textContent || '';
-          return text.length > limit ? text.slice(0, limit) : text;
-        },
-        args: [MAX_TEXT_PER_TAB],
-      });
-      const value = results?.[0]?.result;
-      return typeof value === 'string' ? value : null;
-    } catch {
-      return null;
-    }
+  private async readTabText(tabId: number, timeoutMs: number): Promise<string> {
+    const results = await readPageFrames({
+      target: { tabId },
+      func: (limit: number) => {
+        const body = document.body;
+        if (!body) return '';
+        const text = body.innerText || body.textContent || '';
+        return text.length > limit ? text.slice(0, limit) : text;
+      },
+      args: [MAX_TEXT_PER_TAB],
+    }, { operation: 'tab-text-search', timeoutMs, frameTimeoutMs: timeoutMs });
+    const value = results?.[0]?.result;
+    if (typeof value !== 'string') throw new Error('INVALID_RESULT：页面未返回文本');
+    return value;
   }
 }
 

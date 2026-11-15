@@ -57,7 +57,7 @@ Every hour of manual operation removed is the point. Features that do not move t
 ## 🔥 Core Features
 
 ### 🧰 Rich Tool System
-**17 categories with 70+ built-in tools** at multiple abstraction levels: tab / window / navigation management, page clicking, filling and scrolling, screenshots (viewport, full page, element), network capture (CDP debugger), page source / content extraction, page cleaning (ad & tracker removal), resource sniffing and downloading, integrated search, history & bookmark management, text compression, XLSX read/write, Excalidraw canvas drawing, Bilibili subtitle fetching, code execution, and more.
+**17 categories with 70+ built-in tools** at multiple abstraction levels: tab / window / navigation management, page clicking, filling and scrolling, screenshots (viewport, full page, element), network capture (CDP debugger), page source / content extraction, page cleaning (ad & tracker removal), resource sniffing and downloading, integrated search, history & bookmark management, text compression, XLSX read/write, Excalidraw canvas drawing, code execution, and more. Site-specific capabilities such as Bilibili search and subtitles ship as official plugins.
 
 ### 🔌 Multi-Protocol Model Access
 Native streaming adapters for **OpenAI, OpenAI Responses, Claude, Gemini, and Ollama**, unified into a single internal message stream; backed by SSE protocol contract tests (`tests/protocol-contract`) to keep protocol parsing accurate across vendors.
@@ -66,10 +66,10 @@ Native streaming adapters for **OpenAI, OpenAI Responses, Claude, Gemini, and Ol
 A custom context engine (context metering, transcript engine, context-window guard) automatically trims and compresses history, while the chat database persists conversations — long sessions stay within limits and remain resumable.
 
 ### 🤖 Agent System
-7 preset agents: Deep Search, General Text Assistant, Vision Assistant, General Vision Assistant, Data Collection Assistant, Bilibili Search Assistant, and Mindmap Assistant. Their names, descriptions, categories and tags follow the interface language. Custom agents (model, prompt, toolset, skill mounting) can be created in the management hub.
+6 preset agents: Deep Search, General Text Assistant, Vision Assistant, General Vision Assistant, Data Collection Assistant, and Mindmap Assistant. Their names, descriptions, categories and tags follow the interface language. The Bilibili Search Assistant is now delivered by the official Bilibili plugin. Custom agents (model, prompt, toolset, skill mounting) can be created in the management hub.
 
 ### 📚 Skill System
-Skill loading and resource reading tools, with 3 built-in skills: Bilibili video summary, web research report, and XLSX creator; skills support import/export and availability management (see "Skill Design" below for the design rationale).
+Skill loading and resource reading tools, with built-in web research report, XLSX creator and skill authoring guides (the Bilibili video summary skill now ships with the official Bilibili plugin); skills support import/export and availability management (see "Skill Design" below for the design rationale).
 
 ### 🗂️ Management Hub
 A dedicated management page for agents, skills, and configuration backup / restore.
@@ -104,7 +104,7 @@ Skills combine reusable workflows in `SKILL.md` with optional scripts, templates
 ### What Belongs in a Skill
 - **Workflow experience**: a complete methodology, e.g. the web research report flow of "decompose → multi-source search → cross-validate → log progress → summarize";
 - **Scenario-specific solutions**: tool orchestration and parameter know-how for a specific task, such as the field conventions for creating an XLSX spreadsheet;
-- **Site-specific guides**: an operating manual for a particular website, e.g. Bilibili video summarization — page-pattern recognition, prerequisites (logged-in state), when to call dedicated tools, and fallback strategies.
+- **Site-specific guides**: an operating manual for a particular website, e.g. a video-site summarization workflow — page-pattern recognition, prerequisites (logged-in state), when to call dedicated tools, and fallback strategies.
 
 ### Skill Format
 One skill = one `SKILL.md` (YAML frontmatter + Markdown body) + optional resource files (e.g. `references/*.md`). Key frontmatter fields:
@@ -114,7 +114,7 @@ One skill = one `SKILL.md` (YAML frontmatter + Markdown body) + optional resourc
 | `name` | Skill name (lowercase letters / digits / hyphens). Duplicates are allowed — uniqueness is carried by the identifier below |
 | `description` | What it does + when to use it — the model matches tasks against this, users enable by it |
 | `allowed-tools` | Pre-authorized tool IDs (space-separated), callable directly once the skill is activated |
-| `compatibility` | Environment requirements (optional), e.g. "requires a logged-in Bilibili session" |
+| `compatibility` | Environment requirements (optional), e.g. "requires a logged-in site session" |
 
 ### Progressive Disclosure (context-friendly)
 1. **Discover**: the system prompt carries a persistent `<available-skills>` list — skill id + one-line description per entry;
@@ -125,7 +125,9 @@ One skill = one `SKILL.md` (YAML frontmatter + Markdown body) + optional resourc
 
 Every chat receives `skill_tool` with `load`, `read`, `copy`, `create`, `edit`, and `delete`. Copying resources requires no Python runtime. Pass a decimal `skill_id` and exact `paths` (or `["."]` for the whole Skill). Files keep their bytes and relative layout. Existing files are preserved; collisions go under `<skill_id>/` and then numbered copy directories. Always use returned paths. Install Python only when Python execution is needed.
 
-Write scripts into the chat workspace with `python_run(action="create", path="scripts/report.py", content=...)` and execute them with `action="run"` (the path must be an existing workspace-relative `.py`); use `action="edit"` (full rewrite, or a unique `find`/`replace`) to modify files and `action="delete"` to remove them. All paths are relative to the workspace root — absolute paths, drive letters and `..` are rejected. Skill scripts copied above run the same way from their copied root. `AGENTNEXUS_WORKSPACE` points to the chat workspace, where user files are under `inputs/` and deliverables belong under `outputs/`. Use `argv`, `stdin`, and `env` for arguments, input, and non-secret configuration. For package entry points, pass the dotted `module` alongside its file path. Link a saved output with `<workspace-file path="outputs/report.csv" />`.
+Write scripts into the chat workspace with `python_run(action="create", path="scripts/report.py", content=...)` and execute them with `action="run"` (the path must be an existing workspace-relative `.py`); use `action="edit"` (full rewrite, or a unique `find`/`replace`) to modify files, `action="delete"` to remove them, `action="read"` to page through workspace text files, and `action="list"` to inventory a workspace directory. All paths are relative to the workspace root — absolute paths, drive letters and `..` are rejected. Skill scripts copied above run the same way from their copied root. `AGENTNEXUS_WORKSPACE` points to the chat workspace, where user files are under `inputs/` and deliverables belong under `outputs/`. Use `argv`, `stdin`, and `env` for arguments, input, and non-secret configuration. For package entry points, pass the dotted `module` alongside its file path. Link a saved output with `<workspace-file path="outputs/report.csv" />`.
+
+Dependencies come from three channels: `requirements.txt`, PEP 723 metadata and `pyproject.toml` next to the script are discovered automatically; packages inside the official catalog (numpy, pandas, …) load on import; a pure-Python package outside the catalog must be declared explicitly with `requirements=["pkg"]` **and** `dependencyMode="pypi"` — both are required together, and `requirements` alone always fails in the default catalog mode. That mode asks the user for approval and only supports pure-Python wheels; packages with C extensions must come from the catalog or from a compatible local `.whl` (the `wheels` parameter).
 
 Set `preflight: true` to inspect static imports, PEP 723 metadata, `requirements.txt` or static `pyproject.toml` metadata, and environment references. The default resolver uses the Pyodide catalog and explicitly supplied local wheels. Public PyPI wheel resolution requires approval in chat. Scripts that need Bash, subprocesses, native programs, or packages with no compatible wheel need an equivalent Python implementation or another available tool.
 

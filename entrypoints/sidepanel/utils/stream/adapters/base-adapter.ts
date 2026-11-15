@@ -90,11 +90,29 @@ export interface SSEReadStats {
 }
 
 /**
+ * SSE 流的**空闲超时**（毫秒）：连续多少时间没收到任何数据即判定连接挂起。
+ *
+ * 为什么是 10 分钟而不是 60 秒：模型在两个 token 之间可以静默很久——深度
+ * 推理模型的首 token 动辄几十秒，长上下文 + 长工具链的请求更是如此。60 秒的
+ * 空闲上限会把「模型还在想」误判成「连接已死」，中断一次本可完成的长任务。
+ * 真挂死的连接由用户「停止」按钮主动收敛，不必由超时替用户做决定。
+ */
+export const STREAM_IDLE_TIMEOUT_MS = 600_000;
+
+/**
+ * SSE 流的**建连 + 首包超时**（毫秒）。
+ *
+ * 与空闲超时同源上调：大上下文请求在服务端开始吐字前可能静默很久，首包超时
+ * 若仍是 60 秒，放宽空闲超时就没有意义（请求会先在建连阶段被掐断）。
+ */
+export const STREAM_CONNECT_TIMEOUT_MS = 600_000;
+
+/**
  * 通用 SSE 行读取循环
  * 从 ReadableStream 中按行读取 SSE data，对每行调用 handler。
  * 自动处理：buffer 拼接、done 检测、AbortError 传播、空闲超时。
  *
- * @param idleTimeoutMs 连续无数据的超时毫秒数，默认 60 秒
+ * @param idleTimeoutMs 连续无数据的超时毫秒数，默认 STREAM_IDLE_TIMEOUT_MS
  * @param errorContext 结构化错误的定位上下文（provider/url/model）
  * @returns 读取统计（行数/字节数/首行预览），供调用方做终态校验诊断
  */
@@ -104,7 +122,7 @@ export async function readSSELines(
   lineHandler: (line: string, acc: StreamAccumulator, callbacks: StreamCallbacks) => boolean,
   callbacks: StreamCallbacks,
   acc: StreamAccumulator,
-  idleTimeoutMs: number = 60000,
+  idleTimeoutMs: number = STREAM_IDLE_TIMEOUT_MS,
   errorContext?: StreamErrorContext
 ): Promise<SSEReadStats> {
   const decoder = new TextDecoder();
@@ -289,7 +307,7 @@ export abstract class BaseAdapter implements ProtocolAdapter {
         this.parseSSELine.bind(this),
         callbacks,
         acc,
-        60000,
+        STREAM_IDLE_TIMEOUT_MS,
         context,
       );
 
@@ -375,7 +393,7 @@ export abstract class BaseAdapter implements ProtocolAdapter {
     headers: Record<string, string>,
     body: any,
     signal?: AbortSignal,
-    connectTimeoutMs: number = 60000
+    connectTimeoutMs: number = STREAM_CONNECT_TIMEOUT_MS
   ): Promise<ReadableStreamDefaultReader<Uint8Array>> {
     console.log(`[BaseAdapter] fetchStream 开始`, {
       url: sanitizeUrlForLog(url).substring(0, 150),

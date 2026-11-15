@@ -1,3 +1,4 @@
+import { executeScriptBounded } from '../common/frame-read';
 /**
  * AI操作工具
  * 使用AI视觉能力执行页面操作
@@ -78,7 +79,7 @@ export class AIActionTool extends BaseTool {
 
   async execute(args: ActionParams): Promise<ToolResult> {
     console.log('🎬 [AI操作工具] 开始执行');
-    console.log('📥 [AI操作工具] 接收参数:', args);
+    console.log('📥 [AI操作工具] 已接收操作请求');
     
     try {
       this.validateArgs(args, ['description', 'action']);
@@ -86,7 +87,7 @@ export class AIActionTool extends BaseTool {
       const { description, action, value = '', waitAfter = 1000, screenshot = false } = args;
       
       console.log(`🎯 [AI操作工具] 开始执行操作: "${description}" (${action})`);
-      console.log(`⚙️ [AI操作工具] 配置 - 操作值: "${value}", 等待时间: ${waitAfter}ms, 截图验证: ${screenshot}`);
+      console.log(`⚙️ [AI操作工具] 配置 - 等待时间: ${waitAfter}ms, 截图验证: ${screenshot}`);
       
       this.log(`开始执行操作: ${description} (${action})`);
       
@@ -307,10 +308,10 @@ export class AIActionTool extends BaseTool {
       try {
         // 使用统一的JSON提取方法
         result = this.extractJsonFromText(content);
-        console.log('✅ [AI操作工具-AI分析] JSON解析成功:', result);
+        console.log('✅ [AI操作工具-AI分析] JSON解析成功');
       } catch (parseError) {
         console.error('❌ [AI操作工具-AI分析] JSON解析失败:', parseError);
-        console.error('🔍 [AI操作工具-AI分析] 原始内容:', content);
+        console.error('🔍 [AI操作工具-AI分析] 响应长度:', content?.length);
         throw new Error(`解析AI响应失败: ${content}`);
       }
       
@@ -340,7 +341,7 @@ export class AIActionTool extends BaseTool {
       console.log('🎬 [AI操作工具-执行] 开始执行操作');
       console.log('📍 [AI操作工具-执行] 目标选择器:', selector);
       console.log('🎯 [AI操作工具-执行] 操作类型:', action);
-      console.log('📝 [AI操作工具-执行] 操作值:', value);
+      console.log('📝 [AI操作工具-执行] 是否提供操作值:', value !== undefined && value !== '');
       
       const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tabs[0]) {
@@ -349,13 +350,13 @@ export class AIActionTool extends BaseTool {
       }
       
       console.log('💉 [AI操作工具-执行] 向页面注入执行脚本...');
-      const result = await chrome.scripting.executeScript({
+      const result = await executeScriptBounded({
         target: { tabId: tabs[0].id! },
         func: (sel: string, act: string, val: string) => {
           console.log('🎬 [页面脚本] 开始执行操作脚本');
           console.log('📍 [页面脚本] 选择器:', sel);
           console.log('🎯 [页面脚本] 操作:', act);
-          console.log('📝 [页面脚本] 值:', val);
+          console.log('📝 [页面脚本] 是否提供值:', val !== undefined && val !== '');
           
           try {
             let element = null;
@@ -410,7 +411,7 @@ export class AIActionTool extends BaseTool {
                       element.value = val;
                       element.dispatchEvent(new Event('input', { bubbles: true }));
                       element.dispatchEvent(new Event('change', { bubbles: true }));
-                      console.log('✅ [页面脚本] 输入操作完成，值:', val);
+                      console.log('✅ [页面脚本] 输入操作完成');
                     } else {
                       console.error('❌ [页面脚本] 元素不支持输入操作');
                       throw new Error('元素不支持输入操作');
@@ -427,7 +428,7 @@ export class AIActionTool extends BaseTool {
                     if (element instanceof HTMLSelectElement) {
                       element.value = val;
                       element.dispatchEvent(new Event('change', { bubbles: true }));
-                      console.log('✅ [页面脚本] 选择操作完成，值:', val);
+                      console.log('✅ [页面脚本] 选择操作完成');
                     } else {
                       console.error('❌ [页面脚本] 元素不支持选择操作');
                       throw new Error('元素不支持选择操作');

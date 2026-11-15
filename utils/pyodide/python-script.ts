@@ -1,5 +1,9 @@
 import type { PyodideInterface } from 'pyodide';
 import type { PythonScriptRequest } from './python-script-request';
+import {
+  normalizePackageName,
+  normalizeRequirementName,
+} from './dependency-contract';
 
 // Inspection never imports a module from the workspace or evaluates project configuration.
 import SCRIPT_RUNNER from './workspace-script-runner.py?raw';
@@ -23,11 +27,13 @@ export async function runWorkspaceScript(
     const lock = (await import('pyodide/pyodide-lock.json')).default.packages;
     const catalog = Object.values(lock);
     const catalogImports = new Set(catalog.flatMap(pkg => pkg.imports ?? []));
-    const lookup = (name: string) => name.toLowerCase().replace(/[-_.]+/g, '-');
-    const catalogNames = new Map(catalog.map(pkg => [lookup(pkg.name), pkg.name]));
+    // 包名归一化与官方目录匹配一律走共享契约（utils/pyodide/dependency-contract）：
+    // 工具层的依赖前置判定与 worker 的实际装包必须用**同一套**归一化口径，
+    // 否则同一个包会被一边判为「目录内」、另一边判为「目录外」。
+    const catalogNames = new Map(catalog.map(pkg => [normalizePackageName(pkg.name), pkg.name]));
     const declared = [...new Set(plan.requirements.flatMap(text => {
-      const name = /^([a-z0-9][a-z0-9_.-]*)/i.exec(text)?.[1];
-      const match = name && catalogNames.get(lookup(name));
+      const name = normalizeRequirementName(text);
+      const match = name && catalogNames.get(name);
       return match ? [match] : [];
     }))];
     const available = plan.imports.filter(name => catalogImports.has(name));
@@ -52,7 +58,7 @@ export async function runWorkspaceScript(
         'requirements = runner.requirements(plan)\njson.dumps([req.name for req in requirements])', { globals },
       )) as string[];
       const matching = [...new Set(candidates.flatMap(name => {
-        const match = catalogNames.get(lookup(name));
+        const match = catalogNames.get(normalizePackageName(name));
         return match ? [match] : [];
       }))];
       if (matching.length && request.dependencyMode === 'catalog') await pyodide.loadPackage(matching);

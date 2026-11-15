@@ -29,6 +29,10 @@ import {
   readWorkspaceTextFile,
   WORKSPACE_READ_PAGE_CHARS,
 } from "@/utils/python-workspace/workspace-files";
+import {
+  listPageParams,
+  listWorkspaceEntries,
+} from "@/utils/python-workspace/workspace-listing";
 import { saveWorkspaceResultFile } from "@/utils/python-workspace/data-files";
 import { analyzeValue } from "@/utils/data-ref-rows";
 import { chatDatabase } from "@/entrypoints/sidepanel/core/context/chat-database";
@@ -116,6 +120,12 @@ function jsonArguments(raw: unknown): unknown[] {
   if (json.length > 1000000) throw new Error("args 超过 1000000 字符");
   return JSON.parse(json);
 }
+/**
+ * list 的目录盘点语义（缺失目录提示、文件/目录区分、分页口径）见
+ * utils/python-workspace/workspace-listing —— js_run 与 python_run 共用同一实现，
+ * 两工具在同一会话里盘点同一工作区时返回形状与报错文案逐字一致。
+ */
+
 /** Reuse the unchanged backend execution implementation, with file-backed session input. */
 export class JsRunTool extends BaseBrowserTool {
   name = JS_RUN_TOOL_ID;
@@ -145,7 +155,7 @@ export class JsRunTool extends BaseBrowserTool {
       function: {
         name: this.name,
         description:
-          "当前会话工作区文件与 JavaScript 工具。create/edit/delete 适用于所有扩展名的 UTF-8 文本；read 按 path 分页读取任意工作区文本文件（index 指定页码，每页 ≤2000 字符，响应携带当前页码与总页数）；list 盘点文件。run 只接受已保存的 .js/.mjs/.cjs 相对路径，绝不接收内联 code；每次执行的完整结果自动保存为 results/ 下的独立 JSON 文件（≤10MB，跨浏览器重启持久），响应只回传前 2000 字符、超出部分用 read 续读。crawl 把同一个已保存脚本按 targets 列表跑遍多个页面：工具内部完成导航、等待就绪与逐页执行，页面间随机停顿防风控，每页独立失败并给出逐目标账本，结果合成一张带来源列的表并同样落盘为结果文件。页面执行策略、世界、frame、Promise 与超时完整保留；通过 $args 使用 args 数组动态传参（crawl 时 $args[0] 是本次目标信息）。操作顺序、复用、编辑和交付规则见全局脚本规范。",
+          "当前会话工作区文件与 JavaScript 工具。create/edit/delete 适用于所有扩展名的 UTF-8 文本；read 按 path 分页读取任意工作区文本文件（index 指定页码，每页 ≤2000 字符，响应携带当前页码与总页数）；list 盘点已存在目录（省略 path 或传 \".\" 列根目录；不创建目录，子目录不存在会报错并给出下一步）。run 只接受已保存的 .js/.mjs/.cjs 相对路径，绝不接收内联 code；每次执行的完整结果自动保存为 results/ 下的独立 JSON 文件（≤10MB，跨浏览器重启持久；results/ 由首次写入自动创建），响应只回传前 2000 字符、超出部分用 read 续读。结果文件可直接交给 data_ref_tool(action=\"info\", file=…) 查看字段结构、data_ref_tool(files=[…]) 合并/去重/投影、xlsx_tool(action=\"create_from_data\", sheets:[{name, dataFiles:[结果文件路径]}]) 导出，无需再读内容。crawl 把同一个已保存脚本按 targets 列表跑遍多个页面：工具内部完成导航、等待就绪与逐页执行，页面间随机停顿防风控，每页独立失败并给出逐目标账本，结果合成一张带来源列的表并同样落盘为结果文件。页面执行策略、世界、frame、Promise 与超时完整保留；通过 $args 使用 args 数组动态传参（crawl 时 $args[0] 是本次目标信息）。操作顺序、复用、编辑和交付规则见全局脚本规范。",
         parameters: {
           type: "object",
           additionalProperties: false,
@@ -155,7 +165,7 @@ export class JsRunTool extends BaseBrowserTool {
             path: {
               type: "string",
               description:
-                "当前会话工作区相对路径，如 scripts/collect.js 或 results/run-….json。run/crawl 必填且指向 .js/.mjs/.cjs 脚本；read 必填且一次只读一个文件；list 可省略以列出根目录。",
+                "当前会话工作区相对路径，如 scripts/collect.js 或 results/run-….json。run/crawl 必填且指向 .js/.mjs/.cjs 脚本；read 必填且一次只读一个文件；list 可省略（或传 \".\"）以列出根目录——list 只盘点已存在目录，不会创建目录，results/ 由首次 run/治理写入自动创建。",
             },
             content: {
               type: "string",
@@ -349,36 +359,15 @@ export class JsRunTool extends BaseBrowserTool {
           context?.signal,
         );
       if (action === "list") {
-        const prefix =
-          args.path === undefined || args.path === "."
-            ? ""
-            : parseWorkspaceFilePath(args.path) + "/";
-        const offset = this.integer(args.offset, 0),
-          limit = Math.min(this.integer(args.limit, 100, 1), 200);
-        const snapshot = await chatDatabase.readWorkspace(
+        const { offset, limit } = listPageParams(args.offset, args.limit);
+        const listing = await listWorkspaceEntries(
           chatId,
+          args.path,
+          offset,
+          limit,
           context?.signal,
         );
-        if (prefix) {
-          const entry = snapshot?.entries.find(
-            (item) => item.path === prefix.slice(0, -1),
-          );
-          if (!entry || entry.blob || entry.link)
-            throw new Error("list 的 path 必须指向存在的普通目录");
-        }
-        const entries = (snapshot?.entries ?? [])
-          .filter((item) => item.path.startsWith(prefix))
-          .sort((a, b) => a.path.localeCompare(b.path));
-        return this.createSuccessResponse({
-          entries: entries.slice(offset, offset + limit).map((item) => ({
-            path: item.path,
-            kind: item.link ? "link" : item.blob ? "file" : "directory",
-            bytes: item.blob?.size ?? 0,
-          })),
-          total: entries.length,
-          nextOffset: Math.min(offset + limit, entries.length),
-          hasMore: offset + limit < entries.length,
-        });
+        return this.createSuccessResponse(listing);
       }
       if (action === "read") {
         if (args.path === undefined)
@@ -537,17 +526,12 @@ export class JsRunTool extends BaseBrowserTool {
     }
     if (outcome.errorShapeHint) warnings.push(outcome.errorShapeHint);
 
+    // 回执只保留「与本次结果消费直接相关」的字段：结果文件、预览、总字符、
+    // 行数、截断与告警。执行台账（tabId/frameId/url/engine/world/durationMs/
+    // outcome/attempts/script）对模型下一步决策没有增量价值，已移除；
+    // 数据治理与导出的固定导航文案移到工具描述，避免每次调用重复数百字符。
     const payload: Record<string, unknown> = {
-      tabId: outcome.tabId,
-      frameId: outcome.frameId,
-      url: outcome.url,
-      engine: outcome.engine,
-      world: outcome.world,
-      durationMs: outcome.durationMs,
-      outcome: outcome.outcome,
-      attempts: outcome.attempts,
-      shape,
-      script,
+      ...(shape?.rowCount !== undefined ? { rows: shape.rowCount } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
     };
 
@@ -585,15 +569,12 @@ export class JsRunTool extends BaseBrowserTool {
 
     const truncated = payload.resultTruncated === true;
     let message =
-      `执行成功（${outcome.engine ?? "auto"} / ${outcome.world ?? "MAIN"} 世界，${outcome.durationMs}ms，${shapeText}）。` +
+      `执行成功：${shapeText}。` +
       (resultFile
-        ? `完整结果 ${payload.totalChars as number} 字符已保存为 ${resultFile.path}（${resultFile.bytes} 字节，随会话工作区持久保存）。`
+        ? `完整结果 ${payload.totalChars as number} 字符已保存为 ${resultFile.path}（${resultFile.bytes} 字节）。`
         : "");
     if (resultFile && truncated) {
-      message += `\n本响应仅含前 ${WORKSPACE_READ_PAGE_CHARS} 字符预览——其余部分用 js_run(action="read", path="${resultFile.path}", index=2) 起按页续读（每页 ${WORKSPACE_READ_PAGE_CHARS} 字符，read 响应携带总页数）。`;
-    }
-    if (resultFile) {
-      message += `\n后续：data_ref_tool(action="info", file="${resultFile.path}") 查看字段结构；data_ref_tool(files=[...]) 合并/去重/投影；xlsx_tool(action="create_from_data", sheets:[{name, dataFiles:["${resultFile.path}"]}]) 直接导出。`;
+      message += `\n本响应仅含前 ${WORKSPACE_READ_PAGE_CHARS} 字符预览——其余用 js_run(action="read", path="${resultFile.path}", index=2) 起按页续读（每页 ${WORKSPACE_READ_PAGE_CHARS} 字符）。`;
     }
     if (saveError) {
       return {
@@ -700,15 +681,14 @@ export class JsRunTool extends BaseBrowserTool {
 
     const summary = outcome.summary;
     const message =
-      `✅ 批量抓取完成：${summary.total} 个目标，` +
+      `批量抓取完成：${summary.total} 个目标，` +
       `成功 ${summary.ok}、为空 ${summary.empty}、失败 ${summary.failed}、` +
       `超时 ${summary.timeout}、被风控 ${summary.blocked}、链接漂移 ${summary.drifted}、` +
-      `未执行 ${summary.skipped}（耗时 ${(outcome.totalDurationMs / 1000).toFixed(1)}s）。` +
+      `未执行 ${summary.skipped}。` +
       (resultFile
-        ? `\n结果已保存为 ${resultFile.path}（${outcome.rows.length} 行，含 _target/_url 等来源列，${resultFile.bytes} 字节）` +
-          `\n可直接 xlsx_tool(action="create_from_data", sheets:[{name, dataFiles:["${resultFile.path}"]}]) 导出；多批合并/去重用 data_ref_tool(files=[...])。` +
+        ? `\n结果已保存为 ${resultFile.path}（${outcome.rows.length} 行，含 _target/_url 来源列，${resultFile.bytes} 字节）。` +
           (json.length > WORKSPACE_READ_PAGE_CHARS
-            ? `\n本响应仅含前 ${WORKSPACE_READ_PAGE_CHARS} 字符预览——其余部分用 js_run(action="read", path="${resultFile.path}", index=2) 起按页续读。`
+            ? `\n本响应仅含前 ${WORKSPACE_READ_PAGE_CHARS} 字符预览——其余用 js_run(action="read", path="${resultFile.path}", index=2) 起按页续读。`
             : "")
         : "") +
       (summary.blocked > 0
@@ -725,7 +705,6 @@ export class JsRunTool extends BaseBrowserTool {
       {
         summary,
         ledger: outcome.ledger,
-        totalDurationMs: outcome.totalDurationMs,
         result: json.slice(0, WORKSPACE_READ_PAGE_CHARS),
         resultType: "json-preview",
         totalChars: json.length,
@@ -734,10 +713,6 @@ export class JsRunTool extends BaseBrowserTool {
           : {}),
         ...(resultFile ? { resultFile } : {}),
         ...(saveError ? { saveError } : {}),
-        script: {
-          path: parseWorkspaceFilePath(args.path),
-          sha256: file.sha256,
-        },
       },
       message,
     );

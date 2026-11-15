@@ -22,6 +22,7 @@ import {
   type PluginSnapshot,
 } from '@/utils/plugins/contracts';
 import { computeAvailability } from '@/utils/plugins/dependencies';
+import { revokePluginApprovals } from '@/utils/plugins/approvals';
 import {
   reconcilePackages,
   assertCatalogConsistent,
@@ -668,6 +669,8 @@ async function dispatch(
           // 凭据清理失败不应把已完成的卸载报成失败；下次卸载/重置仍会清理。
           console.warn('[Plugins] Failed to clear plugin secrets', error);
         }
+        // 卸载即回收该插件的会话审批，避免残留授权在重装前继续有效
+        await revokePluginApprovals(input.key);
         return result;
       });
     }

@@ -75,8 +75,12 @@ export default defineConfig({
     // HTML 注入类 CVE，影响半径也被限制在沙箱内（消费方见
     // sidepanel/utils/chat/chart-renderer.ts；CSP 用下方
     // content_security_policy.sandbox 的既有配置）
+    //
+    // HTML 文件预览沙箱页：模型生成的 HTML 同样不可信，由 file-preview 页
+    // 通过 postMessage 下发内容，在本沙箱页内 document.write 渲染
+    // （消费方见 entrypoints/file-preview/main.ts）
     sandbox: {
-      pages: ['chart-sandbox.html'],
+      pages: ['chart-sandbox.html', 'html-preview-sandbox.html'],
     },
     action: {
       default_title: 'AgentNexus'

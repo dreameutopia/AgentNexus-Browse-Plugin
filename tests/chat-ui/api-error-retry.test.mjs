@@ -62,6 +62,8 @@ Object.assign(ports, {
   activeSystemPromptSuffix: ref(''), agentEngine: {}, showAgentSelector: ref(true), showSkillSelector: ref(true), showChatMode: ref(true),
   transcriptEngine: { updateSessionUsage: async () => {}, getEffectiveContext: async () => ({ records: [{ id: 'assistant', status: 'error', content: ports.messages.value.at(-1).content }] }) },
   storeEffectiveContext: () => {}, importWorkspaceFiles: async () => new Map(), messageTextarea: ref({ style: { height: '123px' } }),
+  // 上传文件清单装配（模块级导入在函数抽取式测试里不可见，按端口注入桩）
+  buildUploadFileManifest: files => (Array.isArray(files) ? files.map(file => file.path).join('\n') : ''),
   runtimeBuilder: { build: async input => { runtimeInput = input; return { userInput: '', userImages: [], attachmentPrompt: '', pageQuotePrompt: '', initialContext: [], activationContext: [], toolIds: [], systemPrompt: '', model: { contextThreshold: 100000 } }; } },
   contextUsage: ref(null), measureContextUsage: () => ({}), composeLlmUserMessage: () => ({}), queryActivePageInfo: async () => null, estimateMessageTokens: () => 0, estimateTextTokens: () => 0,
   preRunAbortController: null, runEpoch: 0, selectionSignature: () => '', handleConversationEvent: () => {}, isCompacting: ref(false), syncSessionContextCache: async () => {},

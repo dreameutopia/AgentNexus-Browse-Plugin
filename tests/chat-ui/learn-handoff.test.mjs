@@ -91,7 +91,7 @@ const body = '## 目标\n采集商品 SKU\n## 前置条件\n已登录，关键�
 const draft = { name: 'shop-collect-skus', description: '按关键词采集商品规格时使用', category: 'search', tags: ['搜索', '文本模式'], body, allowedTools: ['browser_observe', 'browser_interact'], mode: 'text', summary: '已抽样核验' };
 const revisedBody = body.replace('规格差异按实际选项处理。', '默认逐项核对规格；缺货选项跳过并记录原因。');
 globalThis.__learnPorts = {
-  transcriptEngine: { createSession: async () => ({ chatId: `learning-${++sourceNumber}` }), getEffectiveContext: async () => ({ records: [], summary: '' }), setSystemPromptSuffix: async (chatId, text) => { if (failReplay) throw Error('replay failure'); suffixes.push({ chatId, draft: JSON.parse(text) }); } },
+  transcriptEngine: { createSession: async () => ({ chatId: `learning-${++sourceNumber}` }), getEffectiveContext: async () => ({ records: [], summary: '' }), getSession: async chatId => ({ chatId }), setSystemPromptSuffix: async (chatId, text) => { if (failReplay) throw Error('replay failure'); suffixes.push({ chatId, draft: JSON.parse(text) }); } },
   runtimeBuilder: { build: async input => ({ ...input, limits: input.limitsOverride, toolIds: [...input.extraToolIds, 'browser_get_page_html'], advertisedToolIds: [...input.extraToolIds, 'browser_get_page_html'] }) },
   conversationEngine: { async run(runtime, options) {
     const isValidation = runtime.extraToolIds.includes('submit_validation'); runKinds.push(isValidation ? 'validation' : 'learning');

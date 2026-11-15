@@ -9,7 +9,7 @@ const file=path.resolve('entrypoints/sidepanel/components/chat/SkillCapturePromp
 const {descriptor}=parse(readFileSync(file,'utf8'),{filename:file});
 const script=compileScript(descriptor,{id:'skill-capture-test',inlineTemplate:true});
 const outfile=path.resolve('node_modules/.cache/skill-capture-ui.mjs'); mkdirSync(path.dirname(outfile),{recursive:true});
-await build({stdin:{contents:script.content,loader:'ts',resolveDir:path.dirname(file)},outfile,bundle:true,platform:'node',format:'esm',external:['vue'],plugins:[{name:'i18n',setup(api){api.onResolve({filter:/@\/utils\/i18n$/},()=>({path:'i18n',namespace:'fake'}));api.onLoad({filter:/.*/,namespace:'fake'},()=>({contents:'export const t=key=>key;'}));}}]});
+await build({stdin:{contents:script.content,loader:'ts',resolveDir:path.dirname(file)},outfile,bundle:true,platform:'node',format:'esm',external:['vue'],plugins:[{name:'i18n',setup(api){api.onResolve({filter:/@\/utils\/i18n$/},()=>({path:'i18n',namespace:'fake'}));api.onLoad({filter:/.*/,namespace:'fake'},()=>({contents:'export const t=key=>key;'}));}},{name:'vue-icon-stub',setup(api){api.onResolve({filter:/\.vue$/},()=>({path:'skill-icon',namespace:'vue-stub'}));api.onLoad({filter:/.*/,namespace:'vue-stub'},()=>({contents:"import {h} from 'vue';export default {name:'SkillIcon',setup(){return()=>h('svg',{class:'skill-icon-stub'});}};",loader:'js'}));}}]});
 const dom=new JSDOM('<div id="app"></div>',{url:'https://example.com'});
 for(const key of ['window','document','Element','HTMLElement','HTMLTextAreaElement','SVGElement','Node','MutationObserver']) globalThis[key]=dom.window[key];
 let stored={},fail=false,blockedSet; const listeners=new Set();
@@ -24,6 +24,19 @@ const emitted=[]; let app,instance;
 const mount=async()=>{app=createApp({setup:()=>()=>h(Component,{...props,ref:value=>instance=value,onCreate:request=>emitted.push(request)})});app.mount('#app');await settle();};
 try {
  await mount(); assert.ok(document.querySelector('.skill-practice-card svg'));
+ // ──── 紧凑排版契约：图标与标题同行（消除左下空白）+ 尺寸基调整体下调 ────
+ const card = document.querySelector('.skill-practice-card');
+ assert.ok(card.querySelector('.skill-practice-head'), '图标与标题同行：存在头部行');
+ assert.ok(card.querySelector('.skill-practice-head .skill-practice-icon'), '图标位于标题行内');
+ assert.equal(card.querySelector('.skill-practice-copy'), null, '不再保留图标独占的左栏（左下空白来源）');
+ assert.ok(card.querySelector('.skill-practice-intro'), '正文为独立段落（整行铺开，不被图标挤窄）');
+ assert.equal(card.querySelectorAll('.skill-practice-actions button').length, 3, '三个动作仍在同一动作行内');
+ const componentCss = readFileSync(file, 'utf8');
+ assert.match(componentCss, /\.skill-practice-card\{[^}]*flex-direction:column/, '卡片纵向堆叠（不再是图标左栏 + 副本右栏）');
+ assert.match(componentCss, /\.skill-practice-icon\{[^}]*width:26px;height:26px/, '图标尺寸下调至 26px');
+ assert.match(componentCss, /\.skill-practice-card\{[^}]*padding:11px 13px/, '卡片内边距收紧至 11/13');
+ assert.match(componentCss, /\.skill-practice-actions button\{[^}]*padding:5px 10px/, '动作按钮内边距收紧至 5/10');
+ assert.match(componentCss, /\.skill-practice-icon svg\{[^}]*width:15px;height:15px/, '图标内 SVG 随图标尺寸收窄');
  await click('skillCaptureLater'); assert.equal(document.querySelector('.skill-practice-card'),null);
  app.unmount(); await mount();
  await click('skillCaptureCreate'); assert.ok(document.querySelector('[role="dialog"]')); assert.equal(emitted.length,0);

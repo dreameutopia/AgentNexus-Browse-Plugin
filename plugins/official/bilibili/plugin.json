@@ -1,0 +1,63 @@
+{
+  "manifestVersion": 1,
+  "publisher": {
+    "id": "ed25519:c2j6j7p7kopyqvr5vygu4wnv65ajyn6yyiyg3jsxkjvcliomkuka",
+    "displayName": "AgentNexus"
+  },
+  "id": "bilibili",
+  "displayName": "Bilibili 搜索助手",
+  "version": "1.0.0",
+  "engines": {
+    "agentnexus": ">=0.0.1 <1.0.0",
+    "pluginApi": "^1.3.0"
+  },
+  "license": "AGPL-3.0-or-later",
+  "capabilities": {
+    "network": [
+      "https://www.bilibili.com",
+      "https://search.bilibili.com",
+      "https://api.bilibili.com",
+      "https://aisubtitle.hdslb.com",
+      "https://i0.hdslb.com",
+      "https://s1.hdslb.com"
+    ],
+    "hostTools": [
+      "builtin/browser_navigation",
+      "builtin/browser_extract_data",
+      "builtin/browser_page_ops",
+      "builtin/browser_page_http",
+      "builtin/browser_media_control",
+      "builtin/read_website"
+    ],
+    "secretSlots": []
+  },
+  "contributes": {
+    "tools": [
+      {
+        "id": "search",
+        "path": "tools/search.json"
+      },
+      {
+        "id": "subtitle",
+        "path": "tools/subtitle.json"
+      },
+      {
+        "id": "jump",
+        "path": "tools/jump.json"
+      }
+    ],
+    "skills": [
+      {
+        "id": "bilibili-video-summary",
+        "path": "skills/bilibili-video-summary/SKILL.md"
+      }
+    ],
+    "agents": [
+      {
+        "id": "bilibili-agent",
+        "path": "agents/bilibili-agent.json"
+      }
+    ]
+  },
+  "dependencies": {}
+}

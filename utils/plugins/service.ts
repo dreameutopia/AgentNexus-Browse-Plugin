@@ -107,6 +107,40 @@ export class PluginService {
       ...plugin.manifest.capabilities.network.map((x) => `Network: ${x}`),
       ...plugin.manifest.capabilities.hostTools.map((x) => `System tool: ${x}`),
     );
+    if (previous) {
+      const previousNetwork = new Set(previous.manifest.capabilities.network);
+      const previousHostTools = new Set(previous.manifest.capabilities.hostTools);
+      const addedNetwork = plugin.manifest.capabilities.network.filter(
+        (x) => !previousNetwork.has(x),
+      );
+      const addedHostTools = plugin.manifest.capabilities.hostTools.filter(
+        (x) => !previousHostTools.has(x),
+      );
+      if (addedNetwork.length) changes.push(`新增网络权限: ${addedNetwork.join(', ')}`);
+      if (addedHostTools.length)
+        changes.push(`新增系统工具: ${addedHostTools.join(', ')}`);
+    }
+    for (const tool of plugin.tools) {
+      const executor = tool.executor;
+      const approval = tool.approval ?? 'session';
+      if (executor.type === 'host-workflow') {
+        changes.push(
+          `Tool ${tool.id}: workflow ${executor.steps
+            .map(
+              (step) =>
+                step.tool.slice('builtin/'.length) +
+                (step.optional ? '?' : ''),
+            )
+            .join(' → ')}（审批：${approval}）`,
+        );
+      } else if (executor.type === 'host-alias') {
+        changes.push(
+          `Tool ${tool.id}: ${executor.target}（审批：${approval}）`,
+        );
+      } else {
+        changes.push(`Tool ${tool.id}: MCP ${executor.remoteName}（审批：${approval}）`);
+      }
+    }
     return {
       plugin,
       previousVersion: previous?.manifest.version,

@@ -100,7 +100,7 @@ class SkillEngine {
     return getAllSkills();
   }
 
-  /** 按引用解析技能（仅十进制 ID 命中） */
+  /** 按引用解析技能（十进制 ID） */
   get(ref: string): SkillRecord | undefined {
     return getSkillById(ref);
   }
@@ -181,8 +181,8 @@ class SkillEngine {
     // 一个数字 ID 只注入一次，避免重复占用上下文。
     const injectedSkillIds = new Set<string>();
 
-    for (const ref of skillRefs) {
-      const skill = getSkillById(ref);
+    for (const rawRef of skillRefs) {
+      const skill = getSkillById(rawRef);
       if (!skill || !skill.enabled) continue;
       if (injectedSkillIds.has(skill.id)) continue;
       injectedSkillIds.add(skill.id);

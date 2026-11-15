@@ -17,7 +17,7 @@ import { BrowserDownloadsTool } from '../../tools/browser/downloads';
 import { BrowserResourcesTool } from '../../tools/browser/resources';
 
 const resourceChatId = 'resource-contract';
-await chatDatabase.createSession({ chatId: resourceChatId, title: 'Resources', createdAt: 1, updatedAt: 1, messageCount: 0, lastMessagePreview: '', agentName: '', skillNames: [] });
+await chatDatabase.createSession({ chatId: resourceChatId, title: 'Resources', createdAt: 1, updatedAt: 1, messageCount: 0, lastMessagePreview: '', agentName: '' });
 
 // ==================== chrome 桩 ====================
 

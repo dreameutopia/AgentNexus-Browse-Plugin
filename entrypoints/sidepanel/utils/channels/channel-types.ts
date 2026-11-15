@@ -2,7 +2,7 @@
  * 渠道 + 模型 领域类型与常量（单一事实源）
  *
  * 领域模型（解耦后的配置结构）：
- *   AppSettings  —— 全局应用设置：interactTimeout、新会话默认智能体、对话循环
+ *   AppSettings  —— 全局应用设置：用户响应等待时长、新会话默认智能体、对话循环
  *                   轮次与工具失败阈值、全局请求参数（重试 / 采样温度）、新建
  *                   模型的默认上下文阈值、当前生效模型引用（activeModelRef）
  *   ChannelConfig—— 渠道：一个上游服务接入点，独立持有 协议驱动 / baseUrl /
@@ -73,8 +73,15 @@ export interface ChannelConfig {
  * 不按渠道单独配置——渠道编辑器不再提供这三项输入。
  */
 export interface AppSettings {
-  /** interact 询问弹窗最长等待时长（分钟，1~120） */
-  interactTimeoutMinutes: number;
+  /**
+   * 用户响应等待时长（分钟，1~120，默认 20）。
+   *
+   * **单一事实源**：所有「等用户回应」的时限都取这一档，用户只改一处：
+   *   - interact 询问弹窗（含最小化悬浮球）：超时按「用户未及时响应」告知智能体；
+   *   - 循环守卫确认条（达到对话轮次上限 / 时长上限 / 连续工具失败阈值）：
+   *     超时按安全侧自动停止本次任务。
+   */
+  userResponseTimeoutMinutes: number;
   /**
    * 新会话默认智能体 ID（输入框未选智能体时，首条消息发送前自动选中）。
    * 存稳定 id 而非名称：智能体改名后引用不变；目标被删除时运行期经
@@ -90,11 +97,12 @@ export interface AppSettings {
    */
   maxConsecutiveFailedToolRounds: number;
   /**
-   * 单个工具的最长执行时间（分钟，1~120，默认 30）。
+   * 单个工具的最长执行时间（分钟，1~120，默认 20）。
    * 超时判定为失败：引擎自动封装为标准 tool 结果回传模型（文案告知模型
    * 「超时未响应，请重新规划或调整工具参数」），会话流程不中断。
-   * 该上界是**引擎级**的硬约束，与「对话运行时长上限」是两个维度：
-   * 前者约束单个工具，后者约束整轮运行。
+   * 该上界是**引擎级**的硬约束；与「对话运行时长上限」是两个维度——后者已
+   * 随普通对话取消（普通对话不再设运行时长上限，由本上界与轮次上限兜底），
+   * 只在学习/验证等显式给出时长预算的长任务里仍然存在。
    */
   toolTimeoutMinutes: number;
   /** 全局自动重试次数（0~10；失败后指数退避重试） */
@@ -133,20 +141,23 @@ export const CONTEXT_THRESHOLD_MAX = 1024 * 1024;
 export const CONTEXT_THRESHOLD_DEFAULT = 256 * 1024;
 
 /**
- * interact 询问弹窗等待时长的合法边界（分钟）。
+ * 用户响应等待时长的合法边界（分钟）。
  * 默认 20 分钟；范围 1-120。
+ *
+ * 旧名 INTERACT_TIMEOUT_*（仅覆盖 interact 询问弹窗）已下线：
+ * 同一档时长现在同时管询问弹窗与循环守卫确认条，旧名会误导调用方。
  */
-export const INTERACT_TIMEOUT_MIN_MINUTES = 1;
-export const INTERACT_TIMEOUT_MAX_MINUTES = 120;
-export const INTERACT_TIMEOUT_DEFAULT_MINUTES = 20;
+export const USER_RESPONSE_TIMEOUT_MIN_MINUTES = 1;
+export const USER_RESPONSE_TIMEOUT_MAX_MINUTES = 120;
+export const USER_RESPONSE_TIMEOUT_DEFAULT_MINUTES = 20;
 
 /**
  * 对话循环轮次上限的合法边界（校验 / 钳制 / UI 三处共用，永不漂移）。
- * 文本与视觉策略统一使用同一上限（高级设置单值，默认 30 轮）。
+ * 文本与视觉策略统一使用同一上限（高级设置单值，默认 60 轮）。
  */
 export const ITERATIONS_MIN = 1;
 export const ITERATIONS_MAX = 100;
-export const MAX_ITERATIONS_DEFAULT = 30;
+export const MAX_ITERATIONS_DEFAULT = 60;
 
 /**
  * 新会话默认智能体 ID（AppSettings.defaultAgentId 的缺省值）。
@@ -166,11 +177,11 @@ export const FAILED_TOOL_ROUNDS_DEFAULT = 5;
 
 /**
  * 单工具最长执行时间的合法边界（校验 / 钳制 / UI 三处共用）。
- * 默认 30 分钟；范围 1-120 分钟。
+ * 默认 20 分钟；范围 1-120 分钟。
  */
 export const TOOL_TIMEOUT_MIN_MINUTES = 1;
 export const TOOL_TIMEOUT_MAX_MINUTES = 120;
-export const TOOL_TIMEOUT_DEFAULT_MINUTES = 30;
+export const TOOL_TIMEOUT_DEFAULT_MINUTES = 20;
 
 // ==================== 归一化与工具函数（防御性编程的公共件） ====================
 
@@ -193,6 +204,25 @@ export function clampInt(value: unknown, min: number, max: number, fallback: num
 export function normalizeText(value: unknown, fallback = ''): string {
   if (typeof value !== 'string') return fallback;
   return value.trim();
+}
+
+/**
+ * 用户响应等待时长（分钟）→ 毫秒：**「等用户回应」时限的唯一换算点**。
+ *
+ * 询问弹窗（interact）与循环守卫确认条（达到轮次/时长/连续失败上限）都读这一档，
+ * 用户在设置里改一次，两处同步生效——避免两套时限各自漂移。
+ *
+ * 脏值防御（配置校验之外的第二道防线）：非数字 / 非有限数 / 越界 / 浮点
+ * 一律收敛到合法区间（取整），脏存储直接进入运行时也不会产生 0 或负数等待。
+ */
+export function resolveUserResponseWaitMs(minutes: unknown): number {
+  const clamped = clampInt(
+    minutes,
+    USER_RESPONSE_TIMEOUT_MIN_MINUTES,
+    USER_RESPONSE_TIMEOUT_MAX_MINUTES,
+    USER_RESPONSE_TIMEOUT_DEFAULT_MINUTES,
+  );
+  return clamped * 60_000;
 }
 
 /**
@@ -226,7 +256,7 @@ export function generateId(prefix: string): string {
 // ==================== 默认值 ====================
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
-  interactTimeoutMinutes: INTERACT_TIMEOUT_DEFAULT_MINUTES,
+  userResponseTimeoutMinutes: USER_RESPONSE_TIMEOUT_DEFAULT_MINUTES,
   defaultAgentId: DEFAULT_SESSION_AGENT_ID,
   maxIterations: MAX_ITERATIONS_DEFAULT,
   maxConsecutiveFailedToolRounds: FAILED_TOOL_ROUNDS_DEFAULT,

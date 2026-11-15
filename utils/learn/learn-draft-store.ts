@@ -191,6 +191,54 @@ export async function clearLearnDraft(sourceChatId?: string): Promise<void> {
   }
 }
 
+/**
+ * 彻底删除某会话作为来源产出的全部学习交接件（随会话删除执行）。
+ *
+ * 与 clearLearnDraft 的分工：
+ *   - clearLearnDraft 只把状态翻成 discarded，正文与编辑副本仍保留在
+ *     chrome.storage.local —— 适用于「终止一次学习但会话还在」；
+ *   - 本方法用于**会话本身已被删除**：来源会话不复存在，交接件既无法在
+ *     管理中心被接收，也无法回放到转录，保留正文只会成为无主幽灵数据。
+ *
+ * 安全性：
+ *   - 只删 sourceChatId 与目标会话**完全相等**的记录（legacy 迁移件
+ *     sourceChatId 为空串，天然不命中；其它会话的成果不受影响）；
+ *   - 每条记录在 per-id 写锁内重新读取并二次确认来源，避免与并发的
+ *     save/update 交错时误删刚换了归属的记录；
+ *   - 单条删除失败只告警并继续（返回实际删除条数），仅在列举存储失败时上抛。
+ */
+export async function purgeLearnDraftsBySource(sourceChatId: string): Promise<number> {
+  if (typeof sourceChatId !== 'string' || !sourceChatId) return 0;
+  let keys: string[];
+  try {
+    const storage = area() as chrome.storage.LocalStorageArea & { getKeys?: () => Promise<string[]> };
+    keys = typeof storage.getKeys === 'function'
+      ? await storage.getKeys()
+      : Object.keys((await storage.get(null)) ?? {});
+  } catch (error) {
+    throw new Error(`读取学习交接件失败: ${failure(error).error}`);
+  }
+  let removed = 0;
+  for (const key of keys) {
+    if (!key.startsWith(LEARN_TRANSFER_PREFIX)) continue;
+    const id = key.slice(LEARN_TRANSFER_PREFIX.length);
+    if (!isLearnTransferId(id)) continue;
+    try {
+      const deleted = await locked(id, async () => {
+        const current = await readLearnDraft(id);
+        // 形态非法（无法归属到具体会话）或归属其它会话 → 一律保留
+        if (current.status !== 'ok' || current.transfer.sourceChatId !== sourceChatId) return false;
+        await area().remove(LEARN_TRANSFER_PREFIX + id);
+        return true;
+      });
+      if (deleted) removed++;
+    } catch (error) {
+      console.warn(`[LearnDraftStore] 删除会话学习交接件 ${id} 失败，已跳过:`, error);
+    }
+  }
+  return removed;
+}
+
 /** Browser releases this origin-wide lock on close/reload; no unreliable expiry leases. */
 export function claimLearnDraftEditor(): Promise<{ ok: true; release: () => void } | Failure> {
   if (typeof navigator === 'undefined' || !navigator.locks) return Promise.resolve(failure('当前环境不支持安全的跨标签编辑锁'));

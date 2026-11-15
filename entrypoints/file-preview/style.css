@@ -1,0 +1,55 @@
+/* 文件预览页：整页交给文件本体，状态文案只在加载 / 失败时占位 */
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: #ffffff;
+  color: #1f2328;
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.preview-host {
+  height: 100%;
+}
+
+/* PDF（浏览器内置阅读器）与 HTML（沙箱页）都铺满视口 */
+.preview-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #ffffff;
+}
+
+.preview-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 24px;
+  box-sizing: border-box;
+  color: #6b7280;
+  text-align: center;
+  word-break: break-word;
+}
+
+/*
+ * hidden 属性必须显式生效：
+ * 上面的 display: flex / 下面的 height: 100% 属于作者样式，会覆盖 UA 的
+ * [hidden] { display: none }——不写这条规则，加载状态层会一直占满整屏，
+ * 把预览内容挤到视口下方，看起来就像「一直卡在加载中」。
+ */
+.preview-status[hidden],
+.preview-host[hidden] {
+  display: none;
+}
+
+.preview-status.is-error {
+  color: #b3261e;
+}

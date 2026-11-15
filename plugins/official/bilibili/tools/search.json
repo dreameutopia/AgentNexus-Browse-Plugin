@@ -1,0 +1,73 @@
+{
+  "description": "Bilibili 站内视频检索：导航到结果页、等待视频卡片渲染，并按卡片结构提取标题、链接、UP 主、日期与时长。query 为精炼关键词；一次调用完成检索与结构化提取。返回 rows / headers；超过 20 行时自动落盘并只回传预览。",
+  "approval": "session",
+  "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "query": {
+        "type": "string",
+        "maxLength": 200,
+        "description": "精炼后的搜索关键词"
+      }
+    },
+    "required": ["query"]
+  },
+  "executor": {
+    "type": "host-workflow",
+    "steps": [
+      {
+        "id": "navigate",
+        "tool": "builtin/browser_navigation",
+        "args": {
+          "action": "open",
+          "url": "https://search.bilibili.com/all?keyword={{args.query|urlencode}}",
+          "waitForLoad": true
+        }
+      },
+      {
+        "id": "wait",
+        "tool": "builtin/browser_page_ops",
+        "optional": true,
+        "args": {
+          "action": "wait_element",
+          "selector": ".bili-video-card",
+          "timeout": 10000
+        }
+      },
+      {
+        "id": "extract",
+        "tool": "builtin/browser_extract_data",
+        "args": {
+          "mode": "list",
+          "selector": ".bili-video-card",
+          "limit": 20,
+          "save": "auto",
+          "label": "bilibili-search",
+          "fields": {
+            "title": {
+              "selector": "h3.bili-video-card__info--tit",
+              "attr": "title"
+            },
+            "link": {
+              "selector": "a[href*=\"/video/\"]",
+              "attr": "href"
+            },
+            "author": {
+              "selector": ".bili-video-card__info--author"
+            },
+            "date": {
+              "selector": ".bili-video-card__info--date"
+            },
+            "duration": {
+              "selector": ".bili-video-card__stats__duration"
+            }
+          }
+        }
+      }
+    ],
+    "output": {
+      "from": "extract"
+    }
+  }
+}

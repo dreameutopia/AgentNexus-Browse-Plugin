@@ -110,7 +110,7 @@ export async function testDomExplore(
     const unique = scan.elements.find((e: any) => e.description === '唯一按钮')!;
 
     // ── 荷载级：action=parent ──
-    const parent = runPayload(elementExplorePayload, ['parent', seed.elementId, 3, 1, false, tabId]);
+    const parent = runPayload(elementExplorePayload, ['parent', 'element', seed.elementId, 1, 3, 1, false, tabId]);
     check(!parent.error, 'parent 不报错', parent.error);
     eq(parent.levels!.length, 4, 'parent 含种子共 4 层（种子+card+wrap+body 截止）');
     eq(parent.levels![0].isSeed, true, '第 0 层是种子');
@@ -123,7 +123,7 @@ export async function testDomExplore(
 
     // ── 荷载级：action=children（depth 展开 + visibleOnly） ──
     const cardId = parent.levels![1].elementId;
-    const children = runPayload(elementExplorePayload, ['children', cardId, 3, 2, true, tabId]);
+    const children = runPayload(elementExplorePayload, ['children', 'element', cardId, 1, 3, 2, true, tabId]);
     check(!children.error, 'children 不报错', children.error);
     eq(children.total, 5, '卡片 depth=2 子元素共 5 个（h3/span/a/button + badge）');
     eq(children.elements!.filter((e) => e.depth === 1).length, 4, '深度 1 恰好 4 个直接子元素');
@@ -133,12 +133,12 @@ export async function testDomExplore(
 
     // ── 荷载级：action=siblings ──
     const title = children.elements!.find((e) => e.classes === 'title')!;
-    const siblings = runPayload(elementExplorePayload, ['siblings', title.elementId, 3, 1, true, tabId]);
+    const siblings = runPayload(elementExplorePayload, ['siblings', 'element', title.elementId, 1, 3, 1, true, tabId]);
     eq(siblings.total, 4, '标题元素的同父兄弟共 4 个');
     eq(siblings.elements!.find((s) => s.isSeed)?.tag, 'h3', '种子（标题）在兄弟列表中标记');
 
     // ── 荷载级：action=similar（descendant 模式：种子在重复容器内） ──
-    const simTitle = runPayload(elementExplorePayload, ['similar', title.elementId, 3, 1, true, tabId]);
+    const simTitle = runPayload(elementExplorePayload, ['similar', 'element', title.elementId, 1, 3, 1, true, tabId]);
     check(!simTitle.error && !simTitle.noPattern, 'similar(descendant) 发现重复模式');
     eq(simTitle.pattern!.mode, 'descendant', '标题位于容器内 → descendant 模式');
     eq(simTitle.pattern!.containerTag, 'div', '重复容器是卡片 div');
@@ -156,18 +156,18 @@ export async function testDomExplore(
     check(String(simTitle.note).includes('51'), 'note 说明实测匹配数');
 
     // visibleOnly=false 时包含隐藏卡
-    const simAll = runPayload(elementExplorePayload, ['similar', title.elementId, 3, 1, false, tabId]);
+    const simAll = runPayload(elementExplorePayload, ['similar', 'element', title.elementId, 1, 3, 1, false, tabId]);
     eq(simAll.total, 51, 'visibleOnly=false 包含隐藏卡（51）');
     check(String(simAll.note).includes('隐藏') === false, '未过滤时不产生隐藏说明', simAll.note);
 
     // ── 荷载级：action=similar（self 模式：种子即重复项） ──
-    const simCard = runPayload(elementExplorePayload, ['similar', cardId, 3, 1, true, tabId]);
+    const simCard = runPayload(elementExplorePayload, ['similar', 'element', cardId, 1, 3, 1, true, tabId]);
     eq(simCard.pattern!.mode, 'self', '卡片本身是重复项 → self 模式');
     eq(simCard.total, 50, 'self 模式匹配 50 张可见卡');
     eq(simCard.pattern!.combinedSelector, '.product-card', 'self 模式选择器直达重复项');
 
     // ── 荷载级：similar 无重复模式 ──
-    const noPattern = runPayload(elementExplorePayload, ['similar', unique.elementId, 3, 1, true, tabId]);
+    const noPattern = runPayload(elementExplorePayload, ['similar', 'element', unique.elementId, 1, 3, 1, true, tabId]);
     eq(noPattern.noPattern, true, '唯一元素无重复模式');
     check(String(noPattern.note).includes('parent'), 'noPattern 引导改用 parent/siblings');
 
@@ -187,7 +187,7 @@ export async function testDomExplore(
       e.description.startsWith('影子收藏1')
     );
     check(!!shadowSeed, '扫描进入 shadow root 发现按钮');
-    const simShadow = runPayload(elementExplorePayload, ['similar', shadowSeed!.elementId, 3, 1, true, tabId]);
+    const simShadow = runPayload(elementExplorePayload, ['similar', 'element', shadowSeed!.elementId, 1, 3, 1, true, tabId]);
     check(
       !simShadow.error && !simShadow.noPattern,
       'shadow 种子不崩溃且发现重复模式（contains 不跨 shadow 的缺陷已修复）',
@@ -202,7 +202,7 @@ export async function testDomExplore(
       '选择器计数如实反映 shadow 不可达（文档级查询为 0）'
     );
     const shadowChildren = runPayload(elementExplorePayload, [
-      'children', simShadow.pattern!.containerElementId!, 3, 1, true, tabId,
+      'children', 'element', simShadow.pattern!.containerElementId!, 1, 3, 1, true, tabId,
     ]);
     eq(shadowChildren.total, 2, 'children 合并宿主 shadow 顶层子元素（h3+button）');
 
@@ -219,22 +219,43 @@ export async function testDomExplore(
       window: freshDom.window,
     });
     const noRegistry = (0, eval)('(' + elementExplorePayload.toString() + ')')(
-      'parent', 'anx:1:a:1', 3, 1, false, tabId
+      'parent', 'element', 'anx:1:a:1', 1, 3, 1, false, tabId
     );
     Object.assign(globalThis, { document: savedDocument, window: savedWindow });
-    check(String(noRegistry.error).includes('NO_REGISTRY'), '无注册表时报错并引导先 observe');
+    check(
+      String(noRegistry.error).includes('STALE_ELEMENT'),
+      '无注册表时按需创建注册表，旧引用报 STALE 并引导重新枚举',
+      noRegistry.error,
+    );
 
     // ── 宿主级：chrome.scripting 桩把 payload 路由到 JSDOM ──
+    const activated: Array<{ id: number; active?: boolean }> = [];
+    let beforeExplore: (() => void) | undefined;
     globalThis.chrome = {
       ...(savedChrome as any),
       tabs: {
         ...(savedChrome as any)?.tabs,
         query: async () => [{ id: tabId, url: 'https://fixture.example/list' }],
+        get: async (id: number) => {
+          if (id !== tabId) throw new Error(`No tab with id: ${id}.`);
+          return { id, url: 'https://fixture.example/list', status: 'complete', windowId: 1 };
+        },
+        update: async (id: number, props: any) => {
+          activated.push({ id, active: props?.active });
+          return { id, url: 'https://fixture.example/list' };
+        },
+      },
+      windows: {
+        ...(savedChrome as any)?.windows,
+        update: async () => undefined,
       },
       scripting: {
         executeScript: async (options: any) => {
           install();
           try {
+            if (options.func.name === 'elementExplorePayload' && beforeExplore) {
+              const mutate = beforeExplore; beforeExplore = undefined; mutate();
+            }
             const fn = (0, eval)('(' + options.func.toString() + ')');
             return [
               { frameId: options.target.frameIds?.[0] ?? 0, result: await fn(...options.args) },
@@ -246,6 +267,17 @@ export async function testDomExplore(
       },
     };
     const tool = new DomExploreTool();
+    const normalExecuteScript = chrome.scripting.executeScript;
+    try {
+      (chrome.scripting as any).executeScript = async () => [{ frameId: 0, result: { total: 1, matches: 'invalid' } }];
+      const malformedLookup = await (tool as any).lookupSeedAcrossFrames(tabId, 'selector', '.product-card');
+      check(!malformedLookup.ok && malformedLookup.frameDiagnostics.issues.some((issue: any) => issue.code === 'INVALID_RESULT'), '畸形候选数据返回可分析的结构化诊断');
+      (chrome.scripting as any).executeScript = async () => [{ frameId: 0, result: { error: 'lookup fixture failure' } }];
+      const failedLookup = await (tool as any).lookupSeedAcrossFrames(tabId, 'selector', '.product-card');
+      check(!failedLookup.ok && failedLookup.frameDiagnostics.issues.some((issue: any) => issue.code === 'PAYLOAD_ERROR'), '全部候选查找失败仍携带 frame 诊断');
+    } finally {
+      chrome.scripting.executeScript = normalExecuteScript;
+    }
     const dataOf = (r: any) => r.data ?? {};
 
     // 参数防御：非法引用/未知参数/action 专属参数误用
@@ -261,14 +293,73 @@ export async function testDomExplore(
       check(!rejected.success, label, rejected.error);
     }
 
+    // ── 新种子形态：selector / xpath 冷启动（不需要先 observe） ──
+    const bySelectorMulti = await tool.execute({ action: 'similar', selector: '.product-card' });
+    check(bySelectorMulti.success, 'selector 多匹配返回候选而不是报错', bySelectorMulti.error);
+    const selectorMulti = dataOf(bySelectorMulti);
+    eq(selectorMulti.totalMatches, 51, 'selector 统计全部匹配（含隐藏卡）');
+    check(Array.isArray(selectorMulti.nextActions) && selectorMulti.nextActions.length === 3, '候选列出前 3 个可复制调用');
+    check(
+      selectorMulti.nextActions.every(
+        (action: any) =>
+          action.tool === 'browser_dom_explore' &&
+          action.args.selector === '.product-card' &&
+          Number.isInteger(action.args.matchIndex) &&
+          Number.isInteger(action.args.frameId),
+      ),
+      '候选调用参数完整（selector + matchIndex + frameId）',
+      selectorMulti.nextActions,
+    );
+
+    // 回填 matchIndex → 直接探索该匹配
+    const bySelectorOne = await tool.execute({
+      action: 'similar',
+      selector: '.product-card',
+      matchIndex: 1,
+    });
+    check(bySelectorOne.success, 'selector + matchIndex 直接探索', bySelectorOne.error);
+    const selectorOne = dataOf(bySelectorOne);
+    eq(selectorOne.totalElements, 50, 'selector 种子 self 模式匹配 50 张可见卡');
+    check(
+      typeof selectorOne.seedElementId === 'string' && selectorOne.seedElementId.startsWith('anx:'),
+      'selector 解析出的种子同样返回可用 ElementId',
+    );
+    eq(selectorOne.seedMatchCount, 51, '结果回显种子实际匹配数');
+
+    // xpath 种子（仅 CSS 无法表达时使用）
+    const byXPath = await tool.execute({
+      action: 'children',
+      xpath: '(//div[contains(@class,"product-card")])[1]',
+      matchIndex: 1,
+      depth: 1,
+    });
+    check(byXPath.success, 'xpath 种子可直接探索', byXPath.error);
+    eq(dataOf(byXPath).totalElements, 4, 'xpath 种子 children 深度 1 = 4 个直接子元素');
+
+    // 占位值 / 越界 / 非法选择器的定向报错
+    for (const [args, label] of [
+      [{ action: 'parent', elementId: 'placeholder', frameId: 0 }, '占位 elementId 给出定向指引'],
+      [{ action: 'similar', selector: '.product-card', matchIndex: 99 }, 'matchIndex 越界'],
+      [{ action: 'similar', selector: '<not-a-selector>' }, '非法选择器'],
+      [{ action: 'parent', xpath: '//div', frameId: 0 }, 'xpath 与 frameId 合法（不误报）'],
+    ] as [any, string][]) {
+      const result = await tool.execute(args);
+      if (label.includes('不误报')) check(result.success, label, result.error);
+      else check(!result.success, label, result.error);
+    }
+    const placeholder = await tool.execute({ action: 'parent', elementId: 'dummy', frameId: 0 });
+    check(String(placeholder.error).includes('PLACEHOLDER_ELEMENT_ID'), '占位值错误码稳定', placeholder.error);
+
     // parent 宿主响应
-    const parentHost = await tool.execute({ action: 'parent', elementId: seed.elementId, frameId: 0, levels: 2 });
-    check(parentHost.success, '宿主 parent 成功', parentHost.error);
+    const parentHost = await tool.execute({ action: 'parent', elementId: seed.elementId, frameId: 0, levels: 2 });    check(parentHost.success, '宿主 parent 成功', parentHost.error);
     const parentData = dataOf(parentHost);
     check(String(parentData.levels).includes('同构兄弟'), 'parent 表格含同构兄弟列');
     check(
-      String(parentData.hint).includes('similar') && String(parentData.hint).includes('疑似重复容器'),
-      'parent 命中重复层时引导 similar/children'
+      Array.isArray(parentData.nextActions) &&
+        parentData.nextActions.some((action: any) => action.args?.action === 'similar') &&
+        parentData.nextActions.some((action: any) => action.args?.action === 'children'),
+      'parent 命中重复层时通过 nextActions 给出可复制的 similar/children 调用',
+      parentData.nextActions,
     );
 
     // similar 宿主响应 + 分页（50 匹配 → 2 页）
@@ -295,6 +386,35 @@ export async function testDomExplore(
       String(d.elements).match(/anx:\d+:[a-f0-9-]+:\d+/g) ?? [];
     eq(idsInTable(p1).length + idsInTable(p2).length, 50, '两页覆盖全部匹配');
     eq(new Set([...idsInTable(p1), ...idsInTable(p2)]).size, 50, '分页无重复');
+
+    // 续读可省略全部种子/过滤参数（从快照继承）——避免模型每次续读都重传全部条件
+    const inherited = await tool.execute({ action: 'similar', snapshotId: p1.snapshotId, page: 2 });
+    check(inherited.success, '续读省略种子/过滤参数可继承快照', inherited.error);
+    const inheritedData = dataOf(inherited);
+    eq(inheritedData.page, 2, '继承续读返回第 2 页');
+    eq(idsInTable(inheritedData).length, 10, '继承续读与显式参数结果一致（第 2 页 10 条）');
+    check(
+      JSON.stringify(inheritedData).includes('elementId'),
+      '继承续读仍回显种子形态（elementId）',
+      inheritedData,
+    );
+
+    // tabId：存在则先切换再执行；不存在给稳定错误码
+    const byTab = await tool.execute({ action: 'parent', elementId: seed.elementId, frameId: 0, tabId });
+    check(byTab.success, 'tabId 指定标签页可执行', byTab.error);
+    check(
+      activated.some((item) => item.id === tabId && item.active === true),
+      'tabId 存在时先激活该标签页',
+      activated,
+    );
+    const missingTab = await tool.execute({
+      action: 'parent', elementId: seed.elementId, frameId: 0, tabId: tabId + 12345,
+    });
+    check(
+      !missingTab.success && /TAB_NOT_FOUND/.test(missingTab.error ?? ''),
+      'tabId 不存在返回 TAB_NOT_FOUND',
+      missingTab.error,
+    );
 
     // 改变 action / visibleOnly → STALE_SNAPSHOT
     check(
@@ -323,6 +443,14 @@ export async function testDomExplore(
     eq(dataOf(sibHost).totalElements, 4, 'siblings 总数与荷载一致');
 
     // visibleOnly=false：隐藏节点进快照且交付成功（身份核验不含可见性——
+    const raceSeed = win.document.createElement('div');
+    raceSeed.id = 'race-seed'; raceSeed.innerHTML = '<span>original seed</span>';
+    win.document.body.append(raceSeed);
+    beforeExplore = () => raceSeed.replaceWith(raceSeed.cloneNode(true));
+    const replacedSeed = await tool.execute({ action: 'children', selector: '#race-seed' });
+    check(!replacedSeed.success && /STALE_ELEMENT/.test(replacedSeed.error ?? ''), '查找后种子被同选择器节点替换时不静默改选新节点', replacedSeed.error);
+
+    // visibleOnly=false：隐藏节点进快照且交付成功（身份核验不含可见性——
     // 旧实现用可交互校验会让每次含隐藏节点的交付误报 STALE）
     const hiddenP1 = await tool.execute({ action: 'similar', elementId: title.elementId, frameId: 0, visibleOnly: false });
     check(hiddenP1.success, 'visibleOnly=false 宿主执行成功', hiddenP1.error);
@@ -333,6 +461,11 @@ export async function testDomExplore(
     });
     check(hiddenP2.success, 'visibleOnly=false 快照续读交付成功（隐藏节点不误报 STALE）', hiddenP2.error);
     eq(dataOf(hiddenP2).totalPages, 2, '51 条仍为 2 页');
+    const hiddenInherited = await tool.execute({
+      action: 'similar', snapshotId: dataOf(hiddenP1).snapshotId, page: 2,
+    });
+    check(hiddenInherited.success, '续读省略 visibleOnly 时继承快照值', hiddenInherited.error);
+    eq(dataOf(hiddenInherited).totalElements, 51, '继承 visibleOnly=false（总数仍 51）');
 
     // depth 快照绑定：改变 depth 不能复用旧快照（否则静默返回旧深度的冻结数据）
     const childDepth1 = await tool.execute({ action: 'children', elementId: cardId, frameId: 0, depth: 1 });

@@ -325,9 +325,15 @@ export function createImageResolver(context: ImageResolverContext): ImageResolve
         const isBase64 = /;base64/i.test(header);
         let bytes: Uint8Array;
         try {
-          const binary = isBase64 ? atob(payload) : decodeURIComponent(payload);
-          bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          if (isBase64) {
+            const binary = atob(payload);
+            bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          } else {
+            // 非 base64 是百分号编码的文本：解码成字符串后再按 UTF-8 取字节，
+            // 直接取 charCodeAt 会把一个多字节字符拆成两个错误的字节。
+            bytes = new TextEncoder().encode(decodeURIComponent(payload));
+          }
         } catch {
           return null;
         }
@@ -348,7 +354,7 @@ export function createImageResolver(context: ImageResolverContext): ImageResolve
       // 3. 工作区既有图片（相对路径）
       if (!/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
         const workspace = await loadWorkspace();
-        const blob = workspace.get(trimmed);
+        const blob = findWorkspaceBlob(workspace, trimmed);
         if (!blob) return null;
         if (blob.size > MAX_IMAGE_BYTES) return null;
         const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -379,7 +385,9 @@ export function createImageResolver(context: ImageResolverContext): ImageResolve
           cache: 'no-store',
         });
         if (!response.ok) return null;
-        // 重定向落地页同样要过 SSRF 判定（fetch 会自动跟随跳转）
+        // 重定向落地页也要过 SSRF 判定：fetch 会自动跟随跳转，落地页可能
+        // 指向内网。注意这一层只能挡住**内容回流**（不把内网响应写进文档），
+        // 挡不住连接本身——扩展里没有可用的 DNS API，无法在跳转前解析目标 IP。
         if (response.url) {
           let finalUrl: URL | null = null;
           try {
@@ -406,6 +414,26 @@ export function createImageResolver(context: ImageResolverContext): ImageResolve
   };
 
   return resolver;
+}
+
+/**
+ * 在工作区快照里找图片。
+ *
+ * Markdown 里的地址可能带 URL 编码（`outputs/我的 图.png` 写成
+ * `outputs/%E6%88%91%E7%9A%84%20%E5%9B%BE.png`），工作区里的实际路径是
+ * 解码后的形式，因此两种写法都要试。
+ */
+function findWorkspaceBlob(workspace: Map<string, Blob>, path: string): Blob | undefined {
+  const direct = workspace.get(path);
+  if (direct) return direct;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(path);
+  } catch {
+    return undefined;
+  }
+  if (decoded === path) return undefined;
+  return workspace.get(decoded);
 }
 
 /**

@@ -12,7 +12,6 @@ import { registerVisionTools } from './vision';
 import { registerCodeTools } from './code';
 import { registerNoteTools } from './note';
 import { registerExcalidrawTools } from './excalidraw';
-import { registerBilibiliTools } from './bilibili';
 import { registerBrowserTools } from './browser';
 import { registerBaseTools } from './base';
 import { registerSkillTools } from './skill';
@@ -23,7 +22,7 @@ import { registerPythonTools } from './python';
 import { registerPlanTools } from './plan';
 import { registerDataTools } from './data';
 import { registerLearnTools } from './learn';
-import { registerUploadFileTools } from './upload-file';
+import { registerFileUtilTools } from './file-util';
 
 /**
  * 注册所有工具（不包括需要 DOM 环境的工具）
@@ -48,7 +47,6 @@ export function registerAllTools() {
   registerCodeTools();
   registerNoteTools();
   registerExcalidrawTools();
-  registerBilibiliTools();
   registerSkillTools(); // 注册技能（skill）加载与资源读取工具
   registerOfficeTools(); // 注册 office 类工具（xlsx_tool）
   registerInteractTools(); // 注册用户交互工具（interact：提问/授权征询）
@@ -57,14 +55,17 @@ export function registerAllTools() {
   registerPlanTools(); // 注册会话任务计划工具（plan_tool：长难任务的步骤与状态跟踪）
   registerDataTools(); // 注册数据引用通道工具（data_ref_tool：批量抓取批次的盘点/合并/清理）
   registerLearnTools(); // 注册网站学习提交工具（submit_skill / submit_validation：终止型结束信号）
-  registerUploadFileTools(); // 注册上传文件分页读取工具（read_file：会话文件库的按页续读）
+  registerFileUtilTools(); // 注册工作区文件工具（file_util：上传文件按需读取 + 文本文件读写）
   // 注意：文档工具（document_tool）**不在此注册**——它只在 sidepanel 注册
-  // （见 openai-tools-converter.ts）。原因：它的重依赖（docx 1.6MB、
+  // （见 sidepanel/utils/tools/document-tools-registration.ts，由
+  // sidepanel/main.ts 最先导入）。原因：它的重依赖（docx 1.6MB、
   // katex 0.6MB、markdown-it、highlight.js）约 2.7MB，而 background 是
   // service worker 入口，Vite 对其强制 inlineDynamicImports——只要 background
   // 静态可达这些模块，就无法拆成按需加载的独立 chunk，会白白拖慢扩展冷启动。
   // 文档工具全程在 sidepanel 执行（工具执行器先查当前上下文注册表，命中即
   // 本地执行），因此不需要 background 注册它。
+  // 唯一的跨上下文例外是 PDF 渲染：它经 tools/document/pdf-protocol.ts
+  // 这个零依赖协议模块与 background 通信。
 }
 
 // 导出所有工具类型和实例
@@ -82,7 +83,6 @@ export * from './vision';
 export * from './code';
 export * from './note';
 export * from './excalidraw';
-export * from './bilibili';
 export * from './skill'; // 导出技能（skill）工具
 export * from './office'; // 导出 office 类工具（xlsx_tool）
 // 注意：document 工具**不在此再导出**——`export *` 是静态的，会把它的重依赖
@@ -93,7 +93,7 @@ export * from './python'; // 导出 Python 沙箱工具（python_run）
 export * from './plan'; // 导出会话任务计划工具（plan_tool）
 export * from './data'; // 导出数据引用通道工具（data_ref_tool）
 export * from './learn'; // 导出网站学习工具（submit_skill / submit_validation）
-export * from './upload-file'; // 导出上传文件分页读取工具（read_file）
+export * from './file-util'; // 导出工作区文件工具（file_util）
 export * from './base-tool';
 
 // ScreenshotTool 只存在于 vision 子模块（tools/browser/capture.ts 的旧版

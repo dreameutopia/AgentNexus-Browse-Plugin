@@ -15,7 +15,7 @@
 | browser_interact | click/fill/focus/keys/type/scroll，按节点引用操作 | 页面业务已保存、任意画布均可编辑 |
 | browser_network_capture | start/read/stop，被动观察 start 之后的真实请求与文本响应（urlIncludes/urlExcludes/types/includeHeaders/durationSec 可选过滤与窗口；read 支持 onlyMissing 对账），完整正文进入 dataRef（**仅数据采集 / 网站学习 / 技能验证场景具备；文本通用助手与视觉通用助手 不携带**） | start 之前的历史请求、二进制协议解码、接口写权限 |
 | js_run | 指定 tab/frame 的脚本执行与工作区结果文件数据通道（每次执行结果自动落盘 results/，持久可分页核对） | 任意闭包、Worker、跨域 frame 自动可读 |
-| browser_get_page_text | 全部可注入 frame、可访问 shadow root 的结构化 Markdown 正文（标题/表格/列表/代码块/链接；超 15000 字符 ref 分页，url= 可直读指定页） | 对 Canvas 像素的识别 |
+| read_website | 全部可注入 frame、可访问 shadow root 的结构化 Markdown 正文（标题/表格/列表/代码块/链接；单页 3000 字符，完整正文落盘 content/*.md，按 path+page 续读，url= 可直读指定页） | 对 Canvas 像素的识别 |
 
 页面菜单和少量编辑用交互；批量取数优先使用已确认且有权限的数据接口/导出。当前没有凭据配置的厂商 API 不作为可用工具承诺。
 
@@ -34,7 +34,7 @@
 
 DOM ElementId 包含来源 tab、随机文档标识和递增编号，绑定实际节点（WeakRef）。不使用网站 HTML id 或位置 CSS 路径；不向网页添加定位属性。签名核对标签、关键属性、文字、关联标签、上下文；输入值不是节点身份。节点替换、导航或过期会失败，不猜测其他节点。HTTP 页面使用 getRandomValues 生成标识，不依赖 secure-context-only 的 randomUUID。
 
-调用 browser_observe(view="element") 或 browser_interact 操作 DOM 引用时，同时提交返回行的 FrameId；枚举不使用节点引用。AX 引用自带 frame/文档/调试会话路由，省略 FrameId；目前只用于 focus/keys/type。AX 操作前重新核对后端节点身份和焦点，失效就重采，禁止拿 AX 行号构造 DOM 引用。
+调用 browser_observe(view="element") 或 browser_interact 操作 DOM 引用时，同时提交返回行的 FrameId；枚举不使用节点引用。AX 引用自带 frame/文档/调试会话路由，省略 FrameId；目前只用于 focus/keys/type。AX 操作前重新核对后端节点身份和焦点，失效就重采，禁止拿 AX 行号构造 DOM 引用。browser_observe / browser_interact / browser_dom_explore 都接受可选 tabId：省略=当前活动页；显式传入会先校验存在性与可注入性，再切换到该页（跨标签页复用引用时始终带同一 tabId）。
 
 DOM 扫描及命中测试使用开放或扩展可访问的封闭 ShadowRoot。浏览器权限仍可能阻止注入。AX 对跨进程 frame 可能仅部分覆盖，响应 warnings/coverage 会明确显示；不能以空结果证明页面无内容。
 
@@ -92,7 +92,7 @@ keys/type 后读取返回的 focus。Tab、Enter、F2 可能切换到新编辑�
 
 ## 恢复与技能记录
 
-STALE_ELEMENT/STALE_SNAPSHOT/FOCUS_CHANGED 重采；WRONG_TAB 切回来源或在当前页面重采；QUERY_MISMATCH 新建查询；无数据结合 coverage 判断。对结果不确定的发送、提交、追加先读取现状，禁止盲目重试。
+STALE_ELEMENT/STALE_SNAPSHOT/FOCUS_CHANGED 重采；WRONG_TAB 用 tabId=引用来源标签页切回，或在当前页面重采；QUERY_MISMATCH 新建查询；无数据结合 coverage 判断。对结果不确定的发送、提交、追加先读取现状，禁止盲目重试。
 
 技能保存 regex/XPath、语义、工作表/记录识别和恢复规则，不能保存 ElementId、AX 引用、snapshotId、captureId 或固定 FrameId。
 

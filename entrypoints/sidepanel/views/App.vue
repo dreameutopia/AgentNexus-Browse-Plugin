@@ -278,7 +278,7 @@
         :count="pendingGuard?.count"
         :minutes="pendingGuard?.minutes"
         :seconds-left="guardSecondsLeft"
-        :total-seconds="GUARD_AUTO_STOP_SECONDS"
+        :total-seconds="guardTotalSeconds"
         @continue="settleGuard(true)"
         @stop="settleGuard(false)"
       />
@@ -328,7 +328,7 @@
           </div>
         </div>
 
-        <!-- 待发送附件栏：文本/Office 解析产物与图片混排；移除即时释放预算 -->
+        <!-- 待发送附件栏：图片与其它文件混排；移除即时释放预算 -->
         <div v-if="pendingAttachments.length" class="attachment-bar">
           <TransitionGroup name="attachment-chip">
             <div
@@ -340,9 +340,6 @@
               <span class="attachment-chip-icon" :class="`source-${att.source}`" aria-hidden="true">
                 <svg v-if="att.source === 'image'" width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M8.5,13.5L11,16.5L14.5,12L19,18H5M21,19V5C21,3.89 20.1,3 19,3H5A2,2 0 0,0 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19Z" fill="currentColor"/>
-                </svg>
-                <svg v-else-if="att.source === 'office'" width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M19,4H18V2H16V4H8V2H6V4H5A2,2 0 0,0 3,6V20A2,2 0 0,0 5,22H19A2,2 0 0,0 21,20V6A2,2 0 0,0 19,4M19,20H5V10H19V20M19,8H5V6H19V8M9,13V15H7V17H9V19H11V17H13V15H11V13H9M15,13V19H17V13H15Z" fill="currentColor"/>
                 </svg>
                 <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M18,20H6V4H13V9H18V20Z" fill="currentColor"/>
@@ -720,7 +717,7 @@
       :visible="showHistoryDrawer"
       :active-chat-id="activeChatId"
       @close="showHistoryDrawer = false"
-      @select="loadHistorySession"
+      @select="selectHistorySession"
       @new-chat="startNewChatFromDrawer"
       @deleted="handleSessionDeleted"
     />
@@ -810,7 +807,7 @@ import {
   appSettingsStore,
   modelRefKey,
   normalizeModelRef,
-  CONTEXT_THRESHOLD_DEFAULT,
+  resolveUserResponseWaitMs,
   type ModelOption,
   type ModelRef,
 } from '../utils/channels';
@@ -865,14 +862,13 @@ import {
   formatBytes,
   type ChatAttachment,
 } from '../composables/use-attachments';
-// 会话文件库：文本附件发送时注册（8 位短 id + 确定性分页），read_file 按页续读
-import { conversationFileStore } from '@/utils/conversation-files/file-store';
 // 会话跨上下文桥：管理中心「会话管理」分区请求本面板切换 / 复位会话
 import { SESSION_BRIDGE_MSG } from '@/utils/sessions/session-bridge';
+// 上传文件清单（模型侧 <upload_file> 表格：路径 + 大小；正文由 file_util 按需读取）
 import {
-  buildUploadFileEnvelope,
-  type UploadFileEnvelopeEntry,
-} from '@/utils/conversation-files/upload-file-envelope';
+  buildUploadFileManifest,
+  type UploadedFileEntry,
+} from '@/utils/upload-files/upload-file-manifest';
 import { showAlert, showConfirm, showAction, openDialogWithHandle, settleDialogById, type AppDialogResult } from '../composables/use-app-dialog';
 // 视觉能力守卫：模型 / 智能体 / 图片附件 三方一致性的判定单一事实源
 import {
@@ -919,7 +915,7 @@ import '@/tools';
 import { ConnectionStatus } from '@/entrypoints/background/ws/websocket-types';
 import { startWebsiteValidationWatcher } from '../utils/ws/website-validator';
 // 统一类型定义
-import type { ExtendedChatMessage, MessageFeedback, MessagePart } from '../types/chat';
+import type { ExtendedChatMessage, MessageFeedback, MessagePart, SkillPartEntry } from '../types/chat';
 // 页面视觉效果
 // WebSocket连接管理
 import { useWebSocket } from '../composables/useWebSocket';
@@ -1035,10 +1031,6 @@ const syncSessionContextCache = async (chatId: string): Promise<void> => {
 const selectionSignature = (): string =>
   `${selectedAgent.value}\u0000${[...selectedSkills.value].join('\u0000')}\u0000${activeModelKey.value}`;
 
-/** 字符数人性化（K 单位一位小数） */
-const formatCharsK = (chars: number): string =>
-  chars < 1024 ? `${Math.round(chars)}` : `${(chars / 1024).toFixed(1)}K`;
-
 /**
  * token 数人性化展示（K = 1024 token，与上下文阈值 256K = 262144 同一换算，
  * 保证「压缩前后」「消息体积 vs 预算」等对比文案与圆环读数量纲一致）。
@@ -1070,10 +1062,15 @@ const pushSystemNotice = (text: string): void => {
 // ==================== 循环守卫确认（应用内非阻塞，取代 window.confirm） ====================
 
 /**
- * 守卫未确认时的自动停止时限（秒）。
- * 默认走安全侧：无人值守（用户离开、忽略确认条）的任务不允许无限续跑。
+ * 守卫未确认时的自动停止时限：取全局「用户响应等待时长」设置。
+ *
+ * 与 interact 询问弹窗**同一档时长**（单一事实源，见 resolveUserResponseWaitMs）：
+ * 用户在设置里改一次，询问弹窗与守卫确认条同步生效——
+ * 此前守卫写死 60s、询问弹窗写死 20min，两套时限各自漂移，
+ * 用户改了设置却只对其中一处生效，是最容易被误解的行为。
+ *
+ * 安全侧不变：超时未确认按「停止」收敛，无人值守的任务不会无限续跑。
  */
-const GUARD_AUTO_STOP_SECONDS = 60;
 
 /** 进行中的守卫确认（null = 无）：finish 一次性收敛 Promise、倒计时与 UI 状态 */
 interface PendingGuard {
@@ -1088,7 +1085,17 @@ interface PendingGuard {
 
 const pendingGuard = ref<PendingGuard | null>(null);
 const guardSecondsLeft = ref(0);
+/** 倒计时总时长（秒）：轨道宽度基准；与本次确认的实际时限一致 */
+const guardTotalSeconds = ref(0);
 let guardCountdownTimer: number | null = null;
+/**
+ * 倒计时截止时刻（绝对时间戳，毫秒）。
+ *
+ * 用绝对截止时间而非「每秒自减」：设置上限 120 分钟时，定时器漂移
+ * （setInterval 的实际间隔大于标称值）会累积成可观的偏差，
+ * 用户看到的剩余时间与真实截止时刻对不上。绝对截止时间免疫漂移。
+ */
+let guardDeadlineMs = 0;
 
 /** 收敛进行中的守卫确认（幂等）：清理倒计时、关闭确认条、resolve 引擎侧 Promise */
 const settleGuard = (proceed: boolean): void => {
@@ -1112,10 +1119,17 @@ const openGuardConfirm = (guard: Omit<PendingGuard, 'finish'>, resolve: (proceed
   // 防御：同一运行内守卫串行触发，理论上不存在并发确认；旧确认按停止收敛兜底
   settleGuard(false);
   pendingGuard.value = { ...guard, finish: proceed => resolve(proceed) };
-  guardSecondsLeft.value = GUARD_AUTO_STOP_SECONDS;
+  // 等待时限取全局设置（分钟 → 毫秒），与询问弹窗同一档；脏值在换算点收敛
+  const waitMs = resolveUserResponseWaitMs(appSettingsStore.getUserResponseTimeoutMinutes());
+  const totalSeconds = Math.max(1, Math.round(waitMs / 1000));
+  guardTotalSeconds.value = totalSeconds;
+  guardSecondsLeft.value = totalSeconds;
+  guardDeadlineMs = Date.now() + waitMs;
   guardCountdownTimer = window.setInterval(() => {
-    guardSecondsLeft.value -= 1;
-    if (guardSecondsLeft.value <= 0) settleGuard(false);
+    // 剩余秒数按绝对截止时间算：定时器漂移不影响精度
+    const remaining = Math.max(0, Math.ceil((guardDeadlineMs - Date.now()) / 1000));
+    guardSecondsLeft.value = remaining;
+    if (remaining <= 0) settleGuard(false);
   }, 1000);
 };
 
@@ -1338,25 +1352,13 @@ const handleConversationEvent = (event: ConversationEvent): void => {
   switch (event.type) {
     case 'user-message': {
       if (messages.value.some(message => message.id === event.record.id)) break;
-      messages.value.push({
-        id: event.record.id,
-        role: 'user',
-        content: event.record.content,
-        timestamp: event.record.createdAt,
-        parts: [{ type: 'text', content: event.record.content }],
-        toolCalls: [],
-        // 自动续跑的隐藏用户轮：参与模型上下文与时效判定，但不渲染用户气泡
-        ...(event.record.synthetic ? { isIgnore: true } : {}),
-        // 用户上传图片以引用形态随消息展示（可查看 / 放大 / 下载）。
-        // 展示口径走 userVisibleImageRefs（只含用户上传）——引擎随后注入的
-        // vision 首截图引用不在此列，避免同一截图在用户气泡与助手「查看屏幕」双显
-        ...(userVisibleImageRefs(event.record).length > 0
-          ? { imageRefs: userVisibleImageRefs(event.record) }
-          : {}),
-        // 用户确认的网页引用：随消息落库，气泡据此渲染引用块（引用原文在
-        // 会话历史里始终可见——用户能核对「当时引用的是哪一段」）
-        ...(event.record.pageQuote ? { pageQuote: event.record.pageQuote } : {}),
-      });
+      // 与历史加载共用同一映射（recordToUiMessage）：图片展示口径、引用块、
+      // 上传文件、智能体绑定与技能快照都在那里归一，避免直播/历史两套口径分叉
+      messages.value.push(recordToUiMessage(event.record));
+      // 技能只对单轮生效：用户消息一入档即取消输入区的技能选中（刚发送的这条
+      // 消息已持有快照，气泡照常可追溯）；智能体保持选中（多轮有效）。
+      // 隐藏续跑轮不是用户新发起的一轮，不改变当前输入区的选择。
+      if (!event.record.synthetic && selectedSkills.value.length > 0) selectedSkills.value = [];
       break;
     }
     case 'assistant-start': {
@@ -1383,6 +1385,11 @@ const handleConversationEvent = (event: ConversationEvent): void => {
       const seededParts: MessagePart[] = [
         ...(preRunCompaction
           ? [createCompactionPart({ trigger: 'pre-run', ...preRunCompaction })]
+          : []),
+        // 预选技能自动激活：运行前已发生的事实，片段置于时间线最前（早于
+        // 首截图与任何模型输出），与引擎 record.parts 的首位片段同序
+        ...(event.activationSkills?.length
+          ? [{ type: 'skill' as const, skills: event.activationSkills }]
           : []),
         ...started.parts,
       ];
@@ -1756,6 +1763,32 @@ const assistantImageRefsOf = (records: readonly ChatMessageRecord[]): Set<string
   return refs;
 };
 
+/** 读取侧字符串归一：非字符串 / 空白一律视为无值（持久化脏数据防御） */
+const normalizedRecordText = (value: unknown): string =>
+  typeof value === 'string' ? value.trim() : '';
+
+/**
+ * 读取侧技能快照归一。
+ *
+ * 写入侧已由 transcriptEngine.normalizeSkillSnapshot 收敛（去空 / 去重 / 名称回落）；
+ * 这里对任意来源的记录（跨版本写入、DB 损坏、测试注入）再做一次防御：
+ * 非数组、空 id、重复 id、空名称都不会进入渲染层，保证气泡技能清单
+ * 每个标签都有可读名称、`:key` 永远唯一。
+ */
+const normalizedRecordSkills = (value: unknown): SkillPartEntry[] => {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: SkillPartEntry[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const id = normalizedRecordText((item as SkillPartEntry).id);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    result.push({ id, name: normalizedRecordText((item as SkillPartEntry).name) || id });
+  }
+  return result;
+};
+
 /** ChatMessageRecord（历史会话加载）→ UI 消息 */
 const recordToUiMessage = (
   record: ChatMessageRecord,
@@ -1769,6 +1802,11 @@ const recordToUiMessage = (
   const visibleImageRefs = record.role === 'user'
     ? userVisibleImageRefs(record, assistantImageRefs)
     : [...(record.imageRefs ?? [])];
+  // 用户消息绑定（@智能体 + 本轮技能快照）：读取侧统一归一，脏字段不进入渲染层。
+  // 这两个语义仅属于用户消息，助手记录即便带有残留字段也不映射。
+  const boundAgentId = record.role === 'user' ? normalizedRecordText(record.agentId) : '';
+  const boundAgentName = record.role === 'user' ? normalizedRecordText(record.agentName) : '';
+  const boundSkills = record.role === 'user' ? normalizedRecordSkills(record.skills) : [];
   return {
     id: record.id,
     role: record.role,
@@ -1785,6 +1823,14 @@ const recordToUiMessage = (
     ...(visibleImageRefs.length > 0 ? { imageRefs: visibleImageRefs } : {}),
     // 网页引用随记录还原（气泡引用块的唯一来源；旧记录无此字段 → 不渲染）
     ...(record.pageQuote ? { pageQuote: record.pageQuote } : {}),
+    // 上传文件条目随记录还原（气泡「文件元素」的唯一来源）
+    ...(record.uploadedFiles?.length
+      ? { uploadedFiles: record.uploadedFiles.map(file => ({ ...file })) }
+      : {}),
+    // 智能体绑定与预选技能快照随记录还原（用户气泡底部 @ 标识 / 顶部技能清单）
+    ...(boundAgentId ? { agentId: boundAgentId } : {}),
+    ...(boundAgentName ? { agentName: boundAgentName } : {}),
+    ...(boundSkills.length > 0 ? { skills: boundSkills } : {}),
   };
 };
 // Escape 关闭面板后记住被忽略的触发符，直到触发序列中断（输入空格/删除），
@@ -3309,24 +3355,10 @@ const loadHistorySessionData = async (chatId: string) => {
     // 展示用解析结果的当前名称，保证标签与最新命名一致
     const boundAgent = agentEngine.resolveRef(meta.agentId, meta.agentName);
     selectedAgent.value = boundAgent ? (boundAgent.plugin ? boundAgent.id : boundAgent.name) : '';
-    // 技能回显：历史会话可能存技能 id（v2）或技能名（v1），统一经 getSkillById
-    // 三态解析为当前记录，取其 id 存入选中态（停用/已删除的静默剔除）；
-    // 并按当前智能体的关联集合过滤（回显口径与面板可选口径一致：未关联的
-    // 技能不回显，旧会话在新规则下不制造悬挂选中）；同一技能的多形态引用
-    //（id 与名称/模型标识并存）解析后按 id 去重，避免重复胶囊、
-    // 选择签名漂移与「取消一次删不干净」的边缘问题
-    const linkedIds = new Set(resolveAgentLinkedSkills(boundAgent?.skills).map(skill => skill.id));
-    const restoredSkillIds = new Set<string>();
-    selectedSkills.value = (Array.isArray(meta.skillNames) ? meta.skillNames : [])
-      .map(ref => skillEngine.get(ref))
-      .filter((skill): skill is SkillRecord => !!skill && skill.enabled)
-      .filter(skill => linkedIds.has(skill.id))
-      .filter(skill => {
-        if (restoredSkillIds.has(skill.id)) return false;
-        restoredSkillIds.add(skill.id);
-        return true;
-      })
-      .map(skill => skill.id);
+    // 技能选中态不回显：技能只对单轮生效，发送后即取消选中，不属于会话级设置。
+    // 历史消息自身的技能快照随记录展示在对应气泡顶部（用户可追溯当时用了哪些技能），
+    // 但输入区保持干净——切回旧会话不应凭空出现「已选技能」。
+    selectedSkills.value = [];
     // 模型回显：会话存的是稳定引用（渠道 + 模型 id 对）——
     // 引用仍可用时回显该会话的选择；引用已失效（渠道/模型被删除或禁用）时
     // 沿用当前生效模型并给出系统提示，绝不阻断会话加载、也不静默换模型
@@ -3478,6 +3510,42 @@ const startNewChatFromDrawer = async () => {
   if (switched) showHistoryDrawer.value = false;
 };
 
+/**
+ * 历史抽屉点击会话：与「新会话」沿用同一套守卫。
+ *
+ * 当前会话仍在运行（含正在停止）时拒绝切换到其他会话——直接切走会中止运行，
+ * 丢失进行中的任务与半成品输出；学习运行中同理拒绝（学习会话由编排层独占，
+ * 切走会让成果停在半路）。拦截时保持抽屉与界面原状，用户可等待任务结束或先暂停。
+ * 点击当前会话本身不构成切换，沿用原有重载路径，不弹提示。
+ */
+const selectHistorySession = async (chatId: string): Promise<boolean> => {
+  if (chatId !== activeChatId.value) {
+    if (isAiResponding.value || isStopping.value) {
+      await showAlert(
+        t('sidepanel.app.newChatBlockedMessage'),
+        t('sidepanel.app.newChatBlockedTitle'),
+        'warn',
+      );
+      return false;
+    }
+    if (learn.isLearnActive.value) {
+      const validating = learn.phase.value === 'validating';
+      await showAlert(
+        t(
+          validating
+            ? 'sidepanel.learn.newChatBlockedValidatingMessage'
+            : 'sidepanel.learn.newChatBlockedMessage',
+        ),
+        t('sidepanel.learn.newChatBlockedTitle'),
+        'warn',
+      );
+      return false;
+    }
+  }
+  await loadHistorySession(chatId);
+  return true;
+};
+
 /** 删除会话时清理其缓存；删除的正是当前活跃会话时重置界面与 activeChatId，防止后续发送产生无会话元信息的孤儿记录 */
 const handleSessionDeleted = (chatId: string) => {
   deferredSendDrafts.delete(chatId);
@@ -3540,19 +3608,10 @@ const handleContainerClick = () => {
 };
 
 // 处理文件上传
-/** 附件 chip 悬浮提示：文件名 + 提取形态 + 体积/页数（图片含压缩前后体积） */
+/** 附件 chip 悬浮提示：文件名 + 形态 + 体积（图片含压缩前后体积） */
 const attachmentChipTitle = (att: ChatAttachment): string => {
   const kindText =
-    att.source === 'workspace'
-      ? t('sidepanel.attachments.sourceWorkspace')
-      : att.source === 'office'
-      ? t('sidepanel.attachments.sourceOffice')
-      : att.source === 'image'
-        ? t('sidepanel.attachments.sourceImage')
-        : t('sidepanel.attachments.sourceText');
-  if (att.kind === 'text') {
-    return `${att.name}\n${kindText} · ${formatBytes(att.sizeBytes)} · ${att.totalPages ?? '?'} ${t('sidepanel.attachments.pagesUnit')} · ${formatCharsK(att.chars)} ${t('sidepanel.attachments.charsUnit')}`;
-  }
+    att.source === 'image' ? t('sidepanel.attachments.sourceImage') : t('sidepanel.attachments.sourceFile');
   const compressed =
     att.displayBytes !== undefined && att.displayBytes !== att.sizeBytes
       ? ` → ${formatBytes(att.displayBytes)}（${t('sidepanel.attachments.compressedTag')}）`
@@ -3560,11 +3619,9 @@ const attachmentChipTitle = (att: ChatAttachment): string => {
   return `${att.name}\n${kindText} · ${formatBytes(att.sizeBytes)}${compressed}`;
 };
 
-/** 附件 chip 元信息：文本类显示页数，图片显示（压缩后）体积 */
+/** 附件 chip 元信息：图片显示（压缩后）体积，其余显示原始体积 */
 const attachmentChipMeta = (att: ChatAttachment): string =>
-  att.kind === 'text'
-    ? `${att.totalPages ?? '?'} ${t('sidepanel.attachments.pagesUnit')}`
-    : formatBytes(att.displayBytes ?? att.sizeBytes);
+  formatBytes(att.displayBytes ?? att.sizeBytes);
 
 const handleFileUpload = (event: MouseEvent) => {
   if (attachmentManager.isAdding.value) return;
@@ -4096,7 +4153,6 @@ const sendMessageInner = async (
           // agentId 是稳定引用（改名不变），恢复会话时优先按它解析；agentName 作为可读别名
           agentId: agentConfig?.id ?? '',
           agentName: selectedAgent.value,
-          skillNames: selectedSkills.value,
           modelRef: activeModelRef.value,
           systemPromptSuffix,
         });
@@ -4110,11 +4166,11 @@ const sendMessageInner = async (
       } else {
         // 学习会话的补充段承载草稿回放数据（非 LLM 输入，见 setSystemPromptSuffix），
         // 绝不能被普通发送生成的 systemPromptSuffix 覆盖——那会抹掉成果兜底；
-        // 其余字段（智能体/技能/模型）照常回显，与普通会话无异
+        // 其余字段（智能体 / 模型）照常回显，与普通会话无异；
+        // 技能不在此列——它只对单轮生效，不作为会话级设置持久化
         await transcriptEngine.updateSessionUsage(runChatId, {
           agentId: agentConfig?.id ?? '',
           agentName: selectedAgent.value,
-          skillNames: selectedSkills.value,
           modelRef: activeModelRef.value,
           ...(activeSessionIsLearn ? {} : { systemPromptSuffix }),
         });
@@ -4194,7 +4250,6 @@ const sendMessageInner = async (
         : submittedText;
     const currentAttachments: ChatAttachment[] = isResume || capture ? [] : [...pendingAttachments.value];
     const selectedModel = activeModelRef.value;
-    const selectedThreshold = activeOption.value?.contextThreshold ?? CONTEXT_THRESHOLD_DEFAULT;
     const selectedAgentName = selectedAgent.value || null;
     const selectedSkillNames = [...selectedSkills.value];
     // 已确认的网页引用随本轮消息发送：装配层从引用数据派生两路产物——
@@ -4215,85 +4270,54 @@ const sendMessageInner = async (
     };
 
     // 附件派生（三条通道，与既有「时间戳只进模型侧」的口径一致）：
-    //   - 转录可见摘要标记：并入 userInput 落库（用户能查到本轮带了哪些附件）
-    //   - 模型侧 <upload_file> 信封 attachmentPrompt：文本附件注册会话文件库
-    //     （8 位短 id + 确定性分页）后只内联第 1 页（预算封顶，见
-    //     upload-file-envelope），全文由 read_file 按页续读；信封只进 LLM
-    //     请求，转录侧不落信封本体
+    //   - 用户可见正文：只有用户自己的输入（附件以「文件元素」形式呈现在
+    //     消息气泡下方，不再有任何 "[本地工作区文件]…" 之类的协议文字混入）
+    //   - 模型侧 <upload_file> 清单 attachmentPrompt：每个上传文件一行
+    //     （相对路径 + 大小），**不含任何正文**；正文由模型按需调用
+    //     file_util 读取（文本分页、Office 转 Markdown）
     //   - 图片附件：data URL 列表走多模态 image_url（模型可见、转录不落库）
-    const textAttachmentBlocks = currentAttachments.filter(att => att.kind === 'text');
-    const currentUserImages = currentAttachments
-      .filter(att => att.kind === 'image' && typeof att.dataUrl === 'string')
-      .map(att => att.dataUrl as string);
-
-    console.log(`[SendMessage] 进入主流程, input="${currentInput.substring(0, 50)}", 文本附件 ${textAttachmentBlocks.length} 个, 图片附件 ${currentUserImages.length} 张`);
+    const currentUserImages: string[] = [];
+    const uploadedFiles: UploadedFileEntry[] = [];
 
     if (!isResume && !capture && messageTextarea.value) {
         messageTextarea.value.style.height = 'auto';
     }
 
-    // --- 5. 文件注册 + runtime 装配（systemPrompt XML 分区 + 工具 Set 去重 + 模型配置 + AI 面历史上下文） ---
-    // 装配封装为函数：文本附件先注册进会话文件库（分配 8 位短 id + 分页元
-    // 信息），再装配 <upload_file> 信封（只内联第 1 页，预算封顶）并构建
-    // runtime。注册 / 装配可能抛错（存储不可用 / 智能体被并发删除 / 模型
-    // 配置残缺）：此时消息尚未进入引擎，用户输入已在第 4 步被清空——先还原
-    // 输入再上抛，由外层 sendMessage 兜底 catch 呈现错误，用户不必为一次
-    // 可修复的失败重新敲一遍全文
+    // --- 5. 文件入库 + runtime 装配（systemPrompt XML 分区 + 工具 Set 去重 + 模型配置 + AI 面历史上下文） ---
+    // 装配封装为函数：上传文件先按**原始字节**写入会话工作区 inputs/
+    // （同名同后缀自动去重为 name(1).ext），再装配 <upload_file> 清单
+    // （只有路径与大小）并构建 runtime。入库 / 装配可能抛错（存储不可用 /
+    // 智能体被并发删除 / 模型配置残缺）：此时消息尚未进入引擎，用户输入
+    // 已在第 4 步被清空——先还原输入再上抛，由外层 sendMessage 兜底 catch
+    // 呈现错误，用户不必为一次可修复的失败重新敲一遍全文
     const registerFilesAndBuildRuntime = async (): Promise<ConversationRuntime> => {
       const workspacePaths = await importWorkspaceFiles(
         runChatId,
         currentAttachments.flatMap(att => att.rawFile ? [{ id: att.id, file: att.rawFile }] : []),
       );
-      const attachmentSummary = currentAttachments.map(att => {
-        const label = att.kind === 'image'
-          ? `[图片附件] ${att.name}`
-          : att.kind === 'text'
-            ? `[附件] ${att.name}（共 ${att.totalPages ?? '?'} 页，AI 可按页读取全文）`
-            : t('sidepanel.attachments.workspaceAttachment', { name: att.name });
+      for (const att of currentAttachments) {
         const path = workspacePaths.get(att.id);
-        return path ? `${label}\n${t('sidepanel.attachments.workspacePath', { path: JSON.stringify(path) })}` : label;
-      });
-      let envelopePrompt = '';
-      if (textAttachmentBlocks.length > 0) {
-        const envelopeEntries: UploadFileEnvelopeEntry[] = [];
-        for (const att of textAttachmentBlocks) {
-          const cached = att.previewFile?.chatId === runChatId
-            ? await conversationFileStore.get(att.previewFile.id)
-            : null;
-          const record = cached?.chatId === runChatId ? cached : await conversationFileStore.register(
-            runChatId,
-            {
-              name: att.name,
-              ext: att.ext,
-              source: att.source === 'office' ? 'office' : 'plain',
-              mimeType: att.mimeType,
-              sizeBytes: att.sizeBytes,
-            },
-            att.text ?? '',
-          );
-          att.previewFile = { chatId: runChatId, id: record.id };
-          envelopeEntries.push({
-            id: record.id,
-            name: record.name,
-            ext: record.ext,
-            source: record.source,
-            totalPages: record.totalPages,
-            page1: att.page1 ?? '',
-          });
-          console.log(`[SendMessage] 文件已注册: ${record.id}（${att.name}，共 ${record.totalPages} 页）`);
-        }
-        // 信封预览预算按当前生效模型的上下文阈值封顶（与运行链路同源的
-        // 模型级阈值；硬兜底仍是发送前的消息体积守卫）
-        envelopePrompt = buildUploadFileEnvelope(
-          envelopeEntries,
-          selectedThreshold,
-        );
+        const isImage = att.kind === 'image' && typeof att.dataUrl === 'string';
+        // imageIndex 与 runtime.userImages 的下标严格对齐（同一趟循环里入列）
+        const imageIndex = isImage ? currentUserImages.length : undefined;
+        if (isImage) currentUserImages.push(att.dataUrl as string);
+        if (!path) continue;
+        uploadedFiles.push({
+          path,
+          name: att.name,
+          sizeBytes: att.sizeBytes,
+          ext: att.ext,
+          ...(imageIndex !== undefined ? { imageIndex } : {}),
+        });
       }
+      console.log(`[SendMessage] 进入主流程, input="${currentInput.substring(0, 50)}", 上传文件 ${uploadedFiles.length} 个, 图片附件 ${currentUserImages.length} 张`);
+      const uploadManifest = buildUploadFileManifest(uploadedFiles);
       return runtimeBuilder.build({
         chatId: runChatId,
-        userInput: attachmentSummary.length ? `${currentInput}\n\n${attachmentSummary.join('\n')}` : currentInput,
+        userInput: currentInput,
         userImages: currentUserImages,
-        attachmentPrompt: envelopePrompt,
+        attachmentPrompt: uploadManifest,
+        uploadedFiles,
         pageQuote: currentQuote,
         agentName: selectedAgentName,
         skillNames: selectedSkillNames,
@@ -4452,7 +4476,8 @@ const sendMessageInner = async (
       try {
         const summary = await conversationEngine.run(runtime, {
           observer: handleConversationEvent,
-          // 循环守卫确认：应用内非阻塞确认条（60s 未确认自动停止），
+          // 循环守卫确认：应用内非阻塞确认条（超时未确认自动停止，
+          // 时限取全局「用户响应等待时长」设置），
           // 停止按钮 / 会话切换 / 倒计时归零均按停止收敛——取代阻塞线程的 window.confirm
           onLimitReached: (kind, info) =>
             new Promise<boolean>(resolve => {
@@ -4467,7 +4492,7 @@ const sendMessageInner = async (
                         : undefined,
                   minutes:
                     kind === 'max-duration'
-                      ? (info.minutes ?? Math.round(runtime.limits.maxDurationMs / 60000))
+                      ? (info.minutes ?? Math.round((runtime.limits.maxDurationMs ?? 0) / 60000))
                       : undefined,
                 },
                 resolve,
@@ -4898,9 +4923,9 @@ const handleRegistryChange = () => {
     selectedAgent.value = '';
   }
   // 技能引用存在性经三态解析（id / 模型标识 / 名称）判定，而非裸 id 集合：
-  // v1 会话与旧数据以名称持久化引用，裸 id 判定会把它们误判为悬挂而清除；
-  // 单次遍历完成「检出 + 过滤」，每个悬挂引用告警一次便于定位来源
-  //（hub 删除 / 存储同步覆盖），避免静默清除无从排查
+  // 选择态可能来自 URL 深链等外部入口，单次遍历完成「检出 + 过滤」，
+  // 每个悬挂引用告警一次便于定位来源（hub 删除 / 存储同步覆盖），
+  // 避免静默清除无从排查
   const validSkillRefs = selectedSkills.value.filter(ref => {
     if (skillEngine.get(ref)) return true;
     console.warn(`[RegistrySync] 已选技能 "${ref}" 不存在或已删除，自动清除选择`);

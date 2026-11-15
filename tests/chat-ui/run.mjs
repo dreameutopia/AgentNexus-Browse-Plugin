@@ -18,7 +18,7 @@ await build({stdin:{contents:script.content,loader:'ts',resolveDir:path.dirname(
   bundle:true,platform:'node',format:'esm',external:['vue'],loader:{'.css':'empty'},plugins:[{
     name:'unrelated-view-stubs',setup(api){
       api.onResolve({filter:/\.vue$|@\/utils\/i18n$|utils\/chat\/(diagram|chart|agent-image)-renderer$/},args=>({path:args.path,namespace:'ui-stub'}));
-      api.onLoad({filter:/.*/,namespace:'ui-stub'},args=>({contents:args.path.endsWith('.vue')?'export default {};':args.path==='@/utils/i18n'?'export const t=key=>key;':'export const installDiagramRenderer=()=>{};export const processDiagrams=()=>{};export const installChartRenderer=()=>{};export const processCharts=()=>{};export const installAgentImageRenderer=()=>{};export const processAgentImages=()=>{};'}));
+      api.onLoad({filter:/.*/,namespace:'ui-stub'},args=>({contents:args.path.endsWith('.vue')?'export default {};':args.path==='@/utils/i18n'?'export const t=key=>key;':'export const installDiagramRenderer=()=>{};export const processDiagrams=()=>{};export const installChartRenderer=()=>{};export const processCharts=()=>{};export const installAgentImageRenderer=()=>{};export const processAgentImages=()=>{};export const AGENT_IMAGE_OPEN_EVENT="agentnexus:agent-image-open";'}));
     },
   }]});
 const dom=new JSDOM('<div id="app"></div>',{url:'https://example.test/'});
@@ -83,3 +83,9 @@ assert.equal(workspaceArtifacts.status, 0, 'Unified chat artifacts without Pytho
 
 const skillCapture = spawnSync(process.execPath, [path.resolve('tests/chat-ui/skill-capture.test.mjs')], {stdio:'inherit'});
 assert.equal(skillCapture.status,0,'Skill capture confirmation and persistence');
+
+const agentImageViewer = spawnSync(process.execPath, [path.resolve('tests/chat-ui/agent-image-viewer.test.mjs')], {stdio:'inherit'});
+assert.equal(agentImageViewer.status,0,'Agent image card (no id caption) and shared image viewer overlay');
+
+const messageUploads = spawnSync(process.execPath, [path.resolve('tests/chat-ui/message-uploads.test.mjs')], {stdio:'inherit'});
+assert.equal(messageUploads.status,0,'Uploaded file elements (image zoom / web preview / download only)');

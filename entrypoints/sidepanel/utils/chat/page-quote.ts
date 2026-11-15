@@ -22,7 +22,7 @@ export const PAGE_QUOTE_TAG = 'page_quote';
  *
  * 选区可能是一整篇文章：全量进上下文会挤爆预算并触发发送前体积拦截
  * （整条消息被拒绝，用户什么都发不出去）。截断后模型仍可经
- * browser_get_page_text 回读页面原文，语义不丢。
+ * read_website 回读页面原文，语义不丢。
  */
 export const PAGE_QUOTE_MAX_CHARS = 8000;
 

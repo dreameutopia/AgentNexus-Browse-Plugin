@@ -25,18 +25,21 @@
  *  11. browser_dom_explore：parent/children/siblings/similar 荷载行为、
  *      重复模式两种形态与生成选择器、noPattern、visibleOnly/depth、
  *      宿主分页快照（40/页/STALE 语义/参数防御）（见 ./dom-explore.test.ts）
- *  12. browser_get_page_text：结构化荷载序列化自包含 + jsdom DOM 行为
+ *  12. 页面正文通道：结构化荷载序列化自包含 + jsdom DOM 行为
  *      （标题/表格 rowspan·colspan/列表/代码块/链接/shadow·slot/噪声剔除）、
- *      宿主流程（短文全量、多 frame 组装、超 15k 自动 dataRef 缓存 + ref/page
- *      分页含代理项跨页配对、url 前台打开模式（激活标签页、加载就绪后提取、
- *      标签页保留不关闭）、参数互斥与越界防御）
+ *      宿主流程（CSV content,page,totalPages,ref 交付、多 frame 组装、
+ *      3000 字符自动分页 + ref 续读含代理项跨页配对、url 前台打开模式
+ *      （激活标签页、加载就绪后提取、标签页保留不关闭）、tabId 解析、
+ *      参数互斥与越界防御）+ read_website（同源提取、content/*.md 落盘、
+ *      path+page 续读、短内容不落盘）
  *  13. 数据通道治理 + xlsx 数据源统一：dedupe/extract 领域契约与工具动作契约、
  *      xlsx 混排（dataRef 表 + 手写公式表）、数据来源二选一/字段误用/空表/
  *      失效引用的精准报错、openaiSchema 数据源声明（见 ./xlsx-dataref.test.ts）
- *  14. 上传文件体系：会话文件库（注册/分页/隔离/级联删除）、read_file 契约
- *      （信封第 1 页一致性/越界自纠/跨会话拒绝）、信封装配（结构/转义/预算
- *      封顶）、压缩引擎纯函数（GIF 动画判定/头部尺寸/触发矩阵）
- *      （见 ./upload-file.test.ts）
+ *  14. 工作区文件工具体系：file_util 契约（读取分页 3000 字符/页、创建防
+ *      覆盖、追加/编辑/删除、类型限制、Office 转 Markdown 返回路径+字数）、
+ *      文件类型判定（后缀 + 无后缀固定名）、文本解码阶梯（UTF-8/GBK/BOM）、
+ *      Office→Markdown 转换（xlsx/docx/pptx）、上传文件清单表格与固定提示词
+ *      （见 ./file-util.test.ts）
  *
  * 运行：node tests/tools/run.mjs   （或 npm run test:tools）
  */
@@ -302,9 +305,9 @@ await import('../../tools/document').then(({ registerDocumentTools }) => registe
   // list/windows、navigation 的 wait）走 needsVisionRefresh 的 action 级豁免
   //（PURE_READ_ACTIONS），工具 metadata 保持缺省保守。
   const NO_RECAPTURE_TOOLS = [
-    'browser_get_page_text', 'browser_get_page_info',
+    'read_website', 'browser_get_page_info',
     'browser_observe', 'browser_dom_explore', 'browser_network_capture',
-    'plan_tool', 'interact', 'note_tool', 'data_ref_tool', 'skill_tool', 'read_file',
+    'plan_tool', 'interact', 'note_tool', 'data_ref_tool', 'skill_tool', 'file_util',
   ];
   for (const id of NO_RECAPTURE_TOOLS) {
     check(toolRegistry.getTool(id)?.metadata.noVisionRecapture === true, `纯读工具 ${id} 声明 noVisionRecapture=true`);
@@ -345,27 +348,25 @@ await import('../../tools/document').then(({ registerDocumentTools }) => registe
   check(NOTE_SYSTEM_PROMPT_SECTION.includes('选择口诀'), '笔记分区含无歧义选择口诀');
 }
 
-// ==================== 2b. 搜索工具契约（web_search 引擎 / platform_search 站点平台 / bilibili_search 专属） ====================
+// ==================== 2b. 搜索工具契约（web_search 引擎 / platform_search 站点平台） ====================
 
 {
-  const { WebSearchTool, PlatformSearchTool, BilibiliSearchTool, SEARCH_ENGINE_IDS, SEARCH_PLATFORM_IDS, SEARCH_DEDICATED_IDS, SEARCH_TARGETS } = await import('../../tools/search');
+  const { WebSearchTool, PlatformSearchTool, SEARCH_ENGINE_IDS, SEARCH_PLATFORM_IDS, SEARCH_TARGETS } = await import('../../tools/search');
   const tool = new WebSearchTool();
   const platformTool = new PlatformSearchTool();
-  const bilibiliTool = new BilibiliSearchTool();
 
   // —— 注册与目标面 ——
   check(toolRegistry.getTool('web_search') !== null, 'web_search 已注册');
   check(toolRegistry.getTool('platform_search') !== null, 'platform_search 已注册');
-  check(toolRegistry.getTool('bilibili_search') !== null, 'bilibili_search 已注册');
+  check(toolRegistry.getTool('bilibili_search') === undefined, 'bilibili_search 已移出内置工具（改由官方插件提供）');
   eq(SEARCH_ENGINE_IDS.length, 2, '搜索引擎注册表共 2 个（bing / baidu）');
-  eq(SEARCH_PLATFORM_IDS.length, 6, '站点平台注册表共 6 个（Bilibili 已独立成专属工具）');
-  eq(SEARCH_DEDICATED_IDS.length, 1, '专属目标注册表共 1 个（bilibili）');
-  eq(SEARCH_ENGINE_IDS.length + SEARCH_PLATFORM_IDS.length + SEARCH_DEDICATED_IDS.length, 9, '搜索目标合计 9 个（拆分后总量不变）');
+  eq(SEARCH_PLATFORM_IDS.length, 6, '站点平台注册表共 6 个');
+  eq(SEARCH_ENGINE_IDS.length + SEARCH_PLATFORM_IDS.length, 8, '内置搜索目标合计 8 个（Bilibili 已迁移到插件）');
   check(
     !SEARCH_PLATFORM_IDS.includes('bilibili' as never),
-    'Bilibili 已从站点平台枚举中移除（platform_search 不再支持该平台）',
+    'Bilibili 不在站点平台枚举中（已迁移到插件）',
   );
-  for (const id of [...SEARCH_ENGINE_IDS, ...SEARCH_PLATFORM_IDS, ...SEARCH_DEDICATED_IDS]) {
+  for (const id of [...SEARCH_ENGINE_IDS, ...SEARCH_PLATFORM_IDS]) {
     const target = SEARCH_TARGETS[id];
     check(
       typeof target.buildSearchUrl('q') === 'string' && target.buildSearchUrl('q').includes(encodeURIComponent('q')),
@@ -377,31 +378,19 @@ await import('../../tools/document').then(({ registerDocumentTools }) => registe
       check(typeof target.extractor.func === 'function', `目标 ${id}: inline 通道有解析函数`);
     }
   }
-  // 三个工具的 schema 各自对应自己的目标类别，互不串味
+  // 两个工具的 schema 各自对应自己的目标类别，互不串味
   type SearchSchemaProperty = { enum?: string[]; description?: string };
   const engineProps = tool.openaiSchema.function.parameters?.properties as Record<string, SearchSchemaProperty>;
   const platformProps = platformTool.openaiSchema.function.parameters?.properties as Record<string, SearchSchemaProperty>;
-  const bilibiliProps = bilibiliTool.openaiSchema.function.parameters?.properties as Record<string, SearchSchemaProperty>;
   eq(engineProps.engine?.enum, [...SEARCH_ENGINE_IDS], 'web_search 的 engine 枚举 = 搜索引擎清单');
   eq(platformProps.platform?.enum, [...SEARCH_PLATFORM_IDS], 'platform_search 的 platform 枚举 = 站点平台清单');
   check(
     !(platformProps.platform?.enum ?? []).includes('bilibili'),
-    'platform_search 的枚举不含 bilibili（B 站已独立成专属工具）',
+    'platform_search 的枚举不含 bilibili（B 站已迁移到插件）',
   );
   check(
     engineProps.website === undefined && platformProps.engine === undefined,
-    '旧参数名 website 已下线，三个工具各用自己的参数名',
-  );
-  // 专属工具：目标固定 → schema 不含目标参数，required 只有 query
-  check(
-    bilibiliProps.platform === undefined && bilibiliProps.engine === undefined,
-    'bilibili_search 的 schema 不含目标参数（目标固定，无需模型再选）',
-    Object.keys(bilibiliProps),
-  );
-  eq(
-    bilibiliTool.openaiSchema.function.parameters?.required,
-    ['query'],
-    'bilibili_search 的必填参数只有 query',
+    '旧参数名 website 已下线，两个工具各用自己的参数名',
   );
   // 参数描述 = 基类枚举清单 + 子类选择指引（paramDescription 曾是死字段，
   // 选择指引没进 schema——此断言防止再次出现「写了但没接上」）
@@ -426,17 +415,12 @@ await import('../../tools/document').then(({ registerDocumentTools }) => registe
     'web_search 描述点明站点检索走 platform_search（分工不靠模型猜）',
   );
   check(
-    (platformTool.openaiSchema.function.description ?? '').includes('bilibili_search'),
-    'platform_search 描述点明 B 站检索走 bilibili_search（分工不靠模型猜）',
-  );
-  check(
     !(platformProps.platform?.description ?? '').includes('bilibili'),
     'platform_search 的参数清单不含 bilibili（该平台已彻底移出该工具）',
     platformProps.platform?.description,
   );
   check(tool.metadata.noVisionRecapture !== true, 'web_search 未标记 noVisionRecapture（搜索改变页面，视觉循环须重拍）');
   check(platformTool.metadata.noVisionRecapture !== true, 'platform_search 未标记 noVisionRecapture（同上）');
-  check(bilibiliTool.metadata.noVisionRecapture !== true, 'bilibili_search 未标记 noVisionRecapture（同上）');
 
   // —— 参数防御（不触导航即返回错误） ——
   const badEngine = await tool.execute({ engine: 'google', query: 'x' });
@@ -450,13 +434,6 @@ await import('../../tools/document').then(({ registerDocumentTools }) => registe
     platformRejectsBilibili.success === false && /不支持的站点平台/.test(platformRejectsBilibili.error ?? ''),
     'platform_search 拒绝 bilibili 平台（已彻底移出该工具）',
     platformRejectsBilibili.error,
-  );
-  // 专属工具：目标固定；若仍传了不一致的目标参数 → 明确报错（不静默忽略）
-  const dedicatedMismatch = await bilibiliTool.execute({ platform: 'zhihu', query: 'x' });
-  check(
-    dedicatedMismatch.success === false && /只支持 bilibili/.test(dedicatedMismatch.error ?? ''),
-    'bilibili_search 拒绝与固定目标不一致的目标参数',
-    dedicatedMismatch.error,
   );
   const badQuery = await tool.execute({ engine: 'bing', query: '   ' });
   check(badQuery.success === false && /query 必填/.test(badQuery.error ?? ''), '空白 query：报错');
@@ -527,7 +504,7 @@ await import('../../tools/document').then(({ registerDocumentTools }) => registe
     check(parseFail.success === true, '解析失败: 整体仍 success（导航事实不被吞）');
     const parseFailData = parseFail.data as { navigation: { success: boolean }; results: { success: boolean; hint?: string } };
     check(parseFailData.navigation.success === true, '解析失败: navigation 仍成功');
-    check(parseFailData.results.success === false && /browser_get_page_text/.test(parseFailData.results.hint ?? ''), '解析失败: 提示自行解析', parseFailData.results.hint);
+    check(parseFailData.results.success === false && /read_website/.test(parseFailData.results.hint ?? ''), '解析失败: 提示自行解析', parseFailData.results.hint);
 
     // 3) script 通道（zhihu）：注入 + sendMessage 契约（站点平台走 platform_search）
     scriptingStub.executeScript = (async () => undefined) as typeof scriptingStub.executeScript;
@@ -545,7 +522,7 @@ await import('../../tools/document').then(({ registerDocumentTools }) => registe
     messageResponse = { status: 'success', data: [] };
     const empty = await platformTool.execute({ platform: 'csdn', query: 'test', waitTime: 0 });
     const emptyData = empty.data as { results: { success: boolean; count: number; hint?: string } };
-    check(emptyData.results.success === true && emptyData.results.count === 0 && /browser_get_page_text/.test(emptyData.results.hint ?? ''), '空结果: success=true 且提示自行确认');
+    check(emptyData.results.success === true && emptyData.results.count === 0 && /read_website/.test(emptyData.results.hint ?? ''), '空结果: success=true 且提示自行确认');
 
     // 5) 导航硬失败（新标签页创建后即消失）
     tabsStub.create = (async () => ({ id: 88 })) as typeof tabsStub.create;
@@ -584,20 +561,20 @@ await import('../../tools/document').then(({ registerDocumentTools }) => registe
 // ==================== 2b2. 搜索工具执行细节（waitTime 生效 / 中止收敛 / 标签页回报 / 失败通道） ====================
 
 {
-  const { WebSearchTool, SEARCH_TARGETS, SEARCH_TARGET_IDS, SEARCH_ENGINE_IDS, SEARCH_PLATFORM_IDS, SEARCH_DEDICATED_IDS } = await import('../../tools/search');
+  const { WebSearchTool, SEARCH_TARGETS, SEARCH_TARGET_IDS, SEARCH_ENGINE_IDS, SEARCH_PLATFORM_IDS } = await import('../../tools/search');
   const tool = new WebSearchTool();
 
   // —— 注册表与 id 数组的一致性：新增目标若只登记进注册表而漏进数组，
   //    工具枚举取不到它 = 静默不可达（类型系统查不出，只能靠契约测试守住） ——
   eq(
-    [...SEARCH_ENGINE_IDS, ...SEARCH_PLATFORM_IDS, ...SEARCH_DEDICATED_IDS].sort(),
+    [...SEARCH_ENGINE_IDS, ...SEARCH_PLATFORM_IDS].sort(),
     Object.keys(SEARCH_TARGETS).sort(),
-    '三个 id 数组的并集与注册表键完全一致（新增目标不得漏登记）',
+    '两个 id 数组的并集与注册表键完全一致（新增目标不得漏登记）',
   );
   eq(
     [...SEARCH_TARGET_IDS],
-    [...SEARCH_ENGINE_IDS, ...SEARCH_PLATFORM_IDS, ...SEARCH_DEDICATED_IDS],
-    'SEARCH_TARGET_IDS 与三个 id 数组的并集一致（派生常量不得漂移）',
+    [...SEARCH_ENGINE_IDS, ...SEARCH_PLATFORM_IDS],
+    'SEARCH_TARGET_IDS 与两个 id 数组的并集一致（派生常量不得漂移）',
   );
 
   const chromeStub = (globalThis as Record<string, unknown>).chrome as Record<string, unknown>;
@@ -686,27 +663,6 @@ await import('../../tools/document').then(({ registerDocumentTools }) => registe
       navFail.data,
     );
 
-    // 6) 专属工具（bilibili_search）：目标固定 → 走 script 通道直达 B 站结果页
-    const { BilibiliSearchTool } = await import('../../tools/search');
-    const bilibiliTool = new BilibiliSearchTool();
-    let messageCalls = 0;
-    let createdUrl = '';
-    tabsStub.create = (async (props: { url?: string }) => {
-      createCalls += 1;
-      createdUrl = props.url ?? '';
-      return { id: createdTabId, url: props.url };
-    }) as typeof tabsStub.create;
-    tabsStub.sendMessage = (async () => {
-      messageCalls += 1;
-      return { status: 'success', data: [{ title: 'V1', link: 'https://b23.tv/BV1xx' }] };
-    }) as typeof tabsStub.sendMessage;
-    const bili = await bilibiliTool.execute({ query: 't', waitTime: 0 });
-    check(bili.success === true, 'bilibili_search：专属工具检索成功', bili);
-    check(createdUrl.includes('search.bilibili.com'), 'bilibili_search：导航到 B 站结果页', createdUrl);
-    check(messageCalls === 1, 'bilibili_search：走 script 通道（内容脚本响应一次）', messageCalls);
-    const biliData = bili.data as { platform?: string; results: { count: number } };
-    check(biliData.platform === 'bilibili', 'bilibili_search：回传目标即固定目标', biliData.platform);
-    check(biliData.results.count === 1, 'bilibili_search：解析出视频条目', biliData.results);
   } finally {
     Object.assign(tabsStub, originalTabs);
     scriptingStub.executeScript = originalExecuteScript;
@@ -1677,7 +1633,7 @@ await testTextAutomation(check, eq);
   resetTabStub();
 }
 
-// ==================== 12. browser_get_page_text：结构化正文 + url + 分页 ====================
+// ==================== 12. 页面正文通道：browser_get_page_text / read_website ====================
 
 {
   const { GetPageTextTool } = await import('../../tools/base/page-info-tool');
@@ -1785,6 +1741,13 @@ await testTextAutomation(check, eq);
     frameId: 0,
     result: { markdown, truncated: false, shadowRoots: 0, url: 'https://example.com/', title: '', ...extra },
   });
+  // 交付契约：CSV 多列单行（content,page,totalPages,ref），解析后取列值断言
+  const { parseCsv } = await import('../../utils/python-workspace/tabular');
+  const csvRow = (data: AnyRecord): Record<string, string> => {
+    const table = parseCsv(String(data.content ?? ''));
+    const row = table.rows[0] ?? [];
+    return Object.fromEntries(table.headers.map((key, index) => [key, row[index] ?? '']));
+  };
   try {
     await dataRefStore.remove('all');
     scriptingStub.executeScript = (async () => [frameResult('# 短文\n\n正文段落。')]) as typeof scriptingStub.executeScript;
@@ -1793,15 +1756,13 @@ await testTextAutomation(check, eq);
     resetTabStub();
     const short = await tool.execute({});
     const shortData = dataOf(short);
-    check(short.success === true && shortData.textContent === '# 短文\n\n正文段落。', '短文全量返回');
-    eq(shortData.page, 1, '短文页码为 1');
-    eq(shortData.totalPages, 1, '短文总页数为 1');
-    eq(shortData.totalChars, '# 短文\n\n正文段落。'.length, '短文 totalChars 准确');
-    eq(shortData.ref, undefined, '短文不产生缓存引用');
-    eq(shortData.hasMore, false, '短文无下一页');
+    const shortRow = csvRow(shortData);
+    check(short.success === true, '短文读取成功', short.error);
+    eq(shortRow.content, '# 短文\n\n正文段落。', '短文正文完整');
+    eq(shortRow.page, '1', '短文页码为 1');
+    eq(shortRow.totalPages, '1', '短文总页数为 1');
+    eq(shortRow.ref, '', '短文不产生缓存引用');
     eq((await dataRefStore.list()).length, 0, '短文不污染暂存区');
-    check(Array.isArray(shortData.coverage?.frames) && shortData.coverage.frames.length === 1, 'coverage.frames 保留');
-    check(String(shortData.hint ?? '').includes('结构化'), '响应携带结构化说明 hint');
 
     // 多 frame：主 frame 置首 + FrameId 标头
     resetTabStub();
@@ -1810,14 +1771,14 @@ await testTextAutomation(check, eq);
       frameResult('主框架正文', { title: '主页面' }),
     ]) as typeof scriptingStub.executeScript;
     const multi = await tool.execute({});
-    const multiData = dataOf(multi);
+    const multiContent = csvRow(dataOf(multi)).content;
     check(
-      String(multiData.textContent).startsWith('# 主页面') &&
-        String(multiData.textContent).includes('[FrameId=0 | https://example.com/]') &&
-        String(multiData.textContent).includes('[FrameId=7 | https://embed.example/]') &&
-        String(multiData.textContent).indexOf('主框架正文') < String(multiData.textContent).indexOf('iframe 正文'),
+      multiContent.startsWith('# 主页面') &&
+        multiContent.includes('[FrameId=0 | https://example.com/]') &&
+        multiContent.includes('[FrameId=7 | https://embed.example/]') &&
+        multiContent.indexOf('主框架正文') < multiContent.indexOf('iframe 正文'),
       '多 frame：标题 + FrameId 标头 + 主 frame 置首',
-      multiData.textContent?.slice(0, 120),
+      multiContent.slice(0, 120),
     );
 
     // 空 frame 不进入正文段：只剩一个有内容的 frame 时不加 FrameId 标头
@@ -1827,38 +1788,35 @@ await testTextAutomation(check, eq);
       { frameId: 3, result: { markdown: '', truncated: false, shadowRoots: 0, url: 'https://empty.example/', title: '' } },
     ]) as typeof scriptingStub.executeScript;
     const withEmpty = await tool.execute({});
-    const withEmptyData = dataOf(withEmpty);
+    const withEmptyContent = csvRow(dataOf(withEmpty)).content;
     check(
-      String(withEmptyData.textContent).startsWith('# 页') && !String(withEmptyData.textContent).includes('[FrameId='),
+      withEmptyContent.startsWith('# 页') && !withEmptyContent.includes('[FrameId='),
       '空 frame 不产生标头：唯一内容 frame 直接输出正文',
-      withEmptyData.textContent?.slice(0, 80),
+      withEmptyContent.slice(0, 80),
     );
-    check(withEmptyData.coverage?.frames?.length === 2, 'coverage 仍保留空 frame 记录');
 
     // 超长：自动缓存 ref + 分页（含代理项边界：页界恰逢增补平面前半）
     resetTabStub();
-    const emojiDoc = 'a'.repeat(14999) + '🙂'.repeat(10) + 'b'.repeat(1000);
+    // 页界（第 3000 个 UTF-16 单元）正好落在 🙂 的高位代理上：两页都不得拆开代理对
+    const emojiDoc = 'a'.repeat(2999) + '🙂' + 'b'.repeat(1000);
     scriptingStub.executeScript = (async () => [frameResult(emojiDoc)]) as typeof scriptingStub.executeScript;
     const long1 = await tool.execute({});
-    const long1Data = dataOf(long1);
-    check(typeof long1Data.ref === 'string' && long1Data.ref.length === 8, '超长正文返回 8 位 ref');
-    eq(long1Data.totalPages, 2, '超长正文总页数为 2');
-    eq(long1Data.page, 1, '默认返回第 1 页');
-    eq(long1Data.hasMore, true, '第 1 页 hasMore=true');
-    eq(long1Data.nextPage, 2, 'nextPage=2');
-    eq(long1Data.textContent, emojiDoc.slice(0, 14999), '第 1 页在代理项边界回退（不含半个 🙂）');
-    check(String(long1Data.refGuide ?? '').includes('page=2'), 'refGuide 给出续读调用');
+    const long1Row = csvRow(dataOf(long1));
+    check(typeof long1Row.ref === 'string' && long1Row.ref.length === 8, '超长正文返回 8 位 ref', long1Row.ref);
+    eq(long1Row.totalPages, '2', '超长正文总页数为 2');
+    eq(long1Row.page, '1', '默认返回第 1 页');
+    eq(long1Row.content, 'a'.repeat(2999), '第 1 页在代理项边界回退（不含半个 🙂）');
     eq((await dataRefStore.list()).length, 1, '超长正文已入暂存区');
 
     // ref 分页续读：不访问页面（executeScript 抛错也不影响）
     scriptingStub.executeScript = (async () => { throw new Error('ref 模式不应注入页面'); }) as typeof scriptingStub.executeScript;
-    const long2 = await tool.execute({ ref: long1Data.ref as string, page: 2 });
-    const long2Data = dataOf(long2);
-    check(long2.success === true && long2Data.source === 'ref', 'ref 模式读取成功且标记 source=ref');
-    eq(long2Data.page, 2, 'ref 模式返回指定页');
-    eq(long2Data.hasMore, false, '末页 hasMore=false');
+    const long2 = await tool.execute({ ref: long1Row.ref, page: 2 });
+    const long2Row = csvRow(dataOf(long2));
+    check(long2.success === true, 'ref 模式读取成功', long2.error);
+    eq(long2Row.page, '2', 'ref 模式返回指定页');
+    eq(long2Row.ref, long1Row.ref, 'ref 模式回显同一引用');
     eq(
-      (long1Data.textContent as string) + (long2Data.textContent as string),
+      long1Row.content + long2Row.content,
       emojiDoc,
       '两页拼接无损还原全文（代理项跨页配对）',
     );
@@ -1867,8 +1825,9 @@ await testTextAutomation(check, eq);
     resetTabStub();
     scriptingStub.executeScript = (async () => [frameResult(emojiDoc)]) as typeof scriptingStub.executeScript;
     const page2Direct = await tool.execute({ page: 2 });
-    check(page2Direct.success === true && dataOf(page2Direct).page === 2, '直接指定页码返回该页');
-    eq(dataOf(page2Direct).textContent, emojiDoc.slice(14999), '第 2 页从被回退的代理项前半开始');
+    const page2Row = csvRow(dataOf(page2Direct));
+    check(page2Direct.success === true && page2Row.page === '2', '直接指定页码返回该页', page2Direct.error);
+    eq(page2Row.content, '🙂' + 'b'.repeat(1000), '第 2 页从被回退的代理项开始（代理对完整）');
 
     // 参数与模式互斥防御
     const conflicts = [
@@ -1882,6 +1841,7 @@ await testTextAutomation(check, eq);
       [{ page: 0 }, /≥1/],
       [{ page: 'abc' }, /≥1/],
       [{ tabId: -1 }, /非负整数/],
+      [{ unknownKey: 1 }, /未知参数/],
       [[1, 2], /参数必须是对象/],
       [null, /参数必须是对象/],
       ['x', /参数必须是对象/],
@@ -1896,14 +1856,14 @@ await testTextAutomation(check, eq);
     scriptingStub.executeScript = (async () => [frameResult('# 短文')]) as typeof scriptingStub.executeScript;
     const outOfRange = await tool.execute({ page: 5 });
     check(outOfRange.success === false && /超出范围/.test(outOfRange.error ?? ''), '现场页码越界报错', outOfRange.error);
-    const refOutOfRange = await tool.execute({ ref: long1Data.ref as string, page: 99 });
+    const refOutOfRange = await tool.execute({ ref: long1Row.ref, page: 99 });
     check(refOutOfRange.success === false && /超出范围/.test(refOutOfRange.error ?? ''), '缓存页码越界报错', refOutOfRange.error);
 
     // ref 指向非本工具批次（records 数据）与不存在的引用
     const alien = await dataRefStore.save([{ a: 1 }], '脚本批次');
     if (alien.ok) {
       const wrongKind = await tool.execute({ ref: alien.meta.id });
-      check(wrongKind.success === false && /不是 browser_get_page_text 的页面正文批次/.test(wrongKind.error ?? ''), '拒绝读取其它工具的数据批次', wrongKind.error);
+      check(wrongKind.success === false && /不是页面正文批次/.test(wrongKind.error ?? ''), '拒绝读取其它工具的数据批次', wrongKind.error);
     }
     const missingRef = await tool.execute({ ref: 'zzzzzzzz' });
     check(missingRef.success === false && /不存在或已过期/.test(missingRef.error ?? ''), '不存在的 ref 报错', missingRef.error);
@@ -1936,7 +1896,7 @@ await testTextAutomation(check, eq);
       'url 模式：不得自动关闭用户可见的标签页（人机验证需用户手动完成）',
       { removedTabIds },
     );
-    check(String(byUrlData.textContent).includes('# 目标页') && byUrlData.url === 'https://target.example/', 'url 模式正文与元数据正确');
+    check(csvRow(byUrlData).content.includes('# 目标页'), 'url 模式正文正确');
 
     // url 与当前活动标签页完全同址：直接读当前页，不开重复标签页
     resetTabStub();
@@ -2016,7 +1976,7 @@ await testTextAutomation(check, eq);
     }) as typeof scriptingStub.executeScript;
     const afterVanish = await tool.execute({ url: 'https://vanish.example/' });
     check(
-      afterVanish.success === true && createdAfterVanish === 1 && String(dataOf(afterVanish).textContent).includes('新开的页面'),
+      afterVanish.success === true && createdAfterVanish === 1 && csvRow(dataOf(afterVanish)).content.includes('新开的页面'),
       '复用标签页消失：转走新建分支并从新标签页提取',
       { createdAfterVanish, error: afterVanish.error },
     );
@@ -2029,12 +1989,171 @@ await testTextAutomation(check, eq);
     resetTabStub();
     tabStub.tabs = [{ id: 1, url: 'chrome://settings/', status: 'complete', windowId: 1 }];
     const restricted = await tool.execute({});
-    check(restricted.success === false && /restricted URL/.test(restricted.error ?? ''), '受限页面拒绝并提示', restricted.error);
+    check(restricted.success === false && /RESTRICTED_PAGE/.test(restricted.error ?? ''), '受限页面拒绝并提示', restricted.error);
   } finally {
     Object.assign(tabsStub, originalTabs);
     scriptingStub.executeScript = originalExecuteScript;
     await dataRefStore.remove('all');
     resetTabStub();
+  }
+}
+
+// ==================== 12d. read_website：同源提取 + content/*.md 落盘 ====================
+
+{
+  const { ReadWebsiteTool } = await import('../../tools/base/read-website-tool');
+  const { readWorkspaceTextFile } = await import('../../utils/python-workspace/workspace-files');
+  const { chatDatabase } = await import('../../entrypoints/sidepanel/core/context/chat-database');
+  const { parseCsv } = await import('../../utils/python-workspace/tabular');
+  const chromeStub = (globalThis as Record<string, unknown>).chrome as Record<string, unknown>;
+  const tabsStub = chromeStub.tabs as Record<string, unknown>;
+  const scriptingStub = chromeStub.scripting as Record<string, unknown>;
+  const originalTabs = { ...tabsStub };
+  const originalExecuteScript = scriptingStub.executeScript;
+  const frameResult = (markdown: string, extra: Record<string, unknown> = {}) => ({
+    frameId: 0,
+    result: { markdown, truncated: false, shadowRoots: 0, url: 'https://example.com/', title: '', ...extra },
+  });
+  const csvRow = (data: AnyRecord): Record<string, string> => {
+    const table = parseCsv(String(data.content ?? ''));
+    const row = table.rows[0] ?? [];
+    return Object.fromEntries(table.headers.map((key, index) => [key, row[index] ?? '']));
+  };
+  const chatId = 'read-website-test';
+  await chatDatabase.createSession({
+    chatId,
+    title: 'read_website',
+    createdAt: 1,
+    updatedAt: 1,
+    messageCount: 0,
+    lastMessagePreview: '',
+    agentName: 'default',
+  } as never);
+  const tool = new ReadWebsiteTool();
+  try {
+    resetTabStub();
+    tabStub.tabs = [{ id: 1, url: 'https://docs.example/guide', status: 'complete', windowId: 1 }];
+    // 结构化荷载的 markdown 不含页面标题（标题由组装层统一加 # 前缀）
+    const body = '正文段落。'.repeat(800);
+    const doc = '# 标题\n\n' + body;
+    scriptingStub.executeScript = (async () => [
+      frameResult(body, { title: '标题', url: 'https://docs.example/guide' }),
+    ]) as typeof scriptingStub.executeScript;
+
+    const first = await tool.execute({}, { chatId });
+    check(first.success === true, 'read_website 读取成功', first.error);
+    const firstRow = csvRow(dataOf(first));
+    eq(firstRow.page, '1', 'read_website 默认第 1 页');
+    eq(firstRow.totalPages, '2', 'read_website 按 3000 字符分页');
+    check(
+      /^content\/docs-example-guide-[a-z]{4}\.md$/.test(firstRow.path),
+      '落盘路径 = content/<url-slug>-<4 位随机字母>.md',
+      firstRow.path,
+    );
+    eq(firstRow.content, doc.slice(0, 3000), '第 1 页恰为前 3000 字符');
+    const stored = await readWorkspaceTextFile(chatId, firstRow.path);
+    eq(stored.content, doc, '落盘文件保存完整正文（未被分页截断）');
+
+    // path + page 续读：只读工作区文件，不访问页面
+    scriptingStub.executeScript = (async () => {
+      throw new Error('续读模式不应注入页面');
+    }) as typeof scriptingStub.executeScript;
+    const second = await new ReadWebsiteTool().execute({ path: firstRow.path, page: 2 }, { chatId });
+    check(second.success === true, 'path 续读成功', second.error);
+    check(dataOf(second).frameDiagnostics?.status === dataOf(first).frameDiagnostics?.status,
+      '新工具实例从诊断旁文件恢复原始采集完整性');
+    const secondRow = csvRow(dataOf(second));
+    eq(secondRow.page, '2', '续读返回指定页');
+    eq(secondRow.path, firstRow.path, '续读回显同一文件路径');
+    eq(firstRow.content + secondRow.content, doc, '两页拼接无损还原全文');
+
+    const overPage = await tool.execute({ path: firstRow.path, page: 9 }, { chatId });
+    check(overPage.success === false && /超出范围/.test(overPage.error ?? ''), '续读页码越界报错', overPage.error);
+
+    const { editWorkspaceFile } = await import('../../utils/python-workspace/workspace-files');
+    const diagnosticPath = dataOf(first).frameDiagnosticsPath as string;
+    check(typeof diagnosticPath === 'string', '归档保留诊断旁文件路径');
+    const diagnosticFile = await readWorkspaceTextFile(chatId, diagnosticPath);
+    const diagnostic = JSON.parse(diagnosticFile.content);
+    await editWorkspaceFile(chatId, diagnosticPath, { content: JSON.stringify({ ...diagnostic, frameDiagnostics: { status: 'complete' } }) });
+    const badDiagnostic = await new ReadWebsiteTool().execute({ path: firstRow.path }, { chatId });
+    check(badDiagnostic.success && !dataOf(badDiagnostic).frameDiagnostics && /格式无效/.test(dataOf(badDiagnostic).diagnosticNote ?? ''), '正文 hash 匹配也不能接受损坏的诊断结构');
+    await editWorkspaceFile(chatId, diagnosticPath, { content: diagnosticFile.content });
+    await editWorkspaceFile(chatId, firstRow.path, { content: stored.content + '\n后续手动编辑' });
+    const changedArchive = await new ReadWebsiteTool().execute({ path: firstRow.path }, { chatId });
+    check(changedArchive.success && !dataOf(changedArchive).frameDiagnostics && /正文文件已变化/.test(dataOf(changedArchive).diagnosticNote ?? ''), '正文编辑后不误用原始覆盖诊断');
+
+    // 短内容不落盘：直接内联返回
+    resetTabStub();
+    scriptingStub.executeScript = (async () => [
+      frameResult('太短', { title: '短', url: 'https://short.example/' }),
+    ]) as typeof scriptingStub.executeScript;
+    const shortDoc = await tool.execute({}, { chatId });
+    const shortRow = csvRow(dataOf(shortDoc));
+    eq(shortRow.path, '', '不足 100 字符不落盘');
+    eq(shortRow.content, '# 短\n\n太短', '短内容仍内联返回');
+    // 内容块可能是 text/image 联合：只取 text 块（与 extractContentText 同口径）
+    const shortText = (shortDoc.content ?? [])
+      .map((block) => (block as { text?: unknown }).text)
+      .filter((text): text is string => typeof text === 'string')
+      .join('\n');
+    check(shortText.includes('未落盘'), '短内容说明未落盘原因', shortText);
+
+    // 验证页/风控页不落盘（不是可用事实），只标记 verificationRequired
+    resetTabStub();
+    scriptingStub.executeScript = (async () => [
+      frameResult('Please verify you are human. ' + 'x'.repeat(200), {
+        title: 'Just a moment...',
+        url: 'https://challenge.example/',
+      }),
+    ]) as typeof scriptingStub.executeScript;
+    const challengeDoc = await tool.execute({}, { chatId });
+    const challengeRow = csvRow(dataOf(challengeDoc));
+    eq(challengeRow.path, '', '验证页不落盘');
+    eq(dataOf(challengeDoc).verificationRequired, true, '验证页标记 verificationRequired');
+    check(
+      String(dataOf(challengeDoc).archiveSkipped ?? '').includes('验证'),
+      '验证页说明未落盘原因',
+      dataOf(challengeDoc).archiveSkipped,
+    );
+
+    // 全 frame 空正文（如纯 canvas 页面）：给可执行的替代方案，而不是返回标题空壳
+    resetTabStub();
+    scriptingStub.executeScript = (async () => [
+      frameResult('   ', { title: '画布页', url: 'https://canvas.example/' }),
+    ]) as typeof scriptingStub.executeScript;
+    const emptyText = await tool.execute({});
+    check(
+      emptyText.success === false && /EMPTY_TEXT/.test(emptyText.error ?? ''),
+      '空正文返回 EMPTY_TEXT 并提示截图/等待渲染',
+      emptyText.error,
+    );
+    check(
+      /画布页/.test(emptyText.error ?? '') && /screenshot/.test(emptyText.error ?? ''),
+      '空正文错误包含标题与替代方案',
+      emptyText.error,
+    );
+
+    // 参数防御：错误必须在触碰页面前给出可自纠原因
+    for (const [badArgs, pattern] of [
+      [{ path: 'outputs/x.md' }, /content\//],
+      [{ url: 'https://a.example/', path: 'content/x.md' }, /互斥/],
+      [{ bogus: 1 }, /未知参数/],
+      [[], /参数必须是对象/],
+      [{ page: 0 }, /≥1/],
+    ] as const) {
+      const rejected = await tool.execute(badArgs as never, { chatId });
+      check(
+        rejected.success === false && pattern.test(rejected.error ?? ''),
+        `read_website 参数防御：${JSON.stringify(badArgs)}`,
+        rejected.error,
+      );
+    }
+  } finally {
+    Object.assign(tabsStub, originalTabs);
+    scriptingStub.executeScript = originalExecuteScript;
+    resetTabStub();
+    await chatDatabase.deleteSession(chatId).catch(() => undefined);
   }
 }
 
@@ -2164,30 +2283,104 @@ await testTextAutomation(check, eq);
   );
 }
 
+// ==================== 15. 数据格式与落盘契约（CSV 编解码 + 新参数声明） ====================
+{
+  const { serializeCsv, parseCsv, csvToRecords } = await import(
+    '../../utils/python-workspace/tabular'
+  );
+  const rows = [
+    ['含,逗号', '含"引号"', '多\n行'],
+    ['', ' 空格 ', 'x'],
+  ];
+  const table = parseCsv(serializeCsv(['A', 'B', 'C'], rows));
+  eq(table.headers, ['A', 'B', 'C'], 'CSV 表头往返');
+  eq(table.rows, rows, 'CSV 引号/逗号/换行往返');
+  eq(table.rows.length, 2, 'CSV 末尾空行不产生数据行');
+
+  const dirty = parseCsv('\uFEFFa,b,a,,\r\n1,2,3,4,5\r\n');
+  eq(dirty.headers, ['a', 'b', 'a(2)', '列4', '列5'], 'CSV BOM/CRLF/重复空表头归一');
+  eq(
+    csvToRecords(dirty),
+    [{ a: '1', b: '2', 'a(2)': '3', 列4: '4', 列5: '5' }],
+    'CSV 对象行按表头对齐且不丢列',
+  );
+  eq(parseCsv('a\nx"y').rows[0][0], 'x"y', 'CSV 字段内裸引号按字面保留');
+  eq(parseCsv('\n\n'), { headers: [], rows: [] }, 'CSV 空内容');
+  eq(serializeCsv([], [['1', '2']]), '1,2\n', 'CSV 无表头矩阵');
+
+  const ragged = parseCsv('a,b\n1,2,3\n');
+  eq(ragged.headers, ['a', 'b', '列3'], 'CSV 数据行多出的列补表头，不静默丢数据');
+  eq(ragged.rows[0], ['1', '2', '3'], 'CSV 数据行按最大列宽对齐');
+
+  const { pageExtractDataTool, PageExtractDataTool } = await import(
+    '../../tools/browser/page-extract-tool'
+  );
+  const extractProps = pageExtractDataTool.openaiSchema.function.parameters.properties as Record<
+    string,
+    unknown
+  >;
+  for (const key of ['save', 'saveTo', 'format', 'previewRows', 'label']) {
+    check(key in extractProps, `browser_extract_data 声明 ${key} 参数`);
+  }
+
+  // 参数误用必须在触碰页面前就被拒绝（错误可自助修复，且不产生副作用）
+  const extract = new PageExtractDataTool();
+  const rejects = async (args: Record<string, unknown>, label: string) => {
+    const result = await extract.execute(args as never, { chatId: 'tools-test' });
+    check(!result.success, label, result);
+  };
+  await rejects({ mode: 'table', fields: { title: 'h2' } }, 'fields 只允许 list 模式');
+  await rejects({ mode: 'list', selector: '.x', attr: 'href' }, 'attr 只允许 selector 模式');
+  await rejects({ mode: 'list' }, 'list 模式必须给 selector');
+  await rejects({ mode: 'table', selector: '   ' }, 'selector 不接受空串');
+  await rejects(
+    { mode: 'list', selector: '.x', fields: { title: { selector: '' } } },
+    'fields.selector 不接受空串',
+  );
+  await rejects({ mode: 'table', format: 'md' }, 'md 只能用于 saveTo 交付');
+  await rejects({ mode: 'table', save: 'never', saveTo: 'outputs/x.csv' }, 'save=never 与 saveTo 冲突');
+  await rejects({ mode: 'selector', selector: '.x', saveTo: 'docs/x.csv' }, 'saveTo 限制在 outputs/');
+  await rejects({ mode: 'table', limit: 0 }, 'limit 必须 ≥1');
+  await rejects({ mode: 'table', previewRows: 0 }, 'previewRows 必须 ≥1');
+
+  const { BrowserObserveTool } = await import('../../tools/browser/observe');
+  const observeProps = new BrowserObserveTool().openaiSchema.function.parameters
+    .properties as Record<string, unknown>;
+  for (const key of ['pageSize', 'hitsOnly', 'includeDetails']) {
+    check(key in observeProps, `browser_observe 声明 ${key} 参数`);
+  }
+}
+
 // ==================== 汇总 ====================
 await import('./wait-navigation.test');
 await import('./history-bookmarks.test');
 await import('./downloads-resources.test');
 await import('./vision-gui.test');
+await import('./script-injection.test');
+await import('./frame-read.test');
+await import('./frame-read-tools.test');
 await import('./confirmation.test');
 await import('./vision-assistant.test');
 await import('./skill-runtime-mode.test');
 await import('./python-run-files.test');
+await import('./python-dependency-contract.test');
 await import('./workspace-defenses.test');
 await import('./prompt-cache.test');
 await import('./api-error-retry.test');
 await import('./agent-i18n.test');
 await import('./agent-image.test');
 await import('./plan.test');
+await import('./interact-options.test');
 await import('./vision-context-e2e.test');
 await import('./vision-capability-guard.test');
 await import('./xlsx-dataref.test');
 await import('./document-tool.test');
 await import('./document-e2e.test');
 await import('./crawl-and-deadline.test');
-await import('./upload-file.test');
+await import('./file-util.test');
 await import('./tool-execution-engine.test');
 await import('./tool-execution-contract.test');
+await import('./limits-contract.test');
 await import('./protocol-continuity.test');
 
 

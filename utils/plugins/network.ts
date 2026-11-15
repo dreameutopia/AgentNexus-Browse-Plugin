@@ -1,19 +1,17 @@
-import { invariant } from './contracts';
+import { invariant, publicHttpsProblem } from './contracts';
 
 export function publicHttps(value: string): URL {
-  const url = new URL(value);
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    invariant(false, 'NETWORK_TARGET_REJECTED', 'invalid URL');
+  }
+  const problem = publicHttpsProblem(url);
   invariant(
-    url.protocol === 'https:' &&
-      !url.username &&
-      !url.password &&
-      !url.hash &&
-      !url.hostname.includes(':') &&
-      !/^(localhost|.*\.localhost|.*\.local|.*\.internal)$/i.test(
-        url.hostname,
-      ) &&
-      !/^\d+(?:\.\d+){3}$/.test(url.hostname),
+    !problem,
     'NETWORK_TARGET_REJECTED',
-    url.hostname,
+    problem ? `${url.hostname} (${problem})` : url.hostname,
   );
   return url;
 }

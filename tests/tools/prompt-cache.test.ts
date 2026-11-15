@@ -214,7 +214,7 @@ try {
   assert.equal(migrated.byModel['openai::legacy'].inputTokens, 1000);
   for (const mode of ['read', 'images']) {
     const textRequests: ChatMessage[][] = []; let round = 0;
-    const toolName = mode === 'read' ? 'browser_get_page_text' : 'screenshot';
+    const toolName = mode === 'read' ? 'read_website' : 'screenshot';
     const textSend = async (messages: ChatMessage[], _callbacks: any) => {
       textRequests.push(structuredClone(messages));
       return { finalMessage: ++round === 1 ? { role: 'assistant', content: 'inspect', tool_calls: Array.from({ length: mode === 'images' ? 6 : 1 }, (_, i) =>
@@ -268,13 +268,13 @@ try {
   for (const mode of ['schema', 'drift']) {
     const source: ChatMessage = { role: 'user', content: 'immutable history' };
     let calls = 0; const definitions: any[] = [];
-    const tool = toolRegistry.getTool('browser_get_page_text')!;
+    const tool = toolRegistry.getTool('read_website')!;
     const description = tool.openaiSchema.function.description;
     try {
       const send = async (_messages: ChatMessage[], _callbacks: any, options: any) => {
         definitions.push(structuredClone(options.toolDefinitions));
         return { finalMessage: ++calls === 1 ? { role: 'assistant', content: 'inspect', tool_calls: [
-          { id: `guard-${mode}`, type: 'function', function: { name: 'browser_get_page_text', arguments: '{}' } },
+          { id: `guard-${mode}`, type: 'function', function: { name: 'read_website', arguments: '{}' } },
         ] } : { role: 'assistant', content: 'done' }, finishReason: calls === 1 ? 'tool_calls' : 'stop' };
       };
       const guarded = new ConversationEngine({ sendStream: send, sendVision: send, requiresApproval: () => false,
@@ -285,7 +285,7 @@ try {
         },
       } as any);
       const result = await guarded.run({ ...runtime, vision: null, initialContext: [source], userInput: 'continue', attachmentPrompt: '', activationContext: [],
-        toolIds: ['browser_get_page_text'], advertisedToolIds: ['browser_get_page_text'] }, {});
+        toolIds: ['read_website'], advertisedToolIds: ['read_website'] }, {});
       assert.equal(result.status, mode === 'drift' ? 'error' : 'done');
       assert.equal(calls, mode === 'drift' ? 1 : 2, 'unexpected non-compaction mutations must never reach the provider');
       if (mode === 'schema') assert.deepEqual(definitions[0], definitions[1], 'per-run schema snapshots remain immutable');

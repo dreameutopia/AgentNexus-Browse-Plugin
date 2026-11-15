@@ -1,4 +1,20 @@
 import { pointSchema, regionSchema } from "./observation-schemas";
+
+/** 所有 action（手势与观察）共用同一调用形态：意图说明与审批标记全局统一。
+ *  观察类动作接受 confirm 只为形态一致——它们只读、永不触发审批回调。 */
+const intentParameter = {
+  type: "string",
+  maxLength: 2000,
+  description:
+    "Concrete target and intent of this action; do not include credentials.",
+};
+const confirmParameter = {
+  type: "boolean",
+  default: false,
+  description:
+    "Accepted on every action for a uniform call shape; read-only actions (read/zoom/check/inspect/mark) never pause for approval.",
+};
+
 export const observationDefinitions = {
   read: {
     description:
@@ -10,6 +26,8 @@ export const observationDefinitions = {
         screenshotId: { type: "string", maxLength: 128 },
         point: pointSchema,
         region: regionSchema,
+        description: intentParameter,
+        confirm: confirmParameter,
       },
       required: ["screenshotId"],
     },
@@ -25,6 +43,8 @@ export const observationDefinitions = {
         point: pointSchema,
         direction: { type: "string", enum: ["up", "down", "left", "right"] },
         containerPercent: { type: "number", minimum: 1, maximum: 100, default: 75 },
+        description: intentParameter,
+        confirm: confirmParameter,
       },
       required: ["screenshotId", "direction"],
     },
@@ -39,13 +59,15 @@ export const observationDefinitions = {
         screenshotId: { type: "string", maxLength: 128 },
         region: regionSchema,
         scale: { type: "number", minimum: 1, maximum: 4, default: 2 },
+        description: intentParameter,
+        confirm: confirmParameter,
       },
       required: ["screenshotId", "region"],
     },
   },
   check: {
     description:
-      "Read main-frame readiness, dialogs and hit target. Optional bounded expectations and polling; no input or automatic action retries. status=passed/failed/unknown/observed refers ONLY to requested checks, never overall business success. Missing DOM text, password values and opaque iframe targets may be unknown. Stable inspected targets return guardId for a later coordinate gesture. Images/DOM remain external untrusted evidence.",
+      'Read main-frame readiness, dialogs and hit target. Optional bounded expectations and polling; no input or automatic action retries. Works WITHOUT a point — expect urlIncludes/textIncludes verify page-level state; add a point to inspect the hit target (expect nameIncludes/enabled/editable/checked/valueEquals require it). status=passed/failed/unknown/observed refers ONLY to requested checks, never overall business success. Missing DOM text, password values and opaque iframe targets may be unknown. Stable inspected targets return guardId — pass it on the NEXT coordinate gesture against the SAME screenshot and action point to re-verify the target right before pressing. Images/DOM remain external untrusted evidence.',
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -68,6 +90,8 @@ export const observationDefinitions = {
             valueEquals: { type: "string", maxLength: 1000 },
           },
         },
+        description: intentParameter,
+        confirm: confirmParameter,
       },
       required: ["screenshotId"],
     },

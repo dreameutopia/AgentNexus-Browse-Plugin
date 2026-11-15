@@ -68,7 +68,7 @@ const props = withDefaults(
     minutes?: number;
     /** 自动停止倒计时剩余秒数 */
     secondsLeft: number;
-    /** 倒计时总时长（秒）：轨道宽度基准；默认与 App.vue 的 GUARD_AUTO_STOP_SECONDS 同值 */
+    /** 倒计时总时长（秒）：轨道宽度基准；默认 60（未绑定时的兜底） */
     totalSeconds?: number;
   }>(),
   { count: undefined, minutes: undefined, totalSeconds: 60 },
@@ -89,9 +89,22 @@ const titleText = computed(() => {
   return t('sidepanel.chat.guardTitleDuration', { minutes: props.minutes ?? 0 });
 });
 
-const hintWithCountdown = computed(() =>
-  t('sidepanel.chat.guardHint', { seconds: props.secondsLeft }),
-);
+/**
+ * 倒计时文案：超过一分钟用「分钟」，否则用「秒」。
+ *
+ * 等待时限来自全局设置（上限 120 分钟），一律显示秒数会得到
+ * 「7200 秒内未确认将自动停止」这种读不懂的数字；
+ * 末尾一分钟切回秒数，让用户感到最后时刻的紧迫。
+ */
+const hintWithCountdown = computed(() => {
+  const remaining = Math.max(0, props.secondsLeft);
+  if (remaining > 60) {
+    return t('sidepanel.chat.guardHintMinutes', {
+      minutes: Math.ceil(remaining / 60),
+    });
+  }
+  return t('sidepanel.chat.guardHint', { seconds: remaining });
+});
 
 /** 轨道剩余占比（钳制到 0–100%，秒步进经 1s 线性过渡抹平为连续递减） */
 const countdownPercent = computed(() => {

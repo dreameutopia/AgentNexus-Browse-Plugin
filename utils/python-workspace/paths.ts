@@ -70,6 +70,17 @@ export function isWorkspaceOutput(path: string): boolean {
   return path.startsWith('outputs/') && isWorkspacePath(path);
 }
 
+/**
+ * 用户上传目录（inputs/）。
+ *
+ * 与 outputs/ 的区别：inputs/ 装的是**用户亲手给的文件**（原始字节，
+ * 发送时随消息落库），outputs/ 装的是工具产出的交付物。用户对自己上传的
+ * 文件有天然的回看/下载/预览诉求，因此这条读取通道对 UI 开放。
+ */
+export function isWorkspaceUpload(path: string): boolean {
+  return path.startsWith('inputs/') && isWorkspacePath(path);
+}
+
 export function workspaceOutputPaths(entries: readonly WorkspaceEntry[]): string[] {
   return entries.filter(entry => entry.blob && isWorkspaceOutput(entry.path)).map(entry => entry.path).sort();
 }

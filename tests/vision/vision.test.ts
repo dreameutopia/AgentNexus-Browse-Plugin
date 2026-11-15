@@ -93,12 +93,17 @@ const scripts: string[] = [];
   tabs: { query: async () => [{ id: tabId, windowId: 1, url: 'https://example.test/' }],
     captureVisibleTab: async () => { visibleCaptureCount++; if(changeHeightOnCapture){measuredHeight=864;changeHeightOnCapture=false;} return `data:image/png;base64,${pngHeader(1440,measuredHeight)}`; } },
   scripting: { executeScript: async ({ args, func }: any) => {
+    // 模拟 Chrome 的 JSON 语义序列化：顶层 undefined 直接拒绝（回归锚点：
+    // 无 point 的 check 曾因此 100% INTERNAL_ERROR，修复后由注入层归一为 null）
+    if (args?.includes(undefined))
+      throw new Error("Error in invocation of scripting.executeScript(scripting.ScriptInjection injection): Error at property 'args': Error at index 0: Value is unserializable.");
     if (func.name === 'focusedEditablePayload') return [{ frameId: 9, result: focusOkay }];
     if (func.name === 'observationViewportPayload') return [{frameId:0,result:{documentId:loader,width:1440,height:measuredHeight,devicePixelRatio:1,pageX:0,pageY,scale,contentWidth:1425,contentHeight:measuredHeight-15,zoom:1}}];
     if (func.name === 'checkPagePayload') return [{frameId:0,result:{target:{signature:observedSignature,identity:'target',tag:'button',name:'Save',opaqueFrame:false,rect:{x:1,y:1,width:20,height:10}},checks:[{kind:'enabled',status:'passed'}],page:{readyState:'complete'},loading:{ariaBusyCount:0},dialogs:[]}}];
-    if (!args) return [{ frameId:0, result:{ width:1440,height:measuredHeight,devicePixelRatio:1,pageX:0,pageY } }];
+    if (!args || args.length === 0) return [{ frameId:0, result:{ width:1440,height:measuredHeight,devicePixelRatio:1,pageX:0,pageY } }];
     scripts.push(args[0]);
     if (args[0] === 'clear' && failAnnotationClear) throw new Error('Clear interrupted');
+    if (args[0] === 'clear') return [{ frameId: 0, result: undefined }, { frameId: 9, result: undefined }];
     if (args[0] === 'collect') return [{ frameId: 0, result: 1 }, { frameId: 9, result: 1 }];
     if (args[0] === 'draw') { marks++; return [{ frameId: 0 }]; }
     if (args[0] === 'inspect') return [{ result: { selector: '#go' } }];
@@ -332,6 +337,12 @@ assert.equal(responses.at(-1).payload.data.diagnostic.code,'INVALID_ARGUMENT');
 s = await snap();
 const checkResult=await gui.execute({action:'check',screenshotId:s.screenshotId,point:{x:250,y:500},expect:{enabled:true},stableMs:0,timeoutMs:50});
 assert.equal(checkResult.success,true); assert.equal(checkResult.data.status,'passed');
+// 回归锚点：不带 point 的页面级 check 曾被 undefined 注入参数 100% 击穿
+// （Chrome 拒绝序列化 undefined）。修复后走 null，description/confirm 也可携带。
+const pageCheck=await gui.execute({action:'check',screenshotId:s.screenshotId,expect:{urlIncludes:'example'},description:'verify page state',confirm:false,stableMs:0,timeoutMs:50});
+assert.equal(pageCheck.success,true,`page-level check must not fail: ${JSON.stringify(pageCheck.data)}`);
+assert.equal(pageCheck.data.status,'passed');
+assert.equal(pageCheck.data.actionPoint,undefined);
 const guardId=registerTargetGuard(s.screenshotId,{x:250,y:500},observedSignature);
 observedSignature='target-v2';
 const beforeGuardPress=events.filter(e=>e.p?.type==='mousePressed').length;

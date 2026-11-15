@@ -11,7 +11,8 @@ import {
   registerView,
   type ImageRegion,
 } from "./observation-model";
-import { bounded, GuiError, guiFailure } from "./gui-errors";
+import { GuiError, guiFailure } from "./gui-errors";
+import { injectScript } from "./injection";
 import { withGuiCancellation } from "./gui-cancellation";
 
 export interface CheckArgs {
@@ -21,17 +22,27 @@ export interface CheckArgs {
   expect?: VisualExpectation;
   timeoutMs?: number;
   stableMs?: number;
+  /** 意图说明：统一调用形态的一部分；校验合法性后忽略，不参与判定。 */
+  description?: string;
+  /** 观察类动作不需要审批；该字段仅被接受并忽略。 */
+  confirm?: boolean;
 }
 export interface ZoomArgs {
   screenshotId: string;
   region: ImageRegion;
   scale?: number;
+  /** 意图说明：统一调用形态的一部分；校验合法性后忽略，不参与判定。 */
+  description?: string;
+  /** 观察类动作不需要审批；该字段仅被接受并忽略。 */
+  confirm?: boolean;
 }
 export function validateZoomArgs(raw: unknown): ZoomArgs {
   const args = validateObservationObject(raw, [
     "screenshotId",
     "region",
     "scale",
+    "description",
+    "confirm",
   ]) as unknown as ZoomArgs;
   imageRegion(args.region);
   if (args.scale !== undefined) finiteRange(args.scale, "scale", 1, 4);
@@ -50,6 +61,8 @@ export function validateObservationObject(
       "INVALID_ARGUMENT",
       "Unexpected observation parameters",
       { allowedFields: fields },
+      undefined,
+      `Send only the fields listed for this action (allowed: ${fields.join(", ")}).`,
     );
   const args = raw as Record<string, unknown>;
   if (
@@ -57,7 +70,28 @@ export function validateObservationObject(
     !args.screenshotId ||
     args.screenshotId.length > 128
   )
-    throw new GuiError("INVALID_ARGUMENT", "Latest screenshotId is required");
+    throw new GuiError(
+      "INVALID_ARGUMENT",
+      "Latest screenshotId is required",
+      { allowedFields: fields },
+      undefined,
+      "Pass the screenshotId from the most recent screenshot.",
+    );
+  if (
+    args.description !== undefined &&
+    (typeof args.description !== "string" || args.description.length > 2000)
+  )
+    throw new GuiError(
+      "INVALID_ARGUMENT",
+      "description must be a string of at most 2000 characters",
+      { allowedFields: fields },
+    );
+  if (args.confirm !== undefined && typeof args.confirm !== "boolean")
+    throw new GuiError(
+      "INVALID_ARGUMENT",
+      "confirm must be a boolean",
+      { allowedFields: fields },
+    );
   return args;
 }
 export function validateCheckArgs(raw: unknown): CheckArgs {
@@ -68,6 +102,8 @@ export function validateCheckArgs(raw: unknown): CheckArgs {
     "expect",
     "timeoutMs",
     "stableMs",
+    "description",
+    "confirm",
   ]) as unknown as CheckArgs;
   if (args.point !== undefined) relativePoint(args.point);
   if (
@@ -192,18 +228,19 @@ export async function executeCheck(
               stable = false;
             while (samples < 64) {
               await guard();
-              const rows = await bounded(
-                chrome.scripting.executeScript({
-                  target: { tabId: s.tabId, frameIds: [0] },
+              const rows = await injectScript(
+                {
+                  tabId: s.tabId,
+                  frameIds: [0],
                   world: "ISOLATED",
                   func: checkPagePayload,
+                  // Chrome 注入参数走 JSON 语义：缺省 point 必须传 null，不能传 undefined。
                   args: [
-                    point ? toViewport(point, s.viewport) : undefined,
+                    point ? toViewport(point, s.viewport) : null,
                     args.expect ?? {},
                   ],
-                }),
-                2000,
-                "Check visual target",
+                },
+                { operation: "Check visual target", timeoutMs: 2000 },
               );
               last = rows[0]?.result;
               samples++;

@@ -1,3 +1,4 @@
+import { executeScriptBounded } from '../common/frame-read';
 /**
  * 表单填充工具
  * 智能填充页面表单
@@ -57,12 +58,13 @@ export class FormFillerTool extends BaseTool {
 
   async execute(args: FormFillerParams): Promise<ToolResult> {
     console.log('📝 [表单填充工具] 开始执行');
-    console.log('📥 [表单填充工具] 接收参数:', args);
+    console.log('📥 [表单填充工具] 已接收填充请求');
     
     try {
       this.validateArgs(args, ['formData']);
       
       const { formData, autoSubmit = false } = args;
+      if (typeof autoSubmit !== 'boolean') return this.createErrorResponse('INVALID_ARGUMENT：autoSubmit 必须是布尔值');
       
       // 解析表单数据
       let parsedFormData: Record<string, any>;
@@ -73,7 +75,8 @@ export class FormFillerTool extends BaseTool {
         return this.createErrorResponse('表单数据格式错误，请提供有效的JSON格式', error);
       }
       
-      console.log('📋 [表单填充工具] 解析的表单数据:', parsedFormData);
+      if (!parsedFormData || typeof parsedFormData !== 'object' || Array.isArray(parsedFormData)) return this.createErrorResponse('INVALID_ARGUMENT：formData 必须是字段到值的 JSON 对象');
+      console.log('📋 [表单填充工具] 解析字段数:', Object.keys(parsedFormData).length);
       
       // 获取当前活动标签页
       const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -87,7 +90,7 @@ export class FormFillerTool extends BaseTool {
       
       // 注入表单填充脚本
       console.log('💉 [表单填充工具] 正在注入表单填充脚本...');
-      const results = await chrome.scripting.executeScript({
+      const results = await executeScriptBounded({
         target: { tabId },
         func: this.fillFormScript,
         args: [parsedFormData, autoSubmit]
@@ -99,7 +102,7 @@ export class FormFillerTool extends BaseTool {
       }
       
       const result = results[0].result as FormFillerResult;
-      console.log('📤 [表单填充工具] 脚本执行结果:', result);
+      console.log('📤 [表单填充工具] 填充字段数:', result?.filledFields);
       
       if (result.success) {
         this.log(`成功填充 ${result.filledFields} 个字段${result.submittedForm ? '，并提交了表单' : ''}`);
@@ -120,7 +123,7 @@ export class FormFillerTool extends BaseTool {
    */
   private fillFormScript(formData: Record<string, any>, autoSubmit: boolean): FormFillerResult {
     try {
-      console.log('📝 [页面脚本] 开始填充表单:', formData);
+      console.log('📝 [页面脚本] 开始填充表单，字段数:', Object.keys(formData).length);
       
       let filledFields = 0;
       const errors: string[] = [];
@@ -185,7 +188,7 @@ export class FormFillerTool extends BaseTool {
           }
           
           filledFields++;
-          console.log(`✅ [页面脚本] 成功填充字段: ${key} = ${value}`);
+          console.log(`✅ [页面脚本] 成功填充字段: ${key}`);
           
         } catch (fieldError) {
           console.error(`❌ [页面脚本] 填充字段 ${key} 时出错:`, fieldError);

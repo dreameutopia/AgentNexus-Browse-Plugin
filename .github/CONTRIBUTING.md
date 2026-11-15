@@ -77,7 +77,6 @@ npm run dev
 │   ├── vision/        # Screenshot, OCR, element detection
 │   ├── automation/    # Automation tools (form filler, AI action)
 │   ├── resource/      # Resource sniffer & downloader
-│   ├── bilibili/      # Bilibili-specific tools
 │   ├── navigation/    # Bookmark & history navigation
 │   ├── note/          # Note management
 │   ├── code/          # Code rendering tools

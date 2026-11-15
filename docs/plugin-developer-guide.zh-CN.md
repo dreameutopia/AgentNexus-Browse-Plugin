@@ -1,4 +1,4 @@
-# 插件开发与维护指南（Plugin API 1.2）
+# 插件开发与维护指南（Plugin API 1.3）
 
 ## 快速开始
 
@@ -57,11 +57,11 @@ ID 永不使用显示名称或版本号。同一发布者不可为两个不同�
 在包内工具/技能引用中，只允许两种写法：
 
 - `./search`：本插件贡献；
-- `builtin/browser_get_page_text`：在 manifest 的 capabilities.hostTools 中声明的公开宿主能力。
+- `builtin/read_website`：在 manifest 的 capabilities.hostTools 中声明的公开宿主能力。
 
 插件智能体的 `tools` 可引用本插件工具或已声明宿主工具；其 `skills` **只能**引用本插件 Skill。完整跨插件 ref（`ed25519:...`）即使声明了 dependencies 也会以 `CROSS_PLUGIN_REFERENCE` 拒绝；Skill 的 `allowed-tools` 与提示词中的 `{{tool:...}}` 同一边界。包内相对引用只供作者书写，保存到运行目录的是完整 ref。
 
-提示词中使用 `{{tool:search}}` 或 `{{tool:builtin/browser_get_page_text}}`；这是受限引用标记，不支持模板表达式。Skill 的标准 `name` 不加命名空间，关联和加载使用 skillRef。模型接口中的短函数名是请求级映射，不是插件的真实身份；不要硬编码 `anp_0` 等传输名。
+提示词中使用 `{{tool:search}}` 或 `{{tool:builtin/read_website}}`；这是受限引用标记，不支持模板表达式。Skill 的标准 `name` 不加命名空间，关联和加载使用 skillRef。模型接口中的短函数名是请求级映射，不是插件的真实身份；不要硬编码 `anp_0` 等传输名。
 
 ## Manifest 的主要字段
 
@@ -71,14 +71,21 @@ ID 永不使用显示名称或版本号。同一发布者不可为两个不同�
 | publisher.id/displayName          | 可验证公钥身份 / 展示名称                                    |
 | id/displayName/version            | 不变本地 ID / 展示名称 / 不含 build metadata 的 SemVer       |
 | engines.agentnexus                | 宿主产品兼容版本范围，当前产品版本见 package.json            |
-| engines.pluginApi                 | 插件公共 API 范围，当前为 `^1.2.0`                           |
+| engines.pluginApi                 | 插件公共 API 范围，当前为 `^1.3.0`                          |
 | capabilities.hostTools            | 明确申请的公开宿主工具，所有 builtin 引用须在此声明          |
 | capabilities.network              | 明确申请的 HTTPS origin，不含 path，不支持 localhost/私有 IP |
 | capabilities.secretSlots          | 宿主管理的按插件隔离的凭据槽名称，包内不得包含实际秘密       |
 | contributes                       | 各类贡献的本地 ID 与包内入口文件路径                         |
 | dependencies                      | 以完整 pluginKey 为键的 SemVer 范围（仅表达安装期版本约束）   |
 
-未知顶层字段报错。v1 不支持任意 JS/脚本、激活/卸载钩子、任意 HTTP 模板、动态工作流和直接操作 chrome.*。新增贡献类型须随宿主版本发布校验器和处理器；第三方不能提交可执行的扩展点实现。
+未知顶层字段报错。v1 不支持任意 JS/脚本、激活/卸载钩子、任意 HTTP 模板、工作流表达式/分支/循环和直接操作 chrome.*。新增贡献类型须随宿主版本发布校验器和处理器；第三方不能提交可执行的扩展点实现。
+
+### 插件 API 1.3 新增
+
+- `host-workflow` 执行器：插件只能按顺序编排**公开宿主工具**，参数在签名包内固定，值可以是受限占位符；没有插件代码执行。
+- 三级审批 `approval: install | session | call`（缺省 `session`）。
+- 页面型公开原语：`browser_extract_data`、`browser_page_ops`、`browser_page_http`、`browser_media_control`。
+- 插件智能体核心工具收口：只有 `plan_tool` / `note_tool` / `file_util` / `skill_tool` 默认可用；页面型核心工具（`read_website`、`browser_navigation`、`js_run` 等）必须在 `capabilities.hostTools` 中显式声明，且 `js_run` 的 run/crawl 对插件默认不可用。
 
 ## 工具执行类型
 
@@ -94,16 +101,63 @@ ID 永不使用显示名称或版本号。同一发布者不可为两个不同�
   },
   "executor": {
     "type": "host-alias",
-    "target": "builtin/browser_get_page_text"
+    "target": "builtin/read_website"
   }
 }
 ```
 
-公开宿主工具表位于 `utils/plugins/host-tools.ts` 的 `PUBLIC_HOST_TOOLS`，在验包、启动对账与运行时三层同时生效。当前包括正文/页面信息/标签页列表、导航、历史与书签统一工具（`browser_history_bookmarks`：检索/打开/增删改/最近访问/最常访问/文件夹结构）。宿主可在后续 API 版本扩大公开表，内部终止/控制工具不自动开放。
+公开宿主工具表位于 `utils/plugins/host-tools.ts` 的 `PUBLIC_HOST_TOOLS`，在验包、启动对账与运行时三层同时生效。当前包括：正文/页面信息/标签页列表、导航、历史与书签统一工具（`browser_history_bookmarks`）、结构化提取（`browser_extract_data`）、页面等待/滚动（`browser_page_ops`）、页面内有限 HTTP 链（`browser_page_http`）、媒体控制（`browser_media_control`）。宿主可在后续 API 版本扩大公开表，内部终止/控制工具不自动开放。
 
 > 1.1.0 变更：书签与历史检索的公开入口由 `browser_search_bookmarks` / `browser_search_history` 合并为单一 `browser_history_bookmarks`（旧名已删除，声明旧 ref 的插件会被判为 HOST_TOOL_NOT_PUBLIC）。
 
-第三方工具默认需要会话操作审批。代理不会获得宿主全部扩展权限，也不能通过填写 metadata 关闭审批。限制了传入参数的代理仍调用原宿主实现。
+页面型工具在插件上下文中统一按 manifest 的 `capabilities.network` 校验 origin：`read_website`、`browser_navigation`、`browser_extract_data`、`browser_page_ops(wait_element)`、`browser_page_http`、`browser_media_control` 只能作用于已声明的 HTTPS origin。`browser_page_ops` 对插件只开放 `wait_element`，`browser_navigation` 对插件禁用 `back`/`forward`。
+
+### host-workflow
+
+```json
+{
+  "description": "搜索并读取当前页的结构化条目。",
+  "inputSchema": {
+    "type": "object",
+    "properties": { "query": { "type": "string", "maxLength": 300 } },
+    "required": ["query"],
+    "additionalProperties": false
+  },
+  "executor": {
+    "type": "host-workflow",
+    "steps": [
+      {
+        "id": "open",
+        "tool": "builtin/browser_navigation",
+        "args": { "action": "open", "url": "https://search.example.com?q={{args.query|urlencode}}", "waitForLoad": true }
+      },
+      { "id": "wait", "tool": "builtin/browser_page_ops", "args": { "action": "wait_element", "selector": ".result", "timeout": 15000 } },
+      { "id": "extract", "tool": "builtin/browser_extract_data", "args": { "mode": "list", "selector": ".result", "limit": 20 } }
+    ],
+    "output": { "from": "extract" }
+  }
+}
+```
+
+规则（验包、启动对账与运行时同源）：
+
+- 1–8 步，`id` 为小写 slug 且不得重复；每步 `tool` 必须属于 `PUBLIC_HOST_TOOLS` **且**已在 `capabilities.hostTools` 声明。
+- `optional: true` 的步骤在遇到普通工具失败（例如等待元素超时、接口无数据）时记录 `ok=false` 并继续；`PLUGIN_ORIGIN_DENIED`、`CAPABILITY_REVOKED`、超时等硬失败仍会中止整条工作流。`output.from` 不能指向可选步骤。
+- 占位符只有 `{{args.<字段>}}` 与 `{{steps.<前序步骤>.<data|tabId|ok|error>...}}`，可选 `|urlencode`；不支持表达式、函数、条件或循环。`{{args.x}}` 必须出现在工具 `inputSchema.properties` 中。
+- 路径是点分形式，数字段按数组下标解析（如 `responses.0.data.aid`），不支持 `[0]` 写法。
+- 前序步骤返回 `tabId` 时，后续标签页类工具自动继承，避免重复选择目标页；也可显式传 `tabId`。
+- 预算：单步 15 秒 / 总 45 秒；单步参数 64 KiB、单步结果 64 KiB、总结果 1 MiB。任一步失败即返回 `WORKFLOW_STEP_FAILED` 并附带已完成步骤摘要。
+- `output.from` 指定返回哪一步；`output.path` 相对该步 `data` 解析（不必写 `data.` 前缀）。
+
+### 审批级别
+
+| approval    | 行为                                         |
+| ----------- | -------------------------------------------- |
+| `install`   | 安装时已审查，调用不再逐次询问               |
+| `session`   | 本会话首次调用需批准，之后按 `chatId + 插件 + digest + epoch` 放行（缺省） |
+| `call`      | 每次调用都需批准                             |
+
+插件更新、重装或回滚会改变 digest/epoch，旧的会话批准自动失效。插件不能通过 metadata 关闭审批。限制了传入参数的代理仍调用原宿主实现。
 
 ### mcp（Streamable HTTP）
 

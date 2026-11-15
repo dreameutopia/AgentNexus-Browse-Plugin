@@ -16,3 +16,4 @@ export * from './pyodide-env';
 export * from './pyodide-downloader';
 export * from './pyodide-micropip';
 export * from './pyodide-runtime';
+export * from './dependency-contract';

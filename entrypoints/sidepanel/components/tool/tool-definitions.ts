@@ -213,28 +213,38 @@ export const categories: ToolCategory[] = [
     ]
   },
   {
-    id: 'upload-file',
-    name: '上传文件工具',
+    id: 'file-util',
+    name: '工作区文件工具',
     icon: '📎',
     tools: [
       {
-        name: 'read_file',
-        description: '分页读取用户上传的文件（会话文件库，全文持久化）',
-        category: 'upload-file',
+        name: 'file_util',
+        description: '会话工作区文件读写：创建/追加/编辑/删除文本文件，分页读取文本与 Office 文档',
+        category: 'file-util',
         version: '1.0.0',
         parameters: {
-          file_id: {
+          action: {
             type: 'string',
-            description: '8 位文件短 id（<upload_file> 信封或工具返回值中的真实 id）',
-            placeholder: '例如：a1b2c3d4'
+            description: '操作类型：read / create / append / edit / delete',
+            placeholder: 'read'
           },
-          page: {
+          path: {
+            type: 'string',
+            description: '工作区相对路径（inputs/ 下的上传文件、content/ 下的正文产物）',
+            placeholder: '例如：inputs/简历.pdf'
+          },
+          index: {
             type: 'number',
-            description: '页码（1 起；信封已内联第 1 页）',
-            placeholder: '2'
+            description: '仅 read：页码（1 起，缺省第 1 页；每页最多 3000 字符）',
+            placeholder: '1'
+          },
+          content: {
+            type: 'string',
+            description: 'create/append：文件内容；edit：全量重写的内容',
+            placeholder: ''
           }
         },
-        required: ['file_id']
+        required: ['action', 'path']
       }
     ]
   },
@@ -424,9 +434,9 @@ export const categories: ToolCategory[] = [
       },
       {
         name: 'browser_extract_data',
-        description: '从页面 DOM 精确提取结构化数据（表格/列表/选择器），免疫 CSP，RPA 抓取首选',
+        description: '从页面 DOM 精确提取结构化数据（表格/列表/选择器），免疫 CSP；批量结果自动落为工作区数据文件，可直出 Excel',
         category: 'browser',
-        version: '1.0.0',
+        version: '2.0.0',
         parameters: {
           mode: {
             type: 'string',
@@ -452,6 +462,32 @@ export const categories: ToolCategory[] = [
             type: 'number',
             description: '最大提取行数（默认 100，上限 500）',
             default: 100
+          },
+          save: {
+            type: 'string',
+            description: '落盘策略：auto=超过 20 行自动存为 results/ 数据文件（推荐）/ always / never',
+            enum: ['auto', 'always', 'never'],
+            default: 'auto'
+          },
+          saveTo: {
+            type: 'string',
+            description: '交付文件路径（outputs/ 下，.json/.csv/.md），提供后总是落盘并返回文件标记',
+            placeholder: 'outputs/商品列表.csv'
+          },
+          format: {
+            type: 'string',
+            description: '落盘格式（saveTo 扩展名优先；不填则 json）：json / csv / md（md 仅用于 saveTo 交付）',
+            enum: ['json', 'csv', 'md']
+          },
+          previewRows: {
+            type: 'number',
+            description: '落盘后回传的预览行数（默认 5，上限 20）',
+            default: 5
+          },
+          label: {
+            type: 'string',
+            description: '结果文件标签（进入文件名，如「第3页」）',
+            placeholder: '第3页'
           }
         },
         required: []
@@ -681,7 +717,7 @@ export const categories: ToolCategory[] = [
         name: 'web_search',
         description:
           '通用网页搜索：一次调用完成「导航到搜索引擎结果页 → 等待加载 → 解析结构化结果 → Markdown 表格」（bing / baidu）。' +
-          '⚠ 自带页面导航（效果等同 browser_navigation(action="open")），禁止同一轮并发调用；返回 navigation（是否成功 + 当前网址）与 results（条目与 Markdown 表，解析失败时用 browser_get_page_text 自行解析）',
+          '⚠ 自带页面导航（效果等同 browser_navigation(action="open")），禁止同一轮并发调用；返回 navigation（是否成功 + 当前网址）与 results（条目与 Markdown 表，解析失败时用 read_website 自行解析）',
         category: 'search',
         version: '1.0.0',
         parameters: {
@@ -739,32 +775,6 @@ export const categories: ToolCategory[] = [
           }
         },
         required: ['platform', 'query']
-      },
-      {
-        name: 'bilibili_search',
-        description:
-          'Bilibili 站内视频搜索：一次调用完成「导航到 B 站搜索结果页 → 等待加载 → 解析视频条目 → Markdown 表格」。' +
-          '⚠ 自带页面导航（效果等同 browser_navigation(action="open")），禁止同一轮并发调用；拿到视频后用 browser_navigation 打开视频页，再用 bilibili_subtitle_tool 提取字幕',
-        category: 'search',
-        version: '1.0.0',
-        parameters: {
-          query: {
-            type: 'string',
-            description: '搜索查询关键词（必填，最长 300 字符）',
-            placeholder: '输入搜索内容'
-          },
-          newTab: {
-            type: 'boolean',
-            description: '是否在新标签页打开搜索结果（默认 true；连续搜索可传 false 复用当前标签页）',
-            default: true
-          },
-          waitTime: {
-            type: 'integer',
-            description: '页面加载完成后的额外等待毫秒数（0-10000，默认 3000；B 站结果动态渲染，解析不全时可调大）',
-            default: 3000
-          }
-        },
-        required: ['query']
       }
     ]
   },
@@ -774,29 +784,29 @@ export const categories: ToolCategory[] = [
     icon: '⚙️',
     tools: [
       {
-        name: 'browser_get_page_text',
-        description: '读取页面为结构化 Markdown：保留标题层级/表格/列表/代码块+语言/链接/引用；覆盖全部 iframe 与可访问 shadow root；支持 url 直读与超 15000 字符 ref 分页',
+        name: 'read_website',
+        description: '读取网页正文为结构化 Markdown 并落盘 content/*.md：保留标题层级/表格/列表/代码块+语言/链接/引用；覆盖全部 iframe 与可访问 shadow root；单页 3000 字符、超出自动分页（CSV：content,page,totalPages,path）；支持 url 直读与 path+page 续读',
         category: 'base',
-        version: '2.0.0',
+        version: '1.0.0',
         parameters: {
           url: {
             type: 'string',
-            description: '目标网址（可选，仅单个 http/https；前台新建并激活标签页打开、等待加载完成后提取，标签页保留可见不自动关闭）',
+            description: '目标网址（可选，仅单个 http/https；前台新建并激活标签页打开、等待加载完成后提取，标签页保留可见不自动关闭；与 tabId 互斥）',
             placeholder: 'https://example.com（留空读当前标签页）'
           },
           tabId: {
             type: 'number',
-            description: '标签页ID（可选，默认当前活动标签页；与 url 互斥）',
+            description: '标签页ID（可选，默认当前活动标签页；也接受纯数字字符串；显式传入会先核对存在性与可注入性、再切换到该页；与 url 互斥）',
             placeholder: '留空表示当前标签页'
           },
-          ref: {
+          path: {
             type: 'string',
-            description: '分页引用 ID（可选，超长响应返回的 ref；只读缓存不访问页面）',
-            placeholder: '上次响应的 ref 值'
+            description: '续读用：上次返回的 content/*.md 工作区路径（只读文件、不访问页面；与 url/tabId 互斥）',
+            placeholder: 'content/example-com-list-a1b2.md'
           },
           page: {
             type: 'number',
-            description: '页码（可选，默认 1；每页 15000 字符）',
+            description: '页码（可选，默认 1；每页 3000 字符）',
             placeholder: '1'
           }
         },
@@ -1148,35 +1158,6 @@ export const categories: ToolCategory[] = [
           }
         },
         required: ['action']
-      }
-    ]
-  },
-  {
-    id: 'bilibili',
-    name: 'B站工具',
-    icon: '📺',
-    tools: [
-      {
-        name: 'bilibili_subtitle_tool',
-        description: '获取B站视频字幕',
-        category: 'bilibili',
-        version: '1.0.0',
-        parameters: {},
-        required: []
-      },
-      {
-        name: 'bilibili_jump_tool',
-        description: '跳转到B站视频指定时间',
-        category: 'bilibili',
-        version: '1.0.0',
-        parameters: {
-          time: {
-            type: 'number',
-            description: '跳转时间（秒）',
-            placeholder: '60'
-          }
-        },
-        required: ['time']
       }
     ]
   },

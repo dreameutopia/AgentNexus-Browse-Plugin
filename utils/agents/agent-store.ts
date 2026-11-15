@@ -32,7 +32,6 @@ import {
   dataHarvesterConfig,
   visionAssistantConfig,
   deepSearchConfig,
-  bilibiliAgentConfig,
   mindmapAssistantConfig,
   visionActionConfig,
 } from './presets';
@@ -65,7 +64,6 @@ export const PRESET_AGENTS: readonly PresetAgentConfig[] = Object.freeze([
   Object.freeze(dataHarvesterConfig),
   Object.freeze(visionAssistantConfig),
   Object.freeze(deepSearchConfig),
-  Object.freeze(bilibiliAgentConfig),
   Object.freeze(mindmapAssistantConfig),
   Object.freeze(visionActionConfig),
 ]);
@@ -411,7 +409,11 @@ export function setAgentEnabled(agentId: string, enabled: boolean): boolean {
 
 /** 按名称获取智能体配置 */
 export function getAgentConfig(agentName: string): AgentConfig | null {
-  const record = pluginAgent(agentName) ?? agentsByName.get(agentName) ?? null;
+  const record =
+    pluginAgent(agentName) ??
+    pluginAgents().find((agent) => agent.name === agentName) ??
+    agentsByName.get(agentName) ??
+    null;
   return record ? withEnabled(record) : null;
 }
 

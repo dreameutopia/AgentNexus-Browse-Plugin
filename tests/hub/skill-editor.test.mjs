@@ -140,6 +140,20 @@ api.__skills.set('demo-skill', {
   },
 });
 
+// 预置技能种子：普通预置 + 内置 skill-create（id 4，永远预置且不可停用/导出）
+const presetSkillSeed = {
+  category: 'general',
+  tags: [],
+  allowedTools: [],
+  enabled: true,
+  source: 'preset',
+  updatedAt: 0,
+  body: 'x',
+  files: { 'SKILL.md': 'x' },
+};
+api.__skills.set('2', { ...presetSkillSeed, id: '2', name: 'web-research-report', description: '调研报告' });
+api.__skills.set('4', { ...presetSkillSeed, id: '4', name: 'skill-create', description: '创建技能' });
+
 const app = createApp(api.SkillManager);
 const errors = [];
 app.config.errorHandler = error => errors.push(error);
@@ -150,6 +164,18 @@ await flush();
 
 const q = selector => document.querySelector(selector);
 const qa = selector => [...document.querySelectorAll(selector)];
+
+// ──── 0. 导出门禁：预置技能（含 skill-create / skill-edit）不提供导出 ────
+
+/** 按技能名取其操作区的「导出」按钮列表 */
+function exportButtonsOf(skillName) {
+  const card = qa('.hub-card').find(el => el.querySelector('.hub-card-name')?.textContent.trim() === skillName);
+  if (!card) return null; // 卡片缺失单独断言，避免与「无导出按钮」混淆
+  return [...card.querySelectorAll('.hub-card-ops .hub-op')].filter(btn => btn.textContent.trim() === '导出');
+}
+assert.equal(exportButtonsOf('demo-skill')?.length, 1, '自定义技能提供导出');
+assert.equal(exportButtonsOf('skill-create')?.length, 0, 'skill-create 不支持导出');
+assert.equal(exportButtonsOf('web-research-report')?.length, 0, '预置技能不支持导出');
 
 // ──── 1. 进入编辑态 ────
 

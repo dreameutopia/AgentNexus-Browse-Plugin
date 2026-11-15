@@ -1,3 +1,4 @@
+import { executeScriptBounded } from '../common/frame-read';
 import { elementScanPayload, type ScanMode } from './shared/element-scan-payload';
 /**
  * 小智网页配置工具
@@ -77,7 +78,7 @@ export class XiaozhiConfigTool extends BaseTool {
       const locate = async (xpath: string, mode: ScanMode): Promise<string> => {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (typeof tab?.id !== 'number') throw new Error('未找到活动标签页');
-        const results = await chrome.scripting.executeScript({
+        const results = await executeScriptBounded({
           target: { tabId: tab.id, frameIds: [frameId] }, world: 'ISOLATED',
           func: elementScanPayload, args: [mode, '', xpath, tab.id],
         });

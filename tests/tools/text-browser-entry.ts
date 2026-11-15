@@ -4,3 +4,4 @@ export { NetworkObserverTool } from '../../tools/browser/network-observer';
 export { cdpSession } from '../../tools/browser/cdp-session';
 export { PageExecTool } from '../../tools/browser/page-exec-tool';
 export { GetPageTextTool } from '../../tools/base/page-info-tool';
+export { parseCsv } from '../../utils/python-workspace/tabular';

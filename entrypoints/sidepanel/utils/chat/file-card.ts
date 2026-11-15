@@ -5,6 +5,8 @@
  * - 文件标记在 Markdown 语法层识别，避免在链接属性或代码中注入卡片；
  * - installFileCardHandler()：document 级事件委托（点击/键盘），解析文件并触发下载，
  *   覆盖聊天列表、历史抽屉等一切经 markdown 渲染输出卡片的容器。
+ * - HTML / PDF 产物在卡片右侧额外提供「预览」按钮：打开独立预览页
+ *   （entrypoints/file-preview），由预览页自行读取工作区文件并渲染。
  *
  * 点击后按需读取当前会话工作区的 outputs/ 文件。
  */
@@ -12,7 +14,14 @@
 import { escapeHtml } from './html-escape';
 import { isWorkspaceOutput } from '@/utils/python-workspace/paths';
 import { readWorkspaceOutput } from '@/utils/python-workspace/store';
+import { t } from '@/utils/i18n/core';
 import type MarkdownIt from 'markdown-it';
+
+/** 预览页（WXT 入口产物名，见 entrypoints/file-preview） */
+const PREVIEW_PAGE = 'file-preview.html';
+
+/** 支持在线预览的扩展名（渲染方式由预览页按扩展名分派） */
+const PREVIEWABLE_PATH_RE = /\.(?:html?|pdf)$/i;
 
 const WORKSPACE_TAG_RE = /<workspace-file[ \t]+path=(?:"([^"<>\r\n]{1,12288})"|'([^'<>\r\n]{1,12288})')[ \t]*\/>/g;
 
@@ -49,7 +58,24 @@ const FILE_ICON_SVG =
   '<path d="M6 3h8l4 4v14H6z M14 3v5h4 M12 10v7m-3-3 3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>' +
   '</svg>';
 
-function cardHtml(attributes: string, safeName: string, icon: string): string {
+/** 预览按钮图标（眼睛） */
+const PREVIEW_ICON_SVG =
+  '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"' +
+  ' stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M2.5 12s3.5-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.5 6.5-9.5 6.5S2.5 12 2.5 12Z"/>' +
+  '<circle cx="12" cy="12" r="2.8"/></svg>';
+
+/** 卡片右侧的预览按钮（仅 html / pdf 产物渲染） */
+function previewButtonHtml(path: string, chatId: string): string {
+  const label = escapeHtml(t('sidepanel.chat.filePreviewLabel'));
+  return (
+    `<button type="button" class="file-card-preview"` +
+    ` data-preview-path="${escapeHtml(path)}" data-preview-chat="${escapeHtml(chatId)}"` +
+    ` title="${label}" aria-label="${label}">${PREVIEW_ICON_SVG}</button>`
+  );
+}
+
+function cardHtml(attributes: string, safeName: string, icon: string, previewHtml: string): string {
   return (
     `<span class="file-card" ${attributes}` +
     ` role="button" tabindex="0" title="下载 ${safeName}">` +
@@ -57,14 +83,21 @@ function cardHtml(attributes: string, safeName: string, icon: string): string {
     '<span class="file-card-info">' +
     `<span class="file-card-name">${safeName}</span>` +
     '<span class="file-card-hint">点击下载</span>' +
-    '</span></span>'
+    '</span>' +
+    previewHtml +
+    '</span>'
   );
 }
 
 function buildWorkspaceCardHtml(path: string, chatId: string): string {
   const name = escapeHtml(path.slice(path.lastIndexOf('/') + 1));
   const attrs = `data-workspace-path="${escapeHtml(path)}" data-workspace-chat="${escapeHtml(chatId)}"`;
-  return cardHtml(attrs, name, /\.xlsx$/i.test(path) ? XLSX_ICON_SVG : FILE_ICON_SVG);
+  return cardHtml(
+    attrs,
+    name,
+    /\.xlsx$/i.test(path) ? XLSX_ICON_SVG : FILE_ICON_SVG,
+    PREVIEWABLE_PATH_RE.test(path) ? previewButtonHtml(path, chatId) : '',
+  );
 }
 
 /** Only recognize file references as text tokens. Raw HTML remains disabled. */
@@ -101,6 +134,24 @@ export function renderPlainFileCards(text: string, chatId?: string): string {
     offset = match.index! + match[0].length;
   }
   return result + escapeHtml(text.slice(offset));
+}
+
+// ──────────────────────────── 预览（事件委托） ────────────────────────────
+
+/**
+ * 打开独立预览页：只传会话 + 路径，文件内容由预览页从工作区读取。
+ * 这样侧边栏不必为预览再读一遍（可能是大文件的） blob，也避免 object URL 生命周期管理。
+ */
+function openPreview(button: HTMLElement): void {
+  const { previewChat, previewPath } = button.dataset;
+  if (!previewChat || !previewPath) return;
+  const tabs = typeof chrome === 'undefined' ? undefined : chrome.tabs;
+  if (!tabs?.create) return;
+  const query = new URLSearchParams({ chat: previewChat, path: previewPath });
+  const url = `${chrome.runtime.getURL(PREVIEW_PAGE)}?${query.toString()}`;
+  tabs.create({ url, active: true }).catch((error: unknown) => {
+    console.warn('[FileCard] 打开文件预览失败:', error);
+  });
 }
 
 // ──────────────────────────── 下载（事件委托） ────────────────────────────
@@ -182,6 +233,13 @@ export function installFileCardHandler(): void {
 
   document.addEventListener('click', event => {
     const target = event.target as HTMLElement | null;
+    // 预览按钮嵌套在卡片内：先于卡片命中，避免一次点击同时触发下载
+    const previewButton = target?.closest?.('.file-card-preview') as HTMLElement | null;
+    if (previewButton) {
+      event.preventDefault();
+      openPreview(previewButton);
+      return;
+    }
     const card = target?.closest?.('.file-card') as HTMLElement | null;
     if (!card) return;
     void handleCardClick(card);
@@ -190,6 +248,9 @@ export function installFileCardHandler(): void {
   document.addEventListener('keydown', event => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
     const target = event.target as HTMLElement | null;
+    // 预览按钮是原生 button：Enter / Space 自带 click，交给 click 委托处理，
+    // 不能让卡片键盘委托把它当成「下载」
+    if (target?.closest?.('.file-card-preview')) return;
     const card = target?.closest?.('.file-card') as HTMLElement | null;
     if (!card) return;
     event.preventDefault();

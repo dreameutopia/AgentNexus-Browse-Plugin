@@ -7,6 +7,7 @@ import { strictJson } from './json';
 import { checkSchema } from './schema';
 import { base32, decode64, sha256, toBase64 } from './codec';
 import { isPublicHostTool } from './host-tools';
+import { validateWorkflow } from './workflow';
 import { decodeSkillText, encodeSkillBytes, isSkillResourcePath, validateSkillBinaries } from '../skills/skill-resources';
 import {
   agentSchema,
@@ -17,6 +18,7 @@ import {
   manifestSchema,
   pluginKey,
   PLUGIN_API_VERSION,
+  publicHttpsProblem,
   resolveRef,
   toolSchema,
   validatePluginKey,
@@ -87,7 +89,7 @@ const ROOT_FILES = new Set([
   'LICENSE.md',
 ]);
 /**
- * 强制规范布局（Plugin API 1.2）：
+ * 强制规范布局：
  *
  *   plugin.json / integrity.json / signature.json / README.md / LICENSE
  *   assets/**
@@ -290,26 +292,41 @@ export async function verifyPackage(
     );
     checkSchema(tool.inputSchema);
     if (tool.outputSchema) checkSchema(tool.outputSchema);
-    if (tool.executor.type === 'host-alias')
+    if (tool.executor.type === 'host-alias') {
+      // 名字形态与引用解析器保持一致：非法命名是 INVALID_REF，而不是“未声明”
       invariant(
-        manifest.capabilities.hostTools.includes(tool.executor.target) &&
-          /^builtin\/[a-zA-Z0-9_-]+$/.test(tool.executor.target),
-        'UNDECLARED_HOST_TOOL',
+        /^builtin\/[a-z][a-z0-9_]*$/.test(tool.executor.target),
+        'INVALID_REF',
+        tool.executor.target,
       );
+      invariant(
+        manifest.capabilities.hostTools.includes(tool.executor.target),
+        'UNDECLARED_HOST_TOOL',
+        tool.executor.target,
+      );
+    }
+    else if (tool.executor.type === 'host-workflow')
+      validateWorkflow(manifest, tool);
     else {
       const url = new URL(tool.executor.url);
+      // 与 manifest.network / 启动对账复用同一公共 HTTPS 策略：私有地址、
+      // 回环与 IP 字面量应当报“目标被拒绝”，而不是伪装成“未声明网络”。
+      const problem = publicHttpsProblem(url);
       invariant(
-        url.protocol === 'https:' &&
-          !url.username &&
-          !url.password &&
-          !url.hash &&
-          manifest.capabilities.network.includes(url.origin),
+        !problem,
+        'NETWORK_TARGET_REJECTED',
+        problem ? `${url.hostname} (${problem})` : url.hostname,
+      );
+      invariant(
+        manifest.capabilities.network.includes(url.origin),
         'UNDECLARED_NETWORK',
+        url.origin,
       );
       invariant(
         !tool.executor.secretSlot ||
           manifest.capabilities.secretSlots.includes(tool.executor.secretSlot),
         'UNDECLARED_SECRET',
+        String(tool.executor.secretSlot),
       );
     }
     return {

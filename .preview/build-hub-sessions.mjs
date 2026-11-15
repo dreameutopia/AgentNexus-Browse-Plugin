@@ -39,7 +39,7 @@ const now = Date.now();
 function seed(partial) {
   const session = {
     chatId: 'chat_x', title: '未命名会话', createdAt: now - DAY, updatedAt: now - MIN,
-    messageCount: 0, lastMessagePreview: '', agentName: '', skillNames: [], ...partial,
+    messageCount: 0, lastMessagePreview: '', agentName: '', ...partial,
   };
   state.sessions.push(session);
   return session;
@@ -159,7 +159,8 @@ export const sessionDeletionEngine = {
     fireChange('deleted');
     return {
       transcriptDeleted: true, imagesDeleted: 0, filesDeleted: 0,
-      learnDraftsDiscarded: 0, activePointerCleared: false, runAborted: false, issues: [],
+      learnDraftsPurged: 0, activePointerCleared: false, localRunRegistryCleared: false,
+      runAborted: false, issues: [],
     };
   },
 };

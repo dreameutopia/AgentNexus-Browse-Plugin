@@ -16,14 +16,38 @@
  *    重新解析同样安全。
  * 3. **流式安全**：处于直播流中的消息（[data-streaming] 标记）跳过解析，
  *    流结束后由 ChatMessageList 的兜底扫描补上（同 diagram/chart 渲染器）。
- * 4. **外部数据不可信**：alt 说明来自模型输出，用 textContent 赋值即转义，
+ * 4. **外部数据不可信**：alt 说明来自模型输出，用 textContent / title 赋值即转义，
  *    不拼进 HTML 字符串。
- * 5. **事件委托**：点击图片在新标签页打开原图（侧边栏窄，放大更方便），
- *    走 document 级委托，符合扩展 CSP（无内联脚本）。
+ * 5. **点击开看图层**：点击图片派发文档级事件（AGENT_IMAGE_OPEN_EVENT），
+ *    由 Vue 宿主（ChatMessageList）挂载共享看图层 ImageViewer——侧边栏内
+ *    遮罩层放大查看，缩放 / 在网页中打开 / 下载都由共享组件提供。
+ *    事件委托到 document 级，符合扩展 CSP（无内联脚本）。
+ *
+ * ==================== 卡片形态 ====================
+ *
+ * 卡片只展示图片本身：底部不再重复短 id（"截图 6zxtjw14"）——那是存储层的
+ * 技术凭据，不是给人看的信息。短 id 仍然保留在 data-agent-image-id 上，
+ * 并作为下载文件名的一部分（screenshot-<短id>.png）继续发挥作用。
+ * 图片的 alt（模型给出的画面说明）移到 title 悬浮提示上，信息不丢。
  */
 
 import { t } from '@/utils/i18n';
 import { imageStore } from '../../core/images/image-store';
+
+/** 点击截图 → 请求宿主挂载看图层（文档级事件；detail 见 AgentImageOpenDetail） */
+export const AGENT_IMAGE_OPEN_EVENT = 'agentnexus:agent-image-open';
+
+/** 看图层请求载荷（DOM 渲染层 → Vue 宿主） */
+export interface AgentImageOpenDetail {
+  /** 内容哈希引用（下载取 MIME / 回读图片库用） */
+  ref: string;
+  /** object URL（展示与「在网页中打开」用） */
+  url: string;
+  /** 下载文件名主干 */
+  name: string;
+  /** 图片说明（模型给出的 alt） */
+  alt: string;
+}
 
 /** 渲染单个截图引用卡片 */
 async function renderAgentImage(card: HTMLElement): Promise<void> {
@@ -35,12 +59,15 @@ async function renderAgentImage(card: HTMLElement): Promise<void> {
   }
   card.dataset.agentImageState = 'loading';
   let url: string | null = null;
+  let ref: string | null = null;
   try {
-    url = await imageStore.getObjectUrlByShortId(id);
+    // 短 id → 内容哈希 → object URL：哈希一并留下（下载取 MIME / 回读用）
+    ref = await imageStore.resolveShortId(id);
+    url = ref ? await imageStore.getObjectUrl(ref) : null;
   } catch {
     url = null;
   }
-  if (!url) {
+  if (!url || !ref) {
     card.dataset.agentImageState = 'missing';
     const missing = document.createElement('span');
     missing.className = 'agent-image-missing';
@@ -49,16 +76,16 @@ async function renderAgentImage(card: HTMLElement): Promise<void> {
     body.appendChild(missing);
     return;
   }
+  const alt = card.dataset.agentImageAlt ?? '';
   const img = document.createElement('img');
   img.src = url;
-  img.alt = card.dataset.agentImageAlt ?? '';
+  img.alt = alt;
+  // 说明文字移到悬浮提示：卡片底部只留图片，不再显示短 id
+  img.title = alt;
   img.loading = 'lazy';
-  const caption = document.createElement('div');
-  caption.className = 'agent-image-caption';
-  caption.textContent = t('sidepanel.chat.agentImageCaption', { id });
   body.textContent = '';
   body.appendChild(img);
-  body.appendChild(caption);
+  card.dataset.agentImageRef = ref;
   card.dataset.agentImageState = 'done';
 }
 
@@ -90,7 +117,17 @@ export function installAgentImageRenderer(): void {
     const target = event.target as HTMLElement | null;
     const img = target?.closest?.('.agent-image-body img') as HTMLImageElement | null;
     if (!img?.src) return;
-    // 用户手势触发的新标签页打开（侧边栏宽度有限，原图另开更便于查看）
-    window.open(img.src, '_blank', 'noopener');
+    const card = img.closest<HTMLElement>('.agent-image-card');
+    if (!card) return;
+    const ref = card.dataset.agentImageRef;
+    if (!ref) return;
+    event.preventDefault();
+    const detail: AgentImageOpenDetail = {
+      ref,
+      url: img.src,
+      name: `screenshot-${card.dataset.agentImageId ?? ''}`,
+      alt: img.alt ?? '',
+    };
+    document.dispatchEvent(new CustomEvent<AgentImageOpenDetail>(AGENT_IMAGE_OPEN_EVENT, { detail }));
   });
 }

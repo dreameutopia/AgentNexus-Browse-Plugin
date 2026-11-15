@@ -182,7 +182,6 @@ for (const raw of [
   { action: "check", screenshotId: "s", expect: { enabled: true } },
   { action: "check", screenshotId: "s", expect: { textIncludes: " " } },
   { action: "check", screenshotId: "s", timeoutMs: 5001 },
-  { action: "zoom", screenshotId: "s", ...valid.zoom, confirm: true },
   { action: "click", screenshotId: "s", ...valid.click, expect: {} },
   { action: "read_scroll", screenshotId: "s" },
   { action: "read_scroll", screenshotId: "s", direction: "down", containerPercent: 0 },
@@ -252,17 +251,82 @@ assert.equal(
 const ui = categories
   .flatMap((c) => c.tools)
   .find((t) => t.name === "vision_gui")!;
-// 顶层合并 schema 是各 action 分支的并集：同名参数若语义不同必须分名，
-// 否则后合并者会覆盖前者（手势 scroll 的 percent 视口相对 vs 阅读式滚动的
-// 容器相对）——顶层就会对某一族 action 谎报取值范围。
+// 顶层 schema 只声明全 action 通用契约；其余字段只存在于各 action 分支
+// （分支 additionalProperties:false）。历史上顶层做过分支字段并集，
+// 导致 description 只在部分分支合法却像全局字段、手势 scroll 的视口相对
+// percent 与阅读式 containerPercent 的取值域在顶层混叠——两处都已修复，
+// 此断言防止并集回归。
 {
   const params = new VisionGuiTool().openaiSchema.function.parameters as {
-    properties: Record<string, { minimum?: number; maximum?: number }>;
+    properties: Record<string, unknown>;
+    anyOf?: {
+      properties: Record<string, { enum?: string[]; minimum?: number; maximum?: number }>;
+    }[];
   };
-  assert.equal(params.properties.percent.minimum, 0.001, '顶层 percent 保持手势 scroll 的视口相对范围');
-  assert.equal(params.properties.percent.maximum, 300);
-  assert.equal(params.properties.containerPercent.minimum, 1, '容器相对百分比独立命名');
-  assert.equal(params.properties.containerPercent.maximum, 100);
+  assert.deepEqual(
+    Object.keys(params.properties).sort(),
+    ["action", "confirm", "description", "screenshotId"],
+    "顶层只保留全 action 通用字段",
+  );
+  const scrollBranch = params.anyOf!.find(
+    (b) => b.properties.action.enum![0] === "scroll",
+  )!;
+  assert.equal(scrollBranch.properties.percent.minimum, 0.001, '手势 scroll 分支的 percent 保持视口相对范围');
+  assert.equal(scrollBranch.properties.percent.maximum, 300);
+  const readScrollBranch = params.anyOf!.find(
+    (b) => b.properties.action.enum![0] === "read_scroll",
+  )!;
+  assert.equal(readScrollBranch.properties.containerPercent.minimum, 1, '容器相对百分比独立命名');
+  assert.equal(readScrollBranch.properties.containerPercent.maximum, 100);
+}
+// description/confirm 在全部 action 家族统一接受（观察类 confirm 只读不审批），
+// 消除「手势可带、check 被拒」的历史不对称。
+{
+  validateVisionGuiArgs({
+    action: "check",
+    screenshotId: "s",
+    expect: { urlIncludes: "example" },
+    description: "verify creation result",
+    confirm: true,
+  });
+  validateVisionGuiArgs({
+    action: "read",
+    screenshotId: "s",
+    description: "read sidebar labels",
+  });
+  validateVisionGuiArgs({
+    action: "zoom",
+    screenshotId: "s",
+    region: { x: 0, y: 0, width: 100, height: 100 },
+    confirm: false,
+  });
+  validateVisionGuiArgs({
+    action: "read_scroll",
+    screenshotId: "s",
+    direction: "down",
+    description: "page down for reading",
+  });
+}
+// 未知字段的错误必须内联列出允许字段与被拒字段（模型常只看 error 字符串）。
+{
+  const rejected = await gui.execute({
+    action: "check",
+    screenshotId: "s",
+    expect: { urlIncludes: "x" },
+    description: "ok",
+    elementId: "bad",
+  });
+  assert.equal(rejected.success, false);
+  const diagnostic = rejected.data!.diagnostic;
+  assert.equal(diagnostic.code, "INVALID_ARGUMENT");
+  assert.match(String(diagnostic.message), /elementId/);
+  assert.match(String(diagnostic.message), /expect/);
+  assert.match(String(rejected.error), /This action accepts/);
+  assert.deepEqual(
+    diagnostic.details.fields,
+    ["elementId"],
+    "diagnostic.details.fields lists rejected fields",
+  );
 }
 const drag = resolveActionDefinition(ui, "drag");
 assert.ok(

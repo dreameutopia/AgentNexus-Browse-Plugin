@@ -30,7 +30,8 @@ function visit(node) {
 visit(ast);
 assert.ok(switchChat && setResponding && settled, 'App learning lifecycle and runtime settlement must exist');
 const functions = ['ensureAssistantMessage', 'applyUiRefresh', 'refreshUiMessage',
-  'recordMetaOf', 'handleConversationEvent', 'requestToolApproval',
+  'normalizedRecordText', 'normalizedRecordSkills',
+  'recordMetaOf', 'recordToUiMessage', 'handleConversationEvent', 'requestToolApproval',
   // 会话级 UI 状态复位（会话切换 / 新建 / 学习切换共用的单一收尾：
   // 运行源 / 直播登记 / 压缩种子与感知 / 用量）
   'resetSessionScopedUiState'];
@@ -60,17 +61,19 @@ await build({ entryPoints: [listFile], outfile: output, bundle: true,
       return { contents: compileScript(descriptor, { id: args.path, inlineTemplate: true }).content,
         loader: 'ts', resolveDir: path.dirname(args.path) };
     });
-    api.onResolve({ filter: /\.vue$|@\/utils\/i18n$|utils\/chat\/(?:diagram|chart|agent-image)-renderer$|utils\/chat\/(?:markdown-renderer|note-nav|message)$/ }, args => {
+    api.onResolve({ filter: /\.vue$|@\/utils\/i18n$|utils\/chat\/(?:diagram|chart|agent-image)-renderer$|utils\/chat\/(?:markdown-renderer|note-nav|message)$|use-agent-display$|agent-engine$/ }, args => {
       if (/(?:ChatMessageList|MessageItem)\.vue$/.test(args.path)) return;
       return { path: args.path, namespace: 'ui-port' };
     });
     api.onLoad({ filter: /.*/, namespace: 'ui-port' }, args => ({ contents:
       args.path.endsWith('.vue') ? 'export default {render:()=>null};' :
       args.path === '@/utils/i18n' ? 'export const t=key=>key;' :
+      args.path === '@/common/use-agent-display' ? 'export const useAgentDisplay=()=>({displayNameOf:a=>String(a?.name??""),displayOf:a=>a});' :
+      args.path.replace(/\\/g, '/').endsWith('core/registry/agent-engine') ? 'export const agentEngine={resolveRef:()=>null};' :
       args.path.endsWith('markdown-renderer') ? 'export const markdownRenderer={renderMessage:s=>s};' :
       args.path.endsWith('note-nav') ? 'export const openNoteDetail=()=>{};' :
       args.path.endsWith('/message') ? 'export const message={success:()=>{},error:()=>{}};' :
-      'export const installDiagramRenderer=()=>{};export const processDiagrams=()=>{};export const installChartRenderer=()=>{};export const processCharts=()=>{};export const installAgentImages=()=>{};export const installAgentImageRenderer=()=>{};export const processAgentImages=()=>{};'
+      'export const installDiagramRenderer=()=>{};export const processDiagrams=()=>{};export const installChartRenderer=()=>{};export const processCharts=()=>{};export const installAgentImages=()=>{};export const installAgentImageRenderer=()=>{};export const processAgentImages=()=>{};export const AGENT_IMAGE_OPEN_EVENT="agentnexus:agent-image-open";'
     }));
   } }],
 });
@@ -105,6 +108,8 @@ await build({ stdin: { contents: "export * from './entrypoints/sidepanel/utils/c
 const compactionParts = await import(pathToFileURL(compactionPartsOutput).href);
 const bindings = {
   messages: ref([{ id: 'old-user', role: 'user', content: '旧会话任务' }]),
+  // 技能单轮生效：用户消息入档后清空输入区技能选中（直播/历史共用映射）
+  selectedSkills: ref([]),
   activeChatId: ref('old-chat'), isAiResponding: ref(false),
   pendingUiRefresh: new Map([['old-answer', { id: 'old-answer' }]]),
   runningAssistantMessages: new Map([['old-answer', {}]]),

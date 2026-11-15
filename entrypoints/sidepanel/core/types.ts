@@ -11,9 +11,10 @@
  */
 
 import type { ChatMessage } from '../utils/ai/ai-chat-api';
-import type { MessageFeedback, MessagePart, ToolCallUI } from '../types/chat';
+import type { MessageFeedback, MessagePart, SkillPartEntry, ToolCallUI } from '../types/chat';
 import type { ModelRef, ResolvedModelEndpoint } from '../utils/channels';
 import type { PageQuote } from '../utils/chat/page-quote';
+import type { UploadedFileEntry } from '@/utils/upload-files/upload-file-manifest';
 
 // ==================== 用户面：会话与消息记录（IndexedDB，无长度限制） ====================
 
@@ -52,12 +53,6 @@ export interface ChatSessionMeta {
   /** 本会话最近一次使用的智能体名（'' = 无智能体；id 的可读别名，用于展示与兜底解析） */
   agentName: string;
   /**
-   * 本会话最近一次使用的技能引用列表。
-   * v2 起存技能 id（稳定引用，技能改名不失效）；v1 历史会话为技能名——
-   * 读取侧经 getSkillById 三态解析（id / 模型标识 / 名称）统一兼容。
-   */
-  skillNames: string[];
-  /**
    * 本会话最近一次使用的模型引用（稳定 id 对：渠道 + 模型）。
    * null/缺省 = 会话未指定过模型（回落全局默认）。
    * 恢复会话时按 id 解析；引用失效（渠道/模型被删除或禁用）时
@@ -71,7 +66,7 @@ export interface ChatSessionMeta {
    * 技能分区」在每次装配时拼装（时间戳已移至本轮用户消息尾部，systemPrompt
    * 逐轮逐字稳定以命中上下文缓存），智能体指令在 hub 编辑后
    * 也应随之更新——落库整串只会得到一份既过期又占空间的副本。落库的是「派生
-   * 输入」（agentName / skillNames / modelRef / 本字段），装配层据此可逐字重建
+   * 输入」（agentName / modelRef / 本字段），装配层据此可逐字重建
    * 同一份 systemPrompt，会话切换与上下文预算估算因此与真实请求完全同源。
    * 仅 Deep Search 等动态装配方会写入非空值；缺省/空串表示无补充段
    * （旧版本写入的会话记录没有该字段，读取侧一律按空串归一化）。
@@ -158,6 +153,15 @@ export interface ChatMessageRecord {
    */
   uploadImageRefs?: string[];
   /**
+   * 本条用户消息携带的**上传文件条目**（路径 + 名称 + 大小 + 后缀）。
+   *
+   * 用户可见气泡据此渲染「文件元素」：图片可放大查看与下载，html/pdf
+   * 可直接在网页打开，其余格式仅支持下载。文件本体在会话工作区 inputs/
+   * 下（原始字节），正文由模型按需调用 file_util 读取。
+   * 缺省 = 本轮无上传文件（旧记录天然缺此字段）。
+   */
+  uploadedFiles?: UploadedFileEntry[];
+  /**
    * 本条用户消息携带的网页引用（用户在页面选中文本并点「确认引用」）。
    *
    * 用户可见气泡据此渲染引用块（引用原文 + 来源页面），让「这条消息引用了
@@ -167,6 +171,24 @@ export interface ChatMessageRecord {
    * 缺省 = 无引用（旧记录天然缺此字段）。
    */
   pageQuote?: PageQuote;
+  /**
+   * 本条用户消息发送时绑定的智能体（稳定 ID + 可读名，仅 user 角色）。
+   *
+   * 用户气泡底部据此展示「@的是哪个智能体」：优先按 id 解析当前记录
+   * （改名后跟随最新命名），id 失配（智能体已被删除）时退回落库名称。
+   * 缺省 = 无智能体（旧记录天然缺此字段）。
+   */
+  agentId?: string;
+  agentName?: string;
+  /**
+   * 本条用户消息发送时预选的技能快照（仅 user 角色）。
+   *
+   * 技能选择只对单轮生效：随本条消息落库后立即从输入区取消选中，
+   * 不再写会话元信息。气泡顶部据此逐项展示「这一轮用了哪些技能」；
+   * 快照持有加载时刻的 id + name，技能随后改名/删除也不影响历史展示。
+   * 缺省 = 本轮未选技能。
+   */
+  skills?: SkillPartEntry[];
   usage?: ChatMessageUsage;
   /**
    * 用户对本条模型消息的反馈（赞/踩）。
@@ -212,8 +234,17 @@ export type ResolvedModelConfig = ResolvedModelEndpoint;
 export interface RuntimeLimits {
   /** 工具循环最大轮数（装配时取应用设置的对话轮次上限，文本与视觉策略统一） */
   maxIterations: number;
-  /** 单次运行最大时长（毫秒） */
-  maxDurationMs: number;
+  /**
+   * 单次运行最大时长（毫秒）。
+   *
+   * **缺省即「不限」**：普通对话不再设会话运行时长上限——它曾把长耗时任务
+   * （数据采集、Python 计算、页面等待）截断成「工具未执行」，而这类任务本来
+   * 就该由**单工具超时**与**轮次上限**兜底。
+   *
+   * 只有学习/验证等**长任务**经 limitsOverride 显式给出时长预算时才启用时长
+   * 守卫与工具批次截止点（见 runtime-builder 的 limitsOverride）。
+   */
+  maxDurationMs?: number;
   /** 单个工具执行超时（毫秒） */
   toolTimeoutMs: number;
   /**
@@ -254,6 +285,20 @@ export interface ConversationRuntime {
   pluginOwners?: string[];
   pluginBindings?: Record<string, { digest: string; epoch: number }>;
   agentId?: string;
+  /**
+   * 本轮绑定的智能体名（装配时解析结果的规范名）。
+   * 与 agentId 一同随用户消息落库，供气泡展示「@的是哪个智能体」；
+   * id 失配（智能体被删除）时作为可读兜底。缺省 = 无智能体。
+   */
+  agentName?: string;
+  /**
+   * 本轮预选技能快照（id + 加载时刻名称，单轮生效）。
+   *
+   * 随用户消息落库供气泡展示；运行期技能激活仍走 activationContext，
+   * 两者同源但用途不同（一个给用户看、一个给模型读）。
+   * 缺省 = 本轮未预选技能。
+   */
+  selectedSkills?: SkillPartEntry[];
   /** Stable advertised catalog. Execution still checks toolIds / loaded skills. */
   advertisedToolIds?: string[];
   chatId: string;
@@ -275,12 +320,23 @@ export interface ConversationRuntime {
    */
   userImages: string[];
   /**
-   * 本轮上传文件信封（<upload_file> XML：文件元信息 + 第 1 页预览，预算封顶）。
-   * 文本附件发送时已注册进会话文件库（8 位短 id + 确定性分页），全文由
-   * read_file 按页续读；信封拼入本轮模型用户消息并随 modelMessages 保留，
-   * 用户可见正文仅存 userInput（摘要标记）。空串 = 无文本附件。
+   * 本轮上传文件清单（<upload_file> 表格：工作区相对路径 + 大小）。
+   *
+   * **只含元信息，不含任何正文**：上传文件以原始字节存放在会话工作区
+   * inputs/ 下，正文一律由模型按需调用 file_util 读取（文本分页、
+   * Office 转 Markdown）。该表格拼入本轮模型用户消息并随 modelMessages
+   * 保留，用户可见正文仅存 userInput（不含任何协议标记）。
+   * 空串 = 本轮无上传文件。
    */
   attachmentPrompt: string;
+  /**
+   * 本轮上传文件条目（与 attachmentPrompt 同源，供消息落库）。
+   *
+   * 随用户消息落库：消息气泡据此渲染「文件元素」（图片可放大查看、
+   * html/pdf 可网页打开、其余可下载）。图片条目另带 imageRef（图片库
+   * 内容哈希引用，由引擎在写入时回填）。
+   */
+  uploadedFiles: UploadedFileEntry[];
   /**
    * 本轮网页引用信封（<page_quote> XML：来源 URL + 页面标题 + 选区原文）。
    *
@@ -365,7 +421,18 @@ export interface PreRunCompactionPayload {
 
 export type ConversationEvent =
   | { type: 'user-message'; chatId: string; record: ChatMessageRecord }
-  | { type: 'assistant-start'; chatId: string; messageId: string; record?: ChatMessageRecord }
+  | {
+      type: 'assistant-start';
+      chatId: string;
+      messageId: string;
+      record?: ChatMessageRecord;
+      /**
+       * 本轮预选技能在运行前自动加载的快照（无预选技能时缺省）。
+       * 直播占位建立时尚无 record 可读，UI 据此把 skill 片段种子到
+       * 片段流最前；终态仍以 assistant-complete 的 record.parts 为准。
+       */
+      activationSkills?: SkillPartEntry[];
+    }
   | { type: 'token'; chatId: string; messageId: string; delta: string }
   | { type: 'reasoning'; chatId: string; messageId: string; delta: string }
   | {

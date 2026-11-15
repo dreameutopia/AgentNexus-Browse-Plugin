@@ -75,7 +75,7 @@ export interface LearnConfig {
   strategy: LearnStrategy;
   /** 学习模型 = 验证模型（稳定 id 对：渠道 + 模型） */
   modelRef: LearnModelRef;
-  /** 是否自动进入验证阶段（默认 true；false 时学习完直接落盘） */
+  /** 是否自动进入验证阶段（默认 false；仅显式为 true 才验证，否则学习完直接落盘） */
   autoValidate: boolean;
   learningLimits?: LearnStageLimits;
   validationLimits?: LearnStageLimits;
@@ -270,8 +270,11 @@ export function isLearnRunning(phase: LearnPhase): boolean {
 
 /**
  * 学习 / 验证段的循环上限。
- * 学习要大量试错，默认 20 轮 / 10 分钟远不够；取 60 轮 / 30 分钟。
+ * 学习要大量试错，普通对话的默认轮次（60 轮）不够用；取 60 轮 / 30 分钟。
  * 高级设置可独立覆盖学习/验证的预算。每次触限都由用户选择继续、总结或丢弃。
+ *
+ * 注意：学习/验证**显式给出**时长预算（普通对话已不设运行时长上限），
+ * 因此这里的 maxDurationMs 仍会启用时长守卫与工具批次截止点。
  */
 export const LEARN_LIMITS = {
   maxIterations: 60,

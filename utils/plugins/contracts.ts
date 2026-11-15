@@ -5,13 +5,13 @@ export const PLUGIN_PROTOCOL = 'agentnexus.plugins.v1';
 /**
  * 宿主公共插件 API 版本。
  *
- * 1.2.0：强制规范包布局（tools/、skills/、agents/）、全类型贡献 ID 唯一、
- * 智能体仅可引用 builtin 与本插件资源。旧布局包会在导入/更新时被明确拒绝，
- * 不会以“兼容”名义进入目录。
+ * 1.3.0：声明式 host-workflow 执行器、三级审批声明与页面型宿主原语。
+ * 规范包布局（tools/、skills/、agents/）、全类型贡献 ID 唯一与引用边界
+ * 是当前唯一契约；旧布局、旧引用与迁移路径不再保留。
  */
-export const PLUGIN_API_VERSION = '1.2.0';
+export const PLUGIN_API_VERSION = '1.3.0';
 
-/** 规范贡献入口路径（Plugin API 1.2），导入与启动对账共用同一口径 */
+/** 规范贡献入口路径，导入与启动对账共用同一口径 */
 export const canonicalContributionPath = (
   kind: 'tools' | 'skills' | 'agents',
   id: string,
@@ -68,7 +68,26 @@ export const versionSchema = z
     (v) => !!valid(v) && !v.includes('+'),
     'Use SemVer without build metadata',
   );
-/** 网络能力必须声明为 https 源（origin），导入期与执行期才能做精确比对 */
+const PRIVATE_HOST =
+  /^(localhost\.?|.*\.localhost\.?|.*\.local\.?|.*\.internal\.?)$/i;
+const IPV4_HOST = /^\d+(?:\.\d+){3}\.?$/;
+
+/**
+ * 公共 HTTPS 目标策略（插件网络声明与 MCP 出站共用）：
+ * 拒绝非 https、凭据、IPv6/IPv4 字面量、localhost 与内网后缀，
+ * 避免插件把宿主当作访问本机/内网的跳板。
+ */
+export function publicHttpsProblem(url: URL): string | null {
+  if (url.protocol !== 'https:') return 'protocol';
+  if (url.username || url.password) return 'credentials';
+  if (url.hash) return 'hash';
+  if (url.hostname.includes(':')) return 'IPv6 literal';
+  if (PRIVATE_HOST.test(url.hostname)) return 'private host';
+  if (IPV4_HOST.test(url.hostname)) return 'IP literal';
+  return null;
+}
+
+/** 网络能力必须声明为公共 https 源（origin），导入期与执行期才能做精确比对 */
 const networkOrigin = z
   .string()
   .max(512)
@@ -76,17 +95,14 @@ const networkOrigin = z
     try {
       const url = new URL(value);
       return (
-        url.protocol === 'https:' &&
-        !url.username &&
-        !url.password &&
+        !publicHttpsProblem(url) &&
         !url.search &&
-        !url.hash &&
         url.origin === value
       );
     } catch {
       return false;
     }
-  }, 'Use an https origin without path, credentials, query or hash');
+  }, 'Use a public https origin without path, credentials, query or hash');
 const uniqueList = <T extends z.ZodTypeAny>(item: T, max: number) =>
   z
     .array(item)
@@ -140,11 +156,42 @@ export const manifestSchema = z
     dependencies: z.record(range).default({}),
   })
   .strict();
+/**
+ * 声明式工作流步骤：只能调用公开宿主工具，参数由插件签名固定。
+ * 参数值支持受限占位符（解析器见 utils/plugins/workflow.ts），不允许表达式。
+ */
+export const workflowStepSchema = z
+  .object({
+    id: slug,
+    tool: z.string().regex(/^builtin\/[a-z][a-z0-9_]*$/),
+    args: z.record(z.unknown()).default({}),
+    /**
+     * 可选步骤：普通工具失败时记录 ok=false 并继续；安全/超时类失败仍然中止。
+     * 用于“等待结果卡片出现”这类允许落空的前置动作。
+     */
+    optional: z.boolean().default(false),
+  })
+  .strict();
+export const workflowSchema = z
+  .object({
+    steps: z.array(workflowStepSchema).min(1).max(8),
+    output: z
+      .object({
+        from: slug,
+        path: z.string().min(1).max(256).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export const approvalSchema = z.enum(['install', 'session', 'call']);
 export const toolSchema = z
   .object({
     description: text,
     inputSchema: z.record(z.unknown()),
     outputSchema: z.record(z.unknown()).optional(),
+    /** 三级人审门；缺省 session（首次调用批准后本会话放行） */
+    approval: approvalSchema.optional(),
     executor: z.discriminatedUnion('type', [
       z.object({ type: z.literal('host-alias'), target: ref }).strict(),
       z
@@ -155,6 +202,7 @@ export const toolSchema = z
           secretSlot: slug.optional(),
         })
         .strict(),
+      z.object({ type: z.literal('host-workflow') }).merge(workflowSchema).strict(),
     ]),
   })
   .strict();
@@ -205,7 +253,7 @@ export type PluginManifest = z.infer<typeof manifestSchema>;
 export type PluginTool = z.infer<typeof toolSchema> & {
   id: string;
   ref: string;
-  /** 包内规范入口路径，用于启动对账复核 1.2 布局 */
+  /** 包内规范入口路径，用于启动对账复核包布局 */
   path: string;
 };
 export interface PluginSkill {
@@ -224,7 +272,7 @@ export interface PluginSkill {
 export type PluginAgent = z.infer<typeof agentSchema> & {
   id: string;
   ref: string;
-  /** 包内规范入口路径，用于启动对账复核 1.2 布局 */
+  /** 包内规范入口路径，用于启动对账复核包布局 */
   path: string;
 };
 export interface VerifiedPlugin {
@@ -297,10 +345,10 @@ export function validatePluginKey(key: string): void {
   );
 }
 /**
- * 解析插件内引用。Plugin API 1.2 只允许两种形态：
+ * 解析插件内引用。只允许两种形态：
  *   - `./<local-id>`：本插件的工具/技能/智能体；
  *   - `builtin/<host-tool>`：显式公开的宿主工具。
- * 跨插件引用在验包期即被拒绝，因此这里不再接受带依赖声明的完整 ref。
+ * 跨插件引用在验包期即被拒绝，因此这里不接受带依赖声明的完整 ref。
  */
 export function resolveRef(value: string, key: string): string {
   if (value.startsWith('./')) {

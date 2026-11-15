@@ -5,7 +5,7 @@
 ## 身份与保护
 
 - 所有工具定位参数仅为 `skill_id`，取十进制字符串。名称不参与查询，同名技能可以共存。
-- `utils/skills/skill-identity.ts` 是内置映射的唯一来源：1 为 Bilibili 摘要，2 为网络调研报告，3 为 Excel 创建，4 为 `skill-create`，5 为 `skill-edit`。
+- `utils/skills/skill-identity.ts` 是内置映射的唯一来源：2 为网络调研报告，3 为 Excel 创建，4 为 `skill-create`，5 为 `skill-edit`。ID 1 曾分配给已迁移到官方 Bilibili 插件的视频总结技能，编号刻意保留空缺，不重排其余内置 ID。
 - 1–1000 全部保留，禁止编辑和删除；4、5 始终全局可发现，不能停用。
 - 自建、导入及插件托管技能通过独立 IndexedDB 事务分配从 1001 开始的唯一 ID，删除后不复用。
 - 只接受当前数字 ID 与身份键格式，旧名称、组合标识和旧 ID 直接丢弃，不提供迁移或名称回退。

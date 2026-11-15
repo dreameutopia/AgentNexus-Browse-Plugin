@@ -187,7 +187,7 @@ for (const version of [0, 1, 2, 3, 4]) {
   const { db } = await fixture('archive-scope');
   const mk = (chatId, updatedAt) => ({
     chatId, title: chatId, createdAt: 1, updatedAt, messageCount: 0,
-    lastMessagePreview: '', agentName: '', skillNames: [],
+    lastMessagePreview: '', agentName: '',
   });
   await db.createSession(mk('a1', 100));
   await db.createSession(mk('a2', 200));

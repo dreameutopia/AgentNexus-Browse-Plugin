@@ -30,6 +30,19 @@ import {
   getPluginSnapshot,
   pluginToolCeiling,
 } from '../../utils/plugins/catalog';
+import {
+  resolveTemplate,
+  resolveWorkflowPath,
+  runWorkflow,
+  WORKFLOW_LIMITS,
+} from '../../utils/plugins/workflow';
+import { PluginError } from '../../utils/plugins/contracts';
+import { assertPluginOrigin } from '../../tools/common/plugin-origin';
+import {
+  grantPluginSessionApproval,
+  hasPluginSessionApproval,
+  revokePluginApprovals,
+} from '../../utils/plugins/approvals';
 
 let passed = 0;
 async function test(name: string, action: () => unknown) {
@@ -65,7 +78,7 @@ async function bundle(
     engines: { agentnexus: '>=0.0.1 <1.0.0', pluginApi: '^1.2.0' },
     license: 'MIT',
     capabilities: {
-      hostTools: ['builtin/browser_get_page_text'],
+      hostTools: ['builtin/read_website'],
       network: [],
       secretSlots: [],
     },
@@ -94,7 +107,7 @@ async function bundle(
               url: 'https://mcp.example.com/mcp',
               remoteName: 'search',
             }
-          : { type: 'host-alias', target: 'builtin/browser_get_page_text' },
+          : { type: 'host-alias', target: 'builtin/read_website' },
       }),
     ),
     'skills/research/SKILL.md': strToU8(
@@ -244,7 +257,7 @@ await test('unsafe paths, symlink names and case-folded collisions rejected', as
     /DUPLICATE/,
   );
 });
-await test('Plugin API 1.2 enforces the canonical layout', async () => {
+await test('canonical layout is enforced at import', async () => {
   // 入口路径必须是规范路径
   await assert.rejects(
     verifyPackage(
@@ -263,7 +276,7 @@ await test('Plugin API 1.2 enforces the canonical layout', async () => {
               },
               executor: {
                 type: 'host-alias',
-                target: 'builtin/browser_get_page_text',
+                target: 'builtin/read_website',
               },
             }),
           ),
@@ -489,6 +502,25 @@ await test('startup reconciliation quarantines bad records without losing the re
   };
   const legacyResult = reconcilePackages([legacy], '0.0.1', '1.2.0');
   assert.match(legacyResult.packages[0].quarantined!, /INVALID_LAYOUT/);
+  // 验包期拒绝的私有/回环来源，启动对账必须同样拒绝（防御纵深一致）
+  for (const origin of [
+    'https://localhost',
+    'https://[::1]',
+    'https://10.0.0.1',
+  ]) {
+    const tampered = {
+      ...goodRecord,
+      manifest: {
+        ...goodRecord.manifest,
+        capabilities: {
+          ...goodRecord.manifest.capabilities,
+          network: [origin],
+        },
+      },
+    };
+    const outcome = reconcilePackages([tampered], '0.0.1', '1.2.0');
+    assert.match(outcome.packages[0].quarantined!, /UNDECLARED_NETWORK/);
+  }
 });
 await test('catalog consistency is enforced before commit', async () => {
   const plugin = await verifyPackage(a, '0.0.1');
@@ -785,6 +817,220 @@ await test('execution requires approval, current grant and matching contract', a
   );
   assert.match(JSON.stringify(bad), /VERSION_CHANGED/);
 });
+await test('workflow rejects undeclared, non-public, forward and unknown input references', async () => {
+  const mutateWorkflow = (
+    manifest: any,
+    files: Record<string, Uint8Array>,
+    executor: any,
+    hostTools: string[] = ['builtin/read_website'],
+  ) => {
+    manifest.capabilities.hostTools = hostTools;
+    files['tools/search.json'] = strToU8(
+      JSON.stringify({
+        description: 'workflow',
+        inputSchema: {
+          type: 'object',
+          properties: { url: { type: 'string' } },
+          additionalProperties: false,
+        },
+        executor,
+      }),
+    );
+  };
+  const step = (id: string, args: Record<string, unknown>) => ({
+    id,
+    tool: 'builtin/read_website',
+    args,
+  });
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', {
+        id: 'wf-undeclared',
+        mutate: (m, f) =>
+          mutateWorkflow(m, f, { type: 'host-workflow', steps: [step('one', {})] }, []),
+      }),
+      '0.0.1',
+    ),
+    /UNDECLARED_HOST_TOOL/,
+  );
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', {
+        id: 'wf-nonpublic',
+        mutate: (m, f) =>
+          mutateWorkflow(
+            m,
+            f,
+            { type: 'host-workflow', steps: [step('one', {})] },
+            ['builtin/browser_page_exec'],
+          ),
+      }),
+      '0.0.1',
+    ),
+    /HOST_TOOL_NOT_PUBLIC/,
+  );
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', {
+        id: 'wf-forward',
+        mutate: (m, f) =>
+          mutateWorkflow(m, f, {
+            type: 'host-workflow',
+            steps: [
+              step('one', { url: '{{steps.two.data.url}}' }),
+              step('two', { url: 'https://example.com' }),
+            ],
+          }),
+      }),
+      '0.0.1',
+    ),
+    /WORKFLOW_STEP_ORDER/,
+  );
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', {
+        id: 'wf-unknown-arg',
+        mutate: (m, f) =>
+          mutateWorkflow(m, f, {
+            type: 'host-workflow',
+            steps: [step('one', { url: '{{args.missing}}' })],
+          }),
+      }),
+      '0.0.1',
+    ),
+    /WORKFLOW_INPUT_UNKNOWN/,
+  );
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', {
+        id: 'wf-bad-path',
+        mutate: (m, f) =>
+          mutateWorkflow(m, f, {
+            type: 'host-workflow',
+            steps: [step('one', { url: '{{args.a..b}}' })],
+          }),
+      }),
+      '0.0.1',
+    ),
+    /WORKFLOW_PATH_INVALID/,
+  );
+  await assert.rejects(
+    verifyPackage(
+      await bundle('1.0.0', {
+        id: 'wf-optional-output',
+        mutate: (m, f) =>
+          mutateWorkflow(m, f, {
+            type: 'host-workflow',
+            steps: [{ ...step('one', {}), optional: true }],
+            output: { from: 'one' },
+          }),
+      }),
+      '0.0.1',
+    ),
+    /WORKFLOW_OUTPUT_OPTIONAL/,
+  );
+});
+await test('workflow templates resolve scalars, urlencode and dotted array paths', () => {
+  const scope = {
+    args: { q: '中文 视频' },
+    steps: {
+      page: { id: 'page', tool: 'builtin/browser_page_http', ok: true, durationMs: 1, data: { responses: [{ data: { aid: 7 } }] } },
+    },
+  } as any;
+  assert.equal(
+    resolveTemplate('https://api.example.com/?q={{args.q|urlencode}}', scope),
+    'https://api.example.com/?q=%E4%B8%AD%E6%96%87%20%E8%A7%86%E9%A2%91',
+  );
+  assert.equal(resolveWorkflowPath(scope, 'steps.page.data.responses.0.data.aid'), 7);
+  assert.equal(resolveTemplate('{{steps.page.data.responses.0.data.aid}}', scope), 7);
+  assert.throws(() => resolveTemplate('{{args.nope}}', scope), /WORKFLOW_TEMPLATE_UNRESOLVED/);
+  // 对象不能静默 String() 成 [object Object]
+  assert.throws(
+    () => resolveTemplate('{{steps.page.data|urlencode}}', scope),
+    /WORKFLOW_TEMPLATE_INVALID/,
+  );
+});
+await test('workflow re-checks resolved argument budget before each step', async () => {
+  const tool = {
+    executor: {
+      type: 'host-workflow',
+      steps: [
+        {
+          id: 'one',
+          tool: 'builtin/browser_page_ops',
+          args: { blob: '{{args.blob}}' },
+        },
+      ],
+      output: { from: 'one' },
+    },
+  } as any;
+  let invoked = false;
+  const result = await runWorkflow(
+    tool,
+    { blob: 'x'.repeat(WORKFLOW_LIMITS.args) },
+    {},
+    async () => {
+      invoked = true;
+      return { success: true, data: {} };
+    },
+  );
+  assert.equal(invoked, false);
+  assert.equal(result.success, false);
+  assert.match(String(result.error), /WORKFLOW_ARGS_LIMIT/);
+});
+await test('optional workflow steps still abort on security failures', async () => {
+  const tool = {
+    executor: {
+      type: 'host-workflow',
+      steps: [
+        {
+          id: 'probe',
+          tool: 'builtin/browser_page_ops',
+          args: {},
+          optional: true,
+        },
+      ],
+      output: { from: 'probe' },
+    },
+  } as any;
+  const result = await runWorkflow(tool, {}, {}, async () => {
+    throw new PluginError('NETWORK_TARGET_REJECTED', 'localhost');
+  });
+  assert.equal(result.success, false);
+  assert.match(String(result.error), /NETWORK_TARGET_REJECTED/);
+});
+await test('session approvals are scoped to chat, digest and epoch', async () => {
+  const key = { chatId: 'c1', pluginKey: 'p', digest: 'd1', epoch: 1 };
+  assert.equal(await hasPluginSessionApproval(key), false);
+  await grantPluginSessionApproval(key);
+  assert.equal(await hasPluginSessionApproval(key), true);
+  assert.equal(await hasPluginSessionApproval({ ...key, chatId: 'c2' }), false);
+  assert.equal(await hasPluginSessionApproval({ ...key, digest: 'd2' }), false);
+  assert.equal(await hasPluginSessionApproval({ ...key, epoch: 2 }), false);
+  await revokePluginApprovals('p');
+  assert.equal(await hasPluginSessionApproval(key), false);
+  // 按插件撤销不影响其它插件；无参撤销清空全部
+  await grantPluginSessionApproval(key);
+  await grantPluginSessionApproval({ ...key, pluginKey: 'q' });
+  await revokePluginApprovals('p');
+  assert.equal(await hasPluginSessionApproval(key), false);
+  assert.equal(
+    await hasPluginSessionApproval({ ...key, pluginKey: 'q' }),
+    true,
+  );
+  await revokePluginApprovals();
+  assert.equal(
+    await hasPluginSessionApproval({ ...key, pluginKey: 'q' }),
+    false,
+  );
+});
+await test('plugin origin guard fails closed', () => {
+  const context = { pluginKey: 'publisher/bilibili', pluginOrigins: ['https://www.bilibili.com'] };
+  assert.doesNotThrow(() => assertPluginOrigin('https://www.bilibili.com', context));
+  assert.throws(() => assertPluginOrigin('https://evil.example', context), /PLUGIN_ORIGIN_DENIED/);
+  assert.throws(() => assertPluginOrigin('null', context), /PLUGIN_ORIGIN_DENIED/);
+  assert.doesNotThrow(() => assertPluginOrigin(null, {}));
+});
 await test('network restrictions reject private addresses and credentials', () => {
   for (const url of [
     'http://example.com',
@@ -818,9 +1064,9 @@ await test('real host-alias execution is aborted and late results suppressed on 
     begun = r;
   });
   const target = {
-    name: 'browser_get_page_text',
+    name: 'read_website',
     metadata: {
-      name: 'browser_get_page_text',
+      name: 'read_website',
       description: 'test',
       category: 'browser',
       version: '1',
@@ -828,7 +1074,7 @@ await test('real host-alias execution is aborted and late results suppressed on 
     openaiSchema: {
       type: 'function' as const,
       function: {
-        name: 'browser_get_page_text',
+        name: 'read_website',
         description: 'test',
         parameters: { type: 'object' as const, properties: {} },
       },
@@ -859,6 +1105,180 @@ await test('real host-alias execution is aborted and late results suppressed on 
   const result = await promise;
   assert.equal(result.success, false);
   release();
+});
+await test('optional workflow step tolerates tool failure but not security denial', async () => {
+  let mode: 'fail' | 'deny' = 'fail';
+  toolRegistry.register({
+    name: 'browser_page_ops',
+    metadata: {
+      name: 'browser_page_ops',
+      description: 'optional-step fixture',
+      category: 'browser',
+      version: '1',
+    },
+    openaiSchema: {
+      type: 'function' as const,
+      function: {
+        name: 'browser_page_ops',
+        description: 'optional-step fixture',
+        parameters: { type: 'object' as const, properties: {} },
+      },
+    },
+    execute: async (args: any) => {
+      if (mode === 'deny')
+        throw new PluginError('PLUGIN_ORIGIN_DENIED', 'blocked by test');
+      if (args?.action === 'status')
+        return { success: true, data: { tabId: 5, probe: 'ok' } };
+      return { success: false, error: '等待 15000ms 内未出现元素' };
+    },
+  });
+  const bytes = await bundle('1.0.0', {
+    id: 'workflow-optional',
+    mutate: (manifest, files) => {
+      manifest.capabilities.hostTools = ['builtin/browser_page_ops'];
+      files['tools/search.json'] = strToU8(
+        JSON.stringify({
+          description: 'optional workflow',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            additionalProperties: false,
+          },
+          executor: {
+            type: 'host-workflow',
+            steps: [
+              {
+                id: 'wait',
+                tool: 'builtin/browser_page_ops',
+                args: { action: 'wait_element', selector: '.x' },
+                optional: true,
+              },
+              {
+                id: 'probe',
+                tool: 'builtin/browser_page_ops',
+                args: { action: 'status' },
+              },
+            ],
+            output: { from: 'probe' },
+          },
+        }),
+      );
+    },
+  });
+  const preview = await service.preview(bytes);
+  await service.install(bytes, preview.generation, preview.plugin.digest);
+  const installed = (await service.snapshot()).packages.find((p) =>
+    p.key.endsWith('/workflow-optional'),
+  )!;
+  const gateway = new PluginExecutionGateway(service, async () => undefined);
+  const bindings = {
+    [installed.key]: { digest: installed.digest, epoch: installed.epoch },
+  };
+  const tolerated = await gateway.execute(installed.tools[0].ref, {}, {
+    pluginApproved: true,
+    pluginBindings: bindings,
+  });
+  assert.equal(tolerated.success, true);
+  assert.equal((tolerated.data as any).steps[0].ok, false);
+  assert.equal((tolerated.data as any).steps[1].ok, true);
+  assert.deepEqual((tolerated.data as any).output, { tabId: 5, probe: 'ok' });
+  mode = 'deny';
+  const denied = await gateway.execute(installed.tools[0].ref, {}, {
+    pluginApproved: true,
+    pluginBindings: bindings,
+  });
+  assert.equal(denied.success, false);
+  assert.match(String(denied.error), /PLUGIN_ORIGIN_DENIED/);
+  const state = await service.snapshot();
+  await service.uninstall(installed.key, state.generation);
+});
+await test('host-workflow runs steps sequentially and inherits the produced tabId', async () => {
+  const calls: Array<{ url?: string; tabId?: number }> = [];
+  toolRegistry.register({
+    name: 'browser_page_http',
+    metadata: {
+      name: 'browser_page_http',
+      description: 'workflow fixture',
+      category: 'browser',
+      version: '1',
+    },
+    openaiSchema: {
+      type: 'function' as const,
+      function: {
+        name: 'browser_page_http',
+        description: 'workflow fixture',
+        parameters: {
+          type: 'object' as const,
+          properties: { url: { type: 'string' as const } },
+        },
+      },
+    },
+    execute: async (args: any) => {
+      calls.push({ url: args.url, tabId: args.tabId });
+      return {
+        success: true,
+        data: { url: args.url, tabId: 77, path: `content/${calls.length}.md` },
+      };
+    },
+  });
+  const bytes = await bundle('1.0.0', {
+    id: 'workflow-demo',
+    mutate: (manifest, files) => {
+      manifest.capabilities.hostTools = ['builtin/browser_page_http'];
+      files['tools/search.json'] = strToU8(
+        JSON.stringify({
+          description: 'workflow',
+          inputSchema: {
+            type: 'object',
+            properties: { url: { type: 'string' } },
+            additionalProperties: false,
+          },
+          executor: {
+            type: 'host-workflow',
+            steps: [
+              {
+                id: 'first',
+                tool: 'builtin/browser_page_http',
+                args: { url: 'https://example.com/a' },
+              },
+              {
+                id: 'second',
+                tool: 'builtin/browser_page_http',
+                args: { url: '{{args.url}}' },
+              },
+            ],
+            output: { from: 'second', path: 'path' },
+          },
+        }),
+      );
+    },
+  });
+  const preview = await service.preview(bytes);
+  await service.install(bytes, preview.generation, preview.plugin.digest);
+  const installed = (await service.snapshot()).packages.find((p) =>
+    p.key.endsWith('/workflow-demo'),
+  )!;
+  const gateway = new PluginExecutionGateway(service, async () => undefined);
+  const result = await gateway.execute(
+    installed.tools[0].ref,
+    { url: 'https://example.com/b' },
+    {
+      pluginApproved: true,
+      pluginBindings: {
+        [installed.key]: { digest: installed.digest, epoch: installed.epoch },
+      },
+    },
+  );
+  assert.equal(result.success, true);
+  assert.deepEqual(calls, [
+    { url: 'https://example.com/a', tabId: undefined },
+    { url: 'https://example.com/b', tabId: 77 },
+  ]);
+  const data = result.data as any;
+  assert.equal(data.output, 'content/2.md');
+  assert.equal(data.steps.length, 2);
+  const state = await service.snapshot();
+  await service.uninstall(installed.key, state.generation);
 });
 await test('a fresh repository instance restores the same verified catalog after restart', async () => {
   const freshService = new PluginService(
@@ -1030,7 +1450,7 @@ await test('background protocol rejects content-script senders and supports inst
   assert.equal(installed.ok, true);
   const ceiling = pluginToolCeiling(verified.key)!;
   assert(ceiling.includes(verified.tools[0].ref));
-  assert(ceiling.includes('browser_get_page_text'));
+  assert(ceiling.includes('read_website'));
   assert(!ceiling.includes('browser_page_exec'));
   assert.equal((await request('export', { key: verified.key })).value, data);
   const backup = await request('backup-export');

@@ -37,16 +37,16 @@ try {
   // 工具执行引擎共用本测试的虚拟时钟：引擎通过注入的计时适配注册/清理
   // 超时定时器，否则它会用真实时钟写进下方的定时器断言并扰乱计时推进
   toolExecutionEngine.setTimerAdapter({ setTimeout, clearTimeout });
-  const runtime:any={chatId:'wait-contract',toolIds:['generic_wait','browser_get_page_text'],vision:null,limits:{maxDurationMs:10000,toolTimeoutMs:120000}};
+  const runtime:any={chatId:'wait-contract',toolIds:['generic_wait','read_website'],vision:null,limits:{maxDurationMs:10000,toolTimeoutMs:120000}};
   const handle:any={abortController:new AbortController(),dynamicToolIds:new Set(),record:{toolCalls:[],parts:[]},toolCallCount:0};
   const call=(name:string,args:any)=>({id:name,type:'function',function:{name,arguments:JSON.stringify(args)}});
-  const enginePending=engine.executeToolCalls(runtime,handle,[call('generic_wait',{waitSeconds:10000}),call('browser_get_page_text',{})],{},()=>{},clock+10000);
+  const enginePending=engine.executeToolCalls(runtime,handle,[call('generic_wait',{waitSeconds:10000}),call('read_website',{})],{},()=>{},clock+10000);
   assert.ok([...scheduled.values()].some(timer=>timer.ms===605000),'Engine must not apply the normal 120s timeout to long waits');
   clock+=600000;takeTimer(600000);
   const outcome=await enginePending;
   assert.equal(outcome.committed,true,'轮次有效时结果必须写入模型上下文（闸门放行）');
   // 「全部失败」判定：本批两个调用中只要有一个成功即不算全败——
-  // 上面只推进了 generic_wait 的等待计时，browser_get_page_text 随后才
+  // 上面只推进了 generic_wait 的等待计时，read_website 随后才
   // 在微任务里完成并被引擎计为成功，因此批次不是「全败」
   assert.equal(outcome.anyFailure,outcome.anySuccess,'至少有一个成功调用，批次不得判为全败');assert.equal(outcome.messages.length,2);assert.equal(outcome.waitedMs,600000);
   // 引擎自身的定时器与被测逻辑共用同一套虚拟时钟（引擎通过注入的计时适配
@@ -66,10 +66,10 @@ try {
       ? new Promise(resolve => { answerUser = resolve; }) : { success: true, data: { text: 'resumed' } },
     requiresApproval: () => false,
   } as any) as any;
-  const questionRuntime = { ...runtime, toolIds: ['interact', 'browser_get_page_text'] };
+  const questionRuntime = { ...runtime, toolIds: ['interact', 'read_website'] };
   const questionHandle = { ...handle, abortController: new AbortController(), record: { toolCalls: [], parts: [] } };
   const answering = questionEngine.executeToolCalls(questionRuntime, questionHandle,
-    [call('interact', { question: '用户流程与现场不符，请澄清' }), call('browser_get_page_text', {})], {}, () => {}, clock + 10000);
+    [call('interact', { question: '用户流程与现场不符，请澄清' }), call('read_website', {})], {}, () => {}, clock + 10000);
   // 「无超时定时器」断言：交互类工具不注册任何引擎超时定时器（剩余的那一个
   // 是上一批次遗留、尚未被 takeTimer 推进的页面加载缓冲等待，不是交互工具的
   // 超时器）——交互类工具只保留中止通道，超时窗口由 UI 层控制

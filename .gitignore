@@ -131,6 +131,9 @@ build/
 # Plugin publisher private keys
 *.publisher-key.json
 
+# Plugin build artifacts (rebuild with `plugin:sdk pack`)
+*.anplugin
+
 # ========================
 # 密钥 / 证书 / 凭据文件
 # ========================

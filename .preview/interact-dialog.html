@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>interact 询问弹窗预览（推荐项）</title>
+    <link rel="stylesheet" href="../entrypoints/sidepanel/components/feedback/interact-dialog.css" />
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        background: #eef0f3;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .stage {
+        margin-bottom: 28px;
+      }
+      .stage h3 {
+        font-size: 12px;
+        color: #6b7280;
+        margin: 0 0 10px;
+        font-weight: 600;
+      }
+      /* 遮罩与弹窗的定位容器（overlay 本身 position: fixed，改为相对定位以并排展示多态） */
+      .stage .interact-overlay {
+        position: relative;
+        inset: auto;
+        background: transparent;
+        backdrop-filter: none;
+        animation: none;
+        padding: 16px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stage">
+      <h3>多选项：推荐项居首并高亮（工具层已归一：唯一 / 首位 / 带标注）</h3>
+      <div class="interact-overlay">
+        <div class="interact-dialog" role="dialog" aria-modal="true">
+          <div class="interact-header">
+            <span class="interact-header-icon">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M20,2H4A2,2 0 0,0 2,4V22L6,18H20A2,2 0 0,0 22,16V4A2,2 0 0,0 20,2M8,11H16V13H8V11M8,7H16V9H8V7Z" fill="currentColor"/>
+              </svg>
+            </span>
+            <div class="interact-header-text">
+              <h4 class="interact-title">模型需要你的确认</h4>
+              <p class="interact-subtitle">请选择一个选项，或输入自定义答复</p>
+            </div>
+          </div>
+          <p class="interact-question">用哪个方式导出这份采集结果？</p>
+          <div class="interact-context">导出格式会影响下游能否直接入库，CSV 需再做一次字段转换。</div>
+          <div class="interact-options">
+            <button type="button" class="interact-option is-recommended">
+              <span class="interact-option-label">导出为 XLSX</span>
+              <span class="interact-option-desc">（推荐：下游可直接入库，无需再做字段转换）</span>
+            </button>
+            <button type="button" class="interact-option">
+              <span class="interact-option-label">导出为 CSV</span>
+              <span class="interact-option-desc">通用格式，但入库前需额外转换列名</span>
+            </button>
+            <button type="button" class="interact-option">
+              <span class="interact-option-label">导出为 JSON</span>
+              <span class="interact-option-desc">保留嵌套结构，仅适合内部调试</span>
+            </button>
+          </div>
+          <div class="interact-custom">
+            <label class="interact-custom-label" for="interact-custom-input">自定义答复</label>
+            <textarea id="interact-custom-input" class="interact-custom-input" rows="2" placeholder="输入你的答复…（Enter 提交，Shift+Enter 换行）"></textarea>
+          </div>
+          <div class="interact-footer">
+            <span class="interact-countdown">剩余 19:42</span>
+            <button type="button" class="interact-btn interact-btn-ghost">拒绝回答</button>
+            <button type="button" class="interact-btn interact-btn-primary">提交</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <h3>模型未标注推荐项时：工具层补「（推荐）」，仍居首</h3>
+      <div class="interact-overlay">
+        <div class="interact-dialog" role="dialog" aria-modal="true">
+          <div class="interact-header">
+            <span class="interact-header-icon">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M20,2H4A2,2 0 0,0 2,4V22L6,18H20A2,2 0 0,0 22,16V4A2,2 0 0,0 20,2M8,11H16V13H8V11M8,7H16V9H8V7Z" fill="currentColor"/>
+              </svg>
+            </span>
+            <div class="interact-header-text">
+              <h4 class="interact-title">模型需要你的确认</h4>
+              <p class="interact-subtitle">请选择一个选项，或输入自定义答复</p>
+            </div>
+          </div>
+          <p class="interact-question">接下来先做哪一步？</p>
+          <div class="interact-options">
+            <button type="button" class="interact-option is-recommended">
+              <span class="interact-option-label">先抓取详情页字段</span>
+              <span class="interact-option-desc">（推荐）</span>
+            </button>
+            <button type="button" class="interact-option">
+              <span class="interact-option-label">先抓取列表页字段</span>
+              <span class="interact-option-desc">覆盖面更广，精度较低</span>
+            </button>
+          </div>
+          <div class="interact-custom">
+            <label class="interact-custom-label" for="interact-custom-input-2">自定义答复</label>
+            <textarea id="interact-custom-input-2" class="interact-custom-input" rows="2" placeholder="输入你的答复…（Enter 提交，Shift+Enter 换行）"></textarea>
+          </div>
+          <div class="interact-footer">
+            <span class="interact-countdown">剩余 19:42</span>
+            <button type="button" class="interact-btn interact-btn-ghost">拒绝回答</button>
+            <button type="button" class="interact-btn interact-btn-primary">提交</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <h3>单选项：不涉及选择 → 不加推荐高亮</h3>
+      <div class="interact-overlay">
+        <div class="interact-dialog" role="dialog" aria-modal="true">
+          <div class="interact-header">
+            <span class="interact-header-icon">
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M20,2H4A2,2 0 0,0 2,4V22L6,18H20A2,2 0 0,0 22,16V4A2,2 0 0,0 20,2M8,11H16V13H8V11M8,7H16V9H8V7Z" fill="currentColor"/>
+              </svg>
+            </span>
+            <div class="interact-header-text">
+              <h4 class="interact-title">模型需要你的确认</h4>
+              <p class="interact-subtitle">请选择一个选项，或输入自定义答复</p>
+            </div>
+          </div>
+          <p class="interact-question">是否继续采集下一批？</p>
+          <div class="interact-options">
+            <button type="button" class="interact-option">
+              <span class="interact-option-label">继续采集下一批</span>
+              <span class="interact-option-desc">按当前配置再跑 20 条</span>
+            </button>
+          </div>
+          <div class="interact-custom">
+            <label class="interact-custom-label" for="interact-custom-input-3">自定义答复</label>
+            <textarea id="interact-custom-input-3" class="interact-custom-input" rows="2" placeholder="输入你的答复…（Enter 提交，Shift+Enter 换行）"></textarea>
+          </div>
+          <div class="interact-footer">
+            <span class="interact-countdown">剩余 19:42</span>
+            <button type="button" class="interact-btn interact-btn-ghost">拒绝回答</button>
+            <button type="button" class="interact-btn interact-btn-primary">提交</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

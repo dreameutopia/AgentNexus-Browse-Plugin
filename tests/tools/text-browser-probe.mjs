@@ -152,6 +152,10 @@ try {
   const detachListeners = [];
   globalThis.chrome = {
     tabs: {
+      get: async id => {
+        assert.equal(id, 1);
+        return { id, windowId: 1, url: `http://127.0.0.1:${server.address().port}` };
+      },
       query: async () => [
         {
           id: 1,
@@ -671,7 +675,7 @@ try {
       assert.equal(await evaluate('namebox.value'), '已生效');
       const text = ok(await new driver.GetPageTextTool().execute({}));
       assert.equal(text.coverage.frames.length, 2);
-      assert.ok(text.textContent.includes('实际浏览器🙂'));
+      assert.ok(driver.parseCsv(text.content).rows[0][0].includes('实际浏览器🙂'));
     }
     console.log(
       '[text-browser] Native/ARIA semantic controls, idempotence, pointer-down expansion, portal selection, multi-select, date constraints, AX categories, replacement recovery, trusted keys, iframe/shadow and response capture passed; zero screenshots.',

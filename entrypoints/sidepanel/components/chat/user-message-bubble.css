@@ -2,12 +2,13 @@
  *
  * 结构：
  *   .user-bubble            气泡容器（灰底圆角）
+ *   ├── .user-bubble-skills 本轮技能标签（单轮生效快照）
  *   ├── .user-bubble-quote  引用块（用户确认引用的网页原文 + 来源页面）
  *   ├── .user-bubble-body   正文区（定位上下文，供底缘渐隐层贴附）
  *   │   ├── .user-bubble-clip   折叠层（超长时由组件加 max-height 裁剪）
  *   │   │   └── .user-bubble-text  正文容器（不限高 → 测量到的始终是完整高度）
  *   │   └── .user-bubble-fade    底缘渐隐（收起态提示下方还有内容）
- *   └── .user-bubble-actions 底部操作行（左：展开/收起；右：复制）
+ *   └── .user-bubble-actions 底部操作行（左：@智能体 + 展开/收起；右：复制）
  */
 
 .user-bubble {
@@ -17,9 +18,8 @@
   width: 100%;
   box-sizing: border-box;
   /* ⚠ 禁止在此添加 container-type（含 inline-size）：气泡宽度沿
-     .message.user(fit-content，flex 子项 auto 宽) → wrapper(100%) → 气泡(100%)
-     链条自外向内传递，容器化会把气泡的内在宽度贡献归零 → fit-content 链
-     坍缩成 ~30px 的细竖条（文字逐字竖排，即 2026-11 的宽度坍塌事故）。
+     .message.user(固定 80%) → wrapper(100%) → 气泡(100%) 自外向内传递，
+     容器化会把气泡的内在宽度贡献归零，文字会逐字竖排（2026-11 宽度坍塌事故）。
      引用块的窄宽度降级用 @media——侧边栏文档的视口就是面板宽度，
      媒体查询精确跟随面板拖拽缩放，无需容器查询。 */
   /* 中性灰气泡（对齐主流聊天客户端）：浅灰底 + 深色文字，
@@ -37,6 +37,58 @@
   color: inherit;
   padding: 0;
   border-radius: 0;
+}
+
+/* ════ 技能清单（本轮预选技能快照） ════
+ *
+ * 位于正文与引用之上，以轻量标签展示名称；多个标签自然换行，
+ * 长名称单行省略，完整名称保留在 title 中。
+ */
+.user-bubble-skills {
+  min-width: 0;
+  margin: 1px 0 9px;
+}
+
+.user-bubble-skills-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.user-bubble-skill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 4px 9px 4px 7px;
+  border: 1px solid color-mix(in srgb, var(--ink-secondary, #787671) 13%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-card, #ffffff) 68%, transparent);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--ink-secondary, #787671);
+}
+
+/* 与模型消息底部的创建入口共用线性图标，随主题配色。 */
+.user-bubble-skill-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  color: var(--ink-primary, #292824);
+}
+
+.user-bubble-skill-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ════ 引用块（用户确认引用的网页原文） ════
@@ -101,9 +153,9 @@
 }
 
 /* 窄宽度：来源标题让位（引用原文与标记优先）。
-   用 @media 而非 @container——气泡处在 fit-content 宽度链上，任何祖先容器化
-   都会触发宽度坍塌（见 .user-bubble 的警示注释）；侧边栏文档的视口即面板
-   宽度，媒体查询对「面板被拖窄」的跟随是精确的 */
+   用 @media 而非 @container——气泡宽度链上任何祖先容器化都会触发宽度坍塌
+   （见 .user-bubble 的警示注释）；侧边栏文档的视口即面板宽度，
+   媒体查询对「面板被拖窄」的跟随是精确的 */
 @media (max-width: 360px) {
   .user-bubble-quote-source {
     display: none;
@@ -136,13 +188,34 @@
   background: linear-gradient(to bottom, transparent 0%, var(--surface-user, #eeece7) 92%);
 }
 
-/* 底部操作行：展开入口靠左、复制按钮贴右下角 */
+/* 底部操作行：@智能体标识与展开入口靠左、复制按钮贴右下角 */
 .user-bubble-actions {
   display: flex;
   align-items: center;
   gap: 2px;
   margin-top: 2px;
   min-height: 24px;
+}
+
+/* @智能体：操作行最左侧的身份标识（仅名称，克制不抢正文）
+ * 与选择胶囊条同名同色系——用户能直接把气泡里的 @名称 对上输入区的胶囊 */
+.user-bubble-agent {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 62%;
+  padding-right: 4px;
+  font-size: 11.5px;
+  line-height: 1;
+  color: var(--ink-muted, #9b9790);
+}
+
+.user-bubble-agent-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .user-bubble-expand {

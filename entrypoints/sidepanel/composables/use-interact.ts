@@ -22,7 +22,8 @@
  *     收敛或污染下一个询问的剩余时间（定时器句柄层的极端竞态兜底）；
  *   - 定时器在每条收敛路径与 dismiss 时清理，绝不泄漏悬空句柄；
  *   - 超时时长读取应用设置并钳制到合法区间（边界常量来自 utils/channels
- *     的单一事实源），脏配置回落默认 20 分钟；
+ *     的单一事实源），脏配置回落默认 20 分钟；该档时长同时管辖循环守卫
+ *     确认条（见 App.vue 的 openGuardConfirm）。
  *   - openInteract 对入参做最低限度防御（本模块是公共 API，不能假设调用方
  *     都经过工具层清洗）：非法请求立即按 dismissed 收敛并告警，不进队列。
  */
@@ -34,10 +35,8 @@ import type {
   InteractUnansweredStatus,
 } from '@/tools/interact/interact-ui-bridge';
 import {
-  INTERACT_TIMEOUT_MIN_MINUTES,
-  INTERACT_TIMEOUT_MAX_MINUTES,
-  INTERACT_TIMEOUT_DEFAULT_MINUTES,
   appSettingsStore,
+  resolveUserResponseWaitMs,
 } from '../utils/channels';
 
 /** 展示形态：dialog = 居中弹窗；ball = 右上角悬浮球（最小化） */
@@ -84,19 +83,13 @@ const TICK_MS = 500;
 
 /**
  * 读取用户配置的等待时长（分钟 → 毫秒）。
- * 非数字 / 非有限数回落默认值；越界与浮点分钟钳制收敛（配置侧校验之外的
- * 第二道防线，脏存储直接进入运行时也不会产生 0 或负数等待）。
+ *
+ * 经 resolveUserResponseWaitMs 换算（**单一事实源**）：询问弹窗与循环守卫
+ * 确认条共用同一档时长，脏值在此收敛（配置侧校验之外的第二道防线），
+ * 脏存储直接进入运行时也不会产生 0 或负数等待。
  */
 function resolveWaitMs(): number {
-  const raw = appSettingsStore.getInteractTimeoutMinutes();
-  const minutes =
-    typeof raw === 'number' && Number.isFinite(raw)
-      ? Math.min(
-          INTERACT_TIMEOUT_MAX_MINUTES,
-          Math.max(INTERACT_TIMEOUT_MIN_MINUTES, Math.floor(raw)),
-        )
-      : INTERACT_TIMEOUT_DEFAULT_MINUTES;
-  return minutes * 60 * 1000;
+  return resolveUserResponseWaitMs(appSettingsStore.getUserResponseTimeoutMinutes());
 }
 
 /** 停止倒计时（幂等；各收敛路径统一调用，防悬空句柄） */

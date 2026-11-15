@@ -1084,13 +1084,16 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
   /** Explicit choices on every budget boundary; never turn an extension into forced submission. */
   async function handleLimitReached(
     kind: 'max-iterations' | 'max-duration' | 'tool-failures',
-    limits: { maxIterations: number; maxDurationMs: number },
+    limits: { maxIterations: number; maxDurationMs?: number },
     stage: 'learning' | 'validating',
   ): Promise<boolean> {
     while (!aborting && !terminating && phase.value === stage) {
       const view: Extract<LearnDialogView, { mode: 'limitWrapUp' }> = {
         mode: 'limitWrapUp', phase: stage, reason: kind,
-        iterations: limits.maxIterations, minutes: limits.maxDurationMs / 60_000,
+        iterations: limits.maxIterations,
+        // 学习/验证始终自带时长预算（LEARN_LIMITS / stageRunLimits），
+        // 缺省值仅为类型兜底，不会真的走到无预算分支。
+        minutes: (limits.maxDurationMs ?? LEARN_LIMITS.maxDurationMs) / 60_000,
         extraIterations: LEARN_DEFAULT_EXTENSION_ITERATIONS,
       };
       const choice = await askDialog(view);
@@ -1170,6 +1173,20 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
     stopTicker();
     forceSubmitting.value = false;
 
+    // 载体会话在交付前已被删除（管理中心并发删除 / 切换会话后会话被清理）：
+    // 草稿随会话一并作废，绝不能写入一条没有载体会话的交接件——
+    // 那会成为删除后仍留在 chrome.storage.local 的幽灵成果。
+    try {
+      if (!(await transcriptEngine.getSession(sessionChatId.value))) {
+        deps.notify(deps.t('sidepanel.learn.sessionDeletedBeforeHandoff'));
+        await reset({ keepConfig: false });
+        return;
+      }
+    } catch (error) {
+      // 读取失败不等于会话不存在：保守继续原交付流程（失败会在后续落盘处暴露）
+      console.warn('[LearnSession] 交付前核对会话失败，继续交付:', error);
+    }
+
     // 会话回放与独立交接副本分别落盘；交接失败保留内存下载/重试入口，不打开空表单。
     try { await transcriptEngine.setSystemPromptSuffix(sessionChatId.value, JSON.stringify(skillDraft)); }
     catch (error) { console.warn('[LearnSession] 会话恢复副本写入失败，将继续保存独立交接副本:', error); }
@@ -1221,7 +1238,6 @@ export function useLearnSession(deps: LearnSessionDeps): LearnSessionApi {
         // 后续普通发送时 resolve 到不存在的智能体而装配失败
         agentId: '',
         agentName: '',
-        skillNames: [],
         modelRef: cfg.modelRef,
         kind: 'site-learn',
       });

@@ -1,5 +1,5 @@
 /**
- * 结构化页面正文提取荷载（browser_get_page_text 注入用）
+ * 结构化页面正文提取荷载（page-doc-engine 注入用）
  *
  * 每个可注入 frame 各执行一次（executeScript allFrames），把 document.body
  * 转成保留语义结构的 Markdown：标题层级 / 表格（grid 还原 rowspan+colspan）/
@@ -30,6 +30,7 @@ export function structuredPagePayload(): {
   url: string;
   title: string;
   error?: string;
+  truncationReason?: string;
 } {
   // ─── 常量（必须内联在函数体内） ───
   /** 单 frame 提取结果字符上限（超长截断并标记） */
@@ -84,6 +85,21 @@ export function structuredPagePayload(): {
   const visited = new WeakSet<object>();
   let emittedChars = 0;
   let truncated = false;
+  const traversalStarted = performance.now();
+  let visitedNodes = 0;
+  let exhausted = false;
+  const nodeErrors: string[] = [];
+  const truncationReasons = new Set<string>();
+  const markTruncated = (reason: string) => { truncated = true; truncationReasons.add(reason); };
+  const withinBudget = (): boolean => {
+    if (exhausted) return false;
+    if (performance.now() - traversalStarted > 2000) {
+      exhausted = true;
+      markTruncated('TRAVERSAL_TIMEOUT: 2000ms');
+      return false;
+    }
+    return true;
+  };
 
   const safeSlice = (text: string, end: number): string => {
     const stop = Math.min(end, text.length);
@@ -160,11 +176,12 @@ export function structuredPagePayload(): {
   const cleanInline = (raw: string): string => (raw || '').replace(/\s*\n+\s*/g, ' ').replace(/ {2,}/g, ' ').trim();
 
   const convertList = (list: Element, ordered: boolean, depth: number): string => {
-    if (depth > MAX_LIST_DEPTH) return '';
+    if (depth > MAX_LIST_DEPTH) { markTruncated(`LIST_DEPTH_LIMIT: ${MAX_LIST_DEPTH}`); return ''; }
     let out = '\n';
     let index = ordered ? attrInt(list, 'start', 1) : 0;
     const items = Array.from(list.children).filter((child) => child.tagName === 'LI');
     for (const item of items) {
+      if (!withinBudget()) break;
       if (visited.has(item)) continue;
       visited.add(item);
       // 任务列表：li 直接子级的 checkbox 转为 [x]/[ ]
@@ -175,6 +192,7 @@ export function structuredPagePayload(): {
       }
       let content = '';
       for (const child of Array.from(item.childNodes)) {
+        if (!withinBudget()) break;
         const tag = (child as Element).tagName;
         if (tag === 'UL' || tag === 'OL') continue;
         content += convertNode(child, 0);
@@ -183,6 +201,7 @@ export function structuredPagePayload(): {
       const marker = ordered ? `${index++}. ` : '- ';
       out += '  '.repeat(depth) + marker + checkbox + content + '\n';
       for (const child of Array.from(item.children)) {
+        if (!withinBudget()) break;
         const tag = child.tagName;
         if (tag === 'UL') out += convertList(child, false, depth + 1);
         else if (tag === 'OL') out += convertList(child, true, depth + 1);
@@ -212,19 +231,22 @@ export function structuredPagePayload(): {
     if (rows.length === 0) return '';
     let rowsTruncated = false;
     for (let r = 0; r < rows.length; r++) {
-      if (r >= MAX_TABLE_ROWS) { rowsTruncated = true; break; }
+      if (!withinBudget()) break;
+      if (r >= MAX_TABLE_ROWS) { rowsTruncated = true; markTruncated(`TABLE_ROW_LIMIT: ${MAX_TABLE_ROWS}`); break; }
       const cells = Array.from(rows[r].querySelectorAll('th,td')).filter((cell) => cell.closest('tr') === rows[r]);
       if (cells.length === 0) continue;
       ensureRow(r);
       let col = 0;
       for (const cell of cells) {
-        if (col >= MAX_TABLE_COLS) break;
+        if (!withinBudget()) break;
+        if (col >= MAX_TABLE_COLS) { markTruncated(`TABLE_COLUMN_LIMIT: ${MAX_TABLE_COLS}`); break; }
         while (occupied(r, col) && col < MAX_TABLE_COLS) col++;
-        if (col >= MAX_TABLE_COLS) break;
+        if (col >= MAX_TABLE_COLS) { markTruncated(`TABLE_COLUMN_LIMIT: ${MAX_TABLE_COLS}`); break; }
         const colspan = Math.min(attrInt(cell, 'colspan', 1), MAX_TABLE_COLS);
-        const rowspan = Math.min(attrInt(cell, 'rowspan', 1), MAX_TABLE_ROWS);
+        const rowspan = Math.min(attrInt(cell, 'rowspan', 1), MAX_TABLE_ROWS - r);
         let text = cleanText(cell.textContent || '');
-        if (text.length > MAX_CELL_CHARS) text = safeSlice(text, MAX_CELL_CHARS) + '…';
+        if (text.length > MAX_CELL_CHARS) { text = safeSlice(text, MAX_CELL_CHARS) + '…'; markTruncated(`TABLE_CELL_TEXT_LIMIT: ${MAX_CELL_CHARS}`); }
+        if (attrInt(cell, 'rowspan', 1) > rowspan || attrInt(cell, 'colspan', 1) > MAX_TABLE_COLS - col) markTruncated('TABLE_SPAN_LIMIT: cell span extends beyond bounded table');
         text = text.replace(/\|/g, '\\|');
         for (let rr = r; rr < r + rowspan; rr++) {
           ensureRow(rr);
@@ -437,11 +459,18 @@ export function structuredPagePayload(): {
   };
 
   const convertNode = (node: Node, depth: number): string => {
-    if (emittedChars > EMIT_STOP_CHARS) {
-      truncated = true;
+    if (!withinBudget()) return '';
+    if (++visitedNodes > 30000) {
+      exhausted = true;
+      markTruncated('DOM_NODE_LIMIT: 30000');
       return '';
     }
-    if (depth > MAX_DEPTH) return '';
+    if (emittedChars > EMIT_STOP_CHARS) {
+      exhausted = true;
+      markTruncated(`CUMULATIVE_TEXT_LIMIT: ${EMIT_STOP_CHARS}`);
+      return '';
+    }
+    if (depth > MAX_DEPTH) { markTruncated(`DOM_DEPTH_LIMIT: ${MAX_DEPTH}`); return ''; }
     if (node.nodeType === Node.TEXT_NODE) {
       // 文本节点只收敛空白不 trim——相邻行内元素之间的词间距不能丢
       return cleanText(node.textContent || '', false);
@@ -450,12 +479,20 @@ export function structuredPagePayload(): {
     const el = node as Element;
     if (visited.has(el)) return '';
     visited.add(el);
-    return convertElement(el, depth);
+    try { return convertElement(el, depth); }
+    catch (error) {
+      markTruncated('NODE_EXTRACTION_FAILED: one or more subtrees were skipped');
+      if (nodeErrors.length < 5) nodeErrors.push(`${el.localName}: ${error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200)}`);
+      return '';
+    }
   };
 
   const processNodes = (nodes: Node[], depth: number): string => {
     let out = '';
-    for (const node of nodes) out += convertNode(node, depth);
+    for (const node of nodes) {
+      if (exhausted) break;
+      out += convertNode(node, depth);
+    }
     emittedChars += out.length;
     return out;
   };
@@ -496,11 +533,12 @@ export function structuredPagePayload(): {
 
     if (markdown.length > FRAME_CHAR_LIMIT) {
       markdown = safeSlice(markdown, FRAME_CHAR_LIMIT) + '\n\n…［本 frame 内容超长已截断］';
-      truncated = true;
+      markTruncated(`FRAME_TEXT_LIMIT: ${FRAME_CHAR_LIMIT}`);
     }
     return {
       markdown,
       truncated,
+      ...(truncated ? { truncationReason: [...truncationReasons, ...nodeErrors].join('; ') } : {}),
       shadowRoots: shadowRootsCount.n,
       url: document.URL || '',
       title: document.title || '',

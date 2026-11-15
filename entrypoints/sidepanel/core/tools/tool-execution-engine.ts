@@ -21,7 +21,7 @@
  *      Runtime.terminateExecution 掐掉页面脚本、Pyodide worker 中断）。
  *      引擎自身在中止/超时后**立刻**结算该调用，绝不被工具的迟钝拖住。
  *
- *   3. **有界执行**：单工具最长执行时间有上界（默认 30 分钟，应用设置可调）。
+ *   3. **有界执行**：单工具最长执行时间有上界（默认 20 分钟，应用设置可调）。
  *      超时判定为失败，自动封装为标准 tool 结果回传模型，绝不悬挂会话。
  *
  *   4. **轮次完整性**：每批工具调用按 chatId 绑定一个**轮次 id**。工具结果
@@ -38,6 +38,7 @@
  */
 
 import type { ToolResult } from '@/common/tool-handler';
+import { TOOL_TIMEOUT_DEFAULT_MINUTES } from '../../utils/channels/channel-types';
 
 // ==================== 类型 ====================
 
@@ -207,12 +208,16 @@ const KILL_HOOK_MAX_WAIT_MS = 1500;
 const MIN_REPORTED_MINUTES = 1;
 
 /**
- * 引擎兜底的单工具上界（毫秒，30 分钟）。
+ * 引擎兜底的单工具上界（毫秒）。
  *
  * 仅在调用方给出的上界非法（NaN / Infinity / 非正数）时启用：上界必须是
  * 一个有限的正数，否则 setTimeout 会把它当成 0ms，让每次调用瞬间判超时。
+ *
+ * 取值与应用设置「单工具最长执行时间」的默认值同源（channel-types 的
+ * TOOL_TIMEOUT_DEFAULT_MINUTES）——两处漂移会让「设置显示 20 分钟、实际
+ * 兜底 30 分钟」这类现象无从判断哪个是真值。
  */
-const DEFAULT_TOOL_TIMEOUT_MS = 30 * 60_000;
+const DEFAULT_TOOL_TIMEOUT_MS = TOOL_TIMEOUT_DEFAULT_MINUTES * 60_000;
 
 /**
  * 单工具上界的硬上限（毫秒，24 小时）。

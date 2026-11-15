@@ -22,7 +22,7 @@ import {
   loadSessionArchivePolicy,
   type SessionArchivePolicy,
 } from './session-archive-policy';
-import { listBusySessions, notifySessionsChanged } from './session-bridge';
+import { listBusySessions, notifySessionDeleted, notifySessionsChanged } from './session-bridge';
 
 /** 清理结果（供调用方展示与埋点） */
 export interface ArchiveSweepResult {
@@ -103,6 +103,10 @@ async function runSweep(now: number): Promise<ArchiveSweepResult> {
     try {
       await sessionDeletionEngine.deleteSession(meta.chatId);
       deleted.push(meta.chatId);
+      // 到期清理多由后台 worker 触发：侧边栏可能正开着这个会话，
+      // 必须让它按「会话已删除」收尾（清缓存 / 中止运行 / 回主页），
+      // 否则会停留在一个已不存在的会话上。
+      notifySessionDeleted(meta.chatId);
     } catch (error) {
       issues.push(`删除归档会话 ${meta.chatId} 失败: ${describe(error)}`);
       skipped++;

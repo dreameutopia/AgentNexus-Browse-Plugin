@@ -27,6 +27,8 @@ import { browserDownloadsTool } from './downloads';
 import { browserResourcesTool } from './resources';
 import { browserTabsTool } from './tab-management';
 import { browserPageOpsTool } from './page-ops';
+import { browserPageHttpTool } from './page-http-tool';
+import { browserMediaControlTool } from './media-control-tool';
 
 // 创建浏览器工具实例
 function createBrowserTools() {
@@ -66,6 +68,10 @@ function createBrowserTools() {
 
     // 轻量页面操作（按屏滚动 / 等待元素出现，无需 DOM 引用）
     browserPageOpsTool,
+
+    // 插件声明式能力原语（页面上下文 HTTP 链 / 媒体控制）
+    browserPageHttpTool,
+    browserMediaControlTool,
   ];
 }
 
@@ -106,3 +112,5 @@ export * from './resources';
 export * from './tab-management';
 export * from './page-load';
 export * from './page-ops';
+export * from './page-http-tool';
+export * from './media-control-tool';

@@ -9,6 +9,8 @@
  *   3. 倒计时轨道占比：secondsLeft / totalSeconds，超界钳制到 0–100%；
  *      末 10s（含 10）轨道转 is-urgent，11s 仍为中性
  *   4. 意图透传：点击「停止」/「继续运行」分别 emit stop / continue
+ *   5. 分钟级等待窗口：等待时长取自全局设置（上限 120 分钟），
+ *      倒计时超一分钟改用分钟表述，末尾一分钟切回秒数
  *
  * 运行：node tests/chat-ui/guard-confirm.test.mjs   （或 npm run test:chat-ui）
  */
@@ -181,6 +183,37 @@ async function mountGuard(props) {
   assert.equal(fill.style.width, '0%', '负值钳制到 0%');
   state.visible = false;
   await nextTick();
+  unmount();
+}
+
+// —— 3c. 分钟级等待窗口：设置上限 120 分钟，倒计时按分钟表述 ——
+// 等待时长来自全局设置后，守卫确认条的窗口可达数十分钟；
+// 「7200 秒内未确认」这种文案读不懂，超过一分钟改用分钟表述，
+// 末尾一分钟切回秒数保留紧迫感。
+{
+  const { state, el, unmount } = await mountGuard({
+    visible: true,
+    kind: 'max-iterations',
+    count: 30,
+    secondsLeft: 7200,
+    totalSeconds: 7200,
+  });
+  const hint = () => el.querySelector('.guard-bar-hint').textContent;
+  assert.equal(
+    hint(),
+    t('sidepanel.chat.guardHintMinutes', { minutes: 120 }),
+    '两小时窗口按分钟表述',
+  );
+  // 向上取整：59s 后仍显示「1 分钟」而非「0 分钟」
+  state.secondsLeft = 61;
+  await nextTick();
+  assert.equal(hint(), t('sidepanel.chat.guardHintMinutes', { minutes: 2 }), '61s → 2 分钟（向上取整）');
+  state.secondsLeft = 60;
+  await nextTick();
+  assert.equal(hint(), t('sidepanel.chat.guardHint', { seconds: 60 }), '60s 切回秒数表述');
+  state.secondsLeft = 1;
+  await nextTick();
+  assert.equal(hint(), t('sidepanel.chat.guardHint', { seconds: 1 }), '最后 1 秒仍按秒表述');
   unmount();
 }
 

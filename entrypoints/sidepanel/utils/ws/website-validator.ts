@@ -1,5 +1,6 @@
 // 验证当前活动页面并在检测到时触发调用 isFromLocalManage
 // 以及提供基于标签页/网站变化的自动重复验证直到成功的监听器
+import { executeScriptBounded } from '@/tools/common/frame-read';
 
 export interface ValidationResult {
   matched: boolean;
@@ -16,7 +17,7 @@ export async function validateActiveTabAndTrigger(): Promise<ValidationResult | 
   try {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     const tabId = tabs[0]?.id;
-    if (!tabId) {
+    if (typeof tabId !== 'number') {
       return {
         matched: false,
         called: false,
@@ -27,8 +28,8 @@ export async function validateActiveTabAndTrigger(): Promise<ValidationResult | 
       };
     }
 
-    const injectionResults = await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
+    const injectionResults = await executeScriptBounded({
+      target: { tabId, frameIds: [0] },
       world: 'MAIN',
       func: async () => {
         try {

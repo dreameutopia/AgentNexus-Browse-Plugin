@@ -1,16 +1,14 @@
 /**
- * 搜索目标注册表（web_search / platform_search / 专属工具的单一事实源）
+ * 搜索目标注册表（web_search / platform_search 的单一事实源）
  *
- * 三类目标共用同一套「导航 + 解析 + Markdown 表」机制，但工具面与语义分离：
+ * 两类目标共用同一套「导航 + 解析 + Markdown 表」机制，但工具面与语义分离：
  *   - 引擎（engine）：通用搜索引擎——bing / baidu，由 web_search 承载；
  *   - 站点平台（platform）：垂直站点——知乎 / GitHub / CSDN / MOOC / 小红书 /
- *     中国知网，由 platform_search 承载；
- *   - 专属目标（dedicated）：只服务于某一个专属工具的站点——bilibili，
- *     由 bilibili_search 承载（**不在 platform_search 的枚举里**）。
+ *     中国知网，由 platform_search 承载。
  *
- * 登记项 = 搜索入口（URL 模板）+ 结果解析器 + 展示文案。三类目标登记在同一张
- * 表里（解析逻辑与来源信息不因工具拆分而分叉），归属由三个 id 数组划分：
- * SEARCH_ENGINE_IDS / SEARCH_PLATFORM_IDS / SEARCH_DEDICATED_IDS——
+ * 登记项 = 搜索入口（URL 模板）+ 结果解析器 + 展示文案。两类目标登记在同一张
+ * 表里（解析逻辑与来源信息不因工具拆分而分叉），归属由两个 id 数组划分：
+ * SEARCH_ENGINE_IDS / SEARCH_PLATFORM_IDS——
  * 各工具的 schema 枚举均由此派生，杜绝「工具描述里的枚举」与「注册表」两处漂移。
  *
  * 解析器分两类通道：
@@ -20,12 +18,11 @@
  *   - script：注入静态内容脚本（inject-scripts/scraper/*.js，wxt 静态资源）
  *     后经 chrome.tabs.sendMessage 以 action 触发，回包契约统一为
  *     { status: 'success', data } | { status: 'error', message }。
- *     （知乎 / GitHub / CSDN / MOOC / 小红书 / 知网 / Bilibili）
+ *     （知乎 / GitHub / CSDN / MOOC / 小红书 / 知网）
  *
  * 新增目标步骤：
  *   1. SearchTargetId 联合类型增加 id；
- *   2. 按类别把 id 加入 SEARCH_ENGINE_IDS / SEARCH_PLATFORM_IDS /
- *      SEARCH_DEDICATED_IDS；
+ *   2. 按类别把 id 加入 SEARCH_ENGINE_IDS / SEARCH_PLATFORM_IDS；
  *   3. SEARCH_TARGETS 登记配置（URL 模板 + 解析通道 + 文案）；
  *   4. script 通道需在 inject-scripts/scraper/ 落解析脚本并在此登记 file/action。
  */
@@ -42,16 +39,8 @@ export type SearchPlatformId =
   | 'xiaohongshu'
   | 'cnki';
 
-/**
- * 专属工具目标 id：只被某一个专属工具承载的站点。
- * 与站点平台分列——「站点内检索」是通用能力（B站之外还有一堆站点），
- * 而 B 站检索是特定智能体的专属动作，两者混在一个枚举里会让通用工具
- * 背上不属于它的平台清单。
- */
-export type DedicatedSearchTargetId = 'bilibili';
-
-/** 全部搜索目标 id（引擎 + 站点平台 + 专属目标） */
-export type SearchTargetId = SearchEngineId | SearchPlatformId | DedicatedSearchTargetId;
+/** 全部搜索目标 id（引擎 + 站点平台） */
+export type SearchTargetId = SearchEngineId | SearchPlatformId;
 
 /** inline 通道的自包含解析函数（在页面上下文求值，返回结果条目数组） */
 export type InlineResultExtractor = () => unknown[];
@@ -316,14 +305,6 @@ export const SEARCH_TARGETS: Readonly<Record<SearchTargetId, SearchTargetConfig>
     buildSearchUrl: q => `https://kns.cnki.net/kns8s/defaultresult/index?kw=${q}`,
     extractor: { kind: 'script', file: 'inject-scripts/scraper/cnki.js', action: 'scrapeCNKIResults' },
   },
-  bilibili: {
-    id: 'bilibili',
-    label: 'Bilibili',
-    engine: 'Bilibili',
-    itemNoun: '个视频',
-    buildSearchUrl: q => `https://search.bilibili.com/all?keyword=${q}`,
-    extractor: { kind: 'script', file: 'inject-scripts/scraper/bilibili.js', action: 'scrapeBilibiliResults' },
-  },
 };
 
 /** 通用搜索引擎 id 清单（web_search 的 engine 枚举，单一来源） */
@@ -339,17 +320,13 @@ export const SEARCH_PLATFORM_IDS: readonly SearchPlatformId[] = [
   'cnki',
 ];
 
-/** 专属工具目标 id 清单（专属工具的固定目标；不进任何通用工具的枚举） */
-export const SEARCH_DEDICATED_IDS: readonly DedicatedSearchTargetId[] = ['bilibili'];
-
-/** 全部搜索目标 id（引擎 + 站点平台 + 专属目标；注册表键的并集） */
+/** 全部搜索目标 id（引擎 + 站点平台；注册表键的并集） */
 export const SEARCH_TARGET_IDS: readonly SearchTargetId[] = [
   ...SEARCH_ENGINE_IDS,
   ...SEARCH_PLATFORM_IDS,
-  ...SEARCH_DEDICATED_IDS,
 ];
 
-/** 判定值是否为合法搜索目标 id（引擎 / 站点平台 / 专属目标） */
+/** 判定值是否为合法搜索目标 id（引擎 / 站点平台） */
 export function isSearchTargetId(value: unknown): value is SearchTargetId {
   return typeof value === 'string' && Object.prototype.hasOwnProperty.call(SEARCH_TARGETS, value);
 }

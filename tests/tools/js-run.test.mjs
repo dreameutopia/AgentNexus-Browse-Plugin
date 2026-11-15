@@ -74,7 +74,7 @@ const api = await import(pathToFileURL(outfile).href);
 api.registerAllTools();
 const js = new api.JsRunTool(), py = new api.PythonRunTool();
 for (const chatId of ['js-a', 'js-b'])
-    await api.chatDatabase.createSession({ chatId, title: chatId, createdAt: 1, updatedAt: 1, messageCount: 0, lastMessagePreview: '', agentName: '', skillNames: [] });
+    await api.chatDatabase.createSession({ chatId, title: chatId, createdAt: 1, updatedAt: 1, messageCount: 0, lastMessagePreview: '', agentName: '' });
 const context = { chatId: 'js-a' };
 const call = (args, ctx = context) => js.execute(args, ctx);
 const text = r => r.error ?? r.content?.filter(c => c.type === 'text').map(c => c.text).join(' ') ?? '';
@@ -85,12 +85,16 @@ assert.equal((await js.execute({ action: 'create', path: 'a.txt', content: 'x' }
 await create('scripts/collect.js', 'return { page: $args[0].page, values: $args[1], count: (window.count = (window.count || 0) + 1) };');
 const run = await call({ action: 'run', path: 'scripts/collect.js', args: [{ page: 2 }, ['a', 'b']], tabId: 12, frameId: 3, world: 'ISOLATED', strategy: 'scripting', timeout: 1234, label: 'batch' });
 assert.equal(run.success, true, text(run));
-assert.equal(run.data.script.path, 'scripts/collect.js');
+// 回执瘦身：执行台账（script/frameId/engine/attempts 等）不再重复回传，
+// 只保留本次结果可消费的事实（result / resultFile / rows / warnings）。
+assert.equal(run.data.script, undefined, '回执不回传脚本台账');
+assert.equal(run.data.tabId, undefined, '回执不回传标签页台账');
+assert.equal(run.data.resultType, 'json-preview', '结果以 JSON 预览通道交付');
 assert.equal(JSON.parse(run.data.result).page, 2);
 assert.equal(run.data.dataRef, undefined, 'run 不再产生 dataRef 暂存批次');
 assert.ok(run.data.resultFile, 'run 携带结果文件');
 assert.match(run.data.resultFile.path, /^results\/run-[\w-]+-batch\.json$/);
-assert.equal(run.data.shape.kind, 'value');
+assert.equal(run.data.rows, undefined, '单值结果不虚构 rows 字段');
 assert.doesNotMatch(text(run), /index=2/, '不足 2000 字符的结果不出现续读提醒');
 assert.deepEqual(injections.at(-1).target, { tabId: 12, frameIds: [3] });
 assert.equal(injections.at(-1).world, 'ISOLATED');
@@ -162,6 +166,16 @@ await create('outputs/test.txt', 'download');
 assert.match((await call({ action: 'read', path: 'outputs/test.txt' })).data.content, /download/);
 const listing = await call({ action: 'list', path: 'config' });
 assert.equal(listing.data.entries[0].path, 'config/deep.yaml');
+// ── list 语义：缺失目录仍显式报错，但错误必须给出可执行下一步；文件路径给出 read 指引 ──
+const missingListing = await call({ action: 'list', path: 'not-created-yet' });
+assert.equal(missingListing.success, false, '不存在的目录显式报错');
+assert.match(text(missingListing), /不存在/, '错误说明目录不存在');
+assert.match(text(missingListing), /省略 path|根目录/, '错误给出列根目录的下一步');
+assert.match(text(missingListing), /results\//, '错误说明 results/ 的生命周期');
+const notDirectory = await call({ action: 'list', path: 'config/deep.yaml' });
+assert.equal(notDirectory.success, false, '文件路径不能当目录盘点');
+assert.match(text(notDirectory), /而不是目录/, '错误区分文件与目录');
+assert.match(text(notDirectory), /read path=/, '错误给出读取文件的正确调用');
 assert.equal((await call({ action: 'delete', path: 'config' })).success, false);
 assert.equal((await call({ action: 'delete', path: 'dup.md' })).success, true);
 assert.equal((await call({ action: 'read', path: 'dup.md' })).success, false);

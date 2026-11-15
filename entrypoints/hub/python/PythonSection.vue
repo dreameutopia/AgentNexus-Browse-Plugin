@@ -106,6 +106,41 @@
       </div>
     </section>
 
+    <!-- ══════════ 预置智能体注入（就绪后显示，位于包管理之上） ══════════ -->
+    <section v-if="env.status === 'ready'" class="hub-python__card">
+      <div class="hub-python__card-head">
+        <h3 class="hub-python__card-title">{{ t('hub.python.agentInjectTitle') }}</h3>
+        <span class="hub-badge hub-python-badge-neutral">
+          {{ t('hub.python.agentInjectCount', { count: linkedAgentIds.length }) }}
+        </span>
+      </div>
+      <p class="hub-hint">{{ t('hub.python.agentInjectDesc') }}</p>
+      <div v-if="injectablePresets.length" class="hub-python__agent-list">
+        <div v-for="agent in injectablePresets" :key="agent.id" class="hub-python__agent-row">
+          <div class="hub-python__agent-main">
+            <span class="hub-python__agent-name">
+              {{ displayNameOf(agent) }}
+              <span v-if="agent.enabled === false" class="hub-python__agent-off">
+                {{ t('hub.python.agentInjectDisabled') }}
+              </span>
+            </span>
+            <span class="hub-python__agent-desc">{{ displayOf(agent).description }}</span>
+          </div>
+          <HubSwitch
+            :model-value="linkedAgentIdSet.has(agent.id)"
+            :disabled="!!injectionBusy"
+            :aria-label="t('hub.python.agentInjectToggleLabel', { name: displayNameOf(agent) })"
+            @update:model-value="toggleAgentInjection(agent.id, $event)"
+          >
+            {{ t('hub.python.agentInjectToggle') }}
+          </HubSwitch>
+        </div>
+      </div>
+      <p v-else class="hub-hint">{{ t('hub.python.agentInjectEmpty') }}</p>
+      <p v-if="injectionMessage" class="hub-hint hub-python__message">{{ injectionMessage }}</p>
+      <p class="hub-hint">{{ t('hub.python.agentInjectNote') }}</p>
+    </section>
+
     <!-- ══════════ 包管理（就绪后显示） ══════════ -->
     <section v-if="env.status === 'ready'" class="hub-python__card">
       <div class="hub-python__card-head">
@@ -524,6 +559,15 @@ import {
 } from '@/utils/pyodide/pyodide-micropip';
 import HubSwitch from '../components/HubSwitch.vue';
 import HubDialog from '../components/HubDialog.vue';
+// 预置智能体注入：预置表不可编辑，python_run 只能经本页的注入关联授予
+import { getAllAgents, isPresetAgent, onAgentsChange, type AgentConfig } from '@/utils/agents/agent-store';
+import { useAgentDisplay } from '@/common/use-agent-display';
+import {
+  onAgentPythonToolLinksChange,
+  pythonToolLinkedAgentIds,
+  restoreAgentPythonToolLinks,
+  setAgentPythonToolLinked,
+} from '@/utils/agents/agent-python-links';
 
 const props = defineProps<{
   /** 当前分区是否激活（激活时重新水合状态，保证跨上下文变更立刻可见） */
@@ -536,6 +580,47 @@ const env = ref<PyodideEnvState>({ ...DEFAULT_PYODIDE_ENV_STATE });
 const downloading = ref(false);
 const verifying = ref(false);
 const cancelController = ref<AbortController | null>(null);
+
+// ──── 预置智能体注入（python_run；仅环境就绪时展示） ────
+
+/** 已注入 python_run 的预置智能体 id（跨上下文实时同步） */
+const linkedAgentIds = ref<string[]>([]);
+const linkedAgentIdSet = computed(() => new Set(linkedAgentIds.value));
+/** 可注入的预置智能体（预置表派生，随智能体存储同步刷新展示文案 / 启用态） */
+const presetAgents = ref<AgentConfig[]>([]);
+/** 正在提交的智能体 id（空串 = 空闲，防重复点击） */
+const injectionBusy = ref('');
+const injectionMessage = ref('');
+const { displayOf, displayNameOf } = useAgentDisplay();
+
+function refreshPresetAgents(): void {
+  presetAgents.value = getAllAgents().filter(agent => isPresetAgent(agent.id));
+}
+
+/** 注入列表（模板只读出口；预置表不可变，列表随存储同步刷新） */
+const injectablePresets = computed(() => presetAgents.value);
+
+async function hydrateAgentInjection(): Promise<void> {
+  await restoreAgentPythonToolLinks();
+  linkedAgentIds.value = pythonToolLinkedAgentIds();
+  refreshPresetAgents();
+}
+
+async function toggleAgentInjection(agentId: string, linked: boolean): Promise<void> {
+  if (injectionBusy.value) return;
+  injectionBusy.value = agentId;
+  try {
+    await setAgentPythonToolLinked(agentId, linked);
+    injectionMessage.value = '';
+  } catch (error) {
+    injectionMessage.value = t('hub.python.agentInjectFailed', {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    injectionBusy.value = '';
+    linkedAgentIds.value = pythonToolLinkedAgentIds();
+  }
+}
 
 const cacheInfo = reactive({ count: 0, bytes: 0 });
 
@@ -738,6 +823,8 @@ function requestClearMicropip(): void {
 }
 
 let unwatchEnv: (() => void) | null = null;
+let unwatchAgentPythonLinks: (() => void) | null = null;
+let unsubscribeAgents: (() => void) | null = null;
 
 // ──── 计算属性 ────
 
@@ -1031,6 +1118,7 @@ const removeConfirmMessage = computed(() =>
     size: formatBytes(cacheInfo.bytes),
     pkgs: installedPackages.value.length,
     micropip: micropip.packages.length,
+    agents: linkedAgentIds.value.length,
   }),
 );
 
@@ -1279,7 +1367,14 @@ onMounted(async () => {
   unwatchEnv = watchPyodideEnv(state => {
     env.value = state;
   });
+  // 注入关联：本页勾选立即生效；其它上下文写入（含删除环境后的自动撤销）实时同步
+  unwatchAgentPythonLinks = onAgentPythonToolLinksChange(() => {
+    linkedAgentIds.value = pythonToolLinkedAgentIds();
+  });
+  // 智能体存储同步（启用态 / 展示文案变化时刷新注入列表）
+  unsubscribeAgents = onAgentsChange(refreshPresetAgents);
   await hydrate();
+  await hydrateAgentInjection();
   // micropip 清单订阅：智能体侧（SW/worker）装包入账后本页芯片实时刷新
   unwatchMicropip = watchMicropipState(state => {
     micropip.globalReuse = state.globalReuse;
@@ -1295,6 +1390,7 @@ watch(
     if (active) {
       void hydrate();
       void hydrateMicropip();
+      void hydrateAgentInjection();
     }
   },
 );
@@ -1308,6 +1404,8 @@ watch(pkgQuery, () => {
 onUnmounted(() => {
   cancelSetup();
   unwatchEnv?.();
+  unwatchAgentPythonLinks?.();
+  unsubscribeAgents?.();
   unwatchMicropip?.();
   // 离开页面时中止进行中的预下载（缓存已写入部分保留，幂等可续）
   preloadController?.abort();

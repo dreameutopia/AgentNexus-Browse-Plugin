@@ -303,7 +303,7 @@ export function initConversationRuntime(): void {
     return ask(
       chatId,
       { kind: "interact", request },
-      appSettingsStore.getInteractTimeoutMinutes() * 60_000,
+      appSettingsStore.getUserResponseTimeoutMinutes() * 60_000,
     ) as Promise<InteractResolution>;
   });
 
