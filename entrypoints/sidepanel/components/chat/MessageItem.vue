@@ -30,6 +30,14 @@
         />
         <!-- 上传文件元素：图片可放大查看与下载，html/pdf 可网页打开，其余仅下载 -->
         <MessageUploads v-if="uploadedFiles.length > 0" :files="uploadedFiles" />
+        <!-- 捕获元素：与文件元素同区排布；点击 chip 打开详情 / 备注弹窗，
+             悬浮 chip 可发起「校验元素」 -->
+        <MessageCapturedElements
+          v-if="capturedElements.length > 0"
+          :elements="capturedElements"
+          @open="handleOpenCapturedElement"
+          @validate="handleValidateCapturedElement"
+        />
       </template>
 
       <!-- ════ 直播态（流式进行中 / 无末段正文的记录）：
@@ -375,6 +383,7 @@ import ToolCallItem from './ToolCallItem.vue';
 import MessageParts from './MessageParts.vue';
 import MessageImages from './MessageImages.vue';
 import MessageUploads from './MessageUploads.vue';
+import MessageCapturedElements from './MessageCapturedElements.vue';
 import UserMessageBubble from './UserMessageBubble.vue';
 import SkillIcon from './SkillIcon.vue';
 
@@ -396,6 +405,10 @@ const emit = defineEmits<{
   'guard-continue': [messageId: string, partIndex: number];
   /** 守卫停止注记的「修改设置」：由 App 打开设置弹窗并定位 */
   'guard-open-settings': [guardKind: MessagePart['guardKind']];
+  /** 打开捕获元素详情：由 App 统一挂载弹窗（输入区与历史消息共用） */
+  'open-captured-element': [messageId: string, element: import('@/utils/element-capture/types').CapturedElement];
+  /** 校验捕获元素：由 App 在当前操作网页内定位并高亮 */
+  'validate-captured-element': [element: import('@/utils/element-capture/types').CapturedElement];
 }>();
 
 const renderMessage = (content: string) => markdownRenderer.renderMessage(content);
@@ -407,6 +420,19 @@ const renderMessage = (content: string) => markdownRenderer.renderMessage(conten
  * 路径同源——装配层在文件入库后才生成清单，UI 只渲染不做路径推导。
  */
 const uploadedFiles = computed(() => props.message.uploadedFiles ?? []);
+
+/** 本条用户消息携带的捕获元素（与文件元素同区排布） */
+const capturedElements = computed(() => props.message.capturedElements ?? []);
+
+function handleOpenCapturedElement(element: import('@/utils/element-capture/types').CapturedElement): void {
+  const messageId = props.message.id;
+  if (!messageId) return;
+  emit('open-captured-element', messageId, element);
+}
+
+function handleValidateCapturedElement(element: import('@/utils/element-capture/types').CapturedElement): void {
+  emit('validate-captured-element', element);
+}
 
 /**
  * 是否渲染底部图片区（MessageImages）：
@@ -420,7 +446,7 @@ const uploadedFiles = computed(() => props.message.uploadedFiles ?? []);
 const showBottomImages = computed<boolean>(() => {
   const refs = props.message.imageRefs;
   if (!refs || refs.length === 0) return false;
-  if (props.message.role === 'user') return uploadedFiles.value.length === 0;
+  if (props.message.role === 'user') return uploadedFiles.value.length === 0 && capturedElements.value.length === 0;
   return !(props.message.parts ?? []).some(part => part.type === 'image');
 });
 
@@ -533,9 +559,9 @@ const legacyReasoningVisible = computed(
 /**
  * 结束态分组（规则实体见 utils/chat/part-grouping 的 groupAnswerParts）：
  * 以最后一个文本片段为锚点（末段正文），其余全部过程片段——含锚点之后
- * 残留的工具调用 / 思考 / 截图（中止、异常、学习模式收尾轮的典型形态）——
+ * 残留的工具调用 / 思考 / 截图（中止、异常、无正文收尾轮的典型形态）——
  * 一律收入前奏折叠；notice（终态注记）保持可见。
- * 任何终态（正常结束 / 用户中止 / 异常 / 学习收尾）走同一条规则：
+ * 任何终态（正常结束 / 用户中止 / 异常 / 无正文收尾）走同一条规则：
  * 折叠条之下只允许锚点正文与终态注记，不存在「折叠了但下面还有过程内容」。
  */
 const groups = computed<AnswerGrouping>(() =>

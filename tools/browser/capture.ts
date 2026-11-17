@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 /**
  * 控制台工具
  * 捕获浏览器控制台日志（原「截图工具 browser_screenshot」已下线：
@@ -55,7 +57,7 @@ export class ConsoleTool extends BaseBrowserTool {
     url?: string;
     includeExceptions?: boolean;
     maxMessages?: number;
-  }): Promise<ToolResult> {
+  }, context?: ToolExecutionContext): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     const { url, includeExceptions = true, maxMessages = 100 } = args;
@@ -66,9 +68,9 @@ export class ConsoleTool extends BaseBrowserTool {
       let targetTab: chrome.tabs.Tab;
 
       if (url) {
-        targetTab = await this.navigateToUrl(url, { waitForLoad: true });
+        targetTab = await this.navigateToUrl(url, { waitForLoad: true }, context);
       } else {
-        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const [activeTab] = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
         if (!activeTab?.id) {
           return createErrorResponse('No active tab found');
         }
@@ -85,11 +87,11 @@ export class ConsoleTool extends BaseBrowserTool {
       const exceptions: any[] = [];
 
       // 附加调试器
-      await chrome.debugger.attach({ tabId }, '1.3');
+      await browserChrome(context).debugger.attach({ tabId }, '1.3');
 
       try {
-        await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable');
-        await chrome.debugger.sendCommand({ tabId }, 'Log.enable');
+        await browserChrome(context).debugger.sendCommand({ tabId }, 'Runtime.enable');
+        await browserChrome(context).debugger.sendCommand({ tabId }, 'Log.enable');
 
         // 监听控制台消息
         const listener = (source: chrome.debugger.Debuggee, method: string, params?: any) => {
@@ -109,17 +111,17 @@ export class ConsoleTool extends BaseBrowserTool {
           }
         };
 
-        chrome.debugger.onEvent.addListener(listener);
+        browserChrome(context).debugger.onEvent.addListener(listener);
 
         // 等待一段时间收集消息
         await new Promise((resolve) => setTimeout(resolve, 2000));
 
-        chrome.debugger.onEvent.removeListener(listener);
+        browserChrome(context).debugger.onEvent.removeListener(listener);
 
-        await chrome.debugger.sendCommand({ tabId }, 'Runtime.disable');
-        await chrome.debugger.sendCommand({ tabId }, 'Log.disable');
+        await browserChrome(context).debugger.sendCommand({ tabId }, 'Runtime.disable');
+        await browserChrome(context).debugger.sendCommand({ tabId }, 'Log.disable');
       } finally {
-        await chrome.debugger.detach({ tabId });
+        await browserChrome(context).debugger.detach({ tabId });
       }
 
       const captureEndTime = Date.now();
@@ -142,18 +144,18 @@ export class ConsoleTool extends BaseBrowserTool {
     }
   }
 
-  private async navigateToUrl(url: string, options?: { waitForLoad?: boolean }): Promise<chrome.tabs.Tab> {
-    const existingTabs = await chrome.tabs.query({ url });
+  private async navigateToUrl(url: string, options?: { waitForLoad?: boolean }, context?: ToolExecutionContext): Promise<chrome.tabs.Tab> {
+    const existingTabs = await browserChrome(context).tabs.query({ url });
 
     if (existingTabs.length > 0 && existingTabs[0]?.id) {
       const tab = existingTabs[0];
-      await chrome.tabs.update(tab.id!, { active: true });
-      await chrome.windows.update(tab.windowId, { focused: true });
+      await browserChrome(context).tabs.update(tab.id!, { active: true });
+      await browserChrome(context).windows.update(tab.windowId, { focused: true });
       return tab;
     } else {
-      const newTab = await chrome.tabs.create({ url, active: true });
+      const newTab = await browserChrome(context).tabs.create({ url, active: true });
       if (options?.waitForLoad && newTab.id) {
-        await this.waitForTabComplete(newTab.id);
+        await this.waitForTabComplete(newTab.id, undefined, context);
       }
       return newTab;
     }

@@ -4,6 +4,7 @@ import {
   checkWorkspaceLimits, indexWorkspaceEntries, isInternalWorkspaceLink,
   isWorkspacePath, workspaceOutputPaths, workspaceRoot, type WorkspaceEntry, type WorkspaceSnapshot,
 } from './paths';
+import { WORKSPACE_SANDBOX_PRESET_DIRECTORIES } from './workspace-directories';
 import { saveWorkspace, withWorkspaceLock, type WorkspaceCommitGuard } from './store';
 
 type FS = PyodideInterface['FS'];
@@ -76,8 +77,12 @@ export async function stagePythonWorkspace<T extends WorkspaceOutcome>(
     fs.mount(mountedFs.filesystems.MEMFS, {}, root);
     mounted = true;
     const mount = fs.lookupPath(root, { follow: true }).node.mount;
-    fs.mkdirTree(`${root}/inputs`);
-    fs.mkdirTree(`${root}/outputs`);
+    // 预建标准一级目录（清单见 workspace-directories.ts）：脚本直接写
+    // MEMFS，open() 不会自动建目录——沙箱与提示词描述不一致时，模型会看到
+    // 「目录说存在却 FileNotFoundError」并反复重试。
+    for (const directory of WORKSPACE_SANDBOX_PRESET_DIRECTORIES) {
+      fs.mkdirTree(`${root}/${directory}`);
+    }
     const restored = [...previous.values()];
     for (const { path, blob, link } of restored) {
       signal?.throwIfAborted();

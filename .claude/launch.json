@@ -44,6 +44,14 @@
       "url": "http://localhost:4173/.preview/hub-usage-python.html"
     },
     {
+      "name": "hub-python-section",
+      "url": "http://localhost:4173/.preview/hub-usage-python.html?section=python"
+    },
+    {
+      "name": "greeting-python-tag",
+      "url": "http://localhost:4173/.preview/greeting-python-tag.html"
+    },
+    {
       "name": "hub-sessions",
       "url": "http://localhost:4173/.preview/hub-sessions.html"
     },
@@ -80,6 +88,10 @@
     {
       "name": "page-quote-preview",
       "url": "http://localhost:4173/.preview/page-quote.html"
+    },
+    {
+      "name": "history-drawer-preview",
+      "url": "http://localhost:4173/.preview/history-drawer.html"
     }
   ]
 }

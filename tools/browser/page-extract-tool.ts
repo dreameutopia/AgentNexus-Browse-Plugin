@@ -1,3 +1,4 @@
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { executeScriptBounded } from '../common/frame-read';
 /**
  * 结构化数据提取工具（browser_extract_data）
@@ -603,8 +604,8 @@ export class PageExtractDataTool extends BaseBrowserTool {
     try {
       tab =
         requestedTabId !== undefined && requestedTabId !== null
-          ? await chrome.tabs.get(requestedTabId)
-          : (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+          ? await browserChrome(context).tabs.get(requestedTabId)
+          : (await browserChrome(context).tabs.query({ active: true, currentWindow: true }))[0];
     } catch (error) {
       // 标签页已关闭/ID 失效：归类为 TAB_GONE，给出「重新选标签页」的下一步，
       // 而不是让原始 Chrome 文案落进 UNEXPECTED_ERROR
@@ -666,7 +667,7 @@ export class PageExtractDataTool extends BaseBrowserTool {
           world: 'ISOLATED',
         },
           8_000,
-          context?.signal,
+          context?.signal, context
         );
       } catch (error) {
         // 注入失败（权限/页面受限/页签关闭/参数不可序列化）交给共享分类层，
@@ -829,7 +830,7 @@ export class PageExtractDataTool extends BaseBrowserTool {
         response.next =
           explicitSaveTo
             ? `交付文件已保存：${saved.path}（在回复中单独一行插入返回的 marker）`
-            : `完整数据在 ${saved.path}：用 xlsx_tool(sheets[].dataFiles=["${saved.path}"]) 导出 Excel，或用 data_ref_tool(files=["${saved.path}"]) 整形；核对片段用 js_run(action="read",path="${saved.path}",index=N)`;
+            : `完整数据在 ${saved.path}：用 xlsx_tool(sheets[].dataFiles=["${saved.path}"]) 导出 Excel，或用 data_ref_tool(files=["${saved.path}"]) 整形；核对片段用 file_util(action="read", path="${saved.path}", index=N)`;
       } else {
         // 内联与落盘统一为对象行形态（selector 模式即 {text|attr: value}），
         // 下游 xlsx_tool/data_ref_tool 对两种通道的消费方式完全一致

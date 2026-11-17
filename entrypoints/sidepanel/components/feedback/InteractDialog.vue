@@ -9,12 +9,18 @@
     离场动画按去向分流：最小化收缩衔接悬浮球，收敛（提交/拒绝/超时/打断）
     原地淡出；
   - 交互约定（对齐 Claude Code / Codex 桌面端）：
-    · 点选项 = 立即提交该选项；自定义输入框始终可用（Enter 提交，Shift+Enter 换行，
+    · 单选：点选项 = 立即提交该选项；多选（request.multiSelect）：点选项只切换勾选，
+      由底部「提交所选」一次性答复，答复原文的拼接在工具层完成；
+    · 自定义输入框始终可用（Enter 提交，Shift+Enter 换行，
       IME 组合态不误触提交）；
     · 「拒绝回答」= 明确拒绝（区别于最小化与超时，模型收到 declined 语义）；
     · Esc / 最小化按钮 / 点击悬浮球外不响应——弹窗遮罩点击不关闭（防敏感授权被
       误触消失），Esc 仅执行最小化，悬浮球可随时重新展开；
     · 键盘可达性：弹窗展示期间 Tab 焦点圈定在弹窗内循环（模态可达性基本要求）。
+  - 高度模型（布局契约，改动前先读 interact-dialog.css 顶部说明）：
+    卡片 82vh 封顶，头部 / 作答区 / 底部三段固定不收缩，中部 .interact-body
+    吃掉剩余高度并自行滚动；问题（26vh）、背景（16vh）、选项（38vh）各自只设
+    上限、不参与收缩——避免「有 overflow 的分区被 flex 压成一两行」的老故障。
 
   纯展示 + 意图转发组件：状态与收敛决定权全部在 use-interact 状态机持有。
 -->
@@ -56,27 +62,56 @@
           </span>
         </div>
 
-        <!-- 问题正文 -->
-        <p class="interact-question">{{ question }}</p>
+        <!-- 中部滚动区：问题 / 背景 / 选项。
+             高度 = 卡片剩余空间（头部、作答区、底部三段固定不收缩），
+             超出在此滚动；各分区另有自己的 max-height，谁也挤不掉谁。 -->
+        <div class="interact-body">
+          <!-- 问题正文：优先级最高，只封顶（26vh）不收缩 -->
+          <p class="interact-question">{{ question }}</p>
 
-        <!-- 背景说明（可选） -->
-        <p v-if="context" class="interact-context">{{ context }}</p>
+          <!-- 背景说明（可选）：上限 16vh -->
+          <p v-if="context" class="interact-context">{{ context }}</p>
 
-        <!-- 候选选项：点击即提交（对齐 Claude Code AskUserQuestion 交互）
-             工具层已把推荐项归一为列表第一项且 description 带「（推荐：…）」标注，
-             此处只负责呈现：推荐项加高亮底色与边框，让用户一眼看到首选。 -->
-        <div v-if="options.length > 0" class="interact-options">
-          <button
-            v-for="(option, index) in options"
-            :key="option.label"
-            type="button"
-            class="interact-option"
-            :class="{ 'is-recommended': index === 0 && options.length > 1 }"
-            @click="submitInteractAnswer(option.label, 'option')"
+          <!-- 候选选项：
+               - 单选（默认）：点击即提交（对齐 Claude Code AskUserQuestion 交互）；
+               - 多选（request.multiSelect）：点击只切换勾选，须点底部「提交所选」一次性答复；
+               工具层已把推荐项归一为列表第一项且 description 带「（推荐：…）」标注，
+               此处只负责呈现：推荐项加高亮底色与边框，让用户一眼看到首选。
+               容器自身上限 38vh 并内部滚动，选项再多也不会顶掉问题区。 -->
+          <div
+            v-if="options.length > 0"
+            class="interact-options"
+            :class="{ 'has-selection': multiSelect && selectedLabels.length > 0 }"
           >
-            <span class="interact-option-label">{{ option.label }}</span>
-            <span v-if="option.description" class="interact-option-desc">{{ option.description }}</span>
-          </button>
+            <button
+              v-for="(option, index) in options"
+              :key="option.label"
+              type="button"
+              class="interact-option"
+              :class="{
+                'is-recommended': index === 0 && options.length > 1,
+                'is-selectable': multiSelect,
+                'is-selected': multiSelect && isSelected(option.label),
+              }"
+              :aria-pressed="multiSelect ? isSelected(option.label) : undefined"
+              @click="handleOptionClick(option)"
+            >
+              <span v-if="multiSelect" class="interact-option-check" aria-hidden="true">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </span>
+              <span class="interact-option-body">
+                <span class="interact-option-label">{{ option.label }}</span>
+                <span v-if="option.description" class="interact-option-desc">{{ option.description }}</span>
+              </span>
+            </button>
+          </div>
+
+          <!-- 多选提示：在选项容器之外，选项滚动时提示保持可见 -->
+          <p v-if="multiSelect" class="interact-multi-hint">
+            {{ t('sidepanel.interact.multiHint') }}
+          </p>
         </div>
 
         <!-- 自定义答复：始终可用（即使提供了选项） -->
@@ -110,10 +145,10 @@
           <button
             type="button"
             class="interact-btn interact-btn-primary"
-            :disabled="!customAnswer.trim()"
-            @click="submitCustom"
+            :disabled="primaryDisabled"
+            @click="submitPrimary"
           >
-            {{ t('sidepanel.interact.submit') }}
+            {{ primaryLabel }}
           </button>
         </div>
       </div>
@@ -160,6 +195,7 @@ import {
   useInteractDialog,
   openInteract,
   submitInteractAnswer,
+  submitInteractSelection,
   declineInteract,
   minimizeInteract,
   reopenInteract,
@@ -179,6 +215,18 @@ const options = computed(() => request.value?.options ?? []);
 const isSensitive = computed(() => request.value?.sensitive === true);
 
 /**
+ * 是否多选模式。工具层只在候选数 ≥ 2 时才会置 multiSelect=true，
+ * 这里再判一次数量：历史 / 异常来源的请求拿到单选项时退回单选交互，
+ * 不给用户「只有一个复选框还要再点提交」的无谓往返。
+ */
+const multiSelect = computed(
+  () => request.value?.multiSelect === true && options.value.length >= 2,
+);
+
+/** 多选已勾选的 label（提交时按选项列表顺序回传，见 submitSelection） */
+const selectedLabels = ref<string[]>([]);
+
+/**
  * 离场动画分流依据：离场发生时状态已更新——
  *   - 最小化：visible 仍为 true（仅 phase 切换）→ 收缩动画衔接悬浮球；
  *   - 收敛：visible 已置 false → 原地淡出。
@@ -194,11 +242,12 @@ const titleText = computed(() =>
     : t('sidepanel.interact.title'),
 );
 
-const subtitleText = computed(() =>
-  isSensitive.value
-    ? t('sidepanel.interact.sensitiveSubtitle')
-    : t('sidepanel.interact.subtitle'),
-);
+const subtitleText = computed(() => {
+  // 敏感警示优先于形态说明（安全文案不被多选提示挤掉）
+  if (isSensitive.value) return t('sidepanel.interact.sensitiveSubtitle');
+  if (multiSelect.value) return t('sidepanel.interact.multiSubtitle');
+  return t('sidepanel.interact.subtitle');
+});
 
 const ballTitle = computed(() => `${t('sidepanel.interact.ballTitle')}\n${question.value}`);
 
@@ -250,6 +299,53 @@ function handleCustomKeydown(event: KeyboardEvent): void {
   if (event.shiftKey || event.isComposing || event.keyCode === 229) return;
   event.preventDefault();
   submitCustom();
+}
+
+// ── 选项选择：单选点击即提交；多选只切换勾选，由底部「提交所选」一次性答复 ──
+function isSelected(label: string): boolean {
+  return selectedLabels.value.includes(label);
+}
+
+function handleOptionClick(option: { label: string }): void {
+  if (!multiSelect.value) {
+    submitInteractAnswer(option.label, 'option');
+    return;
+  }
+  selectedLabels.value = isSelected(option.label)
+    ? selectedLabels.value.filter(label => label !== option.label)
+    : [...selectedLabels.value, option.label];
+}
+
+/** 多选提交：按选项列表顺序回传（与模型看到的顺序一致，不随点击顺序漂移） */
+function submitSelection(): void {
+  const ordered = options.value.map(option => option.label).filter(isSelected);
+  submitInteractSelection(ordered);
+}
+
+// ── 底部主按钮 ──
+// 单选：等价于「提交自定义」（选项走点击即提交，故无自定义文本时禁用）；
+// 多选：无自定义文本时提交所选（带数量反馈），有自定义文本时以自定义为准
+// （与单选一致——自由输入是覆盖性答复，不与勾选混拼）。
+const hasCustomAnswer = computed(() => customAnswer.value.trim().length > 0);
+
+const primaryDisabled = computed(() => {
+  if (hasCustomAnswer.value) return false;
+  return multiSelect.value ? selectedLabels.value.length === 0 : true;
+});
+
+const primaryLabel = computed(() => {
+  if (!hasCustomAnswer.value && multiSelect.value) {
+    return t('sidepanel.interact.submitSelected', { count: selectedLabels.value.length });
+  }
+  return t('sidepanel.interact.submit');
+});
+
+function submitPrimary(): void {
+  if (hasCustomAnswer.value) {
+    submitCustom();
+    return;
+  }
+  if (multiSelect.value) submitSelection();
 }
 
 /**
@@ -320,6 +416,7 @@ watch(
   (next, prev) => {
     if (next !== null && next !== prev) {
       customAnswer.value = '';
+      selectedLabels.value = [];
       if (state.value.phase === 'dialog') {
         void nextTick(() => customInputRef.value?.focus());
       }

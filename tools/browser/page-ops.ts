@@ -1,3 +1,4 @@
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { executeScriptBounded } from '../common/frame-read';
 /**
  * 页面就绪与滚动工具（browser_page_ops）
@@ -15,7 +16,7 @@ import { executeScriptBounded } from '../common/frame-read';
  * 与其它工具的边界（**刻意不合并**）：
  *   - browser_interact  引用式交互（点击/填充/按键）：必须带 observe 得到的引用，
  *                        且有审批门与 exclusiveText 互斥队列；
- *   - generic_wait      纯时间等待（不针对任何页面条件）；
+ *   - browser_wait      按条件等待（地址/文案/控件/网络），替代盲等固定秒数；
  *   - browser_navigation(action="wait")  等待页面加载就绪（就绪判定单一来源）。
  *
  * 防御性约定：
@@ -90,7 +91,7 @@ export class BrowserPageOpsTool extends BaseBrowserTool {
         'wait_element=等待满足 CSS 选择器的元素出现（selector 必填，timeout 默认 5000ms、上限 120000ms；' +
         '超时返回精确原因与已等待时长）。' +
         '需要点击/填充具体控件、或需要容器内滚动时用 browser_interact（必须带 observe 返回的引用）。' +
-        '纯时间等待（不针对任何元素条件）用 generic_wait。',
+        '按条件等待（地址/文案/控件/网络）用 browser_wait。',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -237,8 +238,8 @@ export class BrowserPageOpsTool extends BaseBrowserTool {
     let tab: chrome.tabs.Tab | undefined;
     try {
       tab = args.tabId !== undefined
-        ? await chrome.tabs.get(args.tabId)
-        : await this.getActiveTab();
+        ? await browserChrome(context).tabs.get(args.tabId)
+        : await this.getActiveTab(context);
     } catch (error) {
       return this.createErrorResponse(
         `TAB_NOT_FOUND：${args.tabId}（${error instanceof Error ? error.message : String(error)}）`,
@@ -300,7 +301,7 @@ export class BrowserPageOpsTool extends BaseBrowserTool {
           position: { x: window.scrollX, y: window.scrollY },
         };
       },
-    });
+    }, undefined, undefined, context);
 
     const result = results?.[0]?.result as Record<string, unknown> | undefined;
 
@@ -321,8 +322,8 @@ export class BrowserPageOpsTool extends BaseBrowserTool {
     let tab: chrome.tabs.Tab | undefined;
     try {
       tab = args.tabId !== undefined
-        ? await chrome.tabs.get(args.tabId)
-        : await this.getActiveTab();
+        ? await browserChrome(context).tabs.get(args.tabId)
+        : await this.getActiveTab(context);
     } catch (error) {
       return this.createErrorResponse(
         `TAB_NOT_FOUND：${args.tabId}（${error instanceof Error ? error.message : String(error)}）`,
@@ -374,7 +375,7 @@ export class BrowserPageOpsTool extends BaseBrowserTool {
         }
         return { found: false, waitTime: Date.now() - start };
       },
-    }, timeout + 1000, context?.signal);
+    }, timeout + 1000, context?.signal, context);
 
     const result = results?.[0]?.result as { found?: boolean; waitTime?: number; elementInfo?: Record<string, unknown> } | undefined;
 

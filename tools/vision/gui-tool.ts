@@ -332,7 +332,7 @@ export class VisionGuiTool extends BaseTool {
             executeGui(
               action as GuiAction,
               parameters as GuiParameters,
-              signal,
+              signal, context
             ),
           context?.signal,
         ),

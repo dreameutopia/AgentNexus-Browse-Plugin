@@ -3,6 +3,9 @@ import { htmlToMarkdown } from '@/utils/html-to-markdown'
 import { initLocale, t } from '@/utils/i18n/core'
 import { readSelectedText } from '@/utils/selection/read-selection'
 
+// 元素捕获器在独立入口 entrypoints/element-picker.content.ts 中安装
+// （独立文件可被侧边栏补注入，且不受本脚本启动逻辑影响）
+
 // 恢复用户语言（content script 与其它扩展上下文共享同一选择）
 void initLocale()
 

@@ -8,8 +8,8 @@
  *   2. **普通对话不再有会话运行时长上限**：maxDurationMs 缺省即「不限」，
  *      时长守卫不触发、工具批次不设截止点——长耗时任务不再被截断成
  *      「已达本次运行时长上限，工具 X 未执行」。
- *   3. **学习/验证仍保留独立时长预算**：经 limitsOverride 显式给出上限时，
- *      时长守卫与工具批次截止点照旧生效（长任务不能变成无界的）。
+ *   3. **显式时长预算仍生效**：装配方在 RuntimeLimits 上显式给出 maxDurationMs
+ *      时，时长守卫与工具批次截止点照旧生效（长任务不能变成无界的）。
  *
  * 运行：由 tools.test.ts 末尾动态引入（chrome 全局桩已就位）。
  */
@@ -119,10 +119,10 @@ import {
   engine.closeRound(chatId, roundId);
 }
 
-// ───────────────────────── 4. 学习/验证保留独立时长预算 ─────────────────────────
+// ───────────────────────── 4. 显式时长预算仍生效 ─────────────────────────
 
 {
-  // 有截止点时（学习/验证经 limitsOverride 显式给出上限）照旧截断未开始的调用
+  // 有截止点时（装配方显式给出 maxDurationMs）照旧截断未开始的调用
   const engine = toolExecutionEngine;
   const chatId = 'learn-session-cap';
   const roundId = engine.beginRound(chatId);

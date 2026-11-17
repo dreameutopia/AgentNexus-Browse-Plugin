@@ -73,13 +73,13 @@ export class SendCommandToInjectScriptTool extends BaseBrowserTool {
         }
       }
 
-      const targetTabId = tabId ?? (await this.getActiveTab()).id!;
+      const targetTabId = tabId ?? (await this.getActiveTab(context)).id!;
 
       if (tabId !== undefined) context?.onTabTarget?.(targetTabId);
       const result = await this.sendMessageToTab(targetTabId, {
         action: eventName,
         payload: parsedPayload,
-      });
+      }, context);
 
       return this.createSuccessResponse(
         {

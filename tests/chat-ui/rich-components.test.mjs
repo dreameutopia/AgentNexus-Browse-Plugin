@@ -9,7 +9,7 @@
  *   4. 图表派生：图型推断（bar 默认 / line 时间序 / pie 占比语义）、显式
  *      kind 与非法 kind 回落、radar 转置、scatter 分组、gauge / funnel /
  *      heatmap、数值宽容解析、与净化器的组合（防御纵深）；
- *   5. 同步构建器：stat（涨跌方向只由 +/- 驱动、>6 行降级）、table（数值列
+ *   5. 同步构建器：stat（涨跌方向只由 +/- 驱动、>6 行改判 table）、table（数值列
  *      右对齐、状态着色、不被 wrapTables 二次包裹）、timeline（状态列识别）、
  *      tree（层级 / 去重）、diff（行级着色 + 统计 + 转义）；
  *   6. markdown 渲染器集成：```component 信封（chart 骨架 / 同步组件 / 失败
@@ -137,6 +137,11 @@ setLocale('zh-CN');
   // 形状教学（模型照抄字段名即可）
   assert.ok(prompt.includes('"type":"chart"'), 'chart 示例在场（形状教学）');
 
+  // stat 行数硬上限：场景列 + usage + 纪律三处呼应（防模型超限硬写）
+  assert.ok(prompt.includes('6 是硬上限'), 'stat 场景列声明硬上限');
+  assert.ok(prompt.includes('不要超限硬写，也不要拆成多条 stat'), 'stat usage 给出超限处置动作');
+  assert.ok(prompt.includes('stat 最多 6 行'), 'stat 行数纪律在场');
+
   // 事实优先 / 交叉验证 / 来源标注 / 关键见解拆解：四条纪律必须在场
   assert.ok(prompt.includes('事实优先'), '事实优先在场');
   assert.ok(prompt.includes('严禁编造'), '数据纪律在场');
@@ -155,9 +160,15 @@ setLocale('zh-CN');
   // 能力裁剪：只教声明的组件
   const trimmed = buildRichOutputSystemPrompt(['chart', 'stat']);
   assert.ok(trimmed.includes('`component` · `stat` |'), '已声明组件在场');
+  assert.ok(trimmed.includes('stat 最多 6 行'), '已声明 stat 时行数纪律在场');
   assert.ok(!trimmed.includes('`component` · `table` |'), '未声明组件不得出现在提示词');
   assert.ok(!trimmed.includes('mermaid'), '未声明 diagram 时原生围栏提示不出现');
   assert.ok(!trimmed.includes('insight'), '未声明 insight 时不得出现');
+  assert.ok(!trimmed.includes('insight 最多 12 行'), '未声明 insight 时行数纪律不出现');
+
+  // 未声明 stat 时行数纪律不注入（裁剪必须覆盖新增纪律行）
+  const noStat = buildRichOutputSystemPrompt(['chart']);
+  assert.ok(!noStat.includes('stat 最多 6 行'), '未声明 stat 时行数纪律不出现');
 
   // 显式空数组 = 整段不注入
   assert.equal(buildRichOutputSystemPrompt([]), '', '空能力集必须返回空串');
@@ -459,13 +470,21 @@ function envelopeOf(json) {
   assert.ok(legacy.includes('stat-card-trend up'), '旧列序趋势仍渲染');
   assert.ok(legacy.includes('stat-card-note">复习掌握 58 个'), '旧列序说明不会被误判为趋势');
 
-  // >6 行降级
+  // >6 行改判 table（不降源码：模型偶发超限时数据仍可读）
   const tooMany = buildEnvelopeComponentBlock(
     envelopeOf(
-      `{"type":"stat","columns":["a","b"],"rows":${JSON.stringify(Array.from({ length: 7 }, (_, i) => [i, i]))}}`,
+      `{"type":"stat","title":"单日核心指标","source":"生意参谋","columns":["指标","当前值","说明"],"rows":${JSON.stringify(
+        Array.from({ length: 7 }, (_, i) => [`指标${i}`, `${i} 元`, `说明${i}`]),
+      )}}`,
     ),
   );
-  assert.equal(tooMany, null, '超过 6 行降级源码');
+  assert.ok(tooMany !== null, '超过 6 行不得降级源码');
+  assert.ok(tooMany.includes('component-data-table'), '超限 stat 改判为表格渲染');
+  assert.ok(!tooMany.includes('stat-card-block'), '超限后不再产出统计卡');
+  assert.equal((tooMany.match(/<tr>/g) || []).length, 8, '表头 + 7 行数据全部保留');
+  assert.ok(tooMany.includes('指标6'), '末行数据在场');
+  assert.ok(tooMany.includes('单日核心指标'), 'title 随改判保留');
+  assert.ok(tooMany.includes('component-block-source'), 'source 脚注随改判保留');
 }
 
 {
@@ -734,6 +753,14 @@ function envelopeOf(json) {
   const bad = markdownRenderer.renderMessage('```component\n{"type":"chart", not json\n```');
   assert.ok(bad.includes('code-block-wrapper'), '失败降级为代码块');
   assert.ok(bad.includes('COMPONENT'), '语言标签可见');
+
+  // 7 行 stat（真实超限场景）→ 表格渲染，不再落入源码降级
+  const statTooMany = markdownRenderer.renderMessage(
+    '```component\n{"type":"stat","title":"单日核心指标","source":"生意参谋","columns":["指标","当前值","说明"],"rows":[["支付金额","574.80元","全店合计"],["支付件数","4件","仅4个商品成交"],["访客数","182人","108个商品合计"],["支付转化率","2.2%","4/182"],["客单价","143.70元/件","574.80/4"],["在售商品数","108个","全部有流量"],["成功退款","0.00元","当日无退款"]]}\n```',
+  );
+  assert.ok(statTooMany.includes('component-data-table'), '超限 stat 在渲染器集成层产出表格');
+  assert.ok(!statTooMany.includes('code-block-wrapper'), '超限 stat 不再落入源码降级');
+  assert.ok(statTooMany.includes('574.80元'), '业务数据在场');
 
   // legacy 围栏兼容：历史消息继续渲染
   const legacyChart = markdownRenderer.renderMessage(

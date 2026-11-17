@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { executeScriptBounded } from '../common/frame-read';
 import { elementScanPayload, type ScanMode } from './shared/element-scan-payload';
 /**
@@ -60,7 +62,7 @@ export class XiaozhiConfigTool extends BaseTool {
     }
   };
 
-  async execute(args: XiaozhiConfigParams): Promise<ToolResult> {
+  async execute(args: XiaozhiConfigParams, context?: ToolExecutionContext): Promise<ToolResult> {
     console.log('🤖 [小智配置工具] 开始执行');
     console.log('📥 [小智配置工具] 接收参数:', {
       wifiSsid: args.wifiSsid,
@@ -76,12 +78,12 @@ export class XiaozhiConfigTool extends BaseTool {
 
       if (!Number.isSafeInteger(frameId) || frameId < 0) return this.createErrorResponse('frameId 必须为非负整数');
       const locate = async (xpath: string, mode: ScanMode): Promise<string> => {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const [tab] = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
         if (typeof tab?.id !== 'number') throw new Error('未找到活动标签页');
         const results = await executeScriptBounded({
           target: { tabId: tab.id, frameIds: [frameId] }, world: 'ISOLATED',
           func: elementScanPayload, args: [mode, '', xpath, tab.id],
-        });
+        }, undefined, undefined, context);
         const payload = results[0]?.result;
         if (payload?.error) throw new Error(payload.error);
         const hits = payload?.elements.filter(el => el.isHit) ?? [];
@@ -99,7 +101,7 @@ export class XiaozhiConfigTool extends BaseTool {
         elementId: await locate("//*[@data-lang='advanced_tab']", 'buttons'),
         description: '切换高级设置',
         frameId
-      });
+      }, context);
       if (!result.success) {
         console.error('❌ [小智配置工具] 点击高级选项按钮失败:', result.error);
         return this.createErrorResponse(`步骤1失败: 点击高级选项按钮 - ${result.error}`);
@@ -112,7 +114,7 @@ export class XiaozhiConfigTool extends BaseTool {
         elementId: await locate("//*[@id='ota_url']", 'inputs'),
         value: otaUrl,
         frameId
-      });
+      }, context);
       if (!result.success) {
         console.error('❌ [小智配置工具] 填充OTA地址失败:', result.error);
         return this.createErrorResponse(`步骤2失败: 填充OTA地址 - ${result.error}`);
@@ -124,7 +126,7 @@ export class XiaozhiConfigTool extends BaseTool {
         elementId: await locate("//*[@id='advanced_button']", 'buttons'),
         description: '保存 OTA 设置',
         frameId
-      });
+      }, context);
       if (!result.success) {
         console.error('❌ [小智配置工具] 点击保存按钮失败:', result.error);
         return this.createErrorResponse(`步骤3失败: 点击保存按钮 - ${result.error}`);
@@ -139,7 +141,7 @@ export class XiaozhiConfigTool extends BaseTool {
         elementId: await locate("//*[@data-lang='wifi_tab']", 'buttons'),
         description: '切换 WiFi 设置',
         frameId
-      });
+      }, context);
       if (!result.success) {
         console.error('❌ [小智配置工具] 点击WiFi配置选项按钮失败:', result.error);
         return this.createErrorResponse(`步骤4失败: 点击WiFi配置选项按钮 - ${result.error}`);
@@ -152,7 +154,7 @@ export class XiaozhiConfigTool extends BaseTool {
         elementId: await locate("//*[@id='ssid']", 'inputs'),
         value: wifiSsid,
         frameId
-      });
+      }, context);
       if (!result.success) {
         console.error('❌ [小智配置工具] 填充WiFi SSID失败:', result.error);
         return this.createErrorResponse(`步骤5失败: 填充WiFi SSID - ${result.error}`);
@@ -164,7 +166,7 @@ export class XiaozhiConfigTool extends BaseTool {
         elementId: await locate("//*[@id='password']", 'inputs'),
         value: wifiPassword,
         frameId
-      });
+      }, context);
       if (!result.success) {
         console.error('❌ [小智配置工具] 填充WiFi密码失败:', result.error);
         return this.createErrorResponse(`步骤6失败: 填充WiFi密码 - ${result.error}`);
@@ -176,7 +178,7 @@ export class XiaozhiConfigTool extends BaseTool {
         elementId: await locate("//*[@id='button']", 'buttons'),
         description: '连接 WiFi',
         frameId
-      });
+      }, context);
       if (!result.success) {
         console.error('❌ [小智配置工具] 点击连接按钮失败:', result.error);
         return this.createErrorResponse(`步骤7失败: 点击连接按钮 - ${result.error}`);

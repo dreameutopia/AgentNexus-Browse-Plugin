@@ -2,7 +2,7 @@
  * 消息折叠分组纯函数回归（groupAnswerParts / buildLivePartSegments）。
  *
  * 覆盖所有终态时序：正常结束 / 用户中止（正文后残留工具 / 纯思考 / 纯工具轮）/
- * 异常收尾 / 学习模式收尾轮（提交工具 + 终态注记），以及直播态连续过程
+ * 异常收尾 / 无正文收尾轮（提交工具 + 终态注记），以及直播态连续过程
  * （连续工具调用 / 工具+思考 / 截图混合）的小折叠分段规则。
  *
  * 运行：node tests/message-collapse/run.mjs（npm run test:message-collapse）
@@ -102,9 +102,9 @@ const kinds = (entries: ReturnType<typeof buildLivePartSegments>) =>
   assert.equal(g.final?.part.type, 'text');
 }
 
-// 6. 学习模式收尾轮：提交工具与终态注记在正文之后 → 工具折叠、注记保持可见
+// 6. 收尾轮：工具与终态注记在正文之后 → 工具折叠、注记保持可见
 {
-  const g = groupAnswerParts(indexed(text('学习完成'), tool('submit_skill'), notice()), {
+  const g = groupAnswerParts(indexed(text('处理完成'), tool('note_tool'), notice()), {
     legacyReasoningText: false,
   });
   assert.deepEqual(g.prelude.map(p => p.part.type), ['tool'], '提交工具并入前奏');
@@ -112,9 +112,9 @@ const kinds = (entries: ReturnType<typeof buildLivePartSegments>) =>
   assert.equal(g.final?.part.type, 'text');
 }
 
-// 7. 学习模式收尾轮（无正文）：工具全折叠，注记可见
+// 7. 收尾轮（无正文）：工具全折叠，注记可见
 {
-  const g = groupAnswerParts(indexed(tool('t1'), tool('submit_skill'), notice()), {
+  const g = groupAnswerParts(indexed(tool('t1'), tool('note_tool'), notice()), {
     legacyReasoningText: false,
   });
   assert.equal(g.final, null);

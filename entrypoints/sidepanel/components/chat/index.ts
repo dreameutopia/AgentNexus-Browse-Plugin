@@ -18,3 +18,8 @@ export { default as ContextUsageRing } from './ContextUsageRing.vue';
 export { default as GuardConfirmBar } from './GuardConfirmBar.vue';
 export { default as PlanBoard } from './PlanBoard.vue';
 export { default as PageQuoteBar } from './PageQuoteBar.vue';
+export { default as CapturedElementList } from './CapturedElementList.vue';
+export { default as MessageCapturedElements } from './MessageCapturedElements.vue';
+export { default as CapturedElementDialog } from './CapturedElementDialog.vue';
+export { default as ElementCaptureOverlay } from './ElementCaptureOverlay.vue';
+export { default as ElementTypeIcon } from './ElementTypeIcon.vue';

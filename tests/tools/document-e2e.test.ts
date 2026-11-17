@@ -13,6 +13,7 @@
 
 import { chatDatabase } from '../../entrypoints/sidepanel/core/context/chat-database';
 import { DocumentTool } from '../../tools/document/document-tool';
+import { FileUtilTool } from '../../tools/file-util/file-util-tool';
 
 // ==================== 本文件自带的迷你断言 ====================
 
@@ -60,40 +61,40 @@ await chatDatabase.createSession({
 } as never);
 
 const tool = new DocumentTool();
+const files = new FileUtilTool();
 const context = { chatId };
+const writeMd = (path: string, content: string) =>
+  files.execute({ action: 'create', path, content }, context);
+const deleteMd = (path: string) =>
+  files.execute({ action: 'delete', path }, context);
 
 // ==================== 1. create → edit → convert → delete ====================
 
 {
-  const created = await tool.execute(
-    {
-      action: 'create',
-      path: 'docs/report.md',
-      content: [
-        '# 端到端报告',
-        '',
-        '## 结论',
-        '',
-        '一切正常。',
-        '',
-        '| 项 | 值 |',
-        '| --- | --- |',
-        '| a | 1 |',
-      ].join('\n'),
-    },
-    context,
+  const created = await writeMd(
+    'docs/report.md',
+    [
+      '# 端到端报告',
+      '',
+      '## 结论',
+      '',
+      '一切正常。',
+      '',
+      '| 项 | 值 |',
+      '| --- | --- |',
+      '| a | 1 |',
+    ].join('\n'),
   );
-  check(created.success, 'create 成功');
+  check(created.success, 'file_util create 成功');
   includes(resultText(created), 'docs/report.md', 'create 回显路径');
-  includes(resultText(created), 'convert', 'create 回显提示下一步转换');
 }
 
 {
-  const edited = await tool.execute(
+  const edited = await files.execute(
     { action: 'edit', path: 'docs/report.md', find: '一切正常。', replace: '端到端验证通过。' },
     context,
   );
-  check(edited.success, 'edit 成功');
+  check(edited.success, 'file_util edit 成功');
   includes(resultText(edited), '唯一命中替换 1 处', 'edit 回显替换次数');
 }
 
@@ -117,8 +118,8 @@ const context = { chatId };
 }
 
 {
-  const deleted = await tool.execute({ action: 'delete', path: 'docs/report.md' }, context);
-  check(deleted.success, 'delete 成功');
+  const deleted = await deleteMd('docs/report.md');
+  check(deleted.success, 'file_util delete 成功');
   includes(resultText(deleted), 'docs/report.md', 'delete 回显路径');
 }
 
@@ -137,14 +138,7 @@ const context = { chatId };
     new Blob([pngBytes.buffer as ArrayBuffer], { type: 'image/png' }),
   );
 
-  await tool.execute(
-    {
-      action: 'create',
-      path: 'docs/with-image.md',
-      content: ['# 带图', '', '![工作区图](outputs/pic.png)'].join('\n'),
-    },
-    context,
-  );
+  await writeMd('docs/with-image.md', ['# 带图', '', '![工作区图](outputs/pic.png)'].join('\n'));
   const converted = await tool.execute(
     { action: 'convert', path: 'docs/with-image.md', format: 'docx' },
     context,
@@ -162,77 +156,35 @@ const context = { chatId };
     includes(xml, 'blip', 'DOCX 含内联图片位图');
   }
 
-  await tool.execute({ action: 'delete', path: 'docs/with-image.md' }, context);
+  await deleteMd('docs/with-image.md');
 }
 
-// ==================== 3. 编辑模式与指纹 ====================
+// ==================== 3. 文件 CRUD 已下线（统一由 file_util 承担） ====================
 
 {
-  // 三种编辑模式与工作区引擎一致：content 全量重写 / find+replace / edits 批量替换
-  const created = await tool.execute(
-    { action: 'create', path: 'docs/modes.md', content: ['# 标题', '', '甲', '', '乙', '', '丙'].join('\n') },
+  const removedEdit = await tool.execute(
+    { action: 'edit', path: 'docs/modes.md', find: '甲', replace: '乙' },
     context,
   );
-  check(created.success, 'create（编辑模式用）成功');
-  const createdData = created.data as { sha256?: string } | undefined;
-  check(typeof createdData?.sha256 === 'string' && createdData.sha256.length === 64, 'create 回传 sha256 指纹');
+  check(!removedEdit.success, 'document_tool 不再提供 edit');
+  includes(resultText(removedEdit), 'file_util', 'edit 下线回执引导到 file_util');
 
-  // 模式一：find + replace
-  const replaced = await tool.execute(
-    { action: 'edit', path: 'docs/modes.md', find: '甲', replace: '甲改' },
+  const removedCreate = await tool.execute(
+    { action: 'create', path: 'docs/modes.md', content: '# x' },
     context,
   );
-  check(replaced.success, 'find+replace 编辑成功');
+  check(!removedCreate.success, 'document_tool 不再提供 create');
+  includes(resultText(removedCreate), 'file_util', 'create 下线回执引导到 file_util');
 
-  // 模式二：edits 批量替换（任一失败则整次不保存）
-  const batch = await tool.execute(
-    {
-      action: 'edit',
-      path: 'docs/modes.md',
-      edits: [
-        { find: '乙', replace: '乙改' },
-        { find: '丙', replace: '丙改' },
-      ],
-    },
-    context,
-  );
-  check(batch.success, 'edits 批量替换成功');
-  includes(resultText(batch), '替换 2 处', '批量替换回显替换次数');
-
-  // 模式三：content 全量重写
-  const rewritten = await tool.execute(
-    { action: 'edit', path: 'docs/modes.md', content: '# 全新内容' },
-    context,
-  );
-  check(rewritten.success, 'content 全量重写成功');
-  includes(resultText(rewritten), '已整体重写', '全量重写回显模式');
-
-  // expectedHash：与当前文件不符时必须拒绝保存
-  const staleHash = 'a'.repeat(64);
-  const conflicted = await tool.execute(
-    { action: 'edit', path: 'docs/modes.md', content: '# 冲突写入', expectedHash: staleHash },
-    context,
-  );
-  check(!conflicted.success, 'expectedHash 不匹配时拒绝保存');
-  includes(resultText(conflicted), 'DOCUMENT_EDIT_CONFLICT', '冲突错误码可识别');
-
-  // 三种模式互斥
-  const exclusive = await tool.execute(
-    { action: 'edit', path: 'docs/modes.md', content: '# a', edits: [{ find: 'a', replace: 'b' }] },
-    context,
-  );
-  check(!exclusive.success, 'content 与 edits 互斥被拒');
-
-  await tool.execute({ action: 'delete', path: 'docs/modes.md' }, context);
+  const removedDelete = await tool.execute({ action: 'delete', path: 'docs/modes.md' }, context);
+  check(!removedDelete.success, 'document_tool 不再提供 delete');
+  includes(resultText(removedDelete), 'file_util', 'delete 下线回执引导到 file_util');
 }
 
 // ==================== 4. 产物命名 ====================
 
 {
-  await tool.execute(
-    { action: 'create', path: 'docs/naming.md', content: '# 命名测试' },
-    context,
-  );
+  await writeMd('docs/naming.md', '# 命名测试');
   const converted = await tool.execute(
     { action: 'convert', path: 'docs/naming.md', format: 'docx', filename: '季度报告.docx' },
     context,
@@ -242,7 +194,7 @@ const context = { chatId };
   const artifactPath = data?.files?.[0]?.path ?? '';
   // 已有 .docx 后缀不应叠加出畸形名（早先会得到「季度报告..docx」）
   eq(artifactPath, 'outputs/季度报告.docx', '产物文件名后缀正确');
-  await tool.execute({ action: 'delete', path: 'docs/naming.md' }, context);
+  await deleteMd('docs/naming.md');
 }
 
 // ==================== 5. 同名产物不覆盖 ====================
@@ -250,10 +202,7 @@ const context = { chatId };
 {
   // 契约：产物一律落在当前会话工作区的 outputs/ 下；同名时不覆盖既有文件，
   // 而是自动改名为 name(1).docx、name(2).docx…
-  await tool.execute(
-    { action: 'create', path: 'docs/dup-artifact.md', content: '# 重复导出' },
-    context,
-  );
+  await writeMd('docs/dup-artifact.md', '# 重复导出');
   const first = await tool.execute(
     { action: 'convert', path: 'docs/dup-artifact.md', format: 'docx', filename: '重复导出' },
     context,
@@ -278,7 +227,7 @@ const context = { chatId };
   const renamed = await readWorkspaceOutput(chatId, 'outputs/重复导出(1).docx');
   check(!!renamed && renamed.size > 0, '改名后的产物可读');
 
-  await tool.execute({ action: 'delete', path: 'docs/dup-artifact.md' }, context);
+  await deleteMd('docs/dup-artifact.md');
 }
 
 // ==================== 6. 非法输入与失败路径 ====================
@@ -310,21 +259,22 @@ const context = { chatId };
 }
 
 {
-  // 非 .md 的 create 同样被拒（文档工具只管 Markdown 源文件）
-  const wrongExtCreate = await tool.execute(
+  // 文件 CRUD 已下线：convert 之外的 action 一律明确拒绝并指向 file_util
+  const removed = await tool.execute(
     { action: 'create', path: 'docs/a.txt', content: 'x' },
     context,
   );
-  check(!wrongExtCreate.success, 'create 非 .md 路径被拒绝');
+  check(!removed.success, 'create 已下线');
+  includes(resultText(removed), 'file_util', '回执引导到 file_util');
 }
 
 {
-  // 重复 create：已存在文件应拒绝（防误覆盖）
-  await tool.execute({ action: 'create', path: 'docs/dup.md', content: '# a' }, context);
-  const again = await tool.execute({ action: 'create', path: 'docs/dup.md', content: '# b' }, context);
+  // 重复 create 由 file_util 拒绝（防误覆盖）
+  await writeMd('docs/dup.md', '# a');
+  const again = await writeMd('docs/dup.md', '# b');
   check(!again.success, '重复 create 被拒绝（防误覆盖）');
-  includes(resultText(again), '已存在', '重复 create 的原因指明文件已存在');
-  await tool.execute({ action: 'delete', path: 'docs/dup.md' }, context);
+  includes(resultText(again), 'FILE_EXISTS', '重复 create 的原因指明文件已存在');
+  await deleteMd('docs/dup.md');
 }
 
 // ==================== 汇总 ====================

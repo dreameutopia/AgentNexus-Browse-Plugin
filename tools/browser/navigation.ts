@@ -1,3 +1,4 @@
+import { browserChrome } from '@/tools/browser/browser-scope';
 /**
  * 统一导航工具（browser_navigation）
  *
@@ -174,7 +175,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
           },
           timeout: {
             type: 'number',
-            description: `等待上限，毫秒（默认 30000，合法区间 1~${PAGE_LOAD_TIMEOUT_MAX_MS}；超上限报错）。所有 action 均可传：导航类约束 waitForLoad 的等待，wait 约束自身等待。需要分钟级等待请用 generic_wait({waitSeconds})`,
+            description: `等待上限，毫秒（默认 30000，合法区间 1~${PAGE_LOAD_TIMEOUT_MAX_MS}；超上限报错）。所有 action 均可传：导航类约束 waitForLoad 的等待，wait 约束自身等待。需要更长等待请用 browser_wait({conditions})（按地址/文案/控件/网络条件等待）`,
           },
           checkInterval: {
             type: 'number',
@@ -205,7 +206,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
       try {
         if (context?.pluginKey)
           await resolveTabOrigin(args.tabId, context);
-        return await this.handleWait(args);
+        return await this.handleWait(args, context);
       } catch (error) {
         this.log(`Wait failed: ${error}`, 'error');
         if (context?.pluginKey && error instanceof Error)
@@ -246,7 +247,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
               }
             }
           }
-          return await this.handleOpen(args);
+          return await this.handleOpen(args, context);
         }
         case 'refresh':
           if (context?.pluginKey) {
@@ -258,14 +259,14 @@ export class BrowserNavigationTool extends BaseBrowserTool {
               );
             }
           }
-          return await this.handleRefresh(args);
+          return await this.handleRefresh(args, context);
         case 'back':
         case 'forward':
           if (context?.pluginKey)
             return this.createErrorResponse(
               'PLUGIN_NAVIGATION_DENIED：插件调用不允许 back/forward，请使用 action="open" 导航到声明的 origin',
             );
-          return await this.handleHistory(args);
+          return await this.handleHistory(args, context);
       }
     } catch (error) {
       this.log(`Navigation failed: ${error}`, 'error');
@@ -304,7 +305,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     const timeout = readNumberField(input, 'timeout', {
       min: 1,
       max: PAGE_LOAD_TIMEOUT_MAX_MS,
-      hint: `毫秒；页面加载等待上限 ${PAGE_LOAD_TIMEOUT_MAX_MS}ms，更长的等待请改用 generic_wait({waitSeconds})`,
+      hint: `毫秒；页面加载等待上限 ${PAGE_LOAD_TIMEOUT_MAX_MS}ms，更长的等待请改用 browser_wait({conditions})`,
     });
     if (!timeout.ok) return { error: this.createErrorResponse(timeout.error) };
     if (timeout.value !== undefined) args.timeout = timeout.value;
@@ -352,10 +353,10 @@ export class BrowserNavigationTool extends BaseBrowserTool {
   protected async waitForPageLoad(
     tabId: number,
     timeoutMs: number = PAGE_LOAD_DEFAULT_TIMEOUT_MS,
-    pollIntervalMs: number = PAGE_LOAD_DEFAULT_POLL_MS,
+    pollIntervalMs: number = PAGE_LOAD_DEFAULT_POLL_MS, context?: ToolExecutionContext
   ): Promise<void> {
     this.log(`Starting to wait for page load on tab ${tabId}`);
-    const outcome = await waitForTabReady(tabId, { timeoutMs, pollIntervalMs });
+    const outcome = await waitForTabReady(tabId, { timeoutMs, pollIntervalMs }, context);
     if (outcome.ready) {
       this.log(`Page load complete after ${outcome.elapsedMs}ms`);
       return;
@@ -373,7 +374,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     tabId: number,
     originalUrl: string,
     timeoutMs: number = 10000,
-    pollIntervalMs: number = 100,
+    pollIntervalMs: number = 100, context?: ToolExecutionContext
   ): Promise<{ changed: boolean; currentUrl: string }> {
     const start = Date.now();
     const normalizedOriginal = this.normalizeUrlForComparison(originalUrl);
@@ -382,7 +383,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
 
     while (Date.now() - start < timeoutMs) {
       try {
-        const tab = await chrome.tabs.get(tabId);
+        const tab = await browserChrome(context).tabs.get(tabId);
         const currentUrl = tab.url || '';
         const normalizedCurrent = this.normalizeUrlForComparison(currentUrl);
 
@@ -407,7 +408,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
 
     // 超时后再检查一次最终状态
     try {
-      const tab = await chrome.tabs.get(tabId);
+      const tab = await browserChrome(context).tabs.get(tabId);
       const currentUrl = tab.url || '';
       const normalizedCurrent = this.normalizeUrlForComparison(currentUrl);
 
@@ -437,7 +438,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
   // ──── action 实现 ────
 
   /** open：复用/新建/当前标签导航（含 waitForUrlChange → waitForPageLoad 两段预算） */
-  private async handleOpen(args: NavigationArgs): Promise<ToolResult> {
+  private async handleOpen(args: NavigationArgs, context?: ToolExecutionContext): Promise<ToolResult> {
     const { newTab = true, url, waitForLoad = true, timeout = PAGE_LOAD_DEFAULT_TIMEOUT_MS } = args;
 
     if (!url) {
@@ -449,16 +450,16 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     this.log(`Executing navigation: open URL: ${url}`);
 
     // Explicit current-tab navigation must never activate another matching tab.
-    if (!newTab) return await this.navigateInCurrentOrNewTab(url, waitForLoad, timeout);
-    const existingTab = await this.findExistingTabWithUrl(url);
-    if (existingTab) return await this.activateExistingTab(existingTab, waitForLoad, timeout);
-    return await this.createNewTabWithUrl(url, waitForLoad, timeout);
+    if (!newTab) return await this.navigateInCurrentOrNewTab(url, waitForLoad, timeout, context);
+    const existingTab = await this.findExistingTabWithUrl(url, context);
+    if (existingTab) return await this.activateExistingTab(existingTab, waitForLoad, timeout, context);
+    return await this.createNewTabWithUrl(url, waitForLoad, timeout, context);
   }
 
   /** refresh：刷新当前活动标签 */
-  private async handleRefresh(args: NavigationArgs): Promise<ToolResult> {
+  private async handleRefresh(args: NavigationArgs, context?: ToolExecutionContext): Promise<ToolResult> {
     const { waitForLoad = true, timeout = PAGE_LOAD_DEFAULT_TIMEOUT_MS } = args;
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [activeTab] = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
 
     if (!activeTab || !activeTab.id) {
       return this.createErrorResponse('No active tab found to refresh');
@@ -468,17 +469,17 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     this.log(`Refreshing tab ${activeTab.id}, current URL: ${originalUrl}`);
 
     // 刷新标签页
-    await chrome.tabs.reload(activeTab.id);
+    await browserChrome(context).tabs.reload(activeTab.id);
 
     if (waitForLoad) {
       try {
-        await this.waitForPageLoad(activeTab.id, timeout);
+        await this.waitForPageLoad(activeTab.id, timeout, undefined, context);
       } catch (waitError) {
         // 分类：未知错误上抛（外层 catch 封装）；closed / timeout 分别收口
         const kind = this.classifyWaitError(waitError);
         let latest: chrome.tabs.Tab | undefined;
         try {
-          latest = (await chrome.tabs.get(activeTab.id)) ?? undefined;
+          latest = (await browserChrome(context).tabs.get(activeTab.id)) ?? undefined;
         } catch {
           latest = undefined;
         }
@@ -508,7 +509,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
 
     let updatedTab: chrome.tabs.Tab | undefined;
     try {
-      updatedTab = (await chrome.tabs.get(activeTab.id)) ?? undefined;
+      updatedTab = (await browserChrome(context).tabs.get(activeTab.id)) ?? undefined;
     } catch {
       updatedTab = undefined;
     }
@@ -535,28 +536,28 @@ export class BrowserNavigationTool extends BaseBrowserTool {
   }
 
   /** back/forward：历史跳转 + 默认等待新页面就绪 */
-  private async handleHistory(args: NavigationArgs): Promise<ToolResult> {
+  private async handleHistory(args: NavigationArgs, context?: ToolExecutionContext): Promise<ToolResult> {
     const { action, waitForLoad = true, timeout = PAGE_LOAD_DEFAULT_TIMEOUT_MS } = args;
     const isForward = action === 'forward';
 
     this.log(`Navigating ${isForward ? 'forward' : 'back'} in browser history`);
 
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [activeTab] = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
     if (!activeTab || !activeTab.id) {
       return this.createErrorResponse('No active tab found');
     }
     const tabId = activeTab.id;
 
     if (isForward) {
-      await chrome.tabs.goForward(tabId);
+      await browserChrome(context).tabs.goForward(tabId);
     } else {
-      await chrome.tabs.goBack(tabId);
+      await browserChrome(context).tabs.goBack(tabId);
     }
 
     let loadStatus: 'complete' | 'not_waited' | 'timeout' = 'not_waited';
     if (waitForLoad) {
       try {
-        await this.waitForPageLoad(tabId, timeout);
+        await this.waitForPageLoad(tabId, timeout, undefined, context);
         loadStatus = 'complete';
       } catch (waitError) {
         // 未知错误上抛（外层 catch 封装）；closed → 跳转已发出但标签页消失
@@ -579,7 +580,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
 
     let updatedTab: chrome.tabs.Tab | undefined;
     try {
-      updatedTab = await chrome.tabs.get(tabId);
+      updatedTab = await browserChrome(context).tabs.get(tabId);
     } catch {
       updatedTab = undefined;
     }
@@ -613,7 +614,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
   }
 
   /** wait：等待标签页就绪（参数真正生效的独立等待入口） */
-  private async handleWait(args: NavigationArgs): Promise<ToolResult> {
+  private async handleWait(args: NavigationArgs, context?: ToolExecutionContext): Promise<ToolResult> {
     const {
       timeout = PAGE_LOAD_DEFAULT_TIMEOUT_MS,
       checkInterval = PAGE_LOAD_DEFAULT_POLL_MS,
@@ -623,7 +624,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     let tab: chrome.tabs.Tab | undefined;
     if (args.tabId !== undefined) {
       try {
-        tab = await chrome.tabs.get(args.tabId);
+        tab = await browserChrome(context).tabs.get(args.tabId);
       } catch {
         tab = undefined;
       }
@@ -631,7 +632,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
         return this.createErrorResponse(`标签页 ${args.tabId} 不存在（可能已关闭），请用 browser_tabs(action="list") 核对`);
       }
     } else {
-      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const [activeTab] = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
       if (!activeTab || activeTab.id === undefined) {
         return this.createErrorResponse('No active tab found to wait on');
       }
@@ -643,13 +644,13 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     const tabId = tab.id;
 
     this.log(`Waiting for tab ${tabId} to become ready (timeout=${timeout}ms, interval=${checkInterval}ms)`);
-    const outcome = await waitForTabReady(tabId, { timeoutMs: timeout, pollIntervalMs: checkInterval });
+    const outcome = await waitForTabReady(tabId, { timeoutMs: timeout, pollIntervalMs: checkInterval }, context);
 
     if (outcome.ready) {
       // 就绪后回读一次最新标签信息（等待期间可能又被导航）
       let latest: chrome.tabs.Tab = tab;
       try {
-        latest = await chrome.tabs.get(tabId);
+        latest = await browserChrome(context).tabs.get(tabId);
       } catch {
         return this.createSuccessResponse(
           {
@@ -698,7 +699,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     // 空值（桩/异常实现）一律退回等待前快照，绝不把 undefined 读出 TypeError
     let latest: chrome.tabs.Tab = tab;
     try {
-      latest = (await chrome.tabs.get(tabId)) ?? tab;
+      latest = (await browserChrome(context).tabs.get(tabId)) ?? tab;
     } catch {
       latest = tab;
     }
@@ -721,8 +722,8 @@ export class BrowserNavigationTool extends BaseBrowserTool {
   /**
    * 查找已打开的相同 URL 的标签页
    */
-  private async findExistingTabWithUrl(url: string): Promise<chrome.tabs.Tab | null> {
-    const allTabs = await chrome.tabs.query({ currentWindow: true });
+  private async findExistingTabWithUrl(url: string, context?: ToolExecutionContext): Promise<chrome.tabs.Tab | null> {
+    const allTabs = await browserChrome(context).tabs.query({ currentWindow: true });
     const normalizedTargetUrl = this.normalizeUrlForComparison(url);
 
     for (const tab of allTabs) {
@@ -741,7 +742,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
   private async activateExistingTab(
     tab: chrome.tabs.Tab,
     waitForLoad: boolean,
-    timeout: number,
+    timeout: number, context?: ToolExecutionContext
   ): Promise<ToolResult> {
     this.log(`Activating existing tab ${tab.id} with URL: ${tab.url}`);
 
@@ -750,11 +751,11 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     }
 
     // 激活标签页
-    await chrome.tabs.update(tab.id, { active: true });
+    await browserChrome(context).tabs.update(tab.id, { active: true });
 
     // 聚焦窗口
     if (tab.windowId !== undefined) {
-      await chrome.windows.update(tab.windowId, { focused: true });
+      await browserChrome(context).windows.update(tab.windowId, { focused: true });
     }
 
     // 等待页面加载（如果需要）。等待失败按三态收口：
@@ -766,7 +767,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     let loadStatus: 'complete' | 'timeout' = 'complete';
     if (waitForLoad) {
       try {
-        await this.waitForPageLoad(tab.id, timeout);
+        await this.waitForPageLoad(tab.id, timeout, undefined, context);
       } catch (waitError) {
         const kind = this.classifyWaitError(waitError);
         if (kind === 'closed') {
@@ -789,7 +790,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
 
     let updatedTab: chrome.tabs.Tab | undefined;
     try {
-      updatedTab = await chrome.tabs.get(tab.id);
+      updatedTab = await browserChrome(context).tabs.get(tab.id);
     } catch {
       updatedTab = undefined;
     }
@@ -830,17 +831,17 @@ export class BrowserNavigationTool extends BaseBrowserTool {
   private async navigateInCurrentOrNewTab(
     url: string,
     waitForLoad: boolean,
-    timeout: number,
+    timeout: number, context?: ToolExecutionContext
   ): Promise<ToolResult> {
     // 尝试获取当前活动标签页
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [activeTab] = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
 
     if (activeTab && activeTab.id !== undefined) {
       // 在当前活动标签页中导航
-      return await this.navigateInTab(activeTab.id, url, waitForLoad, timeout, activeTab.url);
+      return await this.navigateInTab(activeTab.id, url, waitForLoad, timeout, activeTab.url, context);
     } else {
       // 没有活动标签页，创建新标签页
-      return await this.createNewTabWithUrl(url, waitForLoad, timeout);
+      return await this.createNewTabWithUrl(url, waitForLoad, timeout, context);
     }
   }
 
@@ -852,7 +853,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     targetUrl: string,
     waitForLoad: boolean,
     timeout: number,
-    currentUrl?: string,
+    currentUrl?: string, context?: ToolExecutionContext
   ): Promise<ToolResult> {
     this.log(`Navigating tab ${tabId} to: ${targetUrl}, current URL: ${currentUrl || 'unknown'}`);
     const startedAt = Date.now();
@@ -860,7 +861,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     // 记录导航前的 URL（回读失败/空值时退回已知 currentUrl，不让空值读出
     // TypeError 污染错误面——真正的标签页缺失会在后续 tabs.update 处以
     // 底层可读错误暴露）
-    const originalUrl = currentUrl || (await chrome.tabs.get(tabId).catch(() => undefined))?.url || '';
+    const originalUrl = currentUrl || (await browserChrome(context).tabs.get(tabId).catch(() => undefined))?.url || '';
     const normalizedOriginalUrl = this.normalizeUrlForComparison(originalUrl);
     const normalizedTargetUrl = this.normalizeUrlForComparison(targetUrl);
 
@@ -869,12 +870,12 @@ export class BrowserNavigationTool extends BaseBrowserTool {
       this.log(`URL unchanged, skipping navigation: ${targetUrl}`);
 
       if (waitForLoad) {
-        await this.waitForPageLoad(tabId, timeout);
+        await this.waitForPageLoad(tabId, timeout, undefined, context);
       }
 
       let tab: chrome.tabs.Tab | undefined;
       try {
-        tab = await chrome.tabs.get(tabId);
+        tab = await browserChrome(context).tabs.get(tabId);
       } catch {
         tab = undefined;
       }
@@ -892,13 +893,13 @@ export class BrowserNavigationTool extends BaseBrowserTool {
 
     // 发起导航
     this.log(`Issuing navigation command for tab ${tabId}`);
-    await chrome.tabs.update(tabId, { url: targetUrl });
+    await browserChrome(context).tabs.update(tabId, { url: targetUrl });
 
     if (!waitForLoad) {
       // 不等待加载，直接返回
       let tab: chrome.tabs.Tab | undefined;
       try {
-        tab = await chrome.tabs.get(tabId);
+        tab = await browserChrome(context).tabs.get(tabId);
       } catch {
         tab = undefined;
       }
@@ -919,7 +920,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     const urlChangeResult = await this.waitForUrlChange(
       tabId,
       originalUrl,
-      Math.min(10000, timeout), // URL 变化超时：最多 10 秒
+      Math.min(10000, timeout), undefined, context // URL 变化超时：最多 10 秒
     );
 
     if (!urlChangeResult.changed) {
@@ -928,7 +929,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
 
       // 检查标签页状态
       try {
-        const tab = await chrome.tabs.get(tabId);
+        const tab = await browserChrome(context).tabs.get(tabId);
         return this.createSuccessResponse({
           navigationAction: 'navigated',
           loadStatus: 'unknown',
@@ -949,7 +950,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     let loadStatus: 'complete' | 'timeout' | 'closed' = 'timeout';
     if (remainingTimeout > 0) {
       try {
-        await this.waitForPageLoad(tabId, remainingTimeout);
+        await this.waitForPageLoad(tabId, remainingTimeout, undefined, context);
         loadStatus = 'complete';
       } catch (loadError) {
         // 未知错误上抛（外层 catch 封装）；closed → 跳转已发出但标签页消失
@@ -971,7 +972,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
 
     let finalTab: chrome.tabs.Tab | undefined;
     try {
-      finalTab = await chrome.tabs.get(tabId);
+      finalTab = await browserChrome(context).tabs.get(tabId);
     } catch {
       finalTab = undefined;
     }
@@ -1010,13 +1011,13 @@ export class BrowserNavigationTool extends BaseBrowserTool {
   private async createNewTabWithUrl(
     url: string,
     waitForLoad: boolean,
-    timeout: number,
+    timeout: number, context?: ToolExecutionContext
   ): Promise<ToolResult> {
     this.log(`Creating new tab with URL: ${url}`);
 
     let windowId: number;
     try {
-      windowId = await existingNavigationWindowId();
+      windowId = await existingNavigationWindowId(context);
     } catch (error) {
       return this.createErrorResponse(
         error instanceof Error ? error.message : '没有可用的现有浏览器窗口',
@@ -1024,7 +1025,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     }
 
     // 在已存在的窗口中创建新标签页
-    const newTab = await chrome.tabs.create({
+    const newTab = await browserChrome(context).tabs.create({
       url: url,
       windowId: windowId,
       active: true,
@@ -1038,7 +1039,7 @@ export class BrowserNavigationTool extends BaseBrowserTool {
     let loadStatus: 'complete' | 'timeout' | 'not_waited' = waitForLoad ? 'complete' : 'not_waited';
     if (waitForLoad) {
       try {
-        await this.waitForPageLoad(newTab.id, timeout);
+        await this.waitForPageLoad(newTab.id, timeout, undefined, context);
       } catch (waitError) {
         const kind = this.classifyWaitError(waitError);
         if (kind === 'closed') {
@@ -1059,11 +1060,11 @@ export class BrowserNavigationTool extends BaseBrowserTool {
       }
     }
 
-    await chrome.windows.update(windowId, { focused: true });
+    await browserChrome(context).windows.update(windowId, { focused: true });
 
     let finalTab: chrome.tabs.Tab | undefined;
     try {
-      finalTab = await chrome.tabs.get(newTab.id);
+      finalTab = await browserChrome(context).tabs.get(newTab.id);
     } catch {
       finalTab = undefined;
     }

@@ -1,4 +1,6 @@
 import { restoreAgentSkillLinks } from '@/utils/agents/agent-skill-links';
+import { readBrowserBinding } from '@/utils/browser-window-binding';
+import { parseBrowserScope, type BrowserScope } from '@/tools/browser/browser-scope';
 import {
   isPythonToolLinked,
   restoreAgentPythonToolLinks,
@@ -40,7 +42,6 @@ import { PLAN_SYSTEM_PROMPT_SECTION } from '@/tools/plan/plan-prompt';
 import { NOTE_SYSTEM_PROMPT_SECTION } from '@/tools/note/note-prompt';
 import { FILE_UTIL_SYSTEM_PROMPT_SECTION } from '@/tools/file-util/file-util-prompt';
 import { JS_SYSTEM_PROMPT_SECTION } from '@/tools/javascript/js-prompt';
-import { PYTHON_SYSTEM_PROMPT_SECTION, PYTHON_RUN_TOOL_ID } from '@/tools/python/python-prompt';
 import { BACKEND_PAGE_EXEC_TOOL_ID, JS_RUN_TOOL_ID } from '@/tools/javascript/js-contract';
 import { WORKSPACE_SYSTEM_PROMPT_SECTION } from '@/utils/python-workspace/workspace-prompt';
 import {
@@ -63,9 +64,13 @@ import type {
 import type { ChatMessage } from '../../utils/ai/ai-chat-api';
 import type { UploadedFileEntry } from '@/utils/upload-files/upload-file-manifest';
 import type { SkillPartEntry } from '../../types/chat';
+import { buildSelectedElementsEnvelope, normalizeCapturedElements } from '../../utils/chat/selected-elements';
+import type { CapturedElement } from '@/utils/element-capture/types';
 
 export interface RuntimeBuildInput {
   chatId: string;
+  /** Explicit undefined freezes the off state; omission reads the saved session selection. */
+  browserScope?: BrowserScope;
   /** 本轮用户输入 */
   userInput: string;
   /** 本轮用户上传图片（data URL 列表；进入多模态用户消息，不落转录） */
@@ -90,6 +95,16 @@ export interface RuntimeBuildInput {
    * 缺省 = 本轮无引用。
    */
   pageQuote?: PageQuote;
+  /**
+   * 本轮用户捕获的网页元素（截图 + 类型 + 唯一选择器 + 备注）。
+   *
+   * 装配层派生两路产物：
+   *   - selectedElementsPrompt：<selected_elements> XML 信封，拼入 LLM 用户消息
+   *     （引用信封之后、附件信封之前），不落转录；
+   *   - capturedElements：元素数据，随用户消息落库（气泡渲染元素 chip）。
+   * 缺省 = 本轮未选择元素。
+   */
+  capturedElements?: CapturedElement[];
   /** 已选智能体名（null/'' = 不使用智能体） */
   agentName: string | null;
   /** 已选技能名列表（多选） */
@@ -103,32 +118,13 @@ export interface RuntimeBuildInput {
   /**
    * `<agent-instructions>` 分区的整体替换（不走 supplementary-context 追加）。
    *
-   * 给「动态装配方」用：网站学习等场景需要一份与任何已存智能体都不同、
+   * 给「动态装配方」用：需要在运行期生成一份与任何已存智能体都不同、
    * 且含运行期参数（URL / 目标 / 模式）的主体指令。传入非空字符串即完全
    * 取代 agent.system（无智能体时取代默认指令）；缺省或空串 = 不覆盖。
    * 注意：技能分区、固定分区（交互准则 / 计划准则 / 富输出）仍照常注入，
    * 覆盖的只是「智能体指令」这一个分区。
    */
   agentSystemOverride?: string;
-  /**
-   * 禁用技能发现（动态装配场景专用，如网站学习的两个阶段）。
-   *
-   * true：不解析可用技能清单——发现分区不注入、skill_tool(action="load")/skill_tool(action="read")
-   * 承载工具不注入、技能携带的工具（如 vision_gui）不参与 offersGui 判定。
-   * 目的：
-   *   - 学习不得被既有技能污染（照抄技能而不是试错探索）；
-   *   - 盲测验证不得借助技能清单获取技能正文之外的知识；
-   *   - 封死「技能携带视觉工具混入文本目标学习」的注入路径。
-   * 缺省 false = 既有行为（无智能体回落全部启用技能），其它调用方不受影响。
-   * 与 skillNames 独立：本标志只关发现清单；调用方仍须自行传空 skillNames。
-   */
-  disableSkillDiscovery?: boolean;
-  /**
-   * 循环限制覆盖（学习等长任务的高上限）。
-   * 与既有「按 vision 取默认 + 应用设置」的基线做浅合并：只覆盖给出的字段，
-   * 未给出的保持基线值。缺省 = 完全沿用基线（行为与改动前一致）。
-   */
-  limitsOverride?: Partial<RuntimeLimits>;
   /**
    * vision 运行配置覆盖。
    * - 缺省（undefined）：沿用 agent 声明的 vision（既有行为）；
@@ -150,8 +146,8 @@ export interface RuntimeBuildInput {
  *
  * **maxDurationMs 缺省**：普通对话不设会话运行时长上限。旧实现的 10 分钟
  * 上限会把长耗时任务（数据采集、Python 计算、页面等待）截断成「工具未执行」，
- * 而这类任务本就该由「单工具超时」与「轮次上限」兜底。学习/验证等长任务
- * 经 limitsOverride 显式给出时长预算（见 learn-types 的 LEARN_LIMITS）。
+ * 而这类任务本就该由「单工具超时」与「轮次上限」兜底。需要时长预算的装配方
+ * 在 RuntimeLimits 上显式给出 maxDurationMs 即可。
  */
 const DEFAULT_LIMITS: RuntimeLimits = {
   maxIterations: MAX_ITERATIONS_DEFAULT,
@@ -255,6 +251,8 @@ class RuntimeBuilder {
    * 视觉策略统一）、连续工具失败停止阈值）。
    */
   async build(input: RuntimeBuildInput): Promise<ConversationRuntime> {
+    const browserScope = Object.prototype.hasOwnProperty.call(input, 'browserScope')
+      ? parseBrowserScope(input.browserScope) : await readBrowserBinding(input.chatId);
     if (typeof document !== 'undefined') {
       // 插件目录是增强能力：宿主/IDB 暂时不可用时保留上次快照并继续装配对话，
       // 不能因为插件子系统故障阻断普通会话。
@@ -329,8 +327,6 @@ class RuntimeBuilder {
     // 按站点动态注入的搜索工具）——「工具在哪技能在哪」对核心工具与动态工具同样
     // 成立。漏掉核心工具会让 allowed-tools 含核心工具的技能在任何智能体下都
     // 匹配失败（技能可用性判定依赖此口径）
-    // disableSkillDiscovery=true（学习/盲测）：可用技能恒为空，发现分区、
-    // 技能承载工具与技能携带的 GUI 能力一并关闭（见 RuntimeBuildInput 注释）
     const sessionToolIds = [
       ...CORE_SESSION_TOOL_IDS,
       ...agentToolIds,
@@ -356,28 +352,39 @@ class RuntimeBuilder {
     }
     const jsToolAvailable =
       registeredToolNames.has(JS_RUN_TOOL_ID) && allowsSessionTool(JS_RUN_TOOL_ID);
-    const globalSkills = skillEngine.list().filter(skill => ['4', '5'].includes(skill.id));
-    const availableSkills = input.disableSkillDiscovery
-      ? globalSkills
-      : skillEngine.resolveAvailableSkills(agent, sessionToolIds)
-        .filter(skill => skill.allowedTools.every(allowsSkillDependency));
+    const availableSkills = skillEngine.resolveAvailableSkills(agent, sessionToolIds)
+      .filter(skill => skill.allowedTools.every(allowsSkillDependency));
     // 预选技能快照（id + 加载时刻名称）：随用户消息落库，供气泡展示
     // 本轮实际使用了哪些技能；与激活轮同源，但用户体验面不依赖运行期状态。
-    // 归一化在此一次收敛：仅保留可用技能、按 id 去重保序、名称去空白并回落 id——
-    // 快照会被直接渲染（气泡顶部的技能清单），不能让重复项或空名称漏到展示层。
+    //
+    // 显式预选是用户授权，**不参与技能发现的可承载性过滤**：只要技能存在且
+    // 未停用就加载，具体工具再由 allowsSessionTool 在交付面裁剪（视觉边界、
+    // 插件天花板、Python 就绪度仍然生效）。这样「任意智能体 + 任意可用工具」
+    // 都能进入技能流程，由技能自身按真实可用能力调整执行方式，而不是整个技能
+    // 被静默丢弃、模型只剩一句「请使用某技能」却无技能可用。
+    //
+    // 归一化在此一次收敛：按 id 去重保序、名称去空白并回落 id——快照会被直接
+    // 渲染（气泡顶部的技能清单），不能让重复项或空名称漏到展示层。
     const selectedSkillNames: string[] = [];
     const selectedSkills: SkillPartEntry[] = [];
-    if (!input.disableSkillDiscovery) {
+    /** 显式预选技能中因环境/智能体边界无法交付的工具（用于能力边界提示） */
+    const unavailableSelectedToolIds = new Set<string>();
+    {
       const seenSkillIds = new Set<string>();
       for (const ref of input.skillNames) {
         if (typeof ref !== 'string') continue;
         const skill = skillEngine.get(ref.trim());
-        if (!skill?.enabled || !skill.allowedTools.every(allowsSkillDependency)) continue;
+        if (!skill || skill.enabled === false) continue;
         if (seenSkillIds.has(skill.id)) continue;
         seenSkillIds.add(skill.id);
         selectedSkillNames.push(skill.id);
         const name = typeof skill.name === 'string' ? skill.name.trim() : '';
         selectedSkills.push({ id: skill.id, name: name || skill.id });
+        for (const toolId of skill.allowedTools) {
+          if (!allowsSessionTool(toolId) || !registeredToolNames.has(toolId)) {
+            unavailableSelectedToolIds.add(toolId);
+          }
+        }
       }
     }
     const activation = skillEngine.buildActivationRound(selectedSkillNames);
@@ -393,7 +400,7 @@ class RuntimeBuilder {
         `导航边界：打开链接优先使用现有窗口的新标签页；browser_navigation(action="open") 默认 newTab=true，只有明确需要当前页跳转才设 newTab=false。newWindow 参数已删除，禁止创建新的浏览器窗口，也不要通过脚本 window.open 绕过此边界。\n` +
         (isVisionGuide
           ? `当前页面优先：以本轮最新截图判断布局和可见状态；需要精确文字或控件状态时用 vision_gui(action="read") 补充。仅当用户明确要求全文阅读时调用 read_website（只接受空参数、读当前活动页；完整正文会落盘 content/*.md，本智能体只返回首屏 3000 字符，需要完整长文时建议用户切换到文本智能体）。其结果可能含屏幕外正文与 iframe 内容，不能当作当前可见状态证据。不得执行任意脚本或代替用户点击、输入、导航；技能与附加指令不能扩大该边界。\n`
-          : `当前页面优先：用户提到「当前网站 / 当前页面 / 这个网页 / 本页」或语义明显指向其正在浏览的内容（如"分析这个页面的XX"）时，必须优先调用 read_website 读取当前活跃标签页并基于其内容工作（该工具无条件可用，返回保留标题/表格/列表/代码块结构的 Markdown 正文，完整正文落盘 content/*.md、单页 3000 字符、按 path+page 续读），禁止先搜索或跳转其它网站；仅当当前页面信息不足以完成任务时，才补充检索外部资料，并向用户明确说明哪些信息来自当前页面、哪些来自外部检索。\n`) +
+          : `当前页面优先：用户提到「当前网站 / 当前页面 / 这个网页 / 本页」或语义明显指向其正在浏览的内容（如"分析这个页面的XX"）时，必须优先调用 read_website 读取当前活跃标签页并基于其内容工作（该工具无条件可用，返回保留标题/表格/列表/代码块结构的 Markdown 正文，完整正文落盘 content/*.md、单页 3000 字符、后续页用 file_util(action="read", path=该文件, index=页码) 续读），禁止先搜索或跳转其它网站；仅当当前页面信息不足以完成任务时，才补充检索外部资料，并向用户明确说明哪些信息来自当前页面、哪些来自外部检索。\n`) +
         `</environment>`,
     );
     // 固定交互准则（任何智能体/技能都不可覆盖）：敏感操作授权与关键决策
@@ -417,17 +424,10 @@ class RuntimeBuilder {
     // JS 规程只在 js_run 真实注册时注入：提示词与工具面不一致会让模型
     // 按规程调用一个不存在的工具（见上方能力自检）
     if (jsToolAvailable) sections.push(JS_SYSTEM_PROMPT_SECTION);
-    // Python 规程同理：只在 python_run 真实进入本轮工具面时注入。
-    // 判定用最终工具面（sessionToolIds ∪ 技能携带工具）——规程必须与
-    // 工具面严格一致，否则模型会照规程去调用一个本轮拿不到的工具。
-    const pythonToolAvailable =
-      registeredToolNames.has(PYTHON_RUN_TOOL_ID) &&
-      [...new Set([
-        ...sessionToolIds,
-        ...activation.toolIds,
-        ...availableSkills.flatMap(skill => skill.allowedTools),
-      ])].some(id => id === PYTHON_RUN_TOOL_ID && allowsSessionTool(id));
-    if (pythonToolAvailable) sections.push(PYTHON_SYSTEM_PROMPT_SECTION);
+    // Python 规程（<python-scripting>）不在这里 push：它走条件注入钩子
+    // （prompt-hooks 的 pythonScriptingHook），由钩子保证「工具面含 python_run
+    // 才注入 + 分区自治防重 + 注册表存在性校验」——新增条件注入一律走钩子，
+    // 不再往装配主流程里加内联判定。
     // 缺失核心工具时的降级说明：明确「不可调用 + 替代路径 + 何时该停下问用户」，
     // 避免模型用不存在的工具空转，或谎称已完成对应操作
     if (unavailableCoreToolIds.length > 0) {
@@ -438,7 +438,7 @@ class RuntimeBuilder {
         );
       }
       if (unavailableCoreToolIds.includes('python_run')) {
-        fallback.push('python_run 不可用：计算与文件整形改用 js_run 或数据工具（data_ref_tool / xlsx_tool）。');
+        fallback.push('python_run 不可用：计算改用 js_run（页面内计算）或数据工具（data_ref_tool / xlsx_tool）；工作区文件的读写/盘点统一用 file_util。');
       }
       sections.push(
         `<capability-limits>\n` +
@@ -461,7 +461,7 @@ class RuntimeBuilder {
       '<history-and-tools>\n历史截图仅是过去状态的证据；GUI 操作必须使用最新有效截图，截图失效时重新获取，不得重用旧坐标。' +
         '\n</history-and-tools>',
     );
-    // 智能体指令分区：动态装配方（网站学习等）经 agentSystemOverride 整体替换，
+    // 智能体指令分区：动态装配方经 agentSystemOverride 整体替换，
     // 否则取所选智能体指令，再兜底默认指令。
     // agentInstructionsIndex 记录该分区的插入锚点：条件注入钩子（视觉规程等）
     // 按 before-agent-instructions 语义 splice 到此位置，保证「视觉规程先于
@@ -477,10 +477,15 @@ class RuntimeBuilder {
 
     // 合成激活轮（预选技能的 skill_tool(action="load") 调用）：正文不进 system prompt，
     // 由会话侧追加到本轮用户消息之后；此处只取其预授权工具参与工具合并
-    if (isVisionGuide && selectedSkillNames.length !== input.skillNames.length) {
-      sections.push('<capability-boundary>\n本轮所选技能中存在不可用或超出观察范围的技能，已跳过激活。不要声称已运行这些技能；若用户目标依赖代操作，说明原因并建议切换视觉通用助手 / 文本通用助手 或数据采集助手。\n</capability-boundary>');
+    // 能力边界：显式预选技能已加载，但其中部分工具在当前智能体/环境下不可用
+    // （视觉助手只读边界、插件工具天花板、工具未注册、Python 未就绪等）。
+    // 只向模型陈述「能力被裁剪」这一事实与替代策略，不暴露内部策略细节；
+    // 技能正文据此走「用户协作 / 观察记录」模式，禁止声称使用了不存在的工具。
+    if (unavailableSelectedToolIds.size > 0) {
+      sections.push(
+        '<capability-boundary>\n本轮所选技能的部分工具在当前智能体或环境下不可用，已按真实能力裁剪。请仅使用实际可用的工具推进；无法直接执行的步骤改为请用户操作，并用可用工具观察、校验与记录。不要声称使用了不可用的工具，也不要尝试绕过能力边界。\n</capability-boundary>',
+      );
     }
-    if (pluginCeiling && selectedSkillNames.length !== input.skillNames.length) sections.push('<capability-boundary>所选技能中有超出插件公开授权范围的能力，已跳过这些技能。请向用户说明限制，不得通过加载其它技能绕过。</capability-boundary>');
     const discovery = skillEngine.buildDiscoverySection(
       [...availableSkills].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0), [],
     );
@@ -491,8 +496,8 @@ class RuntimeBuilder {
     // ∪ 可用技能携带）包含 vision_gui 即注入 vision-gui-prompt 的对应变体——
     // 第 1 步已保证智能体面的 vision_gui 恰由视觉操作开关驱动，此处只做
     // 「检测 → 注入」，两者以同一份归一后的工具面为传递中介。内置观察者取
-    // 观察变体；agentSystem 自带完整 <vision-gui-tool> 分区（学习域自有分区、
-    // 历史智能体正文）时钩子自跳过防重。注入锚点在 <agent-instructions> 之前。
+    // 观察变体；agentSystem 自带完整 <vision-gui-tool> 分区（历史智能体正文）
+    // 时钩子自跳过防重。注入锚点在 <agent-instructions> 之前。
     // 工具面口径与最终交付的 toolIds 对齐（同样的观察者上限与插件天花板过滤）：
     // 被天花板挡掉的工具不得出现在注入规程里——否则模型会按规程去调用一个
     // 本轮不可用的工具。
@@ -532,7 +537,7 @@ class RuntimeBuilder {
     // visionOverride 三态：undefined=沿用 agent 声明、对象=启用/替换、null=显式禁用。
     // 本变量只决定「视觉循环」（自动截图等运行期行为）；vision_gui 工具面的
     // 注入/剔除由上方「视觉操作开关注入」按 agent.vision 声明独立归一——
-    // 动态场景（网站学习 agentName=null）经 extraToolIds 自带工具，不走开关注入。
+    // 动态场景（agentName=null）经 extraToolIds 自带工具，不走开关注入。
     const vision =
       input.visionOverride !== undefined ? input.visionOverride : (agent?.vision ?? null);
     const appSettings = appSettingsStore.get();
@@ -546,16 +551,12 @@ class RuntimeBuilder {
     // 基线：轮次上限、连续失败阈值与单工具超时上限取应用设置（文本与视觉
     // 策略统一同一轮次；单工具超时由工具执行引擎作为硬上界执行），固定
     // 时长保持常量
-    const baselineLimits: RuntimeLimits = {
+    const limits: RuntimeLimits = {
       ...DEFAULT_LIMITS,
       maxIterations: appSettings.maxIterations,
       maxConsecutiveFailedToolRounds: appSettings.maxConsecutiveFailedToolRounds,
       toolTimeoutMs: toolTimeoutMinutes * 60_000,
     };
-    // 长任务（网站学习）经 limitsOverride 提升上限；只覆盖显式给出的字段
-    const limits: RuntimeLimits = input.limitsOverride
-      ? { ...baselineLimits, ...input.limitsOverride }
-      : baselineLimits;
 
     // ── AI 面初始上下文（不含 system 与本轮用户消息；压缩摘要作为记忆消息置于最前）──
     // 图片引用预载（幂等，含缓存驱逐后的回读）：保证任何装配路径——包括绕过
@@ -605,6 +606,7 @@ class RuntimeBuilder {
 
     return {
       chatId: input.chatId,
+      ...(browserScope ? { browserScope } : {}),
       availableSkillIds,
 
       pluginBindings: pluginBindings(),
@@ -626,7 +628,9 @@ class RuntimeBuilder {
       // 预选技能快照（单轮生效；渲染在用户消息顶部，每条消息独立可追溯）
       ...(selectedSkills.length > 0 ? { selectedSkills } : {}),
       advertisedToolIds,
-      systemPrompt,
+      systemPrompt: browserScope
+        ? `${systemPrompt}\n<browser_window_scope>Beta window binding is enabled. All page tools may access only browser window ${browserScope.windowId}. Do not request or use tabs from other windows. Tab activation stays inside the bound window without bringing it to the foreground. If the window closes, the current task stops with an error; settings return to follow mode for the next user request. Never continue this task in another window. Past page references may belong to another window; observe again when needed.</browser_window_scope>`
+        : systemPrompt,
       // 交付前终态归一化（上方已算好：去重保序 + 脏数据过滤 + 未注册 ID 剔除告警）
       toolIds,
       ...(isVisionGuide ? { toolPolicy: 'vision-assistant' as const } : {}),
@@ -641,6 +645,9 @@ class RuntimeBuilder {
       // 不交信封字符串——信封与落库数据因此永不脱节）
       pageQuotePrompt: input.pageQuote ? buildPageQuoteEnvelope(input.pageQuote) : '',
       pageQuote: input.pageQuote,
+      // 元素信封与落库数据同源（调用方只交数组，信封由装配层派生）
+      capturedElements: normalizeCapturedElements(input.capturedElements),
+      selectedElementsPrompt: buildSelectedElementsEnvelope(input.capturedElements ?? []),
       initialContext,
       priorViewportImageRefs,
       // 合成激活轮（未预选技能时为空数组），由会话引擎追加到用户消息之后

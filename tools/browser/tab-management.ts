@@ -1,3 +1,4 @@
+import { browserChrome } from '@/tools/browser/browser-scope';
 /**
  * 统一标签页与窗口工具（browser_tabs）
  *
@@ -139,15 +140,15 @@ export class BrowserTabsTool extends BaseBrowserTool {
     try {
       switch (args.action) {
         case 'list':
-          return await this.handleList(args);
+          return await this.handleList(args, context);
         case 'switch':
-          return await this.handleSwitch(args);
+          return await this.handleSwitch(args, context);
         case 'close':
-          return await this.handleClose(args);
+          return await this.handleClose(args, context);
         case 'create':
           return await this.handleCreate(args, context);
         case 'windows':
-          return await this.handleWindows();
+          return await this.handleWindows(context);
       }
     } catch (error) {
       return this.createErrorResponse(`Failed to ${args.action}`, error);
@@ -208,8 +209,8 @@ export class BrowserTabsTool extends BaseBrowserTool {
   // ──── action 实现 ────
 
   /** list：枚举标签页（原 browser_get_all_tabs 语义） */
-  private async handleList(args: TabsArgs): Promise<ToolResult> {
-    const tabs = await chrome.tabs.query(args.currentWindow ? { currentWindow: true } : {});
+  private async handleList(args: TabsArgs, context?: ToolExecutionContext): Promise<ToolResult> {
+    const tabs = await browserChrome(context).tabs.query(args.currentWindow ? { currentWindow: true } : {});
 
     const tabsInfo = tabs.map(tab => ({
       tabId: tab.id,
@@ -231,13 +232,13 @@ export class BrowserTabsTool extends BaseBrowserTool {
   }
 
   /** switch：切换标签页并聚焦其窗口（原 browser_switch_tab 语义） */
-  private async handleSwitch(args: TabsArgs): Promise<ToolResult> {
+  private async handleSwitch(args: TabsArgs, context?: ToolExecutionContext): Promise<ToolResult> {
     const tabId = args.tabId as number;
     // 先核验存在性：真实 chrome.tabs.get 对缺失 id 会抛裸错，统一收敛为
     // 与 close / wait 同族的可读文案（不把 chrome 内部措辞抛给模型）
     let tab: chrome.tabs.Tab | undefined;
     try {
-      tab = await chrome.tabs.get(tabId);
+      tab = await browserChrome(context).tabs.get(tabId);
     } catch {
       tab = undefined;
     }
@@ -245,10 +246,10 @@ export class BrowserTabsTool extends BaseBrowserTool {
       return this.createErrorResponse(`标签页 ${tabId} 不存在（可能已关闭），请用 action="list" 核对`);
     }
 
-    await chrome.tabs.update(tabId, { active: true });
+    await browserChrome(context).tabs.update(tabId, { active: true });
 
     if (tab.windowId) {
-      await chrome.windows.update(tab.windowId, { focused: true });
+      await browserChrome(context).windows.update(tab.windowId, { focused: true });
     }
 
     return this.createSuccessResponse({
@@ -264,9 +265,9 @@ export class BrowserTabsTool extends BaseBrowserTool {
    * closed（真正关掉的）与 failed（关闭动作被拒的，带底层原因）。
    */
   private async removeTabsResilient(
-    ids: readonly number[],
+    ids: readonly number[], context?: ToolExecutionContext
   ): Promise<{ closed: number[]; failed: Array<{ tabId: number; reason: string }> }> {
-    const settled = await Promise.allSettled(ids.map(id => chrome.tabs.remove(id)));
+    const settled = await Promise.allSettled(ids.map(id => browserChrome(context).tabs.remove(id)));
     const closed: number[] = [];
     const failed: Array<{ tabId: number; reason: string }> = [];
     settled.forEach((result, index) => {
@@ -288,14 +289,18 @@ export class BrowserTabsTool extends BaseBrowserTool {
   }
 
   /** close：单个 / 批量 / URL 匹配 / 缺省当前标签（原 close_tab 与 close_tabs 的并集） */
-  private async handleClose(args: TabsArgs): Promise<ToolResult> {
+  private async handleClose(args: TabsArgs, context?: ToolExecutionContext): Promise<ToolResult> {
+    if (context?.browserScope && args.tabIds) {
+      // Reject a mixed-window batch before closing even its allowed members.
+      await Promise.all(args.tabIds.map(id => browserChrome(context).tabs.get(id)));
+    }
     // ── URL 匹配关闭（原 close_tabs 语义：不含结尾斜杠按前缀组匹配） ──
     if (args.url !== undefined) {
       let urlPattern = args.url;
       if (!urlPattern.endsWith('/')) {
         urlPattern += '/*';
       }
-      const tabs = await chrome.tabs.query({ url: urlPattern });
+      const tabs = await browserChrome(context).tabs.query({ url: urlPattern });
 
       if (!tabs || tabs.length === 0) {
         return this.createSuccessResponse({
@@ -312,7 +317,7 @@ export class BrowserTabsTool extends BaseBrowserTool {
         return this.createErrorResponse('Found tabs but could not get their IDs');
       }
 
-      const { closed, failed } = await this.removeTabsResilient(tabIdsToClose);
+      const { closed, failed } = await this.removeTabsResilient(tabIdsToClose, context);
       if (closed.length === 0) {
         return this.createErrorResponse(
           `匹配 URL 的标签页全部关闭失败：${this.formatFailures(failed)}`,
@@ -336,7 +341,7 @@ export class BrowserTabsTool extends BaseBrowserTool {
       const existingTabs = await Promise.all(
         args.tabIds.map(async (tabId) => {
           try {
-            const tab = await chrome.tabs.get(tabId);
+            const tab = await browserChrome(context).tabs.get(tabId);
             return tab ?? null;
           } catch {
             this.log(`Tab with ID ${tabId} not found`, 'warn');
@@ -359,7 +364,7 @@ export class BrowserTabsTool extends BaseBrowserTool {
         }, 'None of the provided tab IDs exist');
       }
 
-      const { closed, failed } = await this.removeTabsResilient(validTabIds);
+      const { closed, failed } = await this.removeTabsResilient(validTabIds, context);
       if (closed.length === 0) {
         // 存在性核验通过却全部关闭失败 → 异常态势，按失败返回可分析明细
         return this.createErrorResponse(
@@ -385,14 +390,14 @@ export class BrowserTabsTool extends BaseBrowserTool {
     if (args.tabId !== undefined) {
       let existing: chrome.tabs.Tab | undefined;
       try {
-        existing = await chrome.tabs.get(args.tabId);
+        existing = await browserChrome(context).tabs.get(args.tabId);
       } catch {
         existing = undefined;
       }
       if (!existing) {
         return this.createErrorResponse(`标签页 ${args.tabId} 不存在（可能已关闭），请用 action="list" 核对`);
       }
-      const { closed, failed } = await this.removeTabsResilient([args.tabId]);
+      const { closed, failed } = await this.removeTabsResilient([args.tabId], context);
       if (closed.length === 0) {
         return this.createErrorResponse(`标签页 ${args.tabId} 关闭失败：${failed[0]?.reason ?? '未知原因'}`);
       }
@@ -404,13 +409,13 @@ export class BrowserTabsTool extends BaseBrowserTool {
     }
 
     // ── 缺省：关闭当前活动标签（原 close_tabs 的兜底行为） ──
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [activeTab] = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
 
     if (!activeTab || !activeTab.id) {
       return this.createErrorResponse('No active tab found');
     }
 
-    const { closed, failed } = await this.removeTabsResilient([activeTab.id]);
+    const { closed, failed } = await this.removeTabsResilient([activeTab.id], context);
     if (closed.length === 0) {
       return this.createErrorResponse(`关闭当前活动标签失败：${failed[0]?.reason ?? '未知原因'}`);
     }
@@ -423,8 +428,8 @@ export class BrowserTabsTool extends BaseBrowserTool {
   /** create：新建标签页（原 create_tab 语义 + 激活时聚焦窗口） */
   private async handleCreate(args: TabsArgs, context?: ToolExecutionContext): Promise<ToolResult> {
     const active = args.active !== false;
-    const windowId = await existingNavigationWindowId();
-    const tab = await chrome.tabs.create({
+    const windowId = await existingNavigationWindowId(context);
+    const tab = await browserChrome(context).tabs.create({
       windowId,
       url: args.url,
       active,
@@ -439,7 +444,7 @@ export class BrowserTabsTool extends BaseBrowserTool {
     // 后台打开（active=false）刻意不聚焦，不打断用户当前视线
     if (active) {
       try {
-        await chrome.windows.update(windowId, { focused: true });
+        await browserChrome(context).windows.update(windowId, { focused: true });
       } catch {
         // 聚焦失败（窗口最小化 / API 不可用）不阻断创建结果
       }
@@ -453,8 +458,8 @@ export class BrowserTabsTool extends BaseBrowserTool {
   }
 
   /** windows：窗口树枚举（原 browser_window 语义） */
-  private async handleWindows(): Promise<ToolResult> {
-    const windows = await chrome.windows.getAll({ populate: true });
+  private async handleWindows(context?: ToolExecutionContext): Promise<ToolResult> {
+    const windows = await browserChrome(context).windows.getAll({ populate: true });
     let tabCount = 0;
 
     const structuredWindows = windows.map((window) => {

@@ -7,7 +7,7 @@
  *   弹窗（dialog）→ 最小化（ball 悬浮球，边框为剩余时间进度环）→ 重新展开
  *
  * 收敛路径（四条，全部保证 Promise 不悬挂）：
- *   - 用户提交答复（点选项 / 自定义输入）→ { answered: true }
+ *   - 用户提交答复（单选点选项 / 多选勾选后提交 / 自定义输入）→ { answered: true }
  *   - 用户明确拒绝（拒绝按钮）→ { answered: false, status: 'declined' }
  *   - 等待超时（默认 20 分钟，用户可在设置中调整；视为用户不在线）
  *     → { answered: false, status: 'timeout' }
@@ -182,6 +182,21 @@ export function submitInteractAnswer(answer: string, source: 'option' | 'custom'
   const text = typeof answer === 'string' ? answer.trim() : '';
   if (!pendingResolve || !text) return;
   settleCurrent({ answered: true, answer: text, source });
+}
+
+/**
+ * 用户提交多选结果（勾选若干选项后点「提交」）。
+ *
+ * 只回传 label 数组——答复原文的拼接在工具层完成（interact-tool 的
+ * MULTI_ANSWER_SEPARATOR），文案格式不落在 UI 层。空数组 / 无展示时为安全空操作。
+ */
+export function submitInteractSelection(labels: string[]): void {
+  if (!pendingResolve) return;
+  const cleaned = (Array.isArray(labels) ? labels : [])
+    .map(label => (typeof label === 'string' ? label.trim() : ''))
+    .filter(Boolean);
+  if (cleaned.length === 0) return;
+  settleCurrent({ answered: true, answers: cleaned, source: 'option' });
 }
 
 /** 用户明确拒绝回答（区别于最小化与超时） */

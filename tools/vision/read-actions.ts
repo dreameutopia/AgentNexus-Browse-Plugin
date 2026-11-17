@@ -87,7 +87,7 @@ async function observePayload(
   action: ObservationAction,
   args: ReadActionArgs | ReadScrollArgs,
   tabId: number,
-  viewport: Viewport,
+  viewport: Viewport, context?: ToolExecutionContext
 ): Promise<Record<string, unknown>> {
   const point =
     "point" in args && args.point ? toViewport(args.point, viewport) : null;
@@ -118,7 +118,7 @@ async function observePayload(
       func: visionReadPayload,
       args: [action === "read" ? "read" : "scroll", payload],
     },
-    { operation: "Read-only page observation", timeoutMs: 2500 },
+    { operation: "Read-only page observation", timeoutMs: 2500 }, context
   );
   if (!results[0]?.result)
     throw new GuiError("TARGET_UNAVAILABLE", "Observation returned no data");
@@ -159,9 +159,9 @@ export async function executeObservation(
           action === "read_scroll",
           signal,
           async (s) => {
-            const payload = await observePayload(action, args, s.tabId, s.viewport);
+            const payload = await observePayload(action, args, s.tabId, s.viewport, context);
             return { ...payload, sourceScreenshotId: s.id, observedAt: Date.now() };
-          },
+          }, context
         ),
       context?.signal,
     );

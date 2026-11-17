@@ -1,3 +1,4 @@
+import { browserChrome } from '@/tools/browser/browser-scope';
 /**
  * 页面正文提取引擎（read_website 与历史文本通道共用）
  *
@@ -204,14 +205,14 @@ export async function resolvePageTarget(
 
     // 复用同址标签页（不做大小写/尾斜杠归一：路径可能带业务含义）
     try {
-      const windowId = await withDeadline(() => existingNavigationWindowId(), 5000, 'Resolve existing browser window', signal);
-      const sameUrlTabs = await withDeadline(() => chrome.tabs.query({ windowId }), 5000, 'Find reusable page', signal);
+      const windowId = await withDeadline(() => existingNavigationWindowId(context), 5000, 'Resolve existing browser window', signal);
+      const sameUrlTabs = await withDeadline(() => browserChrome(context).tabs.query({ windowId }), 5000, 'Find reusable page', signal);
       const reusable = sameUrlTabs.find(
         (tab) => typeof tab.id === 'number' && tab.url === parsedUrl.href,
       );
       if (reusable && typeof reusable.id === 'number') {
-        await withDeadline(() => chrome.tabs.update(reusable.id!, { active: true }), 5000, 'Activate reusable page', signal);
-        const wait = await waitForUrlTab(reusable.id, signal);
+        await withDeadline(() => browserChrome(context).tabs.update(reusable.id!, { active: true }), 5000, 'Activate reusable page', signal);
+        const wait = await waitForUrlTab(reusable.id, signal, context);
         if (wait.ok) {
           notify(reusable.id);
           return { ok: true, tabId: reusable.id, url: reusable.url ?? rawUrl, ...(wait.note ? { loadNote: wait.note } : {}) };
@@ -224,18 +225,18 @@ export async function resolvePageTarget(
     }
 
     try {
-      const windowId = await withDeadline(() => existingNavigationWindowId(), 5000, 'Resolve existing browser window', signal);
-      const created = await withDeadline(() => chrome.tabs.create({ url: rawUrl, active: true, windowId }), 5000, 'Create page tab', signal);
+      const windowId = await withDeadline(() => existingNavigationWindowId(context), 5000, 'Resolve existing browser window', signal);
+      const created = await withDeadline(() => browserChrome(context).tabs.create({ url: rawUrl, active: true, windowId }), 5000, 'Create page tab', signal);
       if (!created || typeof created.id !== 'number')
         return { ok: false, error: 'TAB_CREATE_FAILED：目标标签页打开失败（浏览器未返回标签页 ID）。' };
       notify(created.id);
       try {
-        await withDeadline(() => chrome.windows.update(windowId, { focused: true }), 3000, 'Focus page window', signal);
+        await withDeadline(() => browserChrome(context).windows.update(windowId, { focused: true }), 3000, 'Focus page window', signal);
       } catch {
         signal?.throwIfAborted();
         // 聚焦失败（窗口最小化/API 不可用）不阻断提取
       }
-      const wait = await waitForUrlTab(created.id, signal);
+      const wait = await waitForUrlTab(created.id, signal, context);
       if (!wait.ok)
         return { ok: false, error: `PAGE_LOAD_FAILED：目标页面加载失败：${wait.note ?? '未知原因'}。` };
       return { ok: true, tabId: created.id, url: rawUrl, ...(wait.note ? { loadNote: wait.note } : {}) };
@@ -254,12 +255,12 @@ export async function resolvePageTarget(
 }
 
 /** url 模式加载等待：就绪 → ok；超时 → 软失败（按已渲染内容继续）；关闭 → 失败 */
-async function waitForUrlTab(tabId: number, signal?: AbortSignal): Promise<{ ok: boolean; note?: string }> {
+async function waitForUrlTab(tabId: number, signal?: AbortSignal, context?: ToolExecutionContext): Promise<{ ok: boolean; note?: string }> {
   const outcome = await waitForTabReady(tabId, {
     timeoutMs: URL_LOAD_TIMEOUT_MS,
     pollIntervalMs: 250,
     signal,
-  });
+  }, context);
   if (outcome.ready) return { ok: true };
   if (outcome.reason === 'closed') return { ok: false, note: '标签页在加载期间被关闭' };
   return { ok: true, note: '页面加载超时，已按当前已渲染内容提取' };
@@ -272,7 +273,7 @@ async function waitForUrlTab(tabId: number, signal?: AbortSignal): Promise<{ ok:
  */
 export async function extractPageDoc(
   tabId: number,
-  options: { requestedUrl?: string; loadNote?: string; signal?: AbortSignal } = {},
+  options: { requestedUrl?: string; loadNote?: string; signal?: AbortSignal } = {}, context?: ToolExecutionContext
 ): Promise<PageDocResult> {
   let results: FrameResults<ReturnType<typeof structuredPagePayload>>;
   try {
@@ -281,7 +282,7 @@ export async function extractPageDoc(
       world: 'ISOLATED',
       func: structuredPagePayload,
     }, { operation: 'page-text', signal: options.signal, maxResultChars: MAX_DOC_CHARS,
-      measureResult: payload => typeof payload?.markdown === 'string' ? payload.markdown.length : 0 });
+      measureResult: payload => typeof payload?.markdown === 'string' ? payload.markdown.length : 0 }, context);
   } catch (error) {
     return {
       ok: false,

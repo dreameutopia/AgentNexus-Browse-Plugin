@@ -9,22 +9,19 @@
  *   - **不再把正文缓存为 dataRef 引用**，而是把完整正文写成会话工作区的
  *     `content/<url-slug>-<4位随机字母>.md` 交付物；
  *   - 返回 CSV 多列单行：`content,page,totalPages,path`；
- *   - 分页续读传 `path + page`（从工作区文件读取），与 js_run 的
- *     `read(path, index)` 规范一致——产物可下载、可编辑、可被 data_ref/xlsx
- *     等工具按路径消费。
+ *   - 续读统一走 file_util(action="read", path=返回的 path, index=页码)——
+ *     文件读取语义全仓只保留一份实现，本工具不再内置 path 读取模式。
  *
  * 落盘策略：正文非空且 ≥100 字符才落盘（过短内容没有归档价值，直接内联返回，
  * 避免产生大量几行的小文件）。落盘失败不阻断本次读取，降级为内联 + 明确告警。
  */
 
 import { BaseBrowserTool } from './browser-tool';
-import { isFrameReadReport, type FrameReadReport } from '../common/frame-read';
 import type { ToolMetadata, ToolExecutionContext } from '../registry';
 import { assertPluginOrigin, pluginOriginOf } from '../common/plugin-origin';
 import type { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
 import {
-  PAGE_CHARS_LIMIT,
   extractPageDoc,
   pageDelivery,
   pageFileSlug,
@@ -33,8 +30,6 @@ import {
 } from '../browser/page-doc-engine';
 import {
   WORKSPACE_CONTENT_DIR,
-  WORKSPACE_READ_MAX_FILE_BYTES,
-  readWorkspaceTextFile,
   writeToolWorkspaceFile,
 } from '@/utils/python-workspace/workspace-files';
 
@@ -71,9 +66,9 @@ export class ReadWebsiteTool extends BaseBrowserTool {
     name: 'read_website',
     description:
       '读取网页正文为结构化 Markdown 并落盘 content/*.md：多 frame + shadow root 覆盖，' +
-      '单页 3000 字符，CSV（content,page,totalPages,path）返回，支持 path+page 续读',
+      '单页 3000 字符，CSV（content,page,totalPages,path）返回；续读用 file_util(action="read")',
     category: 'browser',
-    version: '1.0.0',
+    version: '2.0.0',
     author: 'AgentNexus',
     tags: ['browser', 'content', 'text', 'markdown', 'workspace', 'artifact'],
     // 纯读（不带 url/tabId 时不改变用户可见页面）；带 url 的前台打开或
@@ -92,9 +87,9 @@ export class ReadWebsiteTool extends BaseBrowserTool {
         '覆盖全部可注入 frame（iframe）与可访问 shadow root，剔除隐藏内容与脚本/样式/SVG/Canvas。\n' +
         '目标：默认读当前活动标签页；url=单个网址 时前台打开并等待加载完成（标签页保留在用户眼前，便于手动过验证）；tabId 可指定标签页（会先切换到该页）。\n' +
         '返回 CSV 多列单行：content,page,totalPages,path（path 为工作区相对路径，如 content/example-com-list-1-a1b2.md）。' +
-        '单页最多 3000 字符，完整正文永远在 path 文件里；续读传 path + page（page 从 1 起，page < totalPages 表示还有下一页）。\n' +
+        '单页最多 3000 字符，完整正文永远在 path 文件里；需要后续页或全文时用 file_util(action="read", path=该 path, index=页码) 按页读取（page < totalPages 表示还有下一页）。\n' +
         '正文为空或不足 100 字符时不落盘，直接把内容放在 CSV 的 content 列（path 为空）。\n' +
-        '与其它工具的联动：path 文件可直接用 js_run(read)/data_ref_tool/xlsx_tool 按路径消费，也可作为交付物下载。\n' +
+        '与其它工具的联动：path 文件可直接用 file_util(action="read") / data_ref_tool / xlsx_tool 按路径消费，也可作为交付物下载。\n' +
         '需要批量结构化抽取请用 browser_extract_data / js_run；需要元素级观察与交互请用 browser_observe / browser_interact。',
       parameters: {
         type: 'object',
@@ -111,11 +106,6 @@ export class ReadWebsiteTool extends BaseBrowserTool {
             description:
               '标签页 ID（可选，默认当前活动标签页；运行时也接受纯数字字符串）。显式传入会先核对存在性与可注入性，再切换到该标签页；与 url 互斥',
           },
-          path: {
-            type: 'string',
-            description:
-              '分页续读用：上一次返回的 content/*.md 工作区相对路径。提供时不再访问页面，只从该文件读取指定页；与 url、tabId 互斥',
-          },
           page: {
             type: 'integer',
             minimum: 1,
@@ -128,7 +118,7 @@ export class ReadWebsiteTool extends BaseBrowserTool {
   };
 
   async execute(
-    rawArgs: { url?: unknown; tabId?: unknown; path?: unknown; page?: unknown } = {},
+    rawArgs: { url?: unknown; tabId?: unknown; page?: unknown } = {},
     context?: ToolExecutionContext,
   ): Promise<ToolResult> {
     this.ensureBackgroundContext();
@@ -136,15 +126,18 @@ export class ReadWebsiteTool extends BaseBrowserTool {
 
     if (rawArgs === null || typeof rawArgs !== 'object' || Array.isArray(rawArgs)) {
       return this.createErrorResponse(
-        `参数必须是对象 { url?, tabId?, path?, page? }，实际收到 ${Array.isArray(rawArgs) ? 'array' : typeof rawArgs}`,
+        `参数必须是对象 { url?, tabId?, page? }，实际收到 ${Array.isArray(rawArgs) ? 'array' : typeof rawArgs}`,
       );
     }
     const args = rawArgs as Record<string, unknown>;
-    const allowedKeys = ['url', 'tabId', 'path', 'page'];
+    const allowedKeys = ['url', 'tabId', 'page'];
     const unknownKeys = Object.keys(args).filter((key) => !allowedKeys.includes(key));
     if (unknownKeys.length > 0)
       return this.createErrorResponse(
-        `存在未知参数：${unknownKeys.join('、')}。允许的参数：${allowedKeys.join('/')}（续读用 path + page；打开新页用 url；指定标签页用 tabId）。`,
+        `存在未知参数：${unknownKeys.join('、')}。允许的参数：${allowedKeys.join('/')}（打开新页用 url；指定标签页用 tabId）。` +
+          (unknownKeys.includes('path')
+            ? 'path 续读模式已下线：请用 file_util(action="read", path=上次返回的 path, index=页码) 读取已落盘正文。'
+            : ''),
       );
 
     // ── 参数归一与防御 ──
@@ -162,9 +155,6 @@ export class ReadWebsiteTool extends BaseBrowserTool {
       );
     const tabId =
       args.tabId === undefined || args.tabId === null ? undefined : args.tabId;
-    if (args.path !== undefined && args.path !== null && typeof args.path !== 'string')
-      return this.createErrorResponse('path 必须是字符串（工作区相对路径）');
-    const path = typeof args.path === 'string' ? args.path.trim() : '';
 
     let page = 1;
     if (args.page !== undefined && args.page !== null) {
@@ -179,15 +169,6 @@ export class ReadWebsiteTool extends BaseBrowserTool {
           `page 必须是 ≥1 的整数（页码），实际收到 ${String(args.page)}`,
         );
       page = Math.floor(parsed);
-    }
-
-    // ── 续读模式：只读工作区文件，不访问页面 ──
-    if (path) {
-      if (url) return this.createErrorResponse('path 与 url 互斥：续读模式不访问页面，请只提供 path + page');
-      if (tabId !== undefined)
-        return this.createErrorResponse('path 与 tabId 互斥：续读模式不访问标签页，请只提供 path + page');
-      try { return await this.readSavedPage(path, page, context); }
-      catch (error) { return this.createErrorResponse(`${context?.signal?.aborted ? 'ABORTED' : 'WORKSPACE_READ_FAILED'}：${errorText(error)}`); }
     }
 
     // ── 插件页面边界：先校验目标 URL，再决定是否打开/读取 ──
@@ -231,7 +212,7 @@ export class ReadWebsiteTool extends BaseBrowserTool {
         requestedUrl: target.url,
         loadNote: target.loadNote,
         signal: context?.signal,
-      });
+      }, context);
       if (!doc.ok) return { ...this.createErrorResponse(doc.error), data: { frameDiagnostics: doc.frameDiagnostics } };
       extracted = doc;
     } catch (error) {
@@ -277,11 +258,9 @@ export class ReadWebsiteTool extends BaseBrowserTool {
       value: savedPath,
     });
     if (!delivery.ok) return this.createErrorResponse(delivery.error);
-    // 直接按页码重取会生成第二个正文文件；提示后续用 path + page 复用，
-    // 避免同一篇正文在 content/ 下留下多份拷贝
     const pagingNote =
       page > 1 && savedPath
-        ? '本次按页重取已生成新的正文文件；后续续读请传 path + page 复用该文件，避免重复产物。'
+        ? '本次按页重取已生成新的正文文件；后续请用 file_util(action="read", path=该文件, index=下一页页码) 读取，避免重复提取。'
         : '';
     const note = [extracted.loadNote, pagingNote].filter(Boolean).join(' ');
     const payload: Record<string, unknown> = {
@@ -334,7 +313,7 @@ export class ReadWebsiteTool extends BaseBrowserTool {
             }), { mime: 'application/json;charset=utf-8', signal });
             return { ok: true, path: written.path, frameDiagnosticsPath: metadataPath };
           } catch (error) {
-            return { ok: true, path: written.path, warning: `正文已保存，但采集诊断未能持久化：${errorText(error)}；续读文件无法恢复本次缺失范围，请保留当前 frameDiagnostics。` };
+            return { ok: true, path: written.path, warning: `正文已保存，但采集诊断未能持久化：${errorText(error)}；后续用 file_util(action="read") 续读时无法恢复本次缺失范围，请保留当前 frameDiagnostics。` };
           }
         }
         return { ok: true, path: written.path };
@@ -348,69 +327,13 @@ export class ReadWebsiteTool extends BaseBrowserTool {
       ok: false,
       error:
         `正文落盘失败（${lastError || '未知原因'}）——本次仅返回当前页；` +
-        `可稍后重试，或用 js_run 把正文写入 outputs/。`,
+        `可稍后重试，或用 file_util(action="create", path="content/xxx.md", content=…) 保存正文，再用 document_tool 交付。`,
     };
   }
 
   private async contentHash(text: string): Promise<string> {
     const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
     return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
-  }
-
-  /** 从已落盘的 content/*.md 分页读取（与 js_run read 的语义一致） */
-  private async readSavedPage(
-    path: string,
-    page: number,
-    context?: ToolExecutionContext,
-  ): Promise<ToolResult> {
-    if (!path.startsWith(`${WORKSPACE_CONTENT_DIR}/`))
-      return this.createErrorResponse(
-        `INVALID_ARGUMENT：续读只接受本工具产出的 ${WORKSPACE_CONTENT_DIR}/ 下 Markdown 文件，实际收到 ${JSON.stringify(path.slice(0, 200))}。` +
-          `读取其它工作区文件请用 js_run(action="read", path, index)。`,
-      );
-    if (!context?.chatId)
-      return this.createErrorResponse(
-        '缺少会话上下文，无法读取工作区文件——请在正常会话中续读，或重新提供 url/tabId 提取。',
-      );
-    let text: string;
-    try {
-      const file = await readWorkspaceTextFile(
-        context.chatId,
-        path,
-        context.signal,
-        WORKSPACE_READ_MAX_FILE_BYTES,
-      );
-      text = file.content;
-    } catch (error) {
-      return this.createErrorResponse(
-        `读取 ${path} 失败：${errorText(error)}。请确认路径来自本工具最近一次返回（文件可能已被移动/删除）。`,
-        error,
-      );
-    }
-    const totalPages = Math.max(1, Math.ceil(text.length / PAGE_CHARS_LIMIT));
-    const delivery = pageDelivery(text, page, totalPages, { name: 'path', value: path });
-    if (!delivery.ok) return this.createErrorResponse(delivery.error);
-    let frameDiagnostics: FrameReadReport | undefined;
-    let diagnosticNote = '此文件未附可验证的采集诊断，无法据文件正文判断原始页面覆盖是否完整。';
-    try {
-      const metadataFile = await readWorkspaceTextFile(context.chatId, path + '.frames.json', context.signal, WORKSPACE_READ_MAX_FILE_BYTES);
-      const metadata = JSON.parse(metadataFile.content);
-      if (!metadata || metadata.version !== 1 || !isFrameReadReport(metadata.frameDiagnostics)) {
-        diagnosticNote = '采集诊断文件格式无效或版本不受支持，未将其作为当前覆盖信息。';
-      } else if (metadata.contentSha256 === await this.contentHash(text)) {
-        frameDiagnostics = metadata.frameDiagnostics;
-        diagnosticNote = '';
-      } else diagnosticNote = '正文文件已变化，原始采集诊断不再适用于当前文件。';
-    } catch (error) {
-      context.signal?.throwIfAborted();
-      if (workspaceErrorCode(error) !== 'WORKSPACE_FILE_NOT_FOUND') diagnosticNote = `采集诊断无法读取或校验：${errorText(error)}；正文仍已返回。`;
-    }
-    return this.createSuccessResponse(
-      { content: delivery.csv, ...(frameDiagnostics ? { frameDiagnostics } : {}), ...(diagnosticNote ? { diagnosticNote } : {}) },
-      `已读取 ${path} 第 ${page}/${totalPages} 页（共 ${text.length} 字符${
-        delivery.slice.hasMore ? `，下一页 page=${page + 1}` : '，已到末页'
-      }）`,
-    );
   }
 }
 

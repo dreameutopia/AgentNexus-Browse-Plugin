@@ -203,36 +203,41 @@ export function summarizeRequirements(
 /**
  * 把判定结论渲染成模型可直接照做的下一步指引。
  *
- * 措辞原则：**说出具体包名 + 具体参数**，不给「请检查依赖」这类无动作指引。
- * 三条路径按「改动量从小到大」排列，让模型优先选代价最低的：
- *   ① 已在官方目录内 → 不用声明（脚本 import 即自动加载）；
- *   ② 需从 PyPI 装 → requirements + dependencyMode="pypi"（会请求用户审批）；
- *   ③ 装不上 → 换标准库 / 换实现。
+ * 措辞原则：
+ *   - **说出具体声明 + 具体参数**，不给「请检查依赖」这类无动作指引；
+ *   - 回显**模型写下的原始声明**（含版本约束），不是截短的包名——指引要求
+ *     「保留 requirements」，自己却把 `pypdf>=5` 写成 `pypdf`，模型照抄就会
+ *     丢掉版本约束；
+ *   - 声明去重：同一声明出现多次只提示一次；
+ *   - 三条路径按「改动量从小到大」排列，让模型优先选代价最低的。
  */
 export function renderRequirementGuidance(summary: RequirementSummary): string {
   if (summary.allSatisfied) return '';
+  const unique = (items: readonly RequirementVerdict[]): string[] =>
+    [...new Set(items.map((item) => item.declaration))];
+  const quoted = (items: readonly string[]): string =>
+    `[${items.map((text) => JSON.stringify(text)).join(', ')}]`;
   const lines: string[] = ['[依赖契约判定]'];
   if (summary.satisfied.length) {
-    const names = summary.satisfied.map((item) => item.packageName).join('、');
     lines.push(
-      `已在官方目录/已安装，无需声明：${names}（脚本里直接 import 即可，按 import 自动加载）`,
+      `已在官方目录或已安装，无需声明：${unique(summary.satisfied).join('、')}` +
+      '（脚本里直接 import 即可——官方目录内按 import 自动加载，已安装的直接可用）',
     );
   }
   if (summary.needsPypi.length) {
-    const names = summary.needsPypi.map((item) => item.packageName).join('、');
+    const declarations = unique(summary.needsPypi);
     lines.push(
-      `不在官方目录内，需从公开 PyPI 安装：${names} —— ` +
-      '保留 requirements=["' + names.split('、').join('","') + '"] 并同时传 dependencyMode="pypi"（会请求用户审批；仅纯 Python wheel 可装，含 C 扩展的包只能改用官方目录内的版本）',
+      `不在官方目录内，需从公开 PyPI 安装：${declarations.join('、')} —— ` +
+      `requirements=${quoted(declarations)} 并同时传 dependencyMode="pypi"` +
+      '（会请求用户审批；仅纯 Python wheel 可装，含 C 扩展的包只能改用官方目录内的版本或自备兼容 .whl 走 wheels 参数）',
     );
   }
-  if (summary.unsatisfiable.length) {
-    for (const item of summary.unsatisfiable) {
-      lines.push(
-        `无法解析的依赖声明：${item.declaration}` +
-        (item.reason ? `（${item.reason}）` : '') +
-        ' —— 改用 PEP 508 包名 + 版本约束写法',
-      );
-    }
+  for (const item of summary.unsatisfiable) {
+    lines.push(
+      `无法解析的依赖声明：${JSON.stringify(item.declaration)}` +
+      (item.reason ? `（${item.reason}）` : '') +
+      ' —— 改用 PEP 508 写法：包名 + 可选版本约束（如 "pypdf>=5"）',
+    );
   }
   lines.push(
     '装不上的包不要反复重试同一条命令：换官方目录内的包、换标准库（csv/json/xml/zipfile）等价实现，或改用专用工具产出交付物。',

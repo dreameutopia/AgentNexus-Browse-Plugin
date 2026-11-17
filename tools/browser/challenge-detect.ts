@@ -1,3 +1,4 @@
+import type { ToolExecutionContext } from '@/tools/registry';
 import { executeScriptBounded } from '../common/frame-read';
 /**
  * 风控 / 人机验证页探测（共享实现）
@@ -90,7 +91,7 @@ export function detectChallengeFromText(
  * 不等于验证页，宁可继续也不误停。
  */
 export async function detectChallengePage(
-  tabId: number,
+  tabId: number, context?: ToolExecutionContext
 ): Promise<ChallengeDetection> {
   try {
     const results = await executeScriptBounded({
@@ -104,7 +105,7 @@ export async function detectChallengePage(
         return { title, body };
       },
       world: 'ISOLATED',
-    });
+    }, undefined, undefined, context);
     const payload = results?.[0]?.result as
       | { title?: string; body?: string }
       | undefined;

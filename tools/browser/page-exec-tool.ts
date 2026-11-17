@@ -1,3 +1,4 @@
+import { browserChrome } from '@/tools/browser/browser-scope';
 /**
  * 统一页面执行引擎（browser_page_exec）
  *
@@ -682,8 +683,8 @@ export class PageExecTool extends BaseBrowserTool {
       }
       const tab =
         requestedTabId !== undefined && requestedTabId !== null
-          ? await chrome.tabs.get(requestedTabId)
-          : (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+          ? await browserChrome(context).tabs.get(requestedTabId)
+          : (await browserChrome(context).tabs.query({ active: true, currentWindow: true }))[0];
       if (!tab || typeof tab.id !== "number") {
         return { ok: false, error: "No active tab found" };
       }
@@ -723,7 +724,7 @@ export class PageExecTool extends BaseBrowserTool {
         onEngineChange: (engine) => {
           this.activeEngine = engine;
         },
-      });
+      }, context);
 
       const durationMs = Date.now() - startedAt;
 
@@ -798,11 +799,11 @@ export class PageExecTool extends BaseBrowserTool {
    * 幂等：重复调用安全；目标已关闭 / 无调试会话 / 无正在执行的脚本时，
    * 全部按「已尽力终止」处理，不抛错。
    */
-  async kill(_args: unknown, _context?: ToolExecutionContext): Promise<void> {
+  async kill(_args: unknown, _context?: ToolExecutionContext, context?: ToolExecutionContext): Promise<void> {
     const tabId = this.activeTabId;
     const engine = this.activeEngine;
     if (tabId === null || engine !== "cdp") return;
-    await cdpSession.terminateExecution(tabId);
+    await cdpSession.terminateExecution(tabId, context);
   }
 
   /**

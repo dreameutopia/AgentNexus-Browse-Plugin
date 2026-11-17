@@ -3,35 +3,23 @@
  *
  * ==================== 职责 ====================
  *
- * 一个工具覆盖「写 Markdown → 出 Word/PDF」这条完整链路，四个 action：
+ * 只负责一件事：把工作区里**已存在的 .md** 渲染为 .docx / .pdf（可同时产出）。
  *
- *   create    创建 .md 文件（工作区内）
- *   edit      编辑 .md 文件（整体重写 / find+replace / 批量 edits）
- *   delete    删除 .md 文件
- *   convert   把已有 .md 渲染为 .docx / .pdf（可同时产出两种）
- *
- * 为什么文件 CRUD 与转换放同一个工具：模型的工作流天然是
- * 「写/改 Markdown → 转成 Word/PDF 交付」，拆成两个工具会让模型多一次
- * 工具选择与参数交接；而 create/edit/delete 与 js_run 的同名 action
- * 语义完全一致（路径/内容/替换/指纹），心智负担低。
+ * Markdown 源文件的创建 / 读取 / 编辑 / 删除 / 复制统一由 file_util 承担——
+ * 文件语义全仓只保留一份实现，本工具不再暴露 create/edit/delete。
+ * 推荐工作流：file_util 写/改 content/report.md → document_tool(action="convert")。
  *
  * ==================== 与既有工具的边界 ====================
  *
- * - js_run 已经能创建/编辑/删除**任意**文本文件。本工具的 create/edit/delete
- *   额外约束为 **.md 后缀**（文档源文件），并把「转换」这一动作接在后面，
- *   避免模型为了导出一份报告而先写一段 Python 去调第三方库。
  * - 本工具**不做**数据抓取（那是 js_run/browser_* 的职责），只消费工作区里
- *   已经存在的 Markdown。
+ *   已经存在的 Markdown；
+ * - 本工具**不做**文件 CRUD（那是 file_util 的职责），避免同一套路径校验、
+ *   覆盖保护与编辑语义在两处漂移。
  *
  * ==================== 参数契约 ====================
  *
  * - 每个 action 有**独立的参数白名单**：多传参数会得到「action=convert 不接受
- *   参数：xxx」的明确回执，而不是被静默忽略（静默忽略会让模型以为自己设置
- *   生效了，例如误以为改过标题）。
- * - edit 的三种编辑模式与工作区引擎完全一致（content 整体重写 / find+replace
- *   精确替换 / edits 批量替换），互斥，参数定义复用 js_run 的同一份片段。
- * - create/edit/convert 都会回传源文件的 sha256，模型可以把它作为下一次
- *   edit 的 expectedHash，用于并发改动检测。
+ *   参数：xxx」的明确回执，而不是被静默忽略。
  *
  * ==================== 错误约定 ====================
  *
@@ -47,13 +35,7 @@ import { ToolResult } from '@/common/tool-handler';
 import { readWorkspaceOutput, saveWorkspaceOutput } from '@/utils/python-workspace/store';
 import { requireWorkspaceChatId, type WorkspaceArtifact } from '@/utils/python-workspace/artifact-contract';
 import { downloadWorkspaceArtifact } from '@/utils/python-workspace/artifact-download';
-import { WORKSPACE_EDIT_PROPERTIES } from '@/utils/python-workspace/file-action';
-import {
-  createWorkspaceFile,
-  deleteWorkspaceFile,
-  editWorkspaceFile,
-  readWorkspaceTextFile,
-} from '@/utils/python-workspace/workspace-files';
+import { readWorkspaceTextFile } from '@/utils/python-workspace/workspace-files';
 import { errorDetails } from '@/utils/shared/error-details';
 import { renderMarkdownToHtml } from './markdown-render';
 import { createImageResolver } from './image-resolver';
@@ -67,7 +49,7 @@ import type { PdfPaperSize } from './pdf-protocol';
 export const DOCUMENT_TOOL_ID = 'document_tool';
 
 /** 支持的 action */
-const ACTIONS = ['create', 'edit', 'delete', 'convert'] as const;
+const ACTIONS = ['convert'] as const;
 
 /** 支持的导出格式 */
 const FORMATS = ['docx', 'pdf'] as const;
@@ -85,14 +67,6 @@ const MAX_SOURCE_BYTES = 8 * 1024 * 1024;
 const MAX_FILENAME_BASE = 96;
 
 /**
- * 计算 sha256 指纹的体积门槛。
- *
- * 指纹需要整读文件；超过 1MB 的文档不值得为它多读一遍，此时回传 undefined，
- * 模型自然不会拿它当 expectedHash 用。
- */
-const HASHABLE_FILE_BYTES = 1024 * 1024;
-
-/**
  * 控制字符正则（文件名合法化用）。
  *
  * 用码点构造，而不是在源码里写转义序列：字面控制字符（NUL、US 等）会让
@@ -105,19 +79,6 @@ const CONTROL_CHAR_PATTERN = new RegExp(
 
 /** 每个 action 的参数白名单（多传即报错，避免静默忽略） */
 const ACTION_PARAMS: Record<(typeof ACTIONS)[number], readonly string[]> = {
-  create: ['action', 'path', 'content'],
-  edit: [
-    'action',
-    'path',
-    'content',
-    'find',
-    'replace',
-    'replaceAll',
-    'edits',
-    'matchMode',
-    'expectedHash',
-  ],
-  delete: ['action', 'path'],
   convert: [
     'action',
     'path',
@@ -171,7 +132,7 @@ export function sanitizeArtifactFilename(raw: unknown, extension: string): { nam
   return { name };
 }
 
-/** 校验 .md 路径（create/edit/delete/convert 共用） */
+/** 校验 .md 路径（convert 使用；文件 CRUD 已统一到 file_util） */
 function normalizeMarkdownPath(raw: unknown): { path: string } | { error: string } {
   if (typeof raw !== 'string' || !raw.trim()) {
     return { error: 'path 必填且需为字符串（工作区相对路径，以 .md 结尾）' };
@@ -222,9 +183,9 @@ export class DocumentTool extends BaseTool {
   metadata: ToolMetadata = {
     name: DOCUMENT_TOOL_ID,
     description:
-      'Markdown 文档工具：创建/编辑/删除工作区内的 .md 源文件，并把 .md 渲染为 Word (.docx) 与 PDF。支持标题、多级列表、任务列表、表格、引用块、代码块高亮、GFM 语法、LaTeX 公式（Word 原生公式）、图片（远程/工作区/会话截图）与 Mermaid 图表（矢量嵌入）。',
+      'Markdown 渲染工具：把工作区内已有的 .md 源文件转换为 Word (.docx) 与 PDF（源文件的创建/编辑/删除请用 file_util）。支持标题、多级列表、任务列表、表格、引用块、代码块高亮、GFM 语法、LaTeX 公式（Word 原生公式）、图片（远程/工作区/会话截图）与 Mermaid 图表（矢量嵌入）。',
     category: 'office',
-    version: '1.0.0',
+    version: '2.0.0',
     author: 'AgentNexus',
     displayName: 'Markdown 文档',
     tags: ['markdown', 'docx', 'pdf', 'document', 'office', 'export', 'mermaid'],
@@ -236,13 +197,12 @@ export class DocumentTool extends BaseTool {
     function: {
       name: DOCUMENT_TOOL_ID,
       description:
-        'Markdown 文档工具。create 创建 .md 源文件；edit 编辑 .md（content 全量重写 / find+replace 精确定位 / edits 批量替换，三者互斥）；delete 删除 .md；' +
-        'convert 把已有 .md 渲染为 Word(.docx) 与/或 PDF 并保存到当前会话工作区 outputs/（可下载；同名自动改名，不覆盖既有文件）。' +
+        '把工作区中已有的 .md 源文件渲染为 Word(.docx) 与/或 PDF，并保存到当前会话工作区 outputs/（可下载；同名自动改名，不覆盖既有文件）。' +
+        '本工具只做转换：Markdown 的创建/读取/编辑/删除统一用 file_util（例如先 file_util(action="create", path="content/report.md", content="…")，再 convert path="content/report.md"）。' +
         '转换支持标题、多级/任务列表、表格、引用块、代码块（带语法高亮）、GFM 语法、LaTeX 公式（Word 中为可编辑原生公式）、' +
         '图片与 Mermaid 图表（渲染为矢量图嵌入）。' +
         '图片写法：远程 URL（https://…）、工作区相对路径（outputs/report.png、inputs/photo.jpg）、' +
         '会话截图短 id（agent-image:xxxxxxxx）、内嵌 data URL。' +
-        '典型流程：create 写内容 → edit 精修 → convert 导出；' +
         '产物路径与下载方式同 xlsx_tool。',
       parameters: {
         type: 'object',
@@ -250,31 +210,13 @@ export class DocumentTool extends BaseTool {
           action: {
             type: 'string',
             enum: [...ACTIONS],
-            description:
-              'create=创建 .md；edit=编辑 .md；delete=删除 .md；convert=把 .md 渲染为 docx/pdf',
+            description: 'convert=把已存在的 .md 渲染为 docx/pdf（源文件请先用 file_util 创建或编辑）',
           },
           path: {
             type: 'string',
             description:
-              '工作区相对路径，必须以 .md 结尾（如 docs/报告.md）。create 必填；edit/delete/convert 必填。',
+              '工作区相对路径，必须以 .md 结尾（如 content/报告.md），且文件必须已存在。',
           },
-          content: {
-            type: 'string',
-            description: 'create 必填（Markdown 源码全文）；edit 时全量重写（与 find/replace、edits 互斥）。',
-          },
-          find: {
-            type: 'string',
-            description: 'edit 精确定位串，默认必须唯一命中；与 replace 成对。',
-          },
-          replace: {
-            type: 'string',
-            description: 'edit 替换文本，按字面处理，允许空串。',
-          },
-          replaceAll: {
-            type: 'boolean',
-            description: 'edit 是否替换全部命中，默认 false。',
-          },
-          ...WORKSPACE_EDIT_PROPERTIES,
           format: {
             type: 'string',
             enum: [...FORMAT_VALUES],
@@ -312,12 +254,7 @@ export class DocumentTool extends BaseTool {
         required: ['action'],
         anyOf: ACTIONS.map((action) => ({
           properties: { action: { type: 'string', enum: [action] } },
-          required:
-            action === 'create'
-              ? ['action', 'path', 'content']
-              : action === 'convert'
-                ? ['action', 'path']
-                : ['action', 'path'],
+          required: ['action', 'path'],
         })),
       },
     },
@@ -334,7 +271,8 @@ export class DocumentTool extends BaseTool {
       const action = params.action;
       if (typeof action !== 'string' || !(ACTIONS as readonly string[]).includes(action)) {
         return fail(
-          `action 必须是 ${ACTIONS.map((a) => `"${a}"`).join(' / ')} 之一，实际收到 ${JSON.stringify(action) ?? String(action)}`,
+          `action 必须是 "convert"（本工具只做 .md → docx/pdf 转换）。` +
+            `文件创建/读取/编辑/删除请用 file_util（action="create"/"read"/"edit"/"delete"），实际收到 ${JSON.stringify(action) ?? String(action)}`,
         );
       }
 
@@ -349,105 +287,12 @@ export class DocumentTool extends BaseTool {
         );
       }
 
-      if (action === 'create') return await this.runCreate(params, context);
-      if (action === 'edit') return await this.runEdit(params, context);
-      if (action === 'delete') return await this.runDelete(params, context);
       return await this.runConvert(params, context);
     } catch (error) {
       const message = documentErrorDetails(error);
       this.log(`执行失败：${message}`, 'error');
       return fail(`执行失败 → ${message}`);
     }
-  }
-
-  // ==================== create ====================
-
-  /** action="create"：创建 .md 源文件 */
-  private async runCreate(params: Record<string, unknown>, context?: ToolExecutionContext): Promise<ToolResult> {
-    const normalized = normalizeMarkdownPath(params.path);
-    if ('error' in normalized) return fail(normalized.error);
-    const content = params.content;
-    if (typeof content !== 'string') {
-      return fail('content 必填且需为字符串（Markdown 源码）');
-    }
-
-    const chatId = requireWorkspaceChatId(context?.chatId);
-    const stat = await createWorkspaceFile(chatId, normalized.path, content, context?.signal);
-    const sha256 = await this.readFingerprint(chatId, stat.path, stat.bytes);
-    return {
-      success: true,
-      isError: false,
-      content: [
-        {
-          type: 'text',
-          text:
-            `✅ 已创建 Markdown 文件 ${stat.path}（${stat.bytes} 字节）\n` +
-            `下一步：内容定稿后用 ${DOCUMENT_TOOL_ID}(action="convert", path="${stat.path}") 导出 Word/PDF。`,
-        },
-      ],
-      data: { path: stat.path, bytes: stat.bytes, sha256 },
-    };
-  }
-
-  // ==================== edit ====================
-
-  /** action="edit"：编辑 .md 源文件 */
-  private async runEdit(params: Record<string, unknown>, context?: ToolExecutionContext): Promise<ToolResult> {
-    const normalized = normalizeMarkdownPath(params.path);
-    if ('error' in normalized) return fail(normalized.error);
-
-    // 语义与工作区引擎一致：content 全量重写 / find+replace / edits 批量替换，三者互斥
-    const hasContent = params.content !== undefined;
-    const hasEdits = params.edits !== undefined;
-    const hasPair = params.find !== undefined || params.replace !== undefined;
-    const modes = Number(hasContent) + Number(hasEdits) + Number(hasPair);
-    if (modes === 0) {
-      return fail('edit 需要 content（全量重写）、find+replace（精确替换）或 edits（批量替换）之一');
-    }
-    if (modes > 1) {
-      return fail(
-        'edit 的 content（全量重写）、find/replace（精确替换）、edits（批量替换）三者互斥，请只提供一种',
-      );
-    }
-
-    const chatId = requireWorkspaceChatId(context?.chatId);
-    const stat = await editWorkspaceFile(chatId, normalized.path, params, context?.signal);
-    const replaced = stat.replaced;
-    const detail =
-      replaced === undefined
-        ? '已整体重写'
-        : replaced === 1
-          ? '唯一命中替换 1 处'
-          : `替换 ${replaced} 处`;
-    const sha256 = await this.readFingerprint(chatId, stat.path, stat.bytes);
-    return {
-      success: true,
-      isError: false,
-      content: [
-        {
-          type: 'text',
-          text: `✅ 已编辑 Markdown 文件 ${stat.path}（${stat.bytes} 字节，${detail}）`,
-        },
-      ],
-      data: { path: stat.path, bytes: stat.bytes, replaced, sha256 },
-    };
-  }
-
-  // ==================== delete ====================
-
-  /** action="delete"：删除 .md 源文件 */
-  private async runDelete(params: Record<string, unknown>, context?: ToolExecutionContext): Promise<ToolResult> {
-    const normalized = normalizeMarkdownPath(params.path);
-    if ('error' in normalized) return fail(normalized.error);
-
-    const chatId = requireWorkspaceChatId(context?.chatId);
-    const stat = await deleteWorkspaceFile(chatId, normalized.path, context?.signal);
-    return {
-      success: true,
-      isError: false,
-      content: [{ type: 'text', text: `✅ 已删除 Markdown 文件 ${stat.path}` }],
-      data: { path: stat.path },
-    };
   }
 
   // ==================== convert ====================
@@ -535,7 +380,7 @@ export class DocumentTool extends BaseTool {
         paperSize,
         headerText,
         pageNumbers,
-      });
+      }, context);
       if (!result.ok) {
         // PDF 失败不回滚已成功的 Word：产物独立交付，失败原因如实回传
         const message = `PDF 渲染失败 → ${result.error}`;
@@ -599,27 +444,6 @@ export class DocumentTool extends BaseTool {
         warnings,
       },
     };
-  }
-
-  /**
-   * 读取源文件指纹（sha256）。
-   *
-   * 指纹让模型能在下一次 edit 时用 expectedHash 检测并发改动。
-   * 文件过大时不读（整读一次的成本不划算），返回 undefined。
-   */
-  private async readFingerprint(
-    chatId: string,
-    path: string,
-    bytes: number,
-  ): Promise<string | undefined> {
-    if (bytes > HASHABLE_FILE_BYTES) return undefined;
-    try {
-      const snapshot = await readWorkspaceTextFile(chatId, path, undefined, MAX_SOURCE_BYTES);
-      return snapshot.sha256;
-    } catch {
-      // 指纹只是附加信息，取不到不影响主流程
-      return undefined;
-    }
   }
 }
 

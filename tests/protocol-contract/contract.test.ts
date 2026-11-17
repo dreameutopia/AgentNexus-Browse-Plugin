@@ -470,7 +470,7 @@ async function main() {
         : name === 'claude' ? observeBody.tools[0].input_schema
         : name === 'responses' ? observeBody.tools[0].parameters : observeBody.tools[0].function.parameters;
       eq(observeSchema, observe.function.parameters, `${name}: preserves browser_observe enumeration/element branches`);
-      check(JSON.stringify(observeBody.tools).includes('不传 elementId/frameId'), `${name}: preserves observe parameter guidance`);
+      check(JSON.stringify(observeBody.tools).includes('枚举与节点详情二选一'), `${name}: preserves observe parameter guidance`);
     }
   }
   {

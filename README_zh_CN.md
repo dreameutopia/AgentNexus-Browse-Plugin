@@ -127,7 +127,7 @@ Markdown 渲染支持 Mermaid 图表、KaTeX 公式、PlantUML、代码高亮与
 
 每个会话默认注入 `skill_tool`，提供 `load/read/copy/create/edit/delete`。资源复制不依赖 Python。调用时只传十进制 `skill_id` 与精确的 `paths`（`["."]` 表示整个技能），保留字节与相对目录；已有文件绝不覆盖，冲突时放入 `<skill_id>/`，再冲突则创建编号副本目录。后续必须使用返回的实际路径。仅执行 Python 时需要安装 Python 运行时。
 
-用 `python_run(action="create", path="scripts/report.py", content=...)` 把脚本写入会话工作区，再用 `action="run"` 执行（path 必须是工作区内已存在的相对路径 `.py`）；`action="edit"` 修改文件（全量重写，或 `find`+`replace` 唯一命中替换），`action="delete"` 删除文件，`action="read"` 分页读取工作区文本文件，`action="list"` 盘点工作区目录。所有 path 都相对工作区根目录，绝对路径、盘符与 `..` 一律拒绝。上面复制出的技能脚本从其复制根目录用同样的方式运行。`AGENTNEXUS_WORKSPACE` 指向会话工作区，上传文件在 `inputs/`，交付物写到 `outputs/`。用 `argv`、`stdin` 和 `env` 分别传入参数、输入和非敏感配置。包内入口可额外传入点分隔的 `module`。回复中用 `<workspace-file path="outputs/report.csv" />` 引用已保存的产物。
+用 `file_util(action="create", path="scripts/report.py", content=...)` 把脚本写入会话工作区，再用 `python_run(action="run", path=...)` 执行（path 必须是工作区内已存在的相对路径 `.py`）；`python_run` 只负责执行，文件操作全部走 `file_util`：`action="edit"` 修改文件（全量重写，或 `find`+`replace` 唯一命中替换），`action="delete"` 删除文件，`action="read"` 分页读取工作区文本文件，`action="list"` 盘点工作区目录。所有 path 都相对工作区根目录，绝对路径、盘符与 `..` 一律拒绝。上面复制出的技能脚本从其复制根目录用同样的方式运行。`AGENTNEXUS_WORKSPACE` 指向会话工作区，上传文件在 `inputs/`，交付物写到 `outputs/`。用 `argv`、`stdin` 和 `env` 分别传入参数、输入和非敏感配置。包内入口可额外传入点分隔的 `module`。回复中用 `<workspace-file path="outputs/report.csv" />` 引用已保存的产物。
 
 依赖分三条通道：脚本同目录/项目根的 `requirements.txt`、PEP 723 元数据块、`pyproject.toml` 自动发现；官方目录内的包（numpy、pandas 等）按 import 自动加载；官方目录没有的纯 Python 包需显式声明 `requirements=["包名"]` **并同时**给 `dependencyMode="pypi"`——两者缺一不可，只给 `requirements` 在默认 catalog 模式下必然失败。该模式会请求用户审批，且只支持纯 Python wheel；含 C 扩展的包只能用官方目录内的版本或自备兼容 `.whl`（`wheels` 参数）。
 

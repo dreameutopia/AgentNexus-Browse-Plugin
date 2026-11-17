@@ -11,7 +11,17 @@
  * 视觉上呈现「弹窗收缩为悬浮球」。
  */
 
-/* ---------------- 弹窗形态 ---------------- */
+/* ---------------- 弹窗形态 ----------------
+ *
+ * 高度模型（按占比分配，缺一不可）：
+ *   卡片 max-height 82vh → 头部 / 作答区 / 底部三段固定不收缩，
+ *   中部 .interact-body 吃掉剩余高度（flex:1）并在自身滚动；
+ *   中部各分区只设上限（max-height）不设收缩，谁也不许把别人挤没。
+ *
+ * 关键约束：flex 子项的自动最小高度（min-height:auto）在 overflow≠visible 时
+ * 为 0——若让问题区直接当 flex 子项并开滚动，它会被压到一两行（历史故障）。
+ * 因此「会滚动的分区一律 flex:0 0 auto + 自己的 max-height」，收缩与滚动
+ * 只发生在 .interact-body 这一层。 */
 
 .interact-overlay {
   position: fixed;
@@ -39,16 +49,36 @@
   max-height: 82vh;
   display: flex;
   flex-direction: column;
+  /* 兜底：各分区下限之和在极矮窗口仍可能超 82vh 时整卡滚动，绝不裁切内容 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
   text-align: left;
   animation: iaSlideIn 0.2s ease;
 }
 
-/* 头部：图标 + 标题 + 敏感徽标 */
+/* 头部：固定段，任何情况下不被压缩 */
 .interact-header {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 12px;
+}
+
+/* 中部滚动区（问题 + 背景 + 选项）：高度 = 卡片剩余空间，超出在此滚动。
+ * min-height 是收缩下限——只在「头/作答区/底部之和逼近 82vh」的极矮面板下
+ * 才生效，保证中部仍有约 3 行可读并可自身滚动（而不是塌成 0 高度导致
+ * 内容永久不可达）。取 72px 而非更大值：正常高度下它从不参与，短内容
+ * 弹窗也就不会被撑出空档。 */
+.interact-body {
+  flex: 1 1 auto;
+  min-height: 72px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 .interact-header-icon {
@@ -102,7 +132,10 @@
   border: 1px solid rgba(245, 158, 11, 0.35);
 }
 
-/* 问题正文与背景说明 */
+/* 问题正文：信息优先级最高——只封顶不收缩（flex:0 0 auto），超出块内滚动。
+ * 上限用 clamp(下限, 占比, 上限)：占比随视口等比（26vh ≈ 8~11 行），
+ * 同时给绝对下限（极矮视口下 vh 归零也不会塌成一条缝）与绝对上限
+ * （超宽屏不给一个半屏高的问题块）。短问题保持自然高度不留空档。 */
 .interact-question {
   margin: 0 0 6px;
   font-size: 13.5px;
@@ -111,9 +144,14 @@
   line-height: 1.6;
   white-space: pre-line;
   word-break: break-word;
+  flex: 0 0 auto;
+  max-height: clamp(140px, 26vh, 320px);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
+/* 背景说明：次要信息，同样只封顶不收缩；clamp(96px, 16vh, 200px) ≈ 5~7 行 */
 .interact-context {
   margin: 0 0 12px;
   padding: 8px 10px;
@@ -125,16 +163,26 @@
   line-height: 1.65;
   white-space: pre-line;
   word-break: break-word;
-  max-height: 18vh;
+  flex: 0 0 auto;
+  max-height: clamp(96px, 16vh, 200px);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
-/* 选项列表：整块按钮，点击即提交 */
+/* 选项列表：单选点击即提交 / 多选切换勾选。
+ * 只封顶不收缩（flex:0 0 auto），clamp(200px, 38vh, 480px)——选项再多也不会
+ * 把问题区挤出视野，超出时由本容器滚动（与中部 .interact-body 各管一层）。 */
 .interact-options {
   display: flex;
   flex-direction: column;
   gap: 8px;
   margin: 0 0 12px;
+  flex: 0 0 auto;
+  max-height: clamp(200px, 38vh, 480px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 .interact-option {
@@ -183,9 +231,92 @@
   line-height: 1.5;
 }
 
-/* 自定义答复 */
+/* 选项正文容器：label / description 纵向成组。
+ * 单选时它是按钮的唯一子元素（视觉与无容器时一致），多选时与勾选框并排 */
+.interact-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+/* ---------------- 多选态（request.multiSelect） ----------------
+ * 点击只切换勾选，答复由底部「提交所选」一次性提交 */
+
+.interact-option.is-selectable {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.interact-option-check {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border-radius: 5px;
+  border: 1.5px solid #d1d5db;
+  background: #ffffff;
+  color: transparent;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.interact-option.is-selectable:hover .interact-option-check {
+  border-color: #93c5fd;
+}
+
+.interact-option.is-selected {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.interact-option.is-selected .interact-option-check {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.interact-option.is-selected .interact-option-label {
+  color: #1d4ed8;
+}
+
+/* 已有勾选时让位：推荐高亮不再与「已选」抢同一套蓝边框——
+ * 推荐仍由首位 + description 的「（推荐：…）」标注表达，选中态独占蓝边 */
+.interact-options.has-selection
+  .interact-option.is-selectable.is-recommended:not(.is-selected) {
+  border-color: #e5e7eb;
+  background: #ffffff;
+}
+
+.interact-options.has-selection
+  .interact-option.is-selectable.is-recommended:not(.is-selected)
+  .interact-option-label {
+  color: #1f2937;
+}
+
+/* 多选提示：置于选项容器之外（选项滚动时提示不跟着滚走），
+ * 上距由选项的 margin-bottom 提供，下距留给作答区 */
+.interact-multi-hint {
+  margin: -4px 0 12px;
+  font-size: 11.5px;
+  color: #9ca3af;
+  line-height: 1.5;
+  flex: 0 0 auto;
+}
+
+/* 自定义答复：固定段（在中部滚动区之外），任何时候都能看到并输入。
+ * 上限 clamp(96px, 22vh, 260px) = 标签 + 封顶后的输入框，长答复由输入框滚动承接。 */
 .interact-custom {
+  flex-shrink: 0;
   margin: 0 0 12px;
+  max-height: clamp(96px, 22vh, 260px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 .interact-custom-label {
@@ -208,7 +339,10 @@
   line-height: 1.55;
   resize: vertical;
   min-height: 58px;
-  max-height: 120px;
+  /* 按视口占比封顶（短屏更矮给问题区让位、长屏更舒展），并给绝对下限/上限：
+   * vh 归零时仍保持 58px 可用高度，超宽屏也不无限长；超出块内滚动 */
+  max-height: clamp(58px, 12vh, 160px);
+  overflow-y: auto;
   font-family: inherit;
   outline: none;
   transition: border-color 0.15s ease;
@@ -222,8 +356,9 @@
   color: #c0c6cf;
 }
 
-/* 底部操作区 */
+/* 底部操作区：固定段，倒计时与按钮永远可见 */
 .interact-footer {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 8px;

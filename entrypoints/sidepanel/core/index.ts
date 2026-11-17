@@ -90,7 +90,7 @@ export type {
 
 export type {
   ChatSessionMeta,
-  ChatSessionKind,
+  ConversationTag,
   ChatMessageRecord,
   ChatMessageStatus,
   ChatMessageUsage,

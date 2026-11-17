@@ -3,6 +3,11 @@ import {
   composeLlmUserMessage,
 } from "../sidepanel/core/conversation/conversation-engine";
 import { queryActivePageInfo } from "../sidepanel/utils/system-context";
+import { readBrowserBinding, initBrowserBindingWriter, withBrowserBindingLock, BROWSER_WINDOW_BUSY_CHATS } from '@/utils/browser-window-binding';
+import { parseBrowserScope, assertScopeWindow } from '@/tools/browser/browser-scope';
+import { BrowserScopeError, browserOperation } from '@/tools/browser/scope-errors';
+import { watchOperationWindow, isClosedBrowserWindowError } from '@/utils/browser-window-lifecycle';
+import { toApiErrorBlock } from '../sidepanel/utils/stream/errors';
 import { contextCompactor } from "../sidepanel/core/context/compactor";
 import { transcriptEngine } from "../sidepanel/core/context/transcript-engine";
 import {
@@ -57,6 +62,16 @@ const STOP_SETTLE_TIMEOUT_MS = 30_000;
 
 /** 后台运行时：一个会话同时至多一个停止阶段在进行 */
 const stopStates = new Map<string, StopState>();
+let busyPublication = Promise.resolve();
+function publishBusySessions(): void {
+  if (!chrome.storage?.session) return;
+  // Read the live maps when dispatching, so concurrent starts/finishes cannot
+  // write an older captured snapshot after the latest state.
+  busyPublication = busyPublication.catch(() => undefined).then(async () => {
+    await browserOperation('publishWindowPickerBusyState', undefined,
+      () => chrome.storage.session.set({ [BROWSER_WINDOW_BUSY_CHATS]: listBusySessionIds() }), { mutating: true });
+  }).catch(error => console.warn('[ConversationRuntime] 操作窗口忙碌状态同步失败', error));
+}
 
 /**
  * 取得（或创建）一个会话的停止阶段。同会话并发调用共享同一阶段，
@@ -71,6 +86,7 @@ function ensureStopState(chatId: string): StopState {
   });
   const state: StopState = { phase: 'aborting', resolve, settled };
   stopStates.set(chatId, state);
+  publishBusySessions();
   return state;
 }
 
@@ -78,6 +94,7 @@ function ensureStopState(chatId: string): StopState {
 function finishStopState(chatId: string, state: StopState): void {
   if (state.phase !== 'done') state.phase = 'done';
   stopStates.delete(chatId);
+  publishBusySessions();
   state.resolve();
 }
 
@@ -219,14 +236,14 @@ export function listBusySessionIds(): string[] {
  *
  * @returns 会话引擎侧的中止结果（false = 该会话没有运行中的引擎运行）
  */
-function abortRun(chatId: string): boolean {
+function abortRun(chatId: string, reason?: unknown): boolean {
   pageGlow.stop(chatId);
   // 登记「被用户停掉」：两条停止路径共用，缺一不可
-  if (inFlightRuns.has(chatId) || preparingRuns.has(chatId)) cancelled.add(chatId);
-  const aborted = conversationEngine.abort(chatId);
+  if (reason === undefined && (inFlightRuns.has(chatId) || preparingRuns.has(chatId))) cancelled.add(chatId);
+  const aborted = conversationEngine.abort(chatId, reason);
   // 预运行阶段（压缩 / 装配）：引擎尚未登记运行，engine.abort 是空操作，
   // 必须经它自己的 controller 打断
-  preparingRuns.get(chatId)?.abort();
+  preparingRuns.get(chatId)?.abort(reason);
   // 挂起提问：审批 / interact / 守卫——收敛它们，运行才可能继续往下走
   for (const q of pendingQuestions.values())
     if (q.chatId === chatId) {
@@ -248,6 +265,11 @@ export function initConversationRuntime(): void {
     return;
   }
   runtimeInitialized = true;
+  publishBusySessions();
+  initBrowserBindingWriter(async chatId => {
+    // 只有一个运行持有者（后台 worker）；侧边栏本地运行登记已随旧学习域移除
+    return !listBusySessionIds().includes(chatId);
+  });
   const ports = new Set<chrome.runtime.Port>();
   const compacting = new Set<string>();
   const post = (port: chrome.runtime.Port, message: RuntimeMessage) => {
@@ -308,13 +330,26 @@ export function initConversationRuntime(): void {
   });
 
   chrome.runtime.onConnect.addListener((port) => {
-    if (port.name === LOCAL_PAGE_GLOW_PORT) {
+    if (port.name === LOCAL_PAGE_GLOW_PORT || port.name.startsWith(`${LOCAL_PAGE_GLOW_PORT}:`)) {
       const owner = Symbol("local-page-glow");
       let operation = 0;
       let setTarget: ((tabId: number) => void) | undefined;
-      pageGlow.start(owner);
+      let closed = false;
+      let chatId: string | undefined;
+      try {
+        chatId = port.name === LOCAL_PAGE_GLOW_PORT ? undefined : decodeURIComponent(port.name.slice(LOCAL_PAGE_GLOW_PORT.length + 1));
+      } catch (error) {
+        console.warn('[PageGlow] 无效的本地会话端口名称', error);
+        port.disconnect();
+        return;
+      }
+      const ready = chatId ? readBrowserBinding(chatId).then(scope => {
+        if (!closed) pageGlow.start(owner, scope?.windowId, scope);
+      }).catch(error => console.warn('[PageGlow] 无法读取本地会话的窗口绑定', error)) : Promise.resolve(pageGlow.start(owner));
       const keepAlive = keepWorkerAlive();
-      port.onMessage.addListener((message: LocalPageGlowCommand) => {
+      port.onMessage.addListener(async (message: LocalPageGlowCommand) => {
+        await ready;
+        if (closed) return;
         if (!Number.isSafeInteger(message?.operation)) return;
         if (message.type === "begin" && message.operation > operation) {
           operation = message.operation;
@@ -324,6 +359,7 @@ export function initConversationRuntime(): void {
         }
       });
       port.onDisconnect.addListener(() => {
+        closed = true;
         clearInterval(keepAlive);
         pageGlow.stop(owner);
       });
@@ -354,11 +390,14 @@ export function initConversationRuntime(): void {
           error: String(error instanceof Error ? error.message : error),
         });
       if (command.type === "preparingGlow") {
-        if (command.active) {
-          pageGlow.start(preflightGlow, command.windowId);
-          preflightKeepAlive ??= keepWorkerAlive();
-        } else endPreflight();
-        reply(true);
+        try {
+          if (command.active) {
+            const scope = parseBrowserScope(command.browserScope);
+            pageGlow.start(preflightGlow, scope?.windowId ?? command.windowId, scope);
+            preflightKeepAlive ??= keepWorkerAlive();
+          } else endPreflight();
+          reply(true);
+        } catch (error) { endPreflight(); fail(error); }
       } else if (command.type === "attach") {
         reply({
           running: inFlightRuns.has(command.chatId),
@@ -410,16 +449,28 @@ export function initConversationRuntime(): void {
             /* 停止阶段的异常不影响新运行的发起 */
           }
         }
-        if (inFlightRuns.has(runtime.chatId)) {
-          fail(new Error("会话已有运行中的任务"));
+        const prepareAbort = new AbortController();
+        try {
+          await withBrowserBindingLock(runtime.chatId, async () => {
+            if (inFlightRuns.has(runtime.chatId) || preparingRuns.has(runtime.chatId))
+              throw new Error('会话已有运行中的任务');
+            const requested = parseBrowserScope(runtime.browserScope);
+            const saved = await readBrowserBinding(runtime.chatId);
+            if (requested) await assertScopeWindow({ browserScope: requested });
+            if (requested?.windowId !== saved?.windowId)
+              throw new BrowserScopeError('BROWSER_BINDING_CHANGED', 'startRun', '发送准备期间窗口绑定已改变，请核对后重新发送；未开始页面操作。');
+            if (requested) runtime.browserScope = requested;
+            preparingRuns.set(runtime.chatId, prepareAbort);
+            publishBusySessions();
+          });
+        } catch (error) {
+          fail(error);
           return;
         }
         // Extension API activity keeps MV3 alive during an active task, including long
         // model/tool waits. The timer is independent of all sidepanel connections.
         const keepAlive = keepWorkerAlive();
-        const prepareAbort = new AbortController();
-        preparingRuns.set(runtime.chatId, prepareAbort);
-        pageGlow.start(runtime.chatId, preflightKeepAlive === undefined ? command.windowId : undefined);
+        pageGlow.start(runtime.chatId, runtime.browserScope?.windowId ?? (preflightKeepAlive === undefined ? command.windowId : undefined), runtime.browserScope);
         endPreflight();
         const emit = (
           event: import("../sidepanel/core/types").ConversationEvent,
@@ -430,12 +481,19 @@ export function initConversationRuntime(): void {
           }
           broadcast({ type: "event", event });
         };
+        const runStarted = Date.now();
         const task = (async () => {
+          const windowWatch = watchOperationWindow(runtime.browserScope, reason => {
+            abortRun(runtime.chatId, reason);
+          });
+          try {
+          await windowWatch.ready;
           await Promise.all([skillEngine.restore(), appSettingsStore.load()]);
+          if (prepareAbort.signal.aborted) throw prepareAbort.signal.reason;
           if (cancelled.has(runtime.chatId)) throw new Error("会话已停止");
           // 预运行计量与引擎构造同口径注入 <system_context>（时间时区 +
           // 激活网页）；queryActivePageInfo 失败返回 null，不影响计量
-          const activePage = await queryActivePageInfo();
+          const activePage = await queryActivePageInfo(runtime);
           // The long first compaction belongs to the worker as well. Closing the
           // panel during this model request must not discard the pending input.
           if (
@@ -452,6 +510,7 @@ export function initConversationRuntime(): void {
                   runtime.attachmentPrompt,
                   runtime.userImages,
                   runtime.pageQuotePrompt,
+                  runtime.selectedElementsPrompt ?? '',
                   false,
                   activePage,
                 ),
@@ -475,7 +534,7 @@ export function initConversationRuntime(): void {
                 signal: prepareAbort.signal,
                 strategy: 'pre-run',
               });
-              if (prepareAbort.signal.aborted) throw new Error("会话已停止");
+              if (prepareAbort.signal.aborted) throw prepareAbort.signal.reason;
               await transcriptEngine.setCompaction(
                 runtime.chatId,
                 result.summary,
@@ -509,7 +568,7 @@ export function initConversationRuntime(): void {
                 durationMs: runtime.preRunCompaction.durationMs,
               });
             } catch (error) {
-              if (prepareAbort.signal.aborted) throw error;
+              if (prepareAbort.signal.aborted) throw prepareAbort.signal.reason ?? error;
               const failureText = String(
                 error instanceof Error ? error.message : error,
               );
@@ -528,9 +587,11 @@ export function initConversationRuntime(): void {
               });
             }
           }
-          if (prepareAbort.signal.aborted) throw new Error("会话已停止");
+          if (prepareAbort.signal.aborted) throw prepareAbort.signal.reason;
           preparingRuns.delete(runtime.chatId);
-          return conversationEngine.run(runtime, {
+          // The engine subscribes synchronously before its first await. Keep the
+          // preparation watcher until that handover, then release it in finally.
+          return await conversationEngine.run(runtime, {
             observer: emit,
             beginPageOperation: (followForeground) => pageGlow.beginOperation(runtime.chatId, followForeground),
             onLimitReached: (guard, info) =>
@@ -546,6 +607,7 @@ export function initConversationRuntime(): void {
                 60_000,
               ) as Promise<boolean>,
           });
+          } finally { windowWatch.dispose(); }
         })().finally(() => pageGlow.stop(runtime.chatId));
         inFlightRuns.set(runtime.chatId, task);
         void task
@@ -554,7 +616,33 @@ export function initConversationRuntime(): void {
               reply(summary);
               broadcast({ type: "settled", chatId: runtime.chatId, summary });
             },
-            (error) => {
+            async (error) => {
+              if (isClosedBrowserWindowError(prepareAbort.signal.reason)) error = prepareAbort.signal.reason;
+              // Preparation may fail before the engine owns an assistant row.
+              // Persist the same renderable terminal error even with no panel open.
+              if (isClosedBrowserWindowError(error)) {
+                try {
+                  const block = toApiErrorBlock(error);
+                  const record = await browserOperation('createWindowClosureError', undefined,
+                    () => transcriptEngine.createAssistantRecord(runtime.chatId), { mutating: true });
+                  record.status = 'error';
+                  record.error = block;
+                  record.content = block;
+                  record.parts = [{ type: 'text', content: block }];
+                  const durationMs = Date.now() - runStarted;
+                  record.usage = { iterations: 0, toolCalls: 0, toolRounds: 0, durationMs };
+                  await browserOperation('persistWindowClosureError', undefined, () => transcriptEngine.flush(record), { mutating: true });
+                  emit({ type: 'assistant-start', chatId: runtime.chatId, messageId: record.id });
+                  emit({ type: 'assistant-error', chatId: runtime.chatId, messageId: record.id, error: block, durationMs });
+                  const summary = { chatId: runtime.chatId, messageId: record.id, status: 'error' as const, error: block,
+                    iterations: 0, compactions: 0, durationMs };
+                  reply(summary);
+                  broadcast({ type: 'settled', chatId: runtime.chatId, summary });
+                  return;
+                } catch (persistenceError) {
+                  console.error('[ConversationRuntime] 窗口关闭错误记录写入失败', persistenceError);
+                }
+              }
               fail(error);
               if (cancelled.has(runtime.chatId))
                 emit({
@@ -577,6 +665,7 @@ export function initConversationRuntime(): void {
             cancelled.delete(runtime.chatId);
             preparingRuns.delete(runtime.chatId);
             compacting.delete(runtime.chatId);
+            publishBusySessions();
             for (const q of pendingQuestions.values())
               if (q.chatId === runtime.chatId) q.finish(false);
           });

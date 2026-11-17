@@ -57,14 +57,14 @@ export class OCRTool extends BaseTool {
     }
   };
 
-  async execute(parameters: OCRParams): Promise<ToolResult> {
+  async execute(parameters: OCRParams, context?: import('../registry').ToolExecutionContext): Promise<ToolResult> {
     try {
       let imageBase64 = parameters.imageBase64 as unknown as string | Record<string, any> | undefined;
       
       // 如果需要自动截图
       if (parameters.autoScreenshot) {
         const screenshotTool = new ScreenshotTool();
-        const screenshotResult = await screenshotTool.execute({});
+        const screenshotResult = await screenshotTool.execute({}, context);
         
         if (!screenshotResult.success || !screenshotResult.data) {
           return {

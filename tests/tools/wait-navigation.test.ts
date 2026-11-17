@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { GenericWaitTool } from '../../tools/common/generic-wait';
-import { normalizeWaitSeconds, waitExecutionTimeout } from '../../tools/common/wait-contract';
+import { BrowserWaitTool } from '../../tools/browser/browser-wait-tool';
 import { BrowserNavigationTool } from '../../tools/browser/navigation';
 import { BrowserTabsTool } from '../../tools/browser/tab-management';
 import { ConversationEngine } from '../../entrypoints/sidepanel/core/conversation/conversation-engine';
@@ -9,51 +8,95 @@ import { imageStore } from '../../entrypoints/sidepanel/core/images/image-store'
 import { ViewportImageDeduplicator } from '../../entrypoints/sidepanel/core/conversation/viewport-image-dedup';
 import { SCENARIO_PRESETS } from '../../utils/tools/tool-presets';
 
-for (const scenario of ['automation','visionAgent','visionAssist'] as const) assert.ok(SCENARIO_PRESETS[scenario].includes('generic_wait'));
-assert.equal(normalizeWaitSeconds(1000),600);assert.equal(normalizeWaitSeconds(0.25),0.25);
-for(const value of [NaN,Infinity,-1,'600',undefined]) assert.throws(()=>normalizeWaitSeconds(value));
-assert.equal(waitExecutionTimeout({waitSeconds:1000},120000),605000);
-const wait = new GenericWaitTool();
-for(const value of [null,[],{}, {waitSeconds:-1},{waitSeconds:NaN},{waitSeconds:10,script:'x'}]) assert.equal((await wait.execute(value as any)).success,false);
+for (const scenario of ['automation','visionAgent','visionAssist'] as const) assert.ok(SCENARIO_PRESETS[scenario].includes('browser_wait'));
+// generic_wait 已整体删除：等待能力统一由条件等待承载
+assert.equal(SCENARIO_PRESETS.automation.includes('generic_wait'),false,'generic_wait 必须已删除');
+const wait = new BrowserWaitTool();
+// chrome 桩：条件等待需要读取标签页地址。测试里固定一个地址，
+// 使 url_contains 条件可确定地命中/不命中。
+const waitChromeStub={
+  tabs:{
+    get:async(id:number)=>({id,url:'https://example.test/form',status:'complete'}),
+    query:async()=>[{id:1,url:'https://example.test/form',status:'complete'}],
+  },
+};
+const savedChrome=(globalThis as any).chrome;
+(globalThis as any).chrome=waitChromeStub;
+// 参数校验：条件必须是合法数组，值必须配套
+for(const value of [null,[],{}, {conditions:[]}, {conditions:null}, {conditions:[{}]},
+  {conditions:[{type:'nope'}]}, {conditions:[{type:'text_present'}]},
+  {conditions:[{type:'url_contains'}]}, {conditions:[{type:'page_ready',value:'x'}]},
+  {conditions:'x'}, {conditions:[{type:'text_present',value:'x'}],script:'y'}])
+  assert.equal((await wait.execute(value as any)).success,false,'非法参数必须被拒绝：'+JSON.stringify(value));
+// network_idle / page_ready 不需要 value
+assert.equal((await wait.execute({conditions:[{type:'page_ready'}],timeoutMs:100} as any)).success,true,'page_ready 是合法条件');
+// url_contains 命中：地址含子串即满足
+const hit=await wait.execute({conditions:[{type:'url_contains',value:'example.test'}],timeoutMs:500} as any);
+assert.equal(hit.data.satisfied,true,'地址命中子串必须立即满足条件');
 
-// Virtual clock: exercise the full ten-minute wait and engine timeout without
-// spending ten real minutes or weakening the production duration contract.
 const originalSet=globalThis.setTimeout,originalClear=globalThis.clearTimeout,originalNow=Date.now;
 const oldWindow=(globalThis as any).window;
 const scheduled=new Map<number,{callback:()=>void;ms:number}>();let sequence=0,clock=1000;
-(globalThis as any).window=globalThis;
 (globalThis as any).setTimeout=(callback:()=>void,ms:number)=>{const id=++sequence;scheduled.set(id,{callback,ms});return id;};
 (globalThis as any).clearTimeout=(id:number)=>scheduled.delete(id);
 Date.now=()=>clock;
 const takeTimer=(ms:number)=>{const entry=[...scheduled].find(([,value])=>value.ms===ms);assert.ok(entry,`Expected timer ${ms}`);scheduled.delete(entry[0]);entry[1].callback();};
+/**
+ * 推进虚拟时钟直到某个定时器触发（条件等待的轮询间隔靠它推进）。
+ *
+ * 必须是 async：定时器回调只**安排**promise 的兑现，真正的兑现发生在微任务里。
+ * 同步连发多个定时器会让等待循环的 await 永远排不上微任务，测试就会挂死。
+ * 每步之后 await 一次微任务，保证被唤醒的等待循环能真正跑一轮。
+ */
+const advanceTo=async(ms:number,steps=400)=>{
+  for(let i=0;i<steps;i++){
+    const entry=[...scheduled].find(([,value])=>value.ms===ms);
+    if(entry){clock+=ms;scheduled.delete(entry[0]);entry[1].callback();await Promise.resolve();await Promise.resolve();return;}
+    const next=[...scheduled.values()].sort((a,b)=>a.ms-b.ms)[0];
+    if(!next){clock+=ms;await Promise.resolve();return;}
+    clock+=next.ms;
+    const holder=[...scheduled].find(([,v])=>v===next)!;
+    scheduled.delete(holder[0]);next.callback();
+    await Promise.resolve();await Promise.resolve();
+  }
+};
 try {
-  const pending=wait.execute({waitSeconds:900});
-  takeTimer(600000);const capped=await pending;
-  assert.equal(capped.success,true);assert.equal(capped.data.capped,true);assert.equal(capped.data.waitSeconds,600);
-  const controller=new AbortController();const cancelled=wait.execute({waitSeconds:600},{signal:controller.signal});
-  controller.abort();assert.equal((await cancelled).success,false);assert.equal(scheduled.size,0);
-  const stopped=new AbortController();stopped.abort();assert.equal((await wait.execute({waitSeconds:600},{signal:stopped.signal})).success,false);assert.equal(scheduled.size,0);
-  const engine=new ConversationEngine({executeTool:async(name:string,args:any,context:any)=>name==='generic_wait'?wait.execute(args,context):{success:true,data:{text:'read'}},requiresApproval:()=>false} as any) as any;
+  // 条件等待：条件不满足时按超时收敛，返回逐条件达成情况（不是抛错）
+  const timedOutPromise=wait.execute({conditions:[{type:'url_contains',value:'step=3'}],timeoutMs:1000,intervalMs:100} as any);
+  // 反复推进轮询间隔，直到等待自行超时收敛
+  for(let i=0;i<40;i++){await advanceTo(100);if(await Promise.race([timedOutPromise.then(()=>true),Promise.resolve(false)]))break;}
+  const timedOut=await timedOutPromise;
+  assert.equal(timedOut.success,true,'超时不是错误：应返回可分析的结果');
+  assert.equal(timedOut.data.satisfied,false,'条件未达成必须标记 satisfied=false');
+  assert.equal(timedOut.data.conditions.length,1);
+  assert.equal(timedOut.data.conditions[0].met,false);
+  // 取消：立即收敛且不残留定时器
+  const controller=new AbortController();const cancelled=wait.execute({conditions:[{type:'page_ready'}],timeoutMs:60000,intervalMs:100},{signal:controller.signal});
+  controller.abort();assert.equal((await cancelled).success,false,'取消必须返回失败结果');
+  const stopped=new AbortController();stopped.abort();assert.equal((await wait.execute({conditions:[{type:'page_ready'}],timeoutMs:60000,intervalMs:100},{signal:stopped.signal})).success,false);
+  const engine=new ConversationEngine({executeTool:async(name:string,args:any,context:any)=>name==='browser_wait'?wait.execute(args,context):{success:true,data:{text:'read'}},requiresApproval:()=>false} as any) as any;
   // 工具执行引擎共用本测试的虚拟时钟：引擎通过注入的计时适配注册/清理
   // 超时定时器，否则它会用真实时钟写进下方的定时器断言并扰乱计时推进
   toolExecutionEngine.setTimerAdapter({ setTimeout, clearTimeout });
-  const runtime:any={chatId:'wait-contract',toolIds:['generic_wait','read_website'],vision:null,limits:{maxDurationMs:10000,toolTimeoutMs:120000}};
+  const runtime:any={chatId:'wait-contract',toolIds:['browser_wait','read_website'],vision:null,limits:{maxDurationMs:10000,toolTimeoutMs:120000}};
   const handle:any={abortController:new AbortController(),dynamicToolIds:new Set(),record:{toolCalls:[],parts:[]},toolCallCount:0};
   const call=(name:string,args:any)=>({id:name,type:'function',function:{name,arguments:JSON.stringify(args)}});
-  const enginePending=engine.executeToolCalls(runtime,handle,[call('generic_wait',{waitSeconds:10000}),call('read_website',{})],{},()=>{},clock+10000);
-  assert.ok([...scheduled.values()].some(timer=>timer.ms===605000),'Engine must not apply the normal 120s timeout to long waits');
-  clock+=600000;takeTimer(600000);
+  const enginePending=engine.executeToolCalls(runtime,handle,[call('browser_wait',{conditions:[{type:'url_contains',value:'example.test'}],timeoutMs:10000}),call('read_website',{})],{},()=>{},clock+10000);
+  // 引擎上界必须 ≥ 等待参数 + 缓冲：否则工具的精确超时诊断会被引擎兜底截断，
+  // 模型拿到的是笼统的引擎超时而不是「哪条条件没满足」。
+  assert.ok([...scheduled.values()].some(timer=>timer.ms>=15000),'引擎上界必须覆盖等待参数 + 缓冲');
+  // 条件已满足 → 等待在第一次轮询即返回，无需推进虚拟时钟（避免误触发
+  // 引擎自己的超时定时器，把等待判成超时失败）。
   const outcome=await enginePending;
   assert.equal(outcome.committed,true,'轮次有效时结果必须写入模型上下文（闸门放行）');
-  // 「全部失败」判定：本批两个调用中只要有一个成功即不算全败——
-  // 上面只推进了 generic_wait 的等待计时，read_website 随后才
-  // 在微任务里完成并被引擎计为成功，因此批次不是「全败」
-  assert.equal(outcome.anyFailure,outcome.anySuccess,'至少有一个成功调用，批次不得判为全败');assert.equal(outcome.messages.length,2);assert.equal(outcome.waitedMs,600000);
-  // 引擎自身的定时器与被测逻辑共用同一套虚拟时钟（引擎通过注入的计时适配
-  // 注册/清理定时器），因此上文 takeTimer(600000) 会一并推进引擎的定时器；
-  // 批次结算后引擎侧不得残留任何定时器句柄。
-  // 轮次闸门：executeToolCalls 每次调用都会 beginRound 并在收尾时 closeRound，
-  // 因此这里只断言「调用结束后轮次已销毁」——过期结果不得再写入上下文
+  assert.equal(outcome.anySuccess,true,'批次内至少有一个成功调用');
+  assert.equal(outcome.anyFailure,false,'条件满足的等待不应判为失败');
+  assert.equal(outcome.messages.length,2);
+  // 等待工具的结果必须进模型上下文（模型据此知道「等到了什么」）
+  assert.ok(
+    outcome.messages.some((m: { content?: unknown }) => String(m.content || '').includes('browser_wait') || String(m.content || '').includes('satisfied')),
+    'browser_wait 的结果必须写入模型上下文',
+  );
   assert.equal(toolExecutionEngine.getActiveRoundId('wait-contract'),null,'工具批次结束后轮次 id 必须销毁');
   assert.equal(
     scheduled.size,
@@ -85,7 +128,7 @@ try {
   // 本批「全败」判定：interact 在答复前尚未结算（仍被等待计时占着队列），
   // 因此批次内尚无成功调用——断言失败即说明批次被误判为全败
   assert.equal(resumed.anyFailure,true,'同批存在未结算的交互调用时，批次不得被误判为全败');
-} finally {globalThis.setTimeout=originalSet;globalThis.clearTimeout=originalClear;Date.now=originalNow;toolExecutionEngine.resetTimerAdapter();}
+} finally {globalThis.setTimeout=originalSet;globalThis.clearTimeout=originalClear;Date.now=originalNow;toolExecutionEngine.resetTimerAdapter();(globalThis as any).chrome=savedChrome;}
 
 // —— js_run 引擎超时契约（独立 try/finally：与上方等待用例解耦，
 //    任一侧断言失败都不影响另一侧执行）——
@@ -217,12 +260,12 @@ try {
     {action:'wait',url:'https://x.example/'}, {action:'refresh',newTab:true},
     {action:'open',url:'https://x.example/',tabId:1}, {action:'back',checkInterval:500},
     {action:'open'}, {action:'open',url:'   '}, {action:'open',url:'https://x.example/',timeout:0},
-    // timeout 上限：有界执行（先于引擎工具超时收敛），超限必须拒绝并指引 generic_wait
+    // timeout 上限：有界执行（先于引擎工具超时收敛），超限必须拒绝并指引 browser_wait
     {action:'open',url:'https://x.example/',timeout:100001}, {action:'wait',timeout:600000},
     {action:'wait',tabId:-1}, {action:'wait',tabId:1,checkInterval:10},
   ]) assert.equal((await nav.execute(bad as any)).success,false,`参数矩阵拒绝 ${JSON.stringify(bad)}`);
-  assert.ok(((await nav.execute({action:'wait',timeout:600000})).error??'').includes('generic_wait'),
-    '超时上限错误必须指引改用 generic_wait 而不是只说「不合法」');
+  assert.ok(((await nav.execute({action:'wait',timeout:600000})).error??'').includes('browser_wait'),
+    '超时上限错误必须指引改用 browser_wait 而不是只说「不合法」');
   // ── open 主路径（原 browser_navigate 语义等价迁移） ──
   assert.equal((await nav.execute({action:'open',url:'https://new.example/',waitForLoad:false})).success,true);
   assert.equal(tabCreates.length,1);assert.equal(updated.length,0,'Default navigation preserves the original page');

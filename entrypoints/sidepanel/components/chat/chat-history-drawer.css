@@ -139,6 +139,196 @@
   white-space: nowrap;
 }
 
+/* ──── 会话标签（标题下方 chip 行） ──── */
+
+.history-item-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.history-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  background: var(--surface-soft, #f3f1ed);
+  color: var(--ink-secondary, #787671);
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 内置标签（学习）：琥珀色，与普通自定义标签区分 */
+.history-tag--system {
+  color: #b45309;
+  border-color: rgba(217, 119, 6, 0.32);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.16), rgba(217, 119, 6, 0.07));
+}
+
+.history-tag-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  color: inherit;
+  padding: 0;
+  margin-left: 1px;
+  opacity: 0.6;
+  cursor: pointer;
+}
+
+.history-tag-remove:hover {
+  opacity: 1;
+}
+
+.history-tag-remove:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ──── 行内标签编辑器 ──── */
+
+.history-tag-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px dashed var(--line-soft, #e4e2de);
+  border-radius: 10px;
+  background: var(--surface-canvas, #faf9f7);
+  cursor: default;
+}
+
+.history-tag-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.history-tag-editor-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ink-secondary, #787671);
+}
+
+.history-tag-editor-count {
+  font-size: 10px;
+  color: var(--ink-muted, #9b9790);
+}
+
+.history-tag-editor-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 18px;
+}
+
+.history-tag-editor-empty {
+  font-size: 10px;
+  color: var(--ink-muted, #9b9790);
+}
+
+.history-tag-editor-input-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.history-tag-editor-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink-primary, #292824);
+  font-size: 11px;
+  outline: none;
+}
+
+.history-tag-editor-input:focus {
+  border-color: var(--ink-secondary, #787671);
+  box-shadow: 0 0 0 2px rgba(41, 40, 36, 0.06);
+}
+
+.history-tag-editor-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink-secondary, #787671);
+  cursor: pointer;
+}
+
+.history-tag-editor-add:hover:not(:disabled) {
+  background: var(--surface-hover, #eeece7);
+  color: var(--ink-primary, #292824);
+}
+
+.history-tag-editor-add:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.history-tag-editor-error {
+  margin: 0;
+  font-size: 10px;
+  color: #ef4444;
+}
+
+.history-tag-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.history-tag-editor-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink-secondary, #787671);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.history-tag-editor-btn:hover {
+  background: var(--surface-hover, #eeece7);
+  color: var(--ink-primary, #292824);
+}
+
+.history-tag-editor-btn.primary {
+  border-color: var(--ink-primary, #292824);
+  background: var(--ink-primary, #292824);
+  color: #ffffff;
+}
+
+.history-tag-editor-btn.primary:hover {
+  background: #3b3934;
+  color: #ffffff;
+}
+
+.history-tag-editor-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .history-item-meta {
   display: flex;
   align-items: center;
@@ -158,13 +348,6 @@
   color: var(--ink-secondary, #787671);
   background: var(--surface-hover, #eeece7);
   border-color: var(--ink-secondary, #787671);
-}
-
-/* 网站学习会话（kind='site-learn'）：琥珀色与智能体徽章区分 */
-.history-badge.learn {
-  color: #d97706;
-  background: rgba(245, 158, 11, 0.1);
-  border-color: #f59e0b;
 }
 
 .history-item-count {
@@ -203,28 +386,79 @@
   color: #ef4444;
 }
 
+/* 键盘焦点可见性：标签编辑相关控件均需保持可辨焦点环 */
+.item-op:focus-visible,
+.history-tag-remove:focus-visible,
+.history-tag-editor-add:focus-visible,
+.history-tag-editor-btn:focus-visible {
+  outline: 2px solid var(--ink-secondary, #787671);
+  outline-offset: 1px;
+}
+
+/* ──── 行内重命名：输入框 + 确认/取消（与标签编辑器同一视觉语言） ──── */
+
 .history-rename {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 
 .history-rename input {
   flex: 1;
   min-width: 0;
-  border: 1px solid var(--ink-secondary, #787671);
+  border: 1px solid var(--line-soft, #e4e2de);
   border-radius: 6px;
-  padding: 4px 8px;
+  padding: 5px 8px;
   font-size: 12px;
+  font-family: inherit;
+  color: var(--ink-primary, #292824);
+  background: #ffffff;
   outline: none;
+}
+
+.history-rename input:focus {
+  border-color: var(--ink-secondary, #787671);
+  box-shadow: 0 0 0 2px rgba(41, 40, 36, 0.06);
+}
+
+/* 图标按钮：去掉 UA 默认按钮底色/边框，改为与抽屉一致的描边圆角胶囊 */
+.rename-confirm,
+.rename-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 6px;
+  background: #ffffff;
+  cursor: pointer;
 }
 
 .rename-confirm {
   color: #10b981;
 }
 
+.rename-confirm:hover {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.45);
+}
+
 .rename-cancel {
   color: #ef4444;
+}
+
+.rename-cancel:hover {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.rename-confirm:focus-visible,
+.rename-cancel:focus-visible {
+  outline: 2px solid var(--ink-secondary, #787671);
+  outline-offset: 1px;
 }
 
 /* 抽屉过渡 */

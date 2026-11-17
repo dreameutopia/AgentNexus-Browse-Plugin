@@ -12,6 +12,7 @@ import 'fake-indexeddb/auto';
 import { extractContentText } from '@/common/tool-handler';
 import { chatDatabase } from '@/entrypoints/sidepanel/core/context/chat-database';
 import { PythonRunTool } from '@/tools/python/python-run-tool';
+import { FileUtilTool } from '@/tools/file-util/file-util-tool';
 import {
   evaluateRequirements,
   normalizePackageName,
@@ -21,6 +22,7 @@ import {
 } from '@/utils/pyodide/dependency-contract';
 
 const tool = new PythonRunTool();
+const files = new FileUtilTool();
 const text = (result: { content?: unknown }) => extractContentText(result.content);
 const CHAT = 'python-dep-contract-chat';
 
@@ -61,6 +63,21 @@ assert.match(guidance, /pypdf/, '指引点名具体包名');
 assert.match(guidance, /dependencyMode="pypi"/, '指引给出具体参数');
 assert.match(guidance, /标准库/, '指引给出标准库替代路径');
 
+// 指引必须保留模型写下的原始声明（含版本约束）——指引要求「照抄 requirements」，
+// 自己把 pypdf>=5 截成 pypdf 会让模型照抄时丢掉版本约束
+const versioned = summarizeRequirements(
+  evaluateRequirements(['pypdf>=5', 'pypdf>=5', 'requests[security]>=2'], { catalog, installed, mode: 'catalog' }),
+);
+const versionedGuidance = renderRequirementGuidance(versioned);
+assert.match(versionedGuidance, /"pypdf>=5"/, '指引保留版本约束原文');
+assert.match(versionedGuidance, /"requests\[security\]>=2"/, '指引保留 extras 声明原文');
+assert.equal(versionedGuidance.split('"pypdf>=5"').length - 1, 1, '重复声明去重，只提示一次');
+
+// 空声明可分析：按 JSON 回显（空串肉眼不可见），并给出正确写法
+const blank = summarizeRequirements(evaluateRequirements([''], { catalog, installed, mode: 'catalog' }));
+assert.equal(blank.unsatisfiable.length, 1, '空声明归入 unsatisfiable');
+assert.match(renderRequirementGuidance(blank), /""/, '空声明按 JSON 回显，肉眼可辨');
+
 const invalid = summarizeRequirements(
   evaluateRequirements(['not a valid requirement!!'], { catalog, installed, mode: 'catalog' }),
 );
@@ -78,7 +95,7 @@ await chatDatabase.createSession({
   chatId: CHAT, title: 'dep', createdAt: 1, updatedAt: 1,
   messageCount: 0, lastMessagePreview: '', agentName: '',
 });
-await tool.execute({ action: 'create', path: 'scripts/demo.py', content: 'print(1)\n' }, { chatId: CHAT });
+await files.execute({ action: 'create', path: 'scripts/demo.py', content: 'print(1)\n' }, { chatId: CHAT });
 
 // ① run 未落库脚本 → 存在性错误先行
 assert.match(
@@ -109,5 +126,14 @@ const approved = text(
 );
 assert.doesNotMatch(approved, /PY_DEPENDENCY_UNRESOLVABLE/, 'pypi 模式不被目录判定拦下');
 assert.match(approved, /PY_DEPENDENCY_APPROVAL_REQUIRED/, 'pypi 模式进入审批门');
+
+// ④ preflight 是干跑查询：不得被前置判定拦下（报告依赖状况本身就是它的产物）
+const preflight = text(
+  await tool.execute(
+    { action: 'run', path: 'scripts/demo.py', requirements: ['pypdf>=5'], preflight: true },
+    { chatId: CHAT },
+  ),
+);
+assert.doesNotMatch(preflight, /PY_DEPENDENCY_UNRESOLVABLE/, 'preflight 豁免前置判定');
 
 console.log('[python-dep-contract] 归一化、判定结论、指引文案与工具层前置判定全部通过。');

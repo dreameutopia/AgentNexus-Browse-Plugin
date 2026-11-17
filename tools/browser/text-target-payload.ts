@@ -66,8 +66,49 @@ export async function textTargetPayload(
     if (registry?.resolve(id) !== node)
       return { error: 'STALE_ELEMENT：聚焦时节点变化' };
   }
-  if (!document.hasFocus() || active() !== node)
-    return { error: 'FOCUS_CHANGED：焦点不在指定引用，重新观察当前焦点' };
+  /**
+   * 焦点核验（三态分流，错误必须可分析可执行）：
+   *   1. activeElement === 目标 → 放行。窗口是否在前台**不设闸**——CDP 派发
+   *      的按键/输入对后台窗口同样有效（自动化既定能力），以前
+   *      `!document.hasFocus()` 一票否决会把整个 keys/type 面在用户切走
+   *      窗口后全部打死，且错误文案无从区分两种根因。
+   *   2. 焦点在其它元素 → FOCUS_CHANGED + 告知焦点在谁（并顺手注册它的
+   *      ElementId），模型可直接换引用或 focus 目标，而不是盲目重观察。
+   *   3. 焦点在 body/本 frame 无焦点（浮层吃焦点、焦点在其它 frame、或
+   *      文档级）→ FOCUS_CHANGED + 指明 Escape 等文档级按键可不带
+   *      elementId 调用（keys 的无引用兜底路径）。
+   */
+  const activeNode = active();
+  if (activeNode !== node) {
+    const windowFocused = document.hasFocus();
+    const windowNote = windowFocused ? '' : '；浏览器窗口未在前台（不影响后台派发，但当前焦点不对）';
+    if (!activeNode || activeNode === document.body || activeNode === document.documentElement) {
+      return {
+        error:
+          'FOCUS_CHANGED：目标不是当前焦点（焦点在 body/文档级，或本 frame 无焦点——可能被浮层收走、焦点在其它 frame）' +
+          windowNote +
+          '。关闭浮层后重新 focus 目标再操作；Escape/全局类按键可省略 elementId 直接 keys 派发给当前焦点。',
+      };
+    }
+    const tag = activeNode.localName || 'unknown';
+    const label =
+      activeNode.getAttribute?.('aria-label') ||
+      activeNode.getAttribute?.('placeholder') ||
+      (activeNode.id ? '#' + activeNode.id : '') ||
+      '';
+    let activeElementId = '';
+    try {
+      activeElementId = registry?.register?.(activeNode) || '';
+    } catch {
+      /* 注册失败不阻断诊断 */
+    }
+    return {
+      error:
+        `FOCUS_CHANGED：焦点在 <${tag}${label ? ' ' + String(label).slice(0, 60) : ''}>` +
+        `（elementId=${activeElementId || '不可用'}${windowNote}）。` +
+        '改用该焦点引用操作，或对目标重新 focus 后再试；不要用旧引用重发。',
+    };
+  }
   if (
     phase === 'type' &&
     (!(node.isContentEditable || node.matches('textarea,input')) ||
@@ -91,10 +132,20 @@ export async function textTargetPayload(
   return { success: true, tag: node.localName };
 }
 
+/**
+ * 当前焦点读取（注入）。
+ *
+ * 返回形态：
+ *   - 真实焦点元素 → 完整字段（elementId/tag/…），窗口不在前台时附
+ *     windowFocused:false（供模型分析，不阻止任何动作）；
+ *   - 焦点在 body 或窗口未聚焦 → { state }（不注册 body 引用——那会制造
+ *     一个不可用的句柄）。宿主侧用 dedupeFocusEntries 收敛多 frame 的重复
+ *     state 条目。
+ */
 export function focusedTextPayload(invalidate = false) {
   const registry = (document as ReferenceDocument).__agentNexusReferences;
   if (invalidate) registry?.invalidate();
-  if (!document.hasFocus()) return null;
+  const windowFocused = document.hasFocus();
   let node = document.activeElement;
   const shadow = (el: Element): ShadowRoot | null => {
     try {
@@ -116,10 +167,14 @@ export function focusedTextPayload(invalidate = false) {
   if (
     !node ||
     node === document.body ||
+    node === document.documentElement ||
     node.matches('iframe,frame') ||
     !registry
   )
-    return null;
+    return {
+      state: windowFocused ? 'body' : 'window-unfocused',
+      ...(windowFocused ? {} : { windowFocused: false }),
+    };
   const input = node as HTMLInputElement;
   return {
     elementId: registry.register(node),
@@ -155,5 +210,22 @@ export function focusedTextPayload(invalidate = false) {
       : 'value' in node
         ? { value: String(input.value).slice(0, 2000) }
         : { text: (node.textContent || '').slice(0, 2000) }),
+    ...(windowFocused ? {} : { windowFocused: false }),
   };
+}
+
+/** 宿主侧：多 frame 的 state 级焦点条目（body/window-unfocused）去重——
+ *  每个 frame 都会回一条同义记录，全留给模型只是噪声；带 elementId 的
+ *  真实焦点条目始终保留。 */
+export function dedupeFocusEntries<
+  T extends { elementId?: string; state?: string },
+>(entries: T[]): T[] {
+  const seenStates = new Set<string>();
+  return entries.filter((entry) => {
+    if (entry.elementId) return true;
+    const key = entry.state ?? '';
+    if (seenStates.has(key)) return false;
+    seenStates.add(key);
+    return true;
+  });
 }

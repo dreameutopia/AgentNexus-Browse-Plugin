@@ -11,6 +11,7 @@
  */
 
 import { JS_RUN_TOOL_ID } from '@/tools/javascript/js-contract';
+import { executeWithBrowserScope } from '@/tools/browser/browser-scope';
 import { toolRegistry, type ToolExecutionContext } from '@/tools/registry';
 import { ToolResult, createErrorResponse } from '@/common/tool-handler';
 import { PAGE_TOOL_TARGET_MESSAGE } from '../../../core/conversation/runtime-protocol';
@@ -60,7 +61,7 @@ export async function executeTool(
   if (registeredTool) {
     try {
       // context 为可选扩展参数：不感知会话的既有工具签名不受影响
-      return await registeredTool.execute(parameters, context);
+      return await executeWithBrowserScope(context, scopedContext => registeredTool.execute(parameters, scopedContext));
     } catch (err) {
       // 工具可能因上下文限制（如只能在 background 中运行）而抛出错误，
       // 此时通过 chrome.runtime.sendMessage 转发到 background 执行
@@ -80,7 +81,7 @@ export async function executeTool(
   //    凡已注册工具名（browser_navigation、browser_tabs 等）都由注册表兜底
   //    自动命中，不再需要为每个工具维护单独的 case 分支或白名单。
   try {
-    const cancellableGui = toolName === JS_RUN_TOOL_ID || toolName === 'browser_interact' || toolName === 'screenshot' || toolName.startsWith('vision_');
+    const cancellableGui = !!context?.browserScope || toolName === JS_RUN_TOOL_ID || toolName === 'browser_interact' || toolName === 'screenshot' || toolName.startsWith('vision_');
     const requestId = cancellableGui && context?.signal ? crypto.randomUUID() : undefined;
     const targetRequestId = context?.onTabTarget && typeof document !== 'undefined' ? crypto.randomUUID() : undefined;
     const onTarget = (message: { type?: string; requestId?: string; tabId?: number }, sender: chrome.runtime.MessageSender) => {
@@ -101,6 +102,9 @@ export async function executeTool(
     try {
       response = await chrome.runtime.sendMessage({
         ...(parameters ?? {}), type: toolName,
+        // Trusted envelope is written after model arguments, including undefined:
+        // a model-supplied field cannot enable, disable, or replace the binding.
+        __browserScope: context?.browserScope,
         ...(toolName === JS_RUN_TOOL_ID ? { __scriptContext: { chatId: context?.chatId, toolPolicy: context?.toolPolicy, toolApproved: context?.toolApproved } } : {}),
         ...(requestId ? { __visionRequestId: requestId } : {}),
         ...(targetRequestId ? { __pageTargetRequestId: targetRequestId } : {}),

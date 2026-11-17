@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { executeScriptBounded } from '../common/frame-read';
 /**
  * 页面加载就绪等待（单一实现）
@@ -26,7 +28,7 @@ export const PAGE_LOAD_DEFAULT_TIMEOUT_MS = 30_000;
  * 有界执行的理由：工具在 background 轮询，会话引擎的工具超时（默认 120s）
  * 到点只会给出「引擎兜底超时」的笼统结果——工具侧必须**先于引擎**自己收敛，
  * 返回带 tabId/status/elapsedMs 的可分析诊断。100s 留出引擎兜底余量；
- * 真正的长等待（分钟级）不属于「页面加载等待」，应改用 generic_wait。
+ * 真正的长等待（分钟级）不属于「页面加载等待」，应改用 browser_wait（按条件等待）。
  */
 export const PAGE_LOAD_TIMEOUT_MAX_MS = 100_000;
 /** 默认轮询间隔（毫秒） */
@@ -74,7 +76,7 @@ export type TabReadyOutcome =
 async function pollTabReady(
   tabId: number,
   options: TabReadyOptions = {},
-  progress: { status?: string; consecutive?: number } = {},
+  progress: { status?: string; consecutive?: number } = {}, context?: ToolExecutionContext
 ): Promise<TabReadyOutcome> {
   const timeoutMs = options.timeoutMs ?? PAGE_LOAD_DEFAULT_TIMEOUT_MS;
   const pollIntervalMs = options.pollIntervalMs ?? PAGE_LOAD_DEFAULT_POLL_MS;
@@ -89,7 +91,7 @@ async function pollTabReady(
     // 解析出 undefined（桩/异常实现）同样按「标签页已关闭」收口，绝不裸读 .status
     let tab: chrome.tabs.Tab | undefined;
     try {
-      tab = await abortable(chrome.tabs.get(tabId), options.signal);
+      tab = await abortable(browserChrome(context).tabs.get(tabId), options.signal);
     } catch {
       options.signal?.throwIfAborted();
       tab = undefined;
@@ -107,7 +109,7 @@ async function pollTabReady(
         const probe = await abortable(executeScriptBounded({
           target: { tabId },
           func: () => document.readyState,
-        }), options.signal);
+        }, undefined, undefined, context), options.signal);
         const state = probe?.[0]?.result;
         if (typeof state === 'string') {
           // 探测成功：只有明确知道未就绪才继续等待
@@ -163,7 +165,7 @@ async function pollTabReady(
 }
 
 /** Include stalled browser API calls in the readiness budget, with cancellation taking precedence. */
-export async function waitForTabReady(tabId: number, options: TabReadyOptions = {}): Promise<TabReadyOutcome> {
+export async function waitForTabReady(tabId: number, options: TabReadyOptions = {}, context?: ToolExecutionContext): Promise<TabReadyOutcome> {
   options.signal?.throwIfAborted();
   const timeoutMs = options.timeoutMs ?? PAGE_LOAD_DEFAULT_TIMEOUT_MS;
   const pollIntervalMs = options.pollIntervalMs ?? PAGE_LOAD_DEFAULT_POLL_MS;
@@ -171,7 +173,7 @@ export async function waitForTabReady(tabId: number, options: TabReadyOptions = 
   if (!timeoutMs) return { ready: false, reason: 'timeout', elapsedMs: 0 };
   const startedAt = Date.now();
   const progress: { status?: string; consecutive?: number } = {};
-  try { return await withTimeBudget(timeoutMs, signal => pollTabReady(tabId, { ...options, signal }, progress), options.signal); }
+  try { return await withTimeBudget(timeoutMs, signal => pollTabReady(tabId, { ...options, signal }, progress, context), options.signal); }
   catch (error) {
     options.signal?.throwIfAborted();
     if (error instanceof DOMException && error.name === 'TimeoutError') return { ready: false, reason: 'timeout', elapsedMs: Date.now() - startedAt, ...progress };

@@ -31,7 +31,7 @@ export type { PdfRenderRequest, PdfRenderResult };
  * @param request 渲染请求
  * @returns 成功返回 base64 PDF；失败返回可读原因（不抛错）
  */
-export async function requestPdfRender(request: PdfRenderRequest): Promise<PdfRenderResult> {
+export async function requestPdfRender(request: PdfRenderRequest, context?: import('../registry').ToolExecutionContext): Promise<PdfRenderResult> {
   if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
     return { ok: false, error: '当前环境无法调用后台渲染通道' };
   }
@@ -39,6 +39,7 @@ export async function requestPdfRender(request: PdfRenderRequest): Promise<PdfRe
     const response = await chrome.runtime.sendMessage({
       ...request,
       type: PDF_RENDER_MESSAGE,
+      ...(context?.browserScope ? { __browserScope: context.browserScope } : {}),
     });
     if (!response || typeof response !== 'object') {
       return { ok: false, error: '后台未返回渲染结果（通道可能未就绪）' };

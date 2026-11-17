@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 /**
  * CDP（Chrome DevTools Protocol）会话管理器
  *
@@ -75,10 +77,10 @@ class CdpSessionManager {
   /** A live screenshot must not lose its viewport to an idle-time detach. */
   private retainedUntil = new Map<number, number>();
 
-  retainUntil(tabId: number, expiresAt: number): void {
+  retainUntil(tabId: number, expiresAt: number, context?: ToolExecutionContext): void {
     if (!this.hasSession(tabId) || !Number.isFinite(expiresAt)) return;
     this.retainedUntil.set(tabId, Math.max(this.retainedUntil.get(tabId) ?? 0, expiresAt));
-    this.refreshTtl(tabId);
+    this.refreshTtl(tabId, context);
   }
 
   /** Changes on attach/detach so gestures can reject a session replaced mid-operation. */
@@ -90,22 +92,22 @@ class CdpSessionManager {
   }
 
   /** Renew an existing session only; never attach while checking stale evidence. */
-  touch(tabId: number): boolean {
+  touch(tabId: number, context?: ToolExecutionContext): boolean {
     if (!this.hasSession(tabId)) return false;
-    this.refreshTtl(tabId);
+    this.refreshTtl(tabId, context);
     return true;
   }
 
   /** chrome.debugger 是否可用（仅 background/service worker 环境可用） */
-  isSupported(): boolean {
-    return typeof chrome !== 'undefined' && !!chrome.debugger;
+  isSupported(context?: ToolExecutionContext): boolean {
+    return typeof chrome !== 'undefined' && !!browserChrome(context).debugger;
   }
 
   /** 注册 onDetach 监听（幂等），保证外部脱离时同步本地状态 */
-  private ensureListeners(): void {
+  private ensureListeners(context?: ToolExecutionContext): void {
     if (this.listenersReady) return;
     try {
-      chrome.debugger.onDetach.addListener((target) => {
+      browserChrome(context).debugger.onDetach.addListener((target) => {
         if (typeof target.tabId === 'number') {
           this.forget(target.tabId);
         }
@@ -117,13 +119,13 @@ class CdpSessionManager {
   }
 
   /** 刷新 TTL（首次 attach 与每次复用时调用） */
-  private refreshTtl(tabId: number): void {
+  private refreshTtl(tabId: number, context?: ToolExecutionContext): void {
     const old = this.ttlTimers.get(tabId);
     if (old) clearTimeout(old);
     this.ttlTimers.set(
       tabId,
       setTimeout(() => {
-        void this.detach(tabId);
+        void this.detach(tabId, context);
       }, Math.max(SESSION_TTL_MS, (this.retainedUntil.get(tabId) ?? 0) - Date.now())),
     );
   }
@@ -141,17 +143,17 @@ class CdpSessionManager {
    * 附加（或复用）指定标签页的调试会话
    * @throws 附加失败时抛出 Error（含被占用/不可调试等原因），由上层回退处理
    */
-  async attach(tabId: number): Promise<void> {
-    this.ensureListeners();
+  async attach(tabId: number, context?: ToolExecutionContext): Promise<void> {
+    this.ensureListeners(context);
     if (this.ttlTimers.has(tabId)) {
-      this.refreshTtl(tabId);
+      this.refreshTtl(tabId, context);
       return;
     }
     let pending = this.attaching.get(tabId);
     if (!pending) {
-      pending = chrome.debugger.attach({ tabId }, CDP_PROTOCOL_VERSION).then(() => {
+      pending = browserChrome(context).debugger.attach({ tabId }, CDP_PROTOCOL_VERSION).then(() => {
         this.epochs.set(tabId, this.getEpoch(tabId) + 1);
-        this.refreshTtl(tabId);
+        this.refreshTtl(tabId, context);
       });
       this.attaching.set(tabId, pending);
     }
@@ -160,21 +162,21 @@ class CdpSessionManager {
   }
 
   /** 主动脱离指定标签页的调试会话 */
-  async detach(tabId: number): Promise<void> {
+  async detach(tabId: number, context?: ToolExecutionContext): Promise<void> {
     const pending = this.attaching.get(tabId);
     if (pending) await pending.catch(() => undefined);
     this.forget(tabId);
     try {
-      await chrome.debugger.detach({ tabId });
+      await browserChrome(context).debugger.detach({ tabId });
     } catch {
       // 会话可能已被浏览器自动脱离（页面关闭/导航等），忽略即可
     }
   }
 
   /** 脱离全部会话（供清理场景调用） */
-  async detachAll(): Promise<void> {
+  async detachAll(context?: ToolExecutionContext): Promise<void> {
     const tabIds = Array.from(this.ttlTimers.keys());
-    await Promise.all(tabIds.map((tabId) => this.detach(tabId)));
+    await Promise.all(tabIds.map((tabId) => this.detach(tabId, context)));
   }
 
   /**
@@ -187,16 +189,16 @@ class CdpSessionManager {
   async evaluate(
     tabId: number,
     expression: string,
-    options: CdpEvaluateOptions = {},
+    options: CdpEvaluateOptions = {}, context?: ToolExecutionContext
   ): Promise<CdpEvaluateResult> {
     const { awaitPromise = true, timeoutMs = DEFAULT_EVALUATE_TIMEOUT_MS, contextId } = options;
 
-    await this.attach(tabId);
+    await this.attach(tabId, context);
     // 求值期间会话绝不闲置脱离：attach 只刷 60s 闲置 TTL，而 timeoutMs 可达
     // 300s——不保留的话，长求值跑到 60s 会被 TTL 定时器 detach 掉，CDP 响应
     // 永远不会回来（工具层白等满超时，模型收到的还是兜底文案）。
     // 求值结束后保留期仍生效，但恢复正常闲置回收节奏。
-    this.retainUntil(tabId, Date.now() + timeoutMs + 5_000);
+    this.retainUntil(tabId, Date.now() + timeoutMs + 5_000, context);
 
     const baseParams: Record<string, unknown> = {
       expression,
@@ -209,7 +211,7 @@ class CdpSessionManager {
 
     let response: any;
     try {
-      response = await this.sendCommand(tabId, baseParams, timeoutMs);
+      response = await this.sendCommand(tabId, baseParams, timeoutMs, context);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // 不可按值返回（循环引用链过长等）：回退为按描述信息返回
@@ -218,7 +220,7 @@ class CdpSessionManager {
           response = await this.sendCommand(
             tabId,
             { ...baseParams, returnByValue: false },
-            timeoutMs,
+            timeoutMs, context
           );
         } catch (fallbackError) {
           return {
@@ -270,10 +272,10 @@ class CdpSessionManager {
    *
    * 幂等：目标没有正在执行的脚本时命令同样成功（无副作用）。
    */
-  async terminateExecution(tabId: number): Promise<boolean> {
-    if (!this.isSupported() || !this.hasSession(tabId)) return false;
+  async terminateExecution(tabId: number, context?: ToolExecutionContext): Promise<boolean> {
+    if (!this.isSupported(context) || !this.hasSession(tabId)) return false;
     try {
-      await chrome.debugger.sendCommand({ tabId }, 'Runtime.terminateExecution');
+      await browserChrome(context).debugger.sendCommand({ tabId }, 'Runtime.terminateExecution');
       return true;
     } catch {
       // 目标已关闭 / 调试器已脱离 / 当前无可终止的执行：清理手段失败不影响主流程
@@ -290,9 +292,9 @@ class CdpSessionManager {
   private async sendCommand(
     tabId: number,
     params: Record<string, unknown>,
-    timeoutMs: number,
+    timeoutMs: number, context?: ToolExecutionContext
   ): Promise<any> {
-    const request = chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', params);
+    const request = browserChrome(context).debugger.sendCommand({ tabId }, 'Runtime.evaluate', params);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(

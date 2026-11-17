@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { executeScriptBounded } from '../common/frame-read';
 /**
  * 浏览器工具基类
@@ -43,14 +45,14 @@ export abstract class BaseBrowserTool extends BaseTool {
     tabId: number,
     files: string[],
     injectImmediately = false,
-    world: 'MAIN' | 'ISOLATED' = 'ISOLATED',
+    world: 'MAIN' | 'ISOLATED' = 'ISOLATED', context?: ToolExecutionContext
   ): Promise<void> {
     this.log(`Injecting ${files.join(', ')} into tab ${tabId}`);
 
     // 检查脚本是否已经注入
     try {
       const response = await Promise.race([
-        chrome.tabs.sendMessage(tabId, { action: `${this.name}_ping` }),
+        browserChrome(context).tabs.sendMessage(tabId, { action: `${this.name}_ping` }),
         new Promise((_, reject) =>
           setTimeout(
             () => reject(new Error(`${this.name} Ping action to tab ${tabId} timed out`)),
@@ -81,7 +83,7 @@ export abstract class BaseBrowserTool extends BaseTool {
         files,
         injectImmediately,
         world,
-      });
+      }, undefined, undefined, context);
       this.log(`'${files.join(', ')}' injection successful for tab ${tabId}`);
     } catch (injectionError) {
       const errorMessage =
@@ -99,9 +101,9 @@ export abstract class BaseBrowserTool extends BaseTool {
   /**
    * 向标签页发送消息
    */
-  protected async sendMessageToTab(tabId: number, message: any): Promise<any> {
+  protected async sendMessageToTab(tabId: number, message: any, context?: ToolExecutionContext): Promise<any> {
     try {
-      const response = await chrome.tabs.sendMessage(tabId, message);
+      const response = await browserChrome(context).tabs.sendMessage(tabId, message);
 
       if (response && response.error) {
         throw new Error(String(response.error));
@@ -125,8 +127,8 @@ export abstract class BaseBrowserTool extends BaseTool {
   /**
    * 获取当前活动标签页
    */
-  protected async getActiveTab(): Promise<chrome.tabs.Tab> {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  protected async getActiveTab(context?: ToolExecutionContext): Promise<chrome.tabs.Tab> {
+    const [tab] = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
     if (!tab || !tab.id) {
       throw new Error('No active tab found');
     }
@@ -136,11 +138,11 @@ export abstract class BaseBrowserTool extends BaseTool {
   /**
    * 等待标签页加载完成
    */
-  protected async waitForTabComplete(tabId: number, timeout: number = 30000): Promise<void> {
+  protected async waitForTabComplete(tabId: number, timeout: number = 30000, context?: ToolExecutionContext): Promise<void> {
     const startTime = Date.now();
     
     while (Date.now() - startTime < timeout) {
-      const tab = await chrome.tabs.get(tabId);
+      const tab = await browserChrome(context).tabs.get(tabId);
       if (tab.status === 'complete') {
         return;
       }
@@ -153,8 +155,8 @@ export abstract class BaseBrowserTool extends BaseTool {
   /**
    * 创建新标签页
    */
-  protected async createTab(url: string, active: boolean = true): Promise<chrome.tabs.Tab> {
-    const tab = await chrome.tabs.create({ url, active, windowId: await existingNavigationWindowId() });
+  protected async createTab(url: string, active: boolean = true, context?: ToolExecutionContext): Promise<chrome.tabs.Tab> {
+    const tab = await browserChrome(context).tabs.create({ url, active, windowId: await existingNavigationWindowId(context) });
     if (!tab || !tab.id) {
       throw new Error('Failed to create tab');
     }
@@ -164,8 +166,8 @@ export abstract class BaseBrowserTool extends BaseTool {
   /**
    * 更新标签页 URL
    */
-  protected async updateTab(tabId: number, url: string): Promise<chrome.tabs.Tab> {
-    const tab = await chrome.tabs.update(tabId, { url });
+  protected async updateTab(tabId: number, url: string, context?: ToolExecutionContext): Promise<chrome.tabs.Tab> {
+    const tab = await browserChrome(context).tabs.update(tabId, { url });
     if (!tab) {
       throw new Error(`Failed to update tab ${tabId}`);
     }
@@ -175,21 +177,21 @@ export abstract class BaseBrowserTool extends BaseTool {
   /**
    * 关闭标签页
    */
-  protected async closeTab(tabId: number): Promise<void> {
-    await chrome.tabs.remove(tabId);
+  protected async closeTab(tabId: number, context?: ToolExecutionContext): Promise<void> {
+    await browserChrome(context).tabs.remove(tabId);
   }
 
   /**
    * 查询标签页
    */
-  protected async queryTabs(queryInfo: chrome.tabs.QueryInfo): Promise<chrome.tabs.Tab[]> {
-    return await chrome.tabs.query(queryInfo);
+  protected async queryTabs(queryInfo: chrome.tabs.QueryInfo, context?: ToolExecutionContext): Promise<chrome.tabs.Tab[]> {
+    return await browserChrome(context).tabs.query(queryInfo);
   }
 
   /**
    * 获取标签页信息
    */
-  protected async getTab(tabId: number): Promise<chrome.tabs.Tab> {
-    return await chrome.tabs.get(tabId);
+  protected async getTab(tabId: number, context?: ToolExecutionContext): Promise<chrome.tabs.Tab> {
+    return await browserChrome(context).tabs.get(tabId);
   }
 }

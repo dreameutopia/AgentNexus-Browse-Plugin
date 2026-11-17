@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { executeScriptBounded } from '../common/frame-read';
 /**
  * 批量抓取执行器（crawl runner）
@@ -150,7 +152,7 @@ export interface CrawlRunOptions {
  * 失败隔离是这一层的核心：任何一步失败都只影响**那一个**目标，
  * 以账本条目返回，绝不抛出中断整批——模型据此判断哪些需要补抓。
  */
-export async function runCrawlBatch(options: CrawlRunOptions): Promise<CrawlOutcome> {
+export async function runCrawlBatch(options: CrawlRunOptions, context?: ToolExecutionContext): Promise<CrawlOutcome> {
   const {
     targets,
     code,
@@ -176,7 +178,7 @@ export async function runCrawlBatch(options: CrawlRunOptions): Promise<CrawlOutc
 
   let tabId: number;
   try {
-    tabId = options.tabId ?? (await withTimeBudget(totalTimeoutMs, initSignal => abortable(resolveTabId(), initSignal), signal));
+    tabId = options.tabId ?? (await withTimeBudget(totalTimeoutMs, initSignal => abortable(resolveTabId(context), initSignal), signal));
     options.onTabTarget?.(tabId);
   } catch (error) {
     for (let index = 0; index < targets.length; index++) ledger.push({ index, url: targets[index].url, label: targets[index].label, status: 'skipped', error: '无法初始化抓取标签页：' + errorDetails(error), durationMs: 0 });
@@ -221,7 +223,7 @@ export async function runCrawlBatch(options: CrawlRunOptions): Promise<CrawlOutc
       awaitPromise,
       frameId: options.frameId ?? 0,
       signal: targetSignal,
-    }), signal); }
+    }, context), signal); }
     catch (error) {
       outcome = { rows: [], record: { index, url: target.url, label: target.label,
         status: error instanceof DOMException && error.name === 'TimeoutError' ? 'timeout' : 'failed',
@@ -330,7 +332,7 @@ async function crawlOne(params: {
   awaitPromise: boolean;
   frameId: number;
   signal: AbortSignal;
-}): Promise<{ record: CrawlTargetRecord; rows: Record<string, unknown>[] }> {
+}, context?: ToolExecutionContext): Promise<{ record: CrawlTargetRecord; rows: Record<string, unknown>[] }> {
   const { target, index, tabId, code, args, targetTimeoutMs, world, strategy, awaitPromise, frameId, signal } = params;
   const startedAt = Date.now();
 
@@ -340,7 +342,7 @@ async function crawlOne(params: {
   let finalUrl = target.url;
   try {
     signal.throwIfAborted();
-    await abortable(chrome.tabs.update(tabId, { url: target.url }), signal);
+    await abortable(browserChrome(context).tabs.update(tabId, { url: target.url }), signal);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
@@ -356,7 +358,7 @@ async function crawlOne(params: {
 
   // ── 等待就绪（判据与 browser_navigation 同一实现）──
   signal.throwIfAborted();
-  const ready = await waitForTabReady(tabId, { timeoutMs: targetTimeoutMs, signal });
+  const ready = await waitForTabReady(tabId, { timeoutMs: targetTimeoutMs, signal }, context);
   if (!ready.ready) {
     return {
       record: {
@@ -372,7 +374,7 @@ async function crawlOne(params: {
     };
   }
   try {
-    const tab = await abortable(chrome.tabs.get(tabId), signal);
+    const tab = await abortable(browserChrome(context).tabs.get(tabId), signal);
     if (tab.url) finalUrl = tab.url;
   } catch {
     // 标签页信息读不到不致命：finalUrl 保持请求值
@@ -380,7 +382,7 @@ async function crawlOne(params: {
 
   // ── 风控 / 人机验证探测（命中即停，绝不尝试绕过）──
   signal.throwIfAborted();
-  const challenge = await abortable(detectChallengePage(tabId), signal);
+  const challenge = await abortable(detectChallengePage(tabId, context), signal);
   signal.throwIfAborted();
   if (challenge.detected) {
     return {
@@ -417,7 +419,7 @@ async function crawlOne(params: {
       target: { tabId, frameIds: [frameId] }, world: 'ISOLATED',
       func: function pageContainsText(needle: string) { return (document.body?.innerText ?? '').includes(needle); },
       args: [target.expectTextIncludes],
-    }), signal);
+    }, undefined, undefined, context), signal);
     if (checked[0]?.result !== true) return { record: { ...base, finalUrl, status: 'drifted', error: '目标页面正文不含预期片段，未执行提取脚本', durationMs: Date.now() - startedAt }, rows: [] };
   }
 
@@ -427,7 +429,7 @@ async function crawlOne(params: {
     ...args,
   ];
   let engine: 'scripting' | 'cdp' | null = null;
-  const cancel = () => { if (engine === 'cdp') void cdpSession.terminateExecution(tabId).catch(() => undefined); };
+  const cancel = () => { if (engine === 'cdp') void cdpSession.terminateExecution(tabId, context).catch(() => undefined); };
   signal.addEventListener('abort', cancel, { once: true });
   let run: Awaited<ReturnType<typeof runPageScript>>;
   try { signal.throwIfAborted(); run = await abortable(runPageScript({
@@ -441,7 +443,7 @@ async function crawlOne(params: {
     timeoutMs: targetTimeoutMs,
     captureLimit: CRAWL_MAX_CAPTURE_CHARS,
     onEngineChange: next => { signal.throwIfAborted(); engine = next; },
-  }), signal); }
+  }, context), signal); }
   finally { signal.removeEventListener('abort', cancel); }
   signal.throwIfAborted();
 
@@ -511,12 +513,12 @@ function normalizeRows(value: unknown): Record<string, unknown>[] {
 }
 
 /** 取一个可用的标签页（优先当前活动页；没有则新建一个） */
-async function resolveTabId(): Promise<number> {
-  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+async function resolveTabId(context?: ToolExecutionContext): Promise<number> {
+  const [activeTab] = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
   if (activeTab && typeof activeTab.id === 'number') return activeTab.id;
   const { existingNavigationWindowId } = await import('./navigation-window');
-  const windowId = await existingNavigationWindowId();
-  const created = await chrome.tabs.create({ url: 'about:blank', windowId, active: true });
+  const windowId = await existingNavigationWindowId(context);
+  const created = await browserChrome(context).tabs.create({ url: 'about:blank', windowId, active: true });
   if (typeof created.id !== 'number') {
     throw new Error('无法创建可用标签页');
   }

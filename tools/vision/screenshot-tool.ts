@@ -24,7 +24,7 @@ export class ScreenshotTool extends BaseTool {
           (_parameters.mode !== undefined && !['action','observe'].includes(_parameters.mode as string)))
         throw new GuiError('INVALID_ARGUMENT', 'screenshot accepts only optional mode=action|observe');
       const mode = _parameters.mode === 'observe' ? 'observe' : 'action';
-      const data = await withGuiCancellation(context?.requestId, signal => captureGuiScreenshot(signal, mode), context?.signal);
+      const data = await withGuiCancellation(context?.requestId, signal => captureGuiScreenshot(signal, mode, context), context?.signal);
       const { screenshot: _image, ...metadata } = data;
       // PNG stays in the image channel; never duplicate megabytes of base64 in text content.
       return { success: true, data, content: [{ type: 'text' as const, text: JSON.stringify(metadata) }] };

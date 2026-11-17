@@ -580,7 +580,7 @@ export class ContextCompactor {
         `以下是对本会话先前对话的压缩摘要（压缩于 ${timestamp}${scope}）。` +
         `这是当前任务目标的权威记忆；摘要之后的消息是压缩后新增的对话，两者冲突时以之后的消息为准。\n` +
         `任务计划（plan_tool）的执行状态不在本摘要内：需要剩余步骤或各项状态时，先调用 plan_tool read，以读取结果为权威，不要凭摘要推断计划进度。\n` +
-        `数据批次（dataRef）与结果文件（results/…json）在摘要里可能只保留了名字与大致结构：**引用前先核对真实形态**——refs 用 data_ref_tool(action="list"/"info")、结果文件用 data_ref_tool(action="info", file=路径) 或 js_run(action="read", path=路径, index=1)（字段名、嵌套关系、行数），再决定怎么投影/导出——摘要的转述不能替代实测形态。\n\n` +
+        `数据批次（dataRef）与结果文件（results/…json）在摘要里可能只保留了名字与大致结构：**引用前先核对真实形态**——refs 用 data_ref_tool(action="list"/"info")、结果文件用 data_ref_tool(action="info", file=路径) 或 file_util(action="read", path=路径, index=1)（字段名、嵌套关系、行数），再决定怎么投影/导出——摘要的转述不能替代实测形态。\n\n` +
         `${ensureSummaryWrapped(body)}\n` +
         `</conversation-memory>`,
     };

@@ -11,7 +11,8 @@
  * browser_observe 通过 `mode` 参数选择观察范围：
  * - 'controls'：合并按钮与输入；'structure'：结构、状态与滚动容器；
  * - 'buttons'：按钮/链接/勾选框等可点击元素（含下载特征识别）；
- * - 'inputs'：文本框/textarea/下拉框/富文本区等可输入元素（含富文本识别）。
+ * - 'inputs'：文本框/textarea/下拉框/富文本区等可输入元素（含富文本识别）；
+ * - 'registry'（内部）：只保证完整引用注册表就位即返回，不扫描 DOM。
  *
  * 共享部分（节点引用生成、可见性与遮挡判定、xpath 祖先链命中、过滤标记、排序）
  * 只存在一份；模式差异（采集范围、描述提取链、类型映射、评分权重、截断规则）
@@ -24,7 +25,13 @@ import type {
   ElementReferenceRegistry,
   ControlSemantics,
 } from './element-reference';
-export type ScanMode = 'controls' | 'buttons' | 'inputs' | 'structure';
+export type ScanMode =
+  | 'controls'
+  | 'buttons'
+  | 'inputs'
+  | 'structure'
+  | 'form'
+  | 'registry';
 
 /** 注入脚本返回的元素记录（frameId 由宿主侧补写） */
 export interface PayloadElement {
@@ -43,6 +50,8 @@ export interface PayloadElement {
   isHit: boolean;
   /** 仅 buttons 模式：标记是否为下载/导出按钮 */
   isDownload?: boolean;
+  /** 仅 form 模式：文档坐标（top + scrollY），宿主据此按表单阅读顺序排序与分组 */
+  y?: number;
 }
 
 /** 注入脚本返回结果 */
@@ -53,6 +62,13 @@ export interface PayloadResult {
   error?: string;
   truncated?: boolean;
   truncationReason?: string;
+  /**
+   * 父容器作用域在本 frame 未命中（选择器合法、容器不在这个 frame）。
+   * **不是错误**：多 frame 页面里子 frame 没有目标容器是常态——宿主把它静默
+   * 计入成员（fingerprint 照常回传，避免每次验证都误报 NEW_FRAME），只有
+   * **所有**已扫描 frame 都未命中时才由宿主升级为 PARENT_CONTAINER_NOT_FOUND。
+   */
+  containerMiss?: boolean;
 }
 
 /**
@@ -65,6 +81,8 @@ export function elementScanPayload(
   regexSource: string,
   xpathExpr: string,
   tabId = 0,
+  parentSelector = '',
+  parentXPath = '',
 ): PayloadResult {
   const scanStarted = performance.now();
   let truncated = false;
@@ -129,27 +147,121 @@ export function elementScanPayload(
       string,
       {
         node: WeakRef<Element>;
-        signature: string;
+        /** 身份签名（硬失效） */
+        identity: string;
+        /** 记录签名（硬失效：虚拟行复用防线） */
+        record: string;
+        /** 上下文摘要（软信号：变了只提示，不失效） */
+        context: string;
+        /** 重绑定线索：节点被替换后据此找回等价元素 */
+        locator: LocatorHint;
         expires: number;
         url: string;
       }
     >();
     const nodes = new WeakMap<Element, string>();
-    const attributes = (el: Element): string =>
+    /**
+     * 身份属性：元素**自身**的稳定标识。
+     *
+     * 刻意排除**状态类**属性：value / checked / selected / disabled / readonly /
+     * required 与 aria-checked / aria-selected / aria-expanded / aria-pressed /
+     * aria-current / aria-invalid / aria-busy / aria-describedby /
+     * aria-errormessage / data-state。
+     *
+     * 排除的理由是硬性的：这些属性描述的是「控件现在处于什么状态」，而不是
+     * 「这是谁」。把它们写进身份，等于让控件**自己作废自己的引用**——
+     * set_checked 勾上后 aria-checked 翻转 → 身份漂移 → 下一次操作被判
+     * STALE_ELEMENT；输入框打字后 value 变化 → 同样的自伤。真实站点上这会让
+     * 「操作 → 回读 → 再操作」这种最常见的闭环彻底不可用。
+     */
+    const IDENTITY_ATTR_PATTERN =
+      /^(id|name|type|role|href|title|placeholder|contenteditable|multiple|aria-label|aria-labelledby|data-id|data-key|data-value|data-testid|data-role|data-name)$/;
+    /**
+     * 记录级属性：祖先链上用于标识「属于哪一行/哪个记录」的属性。
+     *
+     * 含**位置类** aria（aria-rowindex / aria-colindex / aria-posinset /
+     * aria-setsize 等）：它们标识记录在结果集中的位置，是虚拟行复用的判据
+     * （行被复用时位置号改变 → 旧引用必须失效）。刻意不含 aria-busy /
+     * aria-invalid / aria-expanded 这类**瞬时状态**——它们一变就失效会让
+     * 正常控件被误判。
+     */
+    const RECORD_ATTR_PATTERN =
+      /^(id|name|role|aria-rowindex|aria-colindex|aria-rowcount|aria-colcount|aria-posinset|aria-setsize|data-id|data-key|data-record-id|data-row-id|data-index|data-testid)$/;
+    const attributesOf = (el: Element, pattern: RegExp): string =>
       JSON.stringify(
         Array.from(el.attributes)
-          .filter((a) =>
-            /^(id|name|type|role|href|title|placeholder|contenteditable|multiple|aria-.*|data-.*)$/.test(
-              a.name,
-            ),
-          )
+          .filter((a) => pattern.test(a.name))
           .map((a) => [a.name, a.value])
           .sort((a, b) => a[0].localeCompare(b[0])),
       );
-    const signature = (el: Element): string => {
+    const attributes = (el: Element): string => attributesOf(el, IDENTITY_ATTR_PATTERN);
+    /**
+     * 控件宿主解析：状态与激活行为真正所属的节点。
+     *
+     * 规则（顺序即优先级）：
+     *   1. <label> → label.control（必须是 input[type=checkbox|radio]）
+     *   2. role=checkbox|radio|switch 的元素 → 其最近后代 input[type=checkbox|radio]
+     *   3. 其余 → 元素自身（永不返回 null，调用方无需再做空值回退）
+     *
+     * 为什么必须解析：自定义复选框的可见表面是 label/包装器，状态住在 input 上。
+     * 读状态要读 control；写操作要作用在**只触发一次**的节点上——点 label 会把
+     * 点击转发给控件，控件的 click 又冒泡回 label，导致处理器被调用两次、
+     * toggle 净效果为零。
+     */
+    const controlOf = (el: Element): Element => {
+      if (el.localName === 'label') {
+        const control = (el as HTMLLabelElement).control;
+        if (
+          control &&
+          control.localName === 'input' &&
+          ['checkbox', 'radio'].includes((control as HTMLInputElement).type)
+        )
+          return control;
+        // label 未关联 checkbox/radio 控件：它自己就是操作表面（点击聚焦关联控件）
+        return el;
+      }
+      const role = (el.getAttribute('role') || '').trim().split(/\s+/)[0];
+      if (['checkbox', 'radio', 'switch', 'toggle'].includes(role)) {
+        const inner = el.querySelector(
+          'input[type="checkbox"],input[type="radio"]',
+        ) as HTMLInputElement | null;
+        if (inner) return inner;
+      }
+      return el;
+    };
+    /**
+     * 身份签名：元素自身。变了 → 目标可能已是另一个控件（IDENTITY_DRIFT，硬失效）。
+     */
+    const identitySignature = (el: Element): string => {
       const input =
         ['input', 'textarea', 'select'].includes(el.localName) ||
         (el as HTMLElement).isContentEditable;
+      const labels = Array.from((el as HTMLInputElement).labels || []).map(
+        (label) => label.textContent,
+      );
+      const root = el.getRootNode() as Document | ShadowRoot;
+      const namedBy = (el.getAttribute('aria-labelledby') || '')
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((id) => root.getElementById?.(id)?.textContent || '');
+      return JSON.stringify([
+        el.namespaceURI,
+        el.localName,
+        attributes(el),
+        input ? '' : el.textContent,
+        labels,
+        namedBy,
+      ]);
+    };
+    /**
+     * 记录签名：元素在记录/行中的归属。
+     *
+     * 这一层**必须**保留：虚拟表格会复用 DOM 行，旧引用若不被拦下就会误指到
+     * 复用后的新行（见 tests/tools/complex-controls.test.ts 的虚拟行复用防御）。
+     * 与旧签名不同，这里只取祖先链上的**记录标识属性**与 recordOwner 文本，
+     * 不再把祖先的自由文本与 aria-* 状态属性算进来。
+     */
+    const recordSignature = (el: Element): string => {
       const ancestors: string[] = [];
       const parentOf = (node: Element): Element | null =>
         node.parentElement || (node.getRootNode() as ShadowRoot).host || null;
@@ -159,51 +271,205 @@ export function elementScanPayload(
         parent && depth < 8;
         depth++, parent = parentOf(parent)
       ) {
-        ancestors.push(parent.localName + attributes(parent));
+        ancestors.push(parent.localName + attributesOf(parent, RECORD_ATTR_PATTERN));
         if (parent.matches('tr, li, [role="row"], [data-id], [data-key]')) {
           ancestors.push(parent.textContent || '');
           break;
         }
       }
-      const labels = Array.from((el as HTMLInputElement).labels || []).map(
-        (label) => label.textContent,
-      );
-      const root = el.getRootNode() as Document | ShadowRoot;
-      const namedBy = (el.getAttribute('aria-labelledby') || '')
-        .split(/\s+/)
-        .filter(Boolean)
-        .map((id) => root.getElementById?.(id)?.textContent || '');
-      // Virtual rows can wrap cells more deeply than the short ancestor signature.
-      // Preserve the nearest record identity independently of presentation depth.
       const recordOwner = el.closest('tr,[role="row"],li,[data-id],[data-key]');
       return JSON.stringify([
-        el.namespaceURI,
-        el.localName,
-        attributes(el),
-        input ? '' : el.textContent,
-        labels,
-        namedBy,
-        contextOf(el),
         ancestors,
-        recordOwner ? [recordOwner.localName,attributes(recordOwner),recordOwner.textContent] : null,
+        recordOwner
+          ? [
+              recordOwner.localName,
+              attributesOf(recordOwner, RECORD_ATTR_PATTERN),
+              recordOwner.textContent,
+            ]
+          : null,
       ]);
     };
-    const resolve = (id: string): Element | null => {
+    /**
+     * 上下文签名：自由文本摘要（所在 <form>/容器的文本）。
+     *
+     * 这一层**不再参与失效判定**——它是「周边内容变了」的信号，不是「这个元素
+     * 换了」的证据。真实页面上校验文案、聊天挂件、计数器都会改它，把它算进
+     * 硬失效会让一个完全可点的元素被反复判死。
+     */
+    const contextSignature = (el: Element): string => contextOf(el);
+    const resolveDetailed = (
+      id: string,
+    ): {
+      element: Element | null;
+      reason:
+        | 'NOT_FOUND'
+        | 'EXPIRED'
+        | 'DOCUMENT_CHANGED'
+        | 'DISCONNECTED'
+        | 'IDENTITY_DRIFT'
+        | 'CONTEXT_CHANGED'
+        | null;
+      contextChanged: boolean;
+    } => {
       const entry = entries.get(id);
-      const el = entry?.node.deref();
-      if (
-        !entry ||
-        !el ||
-        entry.expires <= Date.now() ||
-        entry.url !== document.URL ||
-        !el.isConnected ||
-        el.ownerDocument !== document ||
-        entry.signature !== signature(el)
-      ) {
+      if (!entry) return { element: null, reason: 'NOT_FOUND', contextChanged: false };
+      const el = entry.node.deref();
+      if (!el) { entries.delete(id); return { element: null, reason: 'NOT_FOUND', contextChanged: false }; }
+      if (entry.expires <= Date.now()) {
+        // 过期即删除：引用不会「续期」，留着只会让 rebind 误以为还有线索
         entries.delete(id);
-        return null;
+        return { element: null, reason: 'EXPIRED', contextChanged: false };
       }
-      return el;
+      if (entry.url !== document.URL) {
+        entries.delete(id);
+        return { element: null, reason: 'DOCUMENT_CHANGED', contextChanged: false };
+      }
+      if (!el.isConnected || el.ownerDocument !== document)
+        return { element: null, reason: 'DISCONNECTED', contextChanged: false };
+      const currentIdentity = identitySignature(el);
+      if (currentIdentity !== entry.identity) {
+        entries.delete(id);
+        return { element: null, reason: 'IDENTITY_DRIFT', contextChanged: false };
+      }
+      const currentRecord = recordSignature(el);
+      if (currentRecord !== entry.record) {
+        entries.delete(id);
+        return { element: null, reason: 'CONTEXT_CHANGED', contextChanged: false };
+      }
+      return {
+        element: el,
+        reason: null,
+        contextChanged: contextSignature(el) !== entry.context,
+      };
+    };
+    const resolve = (id: string): Element | null => resolveDetailed(id).element;
+    /**
+     * 定位线索：元素被重渲染替换后，用来重新找到「同一个东西」的路标。
+     *
+     * 优先级：稳定 id → data-testid/data-id/data-key → 结构路径。
+     * 路径用「同标签兄弟中的序号」表示（而非完整 CSS 选择器），避免类名里的
+     * 哈希后缀在重渲染后变化导致线索失效。
+     *
+     * 结构路径**必须能穿过 shadow root**：自定义控件大量住在影子 DOM 里，
+     * 只按 light DOM 路径下钻会永远找不到候选，重绑定形同虚设。
+     */
+    type LocatorStep = {
+      /** 在当前层里找同标签的第 index 个孩子 */
+      tag: string;
+      index: number;
+      /** 落到该元素后，是否继续进入它的 shadow root */
+      intoShadow: boolean;
+    };
+    type LocatorHint =
+      | { kind: 'id'; value: string }
+      | { kind: 'attr'; attr: string; value: string }
+      | { kind: 'path'; steps: LocatorStep[] };
+    const locatorOf = (el: Element): LocatorHint => {
+      if (el.id) return { kind: 'id', value: el.id };
+      for (const attr of ['data-testid', 'data-id', 'data-key']) {
+        const value = el.getAttribute(attr);
+        if (value) return { kind: 'attr', attr, value };
+      }
+      const steps: LocatorStep[] = [];
+      let node: Element | null = el;
+      // 上限 16 层：再深的结构用路径也不稳，宁可放弃重绑定
+      for (let depth = 0; node && depth < 16; depth++) {
+        const parent: Element | null = node.parentElement;
+        if (parent) {
+          const sameTag = Array.from(parent.children).filter(
+            (child) => child.localName === node!.localName,
+          );
+          steps.unshift({
+            tag: node.localName,
+            index: Math.max(0, sameTag.indexOf(node)),
+            intoShadow: false,
+          });
+          node = parent;
+          continue;
+        }
+        // 没有 parentElement ⇒ 节点位于某个 shadow root 内（或是根本身）。
+        // 记录「进入 host 的影子树」这一步，再从 host 继续往上走。
+        const root = node.getRootNode() as ShadowRoot;
+        const host: Element | null =
+          root && 'host' in root ? ((root as unknown as { host: Element }).host ?? null) : null;
+        if (!host) {
+          steps.unshift({ tag: node.localName, index: 0, intoShadow: false });
+          break;
+        }
+        const hostParent: Element | null = host.parentElement;
+        const hostSiblings = hostParent
+          ? Array.from(hostParent.children).filter(
+              (child) => child.localName === host.localName,
+            )
+          : [];
+        steps.unshift({
+          tag: host.localName,
+          index: Math.max(0, hostSiblings.indexOf(host)),
+          intoShadow: true,
+        });
+        node = hostParent;
+      }
+      return { kind: 'path', steps };
+    };
+    /** 按定位线索找出候选节点（不保证唯一，调用方负责唯一性判定）。 */
+    const candidatesFor = (hint: LocatorHint): Element[] => {
+      if (hint.kind === 'id') {
+        const found = document.getElementById(hint.value);
+        return found ? [found] : [];
+      }
+      if (hint.kind === 'attr') {
+        return Array.from(
+          document.querySelectorAll(`[${hint.attr}="${CSS.escape(hint.value)}"]`),
+        );
+      }
+      // path：从 documentElement 逐层下钻（可穿影子树）
+      // current 既可能是 Element 也可能是 ShadowRoot——两者都有 children，
+      // 影子树里的元素只有在这一层才能被找到。
+      let current: Element | ShadowRoot | null = document.documentElement;
+      for (const step of hint.steps) {
+        if (!current) return [];
+        const sameTag: Element[] = Array.from(current.children).filter(
+          (child) => child.localName === step.tag,
+        );
+        const next: Element | undefined = sameTag[step.index];
+        if (!next) return [];
+        if (!step.intoShadow) {
+          current = next;
+          continue;
+        }
+        // 进入影子树：shadowOf 可能返回 null（宿主已无影子根）
+        current = shadowOf(next);
+        if (!current) return [];
+      }
+      // 终点应当是 Element（路径的最后一步指向具体元素）
+      return current && current.nodeType === 1
+        ? [current as unknown as Element]
+        : [];
+    };
+    /**
+     * 重绑定：元素被应用重渲染替换后，找出**唯一**的等价替代节点。
+     *
+     * 框架常在 mousedown/pointerdown 后重建 DOM（换掉按钮节点）。旧实现此时
+     * 直接报「元素已失效」并**放弃已派发的事件**——用户看到的是「点了没反应」。
+     * 重绑定让操作能落到重建后的等价节点上。
+     *
+     * 严格唯一：候选多于一个时返回 null——页面里常有多个同名按钮（「删除」、
+     * 「投递」），此时宁可不操作也不能猜错目标。
+     */
+    const rebind = (id: string): Element | null => {
+      const entry = entries.get(id);
+      if (!entry) return null;
+      const old = entry.node.deref();
+      const hint = entry.locator;
+      const candidates = candidatesFor(hint).filter(
+        (candidate) =>
+          candidate !== old &&
+          candidate.isConnected &&
+          candidate.ownerDocument === document &&
+          // 候选必须仍满足同一身份（属性/文本在重渲染后可能又变了）
+          identitySignature(candidate) === entry.identity,
+      );
+      return candidates.length === 1 ? candidates[0] : null;
     };
     registry = {
       semanticVersion,
@@ -241,6 +507,7 @@ export function elementScanPayload(
             ['checkbox', 'radio'].includes((control as HTMLInputElement).type)
           ) {
             const semantics = registry!.describe!(control);
+            const controlElementId = registry!.register(control);
             return {
               ...semantics,
               name: name || semantics.name,
@@ -249,10 +516,15 @@ export function elementScanPayload(
               actions: semantics.states.disabled
                 ? []
                 : ['click', ...(semantics.actions.includes('set_checked') ? ['set_checked'] : [])],
+              // 状态宿主（隐藏 input）的引用与可见性提到**顶层**——模型不必去解析
+              // relations 就能知道「这行是可见表面，状态住在另一个节点上」。
+              controlElementId,
+              controlRendered: rendered(control),
+              controlIsSeparate: true,
               relations: [
                 {
                   relation: 'label-control',
-                  elementId: registry!.register(control),
+                  elementId: controlElementId,
                   role: control.localName,
                   name: semantics.name,
                 },
@@ -457,6 +729,28 @@ export function elementScanPayload(
         if (tag === 'input' && ['checkbox', 'radio'].includes(native.type)) {
           states.checked = native.indeterminate ? 'mixed' : native.checked;
           states.indeterminate = native.indeterminate;
+        }
+        /**
+         * role 包装器内含原生控件时的状态回退。
+         *
+         * 形如 `<div role="checkbox"><input type="checkbox"></div>` 的自定义控件很
+         * 常见：包装器没有 aria-checked，状态只在内层 input 上。若不回落，
+         * states.checked 会是 undefined → set_checked 报 UNOBSERVABLE_STATE，
+         * 而控件其实完全可读可写。
+         */
+        if (
+          states.checked === undefined &&
+          ['checkbox', 'radio', 'switch', 'toggle'].includes(category) &&
+          tag !== 'input'
+        ) {
+          const inner = el.querySelector(
+            'input[type="checkbox"],input[type="radio"]',
+          ) as HTMLInputElement | null;
+          if (inner) {
+            states.checked = inner.indeterminate ? 'mixed' : inner.checked;
+            states.indeterminate = inner.indeterminate;
+            states.controlIsInner = true;
+          }
         }
         if ('required' in el)
           states.required = !!native.required || states.required === true;
@@ -705,6 +999,16 @@ export function elementScanPayload(
           if (states.expanded !== undefined || tag === 'summary')
             actions.push('set_expanded');
         }
+        /**
+         * 状态宿主（控件本体）暴露到顶层。
+         *
+         * 对「可见表面 ≠ 状态宿主」的自定义控件（label 包裹隐藏 input、
+         * role=checkbox 包裹 input），这告诉模型：这一行的 ElementId 指向可见
+         * 表面，而 checked 状态住在 controlElementId 上。模型据此既不必猜，
+         * 也不必去写脚本探测 DOM 结构。
+         */
+        const hostControl = controlOf(el);
+        const controlIsSeparate = !!hostControl && hostControl !== el;
         return {
           category,
           patterns,
@@ -714,12 +1018,25 @@ export function elementScanPayload(
           states,
           relations,
           actions,
+          ...(controlIsSeparate
+            ? {
+                controlElementId: registry!.register(hostControl),
+                controlRendered: rendered(hostControl),
+                controlIsSeparate: true,
+              }
+            : {}),
         };
       },
       register(el) {
         const previous = nodes.get(el);
         if (previous && resolve(previous) === el) {
-          entries.get(previous)!.expires = Date.now() + 120_000;
+          const entry = entries.get(previous)!;
+          entry.expires = Date.now() + 120_000;
+          // 重新观察同一元素时刷新各层签名：身份/记录变了说明它已不是同一个
+          // 目标（此时本就该换引用）；上下文变了只更新软信号，不影响有效性。
+          entry.identity = identitySignature(el);
+          entry.record = recordSignature(el);
+          entry.context = contextSignature(el);
           return previous;
         }
         if (counter % 256 === 0)
@@ -728,9 +1045,13 @@ export function elementScanPayload(
               entries.delete(id);
           }
         const id = `anx:${tabId}:${nonce}:${++counter}`;
+        const identity = identitySignature(el);
         entries.set(id, {
           node: new WeakRef(el),
-          signature: signature(el),
+          identity,
+          record: recordSignature(el),
+          context: contextSignature(el),
+          locator: locatorOf(el),
           expires: Date.now() + 120_000,
           url: document.URL,
         });
@@ -740,6 +1061,9 @@ export function elementScanPayload(
         return id;
       },
       resolve,
+      resolveDetailed,
+      controlOf,
+      rebind,
       invalidate() {
         revision++;
       },
@@ -756,8 +1080,86 @@ export function elementScanPayload(
     window.addEventListener('popstate', reset);
     window.addEventListener('hashchange', reset);
   }
-  const roots: (Document | ShadowRoot)[] = [document];
-  const seenRoots = new Set<Document | ShadowRoot>(roots);
+  // 'registry' 模式（内部引导用）：只保证完整注册表就位即返回，不扫描 DOM。
+  // 供 browser_dom_explore 冷启动引导——explore 产出的引用必须带完整语义契约
+  // （describe/controlOf/rebind），否则 set_checked 等状态操作在这些引用上失效。
+  if (mode === 'registry') {
+    return { elements: [], fingerprint: registry!.fingerprint() };
+  }
+  const frameFingerprint = registry.fingerprint();
+
+  // —— 扫描范围（可选）：限定在父容器子树内 ——
+  // 语义：parentSelector / parentXPath 命中一个或多个容器时，只遍历其子树
+  // （自动穿透其中的开放 Shadow DOM）；容器本身不进入结果集。未命中直接报错，
+  // 绝不静默退回整页扫描（否则模型会以为过滤生效而误判）。
+  let scopedContainers: Element[] | null = null;
+  if (parentSelector || parentXPath) {
+    if (parentSelector) {
+      try {
+        scopedContainers = Array.from(document.querySelectorAll(parentSelector));
+      } catch (e) {
+        return {
+          elements: [],
+          fingerprint: frameFingerprint,
+          error: `parentSelector 不是合法的 CSS 选择器：${(e as Error).message}`,
+        };
+      }
+    } else {
+      try {
+        const snapshot = document.evaluate(
+          parentXPath,
+          document,
+          null,
+          XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+          null,
+        );
+        const found: Element[] = [];
+        for (let i = 0; i < snapshot.snapshotLength; i++) {
+          const node = snapshot.snapshotItem(i);
+          if (node && node.nodeType === Node.ELEMENT_NODE) found.push(node as Element);
+        }
+        scopedContainers = found;
+      } catch (e) {
+        return {
+          elements: [],
+          fingerprint: frameFingerprint,
+          error: `parentXPath 不是合法的 XPath 1.0 表达式：${(e as Error).message}`,
+        };
+      }
+    }
+    // 去掉被其它命中容器包含的嵌套容器，避免同一子树重复遍历
+    scopedContainers = scopedContainers.filter(
+      (container, index, list) =>
+        !list.some(other => other !== container && other.contains(container)),
+    );
+    if (scopedContainers.length === 0) {
+      // 选择器合法但本 frame 没有容器——非错误（多 frame 常态），
+      // 交宿主决定：单 frame 全 miss → PARENT_CONTAINER_NOT_FOUND；
+      // 其它 frame 命中 → 本 frame 静默缺席，不制造 issue 噪声。
+      return {
+        elements: [],
+        fingerprint: frameFingerprint,
+        containerMiss: true,
+      };
+    }
+  }
+
+  const roots: Node[] = scopedContainers && scopedContainers.length > 0
+    ? [...scopedContainers]
+    : [document];
+  const seenRoots = new Set<Node>(roots);
+  // 容器自身的 shadow 树：TreeWalker 只走 root 的**后代**，作为 root 的容器
+  // 自己不会被访问到，其 shadowOf 不会被循环发现——这里显式播种，否则
+  // 「作用域到 custom element 容器」会静默丢掉容器 shadow 内的全部控件。
+  if (scopedContainers) {
+    for (const container of scopedContainers) {
+      const ownShadow = shadowOf(container);
+      if (ownShadow && !seenRoots.has(ownShadow)) {
+        roots.push(ownShadow);
+        seenRoots.add(ownShadow);
+      }
+    }
+  }
   const scanNodes: Element[] = [];
   for (let i = 0; i < roots.length; i++) {
     const walker = document.createTreeWalker(roots[i], 1 /* NodeFilter.SHOW_ELEMENT */);
@@ -773,7 +1175,34 @@ export function elementScanPayload(
   }
   const queryAll = (selector: string): Element[] =>
     scanNodes.filter(el => !overBudget() && (selector === '*' || el.matches(selector)));
-  const frameFingerprint = registry.fingerprint();
+
+  /**
+   * 父容器作用域的**统一越界门**（register / registerSection 共用）。
+   *
+   * 为什么必须是门而不是只在遍历处收口：结果来源有多个（queryAll 启发式、
+   * xpath 显式节点、body 编辑器特例、分区标题……），只在遍历收口会让
+   * `parentSelector + xpath` 组合把容器外被 xpath 命中的元素漏进来——
+   * 裁剪被局部击穿。防御性要求：任何新注册路径自动被这一道门覆盖。
+   *
+   * 语义：容器自身不进结果（"进入容器看里面"）；容器**shadow 树内的元素**
+   * 算在内（Node.contains 不跨 shadow 边界，需沿 host 逐层提升）。
+   * 未启用作用域时零开销直通。
+   */
+  const withinScope = (el: Element): boolean => {
+    if (!scopedContainers || scopedContainers.length === 0) return true;
+    let node: Element | null = el;
+    for (let hop = 0; node && hop < 64; hop++) {
+      for (const container of scopedContainers) {
+        // 首跳排除容器自身；提升到 host 之后（hop>0）容器就是祖先，算在内
+        if (container.contains(node) && (hop > 0 || container !== node))
+          return true;
+      }
+      const root = node.getRootNode() as ShadowRoot | Document;
+      const host = (root as Partial<ShadowRoot>).host;
+      node = host ?? null; // Document 无 host → 退出（越界）
+    }
+    return false;
+  };
 
   // —— 过滤条件编译（非法条件立即返回错误，避免整页误判）——
   let regex: RegExp | null = null;
@@ -1544,9 +1973,12 @@ export function elementScanPayload(
       el: Element,
       regex: RegExp | null,
       xpathNodes: Set<Element> | null,
+      /** form 视图盘点模式：只管「字段存在与否」，不做可见性/只读过滤（操作层仍会兜底拒绝） */
+      formMode = false,
     ): PayloadElement | null {
-      if (!this.passesVisibilityGuard(el)) return null;
-      if (el.matches('[readonly], [aria-readonly="true"]')) return null;
+      if (!formMode && !this.passesVisibilityGuard(el)) return null;
+      if (!formMode && el.matches('[readonly], [aria-readonly="true"]'))
+        return null;
 
       const tagName = el.tagName.toLowerCase();
       const rawClassName = el.getAttribute('class') || '';
@@ -1584,8 +2016,13 @@ export function elementScanPayload(
         ) {
           type = `input_${inputType}`;
           if (!description) description = `Text input (${inputType})`;
+        } else if (formMode && inputType === 'file') {
+          // 隐藏的 file input 是上传控件的常态（自定义按钮包壳）——盘点必须
+          // 看得见它，操作层 set_files 对隐藏 file input 有专属豁免路径
+          type = 'input_file';
+          if (!description) description = 'File upload input';
         } else {
-          return null; // checkbox/radio/file 等不在本工具范围（属按钮或文件上传工具）
+          return null; // checkbox/radio 等交由 buildButtonRecord（状态宿主路径）
         }
       } else if ((el as HTMLElement).isContentEditable) {
         type = tagName === 'body' ? 'body_editor' : 'div_editable';
@@ -1603,8 +2040,10 @@ export function elementScanPayload(
       let finalDescription = inViewport
         ? description
         : `${description} (currently not visible)`;
-      if (finalDescription.length > 50) {
-        finalDescription = finalDescription.substring(0, 47) + '...';
+      // form 盘点的 label 是分组识别的主键，放宽截断（表格展示层还会再裁一次）
+      const descLimit = formMode ? 157 : 50;
+      if (finalDescription.length > descLimit) {
+        finalDescription = finalDescription.substring(0, descLimit - 3) + '...';
       }
 
       // 属性参与匹配使 regex 可覆盖 placeholder/name/id/value/data-* 等场景，无需为此单独写 xpath
@@ -1650,10 +2089,23 @@ export function elementScanPayload(
 
       const register = (el: Element) => {
         if (overBudget() || results.size >= 8000) { truncated = true; return; }
+        // 父容器作用域统一越界门（xpath 显式节点 / body 特例 / 启发式一并覆盖）
+        if (!el || !withinScope(el)) return;
+        // form 视图：嵌套 button 只收最外层（包装器与文案按钮会成对出现，
+        // 两行同义记录纯占预算）——外层的描述已含子层文案
         if (
-          !el ||
+          mode === 'form' &&
+          el.localName === 'button' &&
+          el.closest('button') &&
+          el.closest('button') !== el
+        )
+          return;
+        if (
           results.has(el) ||
+          // form 视图保留禁用/失效控件：表单盘点需要看到「字段存在但当前
+          // 不可填」——交互层的 NOT_ACTIONABLE 仍会在操作时兜底拒绝。
           (mode !== 'structure' &&
+            mode !== 'form' &&
             (el.matches(':disabled') ||
               el.closest(
                 '[inert],[aria-disabled="true"],[data-disabled]:not([data-disabled="false"])',
@@ -1723,16 +2175,53 @@ export function elementScanPayload(
           record =
             mode === 'inputs'
               ? this.buildInputRecord(el, regex, xpathNodes)
-              : mode === 'controls'
-                ? this.buildInputRecord(el, regex, xpathNodes) ||
+              : mode === 'form'
+                ? this.buildInputRecord(el, regex, xpathNodes, true) ||
                   this.buildButtonRecord(el, regex, xpathNodes)
-                : this.buildButtonRecord(el, regex, xpathNodes);
+                : mode === 'controls'
+                  ? this.buildInputRecord(el, regex, xpathNodes) ||
+                    this.buildButtonRecord(el, regex, xpathNodes)
+                  : this.buildButtonRecord(el, regex, xpathNodes);
         }
+        if (record && mode === 'form')
+          record.y = Math.round(
+            el.getBoundingClientRect().top + window.scrollY,
+          );
         if (
           record &&
-          (mode === 'structure' || !registry!.describe!(el).states.disabled)
+          (mode === 'structure' ||
+            mode === 'form' ||
+            !registry!.describe!(el).states.disabled)
         )
           results.set(el, record);
+      };
+      /** form 视图专用：分区标题只作分组脚手架（宿主侧折进字段的 section，不单独渲染）。 */
+      const registerSection = (el: Element) => {
+        if (overBudget() || results.size >= 8000) {
+          truncated = true;
+          return;
+        }
+        if (!el || !withinScope(el) || results.has(el)) return;
+        const text = (
+          el.getAttribute('aria-label') || el.textContent || ''
+        )
+          .trim()
+          .replace(/\s+/g, ' ')
+          .slice(0, 160);
+        if (!text) return;
+        const record: PayloadElement = {
+          type: 'section',
+          description: text,
+          context: '',
+          elementId: this.getElementId(el),
+          score: 0,
+          matchedRegex: null,
+          matchedXpath: null,
+          isHit: false,
+          y: Math.round(el.getBoundingClientRect().top + window.scrollY),
+        };
+        this.applyFilterFlags(record, el, text, regex, xpathNodes);
+        results.set(el, record);
       };
 
       if (mode === 'structure') {
@@ -1819,6 +2308,23 @@ export function elementScanPayload(
         if (xpathNodes) {
           xpathNodes.forEach((el) => register(el));
         }
+      } else if (mode === 'form') {
+        // 表单视图：字段（含只读/隐藏/禁用——盘点不做过滤）+ 语义按钮（保存/
+        // 添加/删除/导航）+ 复选 label（状态宿主的可见表面）+ 分区标题脚手架。
+        // 不走 controls 的 class/光标启发式——那只为「找可点的东西」，会把
+        // 图标与装饰面也拉进来。
+        queryAll(
+          'input, textarea, select, [contenteditable]:not([contenteditable="false"]):not(body), [role="combobox"], [role="listbox"], [role="radiogroup"], [role="checkbox"], [role="radio"], [role="switch"], [role="slider"], button, [role="button"], label[for], label:has(input[type="checkbox"]), label:has(input[type="radio"])',
+        ).forEach((el) => register(el));
+        if ((document.body as HTMLElement).isContentEditable) {
+          register(document.body);
+        }
+        queryAll('h1,h2,h3,h4,h5,h6,legend,summary,[role="heading"]').forEach(
+          registerSection,
+        );
+        if (xpathNodes) {
+          xpathNodes.forEach((el) => register(el));
+        }
       } else {
         // 步骤 1: 标准排查 (input, textarea, select, 非body的contenteditable)
         queryAll(
@@ -1850,9 +2356,11 @@ export function elementScanPayload(
           ...semantics,
           ...semantics.states,
         };
+        // section 是 form 视图的分组脚手架（type 固定），不参与语义类型改写
         if (
-          !['native', 'generic'].includes(semantics.evidence) ||
-          semantics.category === 'close'
+          record.type !== 'section' &&
+          (!['native', 'generic'].includes(semantics.evidence) ||
+            semantics.category === 'close')
         )
           record.type = semantics.category;
         if (
@@ -1886,6 +2394,9 @@ export function elementScanPayload(
       // 排序：命中过滤条件者置顶，其余按评分降序
       list.sort((a, b) => {
         if (hasFilter && a.isHit !== b.isHit) return a.isHit ? -1 : 1;
+        // form 视图按文档坐标排序（阅读顺序 = 填写顺序），不做评分级排——
+        // 表单里「哪个字段在前」本身就是模型需要的事实，评分排序会打乱它
+        if (mode === 'form') return (a.y ?? 0) - (b.y ?? 0);
         return (b.score || 0) - (a.score || 0);
       });
 

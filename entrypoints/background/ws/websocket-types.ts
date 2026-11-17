@@ -15,6 +15,7 @@ export enum MessageType {
   // 服务器 -> 客户端
   COMMAND = 'COMMAND',
   TOOL_EXECUTION_REQUEST = 'TOOL_EXECUTION_REQUEST',
+  TOOL_EXECUTION_CANCEL = 'TOOL_EXECUTION_CANCEL',
   VISION_ACTION = 'VISION_ACTION',
   FILE_SEND_ERROR = 'FILE_SEND_ERROR',
 }
@@ -73,6 +74,8 @@ export interface CommandResponsePayload {
  * 工具执行请求 Payload (服务器 -> 客户端)
  */
 export interface ToolExecutionPayload {
+  connectorId?: number;
+  connectorWindowId?: number;
   toolName: string;
   arguments: Record<string, any>;
 }

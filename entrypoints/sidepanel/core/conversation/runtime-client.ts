@@ -1,4 +1,7 @@
 import type { ConversationRuntime, RunSummary } from "../types";
+import { readBrowserBinding } from '@/utils/browser-window-binding';
+import { parseBrowserScope, type BrowserScope } from '@/tools/browser/browser-scope';
+import { browserErrorText, browserOperation } from '@/tools/browser/scope-errors';
 import type { RunOptions } from "./conversation-engine";
 import { getInteractHandler } from "@/tools/interact/interact-ui-bridge";
 import {
@@ -65,10 +68,11 @@ export class ConversationRuntimeClient {
     if (!this.ready) {
       this.ready = (async () => {
         try {
-          const response = await chrome.runtime.sendMessage({ type: CONVERSATION_READY });
+          const response = await browserOperation('conversationReady', undefined,
+            () => chrome.runtime.sendMessage({ type: CONVERSATION_READY }));
           if (response?.ready !== true || response?.protocol !== CONVERSATION_PORT) throw new Error('missing runtime');
-        } catch {
-          throw new Error("会话后台尚未就绪，请在扩展管理页重新加载扩展后重试");
+        } catch (error) {
+          throw new Error(`会话后台尚未就绪，请在扩展管理页重新加载扩展后重试：${browserErrorText(error)}`);
         }
       })();
     }
@@ -101,6 +105,10 @@ export class ConversationRuntimeClient {
   private async findPanelWindow(): Promise<number | undefined> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      if (typeof chrome.windows?.getCurrent === 'function') {
+        const window = await browserOperation('findSidebarWindow', undefined, () => chrome.windows.getCurrent());
+        if (Number.isSafeInteger(window?.id) && window.id! >= 0 && (window.type === undefined || window.type === 'normal')) return window.id;
+      }
       const [tab] = await Promise.race([
         chrome.tabs.query({ active: true, currentWindow: true, windowType: "normal" }),
         new Promise<chrome.tabs.Tab[]>(resolve => { timer = setTimeout(() => resolve([]), 300); }),
@@ -156,14 +164,21 @@ export class ConversationRuntimeClient {
   }
 
   /** The view owns preflight; a dispatched run takes over in the worker. */
-  beginPreparingGlow(): () => void {
+  beginPreparingGlow(chatId?: string, snapshot?: Promise<BrowserScope | undefined>): () => void {
     const generation = this.generation;
     const panelWindow = this.findPanelWindow();
     this.panelWindow = panelWindow;
-    const start = this.request({ type: "preparingGlow", active: true }).catch(error => {
+    let ended = false;
+    const start = panelWindow.then(async windowId => {
+      const browserScope = parseBrowserScope(await (snapshot ?? (chatId || windowId !== undefined
+        ? readBrowserBinding(chatId || `draft:${windowId}`) : Promise.resolve(undefined))));
+      if (ended || generation !== this.generation || this.panelWindow !== panelWindow) return;
+      return this.request({ type: "preparingGlow", active: true, ...(browserScope ? { browserScope } : {}) });
+    }).catch(error => {
       if (generation === this.generation) console.warn("[PageGlow] 侧栏未能提交发送准备", error);
     });
     return () => {
+      ended = true;
       void start.then(() => {
         if (generation !== this.generation || this.panelWindow !== panelWindow) return;
         this.panelWindow = undefined;
@@ -173,9 +188,9 @@ export class ConversationRuntimeClient {
   }
 
   /** Local learning/validation keeps its own engine but shares the worker's page selector. */
-  beginLocalPageGlow(): LocalPageGlow | undefined {
+  beginLocalPageGlow(chatId?: string): LocalPageGlow | undefined {
     try {
-      const port = chrome.runtime.connect({ name: LOCAL_PAGE_GLOW_PORT });
+      const port = chrome.runtime.connect({ name: chatId ? `${LOCAL_PAGE_GLOW_PORT}:${encodeURIComponent(chatId)}` : LOCAL_PAGE_GLOW_PORT });
       let connected = true;
       let operation = 0;
       port.onDisconnect.addListener(() => {

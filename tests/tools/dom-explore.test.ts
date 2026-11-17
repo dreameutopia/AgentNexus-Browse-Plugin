@@ -223,8 +223,8 @@ export async function testDomExplore(
     );
     Object.assign(globalThis, { document: savedDocument, window: savedWindow });
     check(
-      String(noRegistry.error).includes('STALE_ELEMENT'),
-      '无注册表时按需创建注册表，旧引用报 STALE 并引导重新枚举',
+      String(noRegistry.error).includes('REGISTRY_UNAVAILABLE'),
+      '无注册表时明确报 REGISTRY_UNAVAILABLE（宿主经 registry 模式引导完整注册表）',
       noRegistry.error,
     );
 

@@ -1,4 +1,5 @@
 import { createErrorResponse } from '@/common/tool-handler';
+import { executeWithBrowserScope } from '@/tools/browser/browser-scope';
 import { ERROR_MESSAGES } from '@/common/constants';
 import { toolRegistry as highLevelToolRegistry, type ToolExecutionContext } from '@/tools/registry';
 
@@ -20,7 +21,7 @@ export const handleCallTool = async (param: ToolCallParam) => {
   const tool = highLevelToolRegistry.getTool(param.name);
   if (tool) {
     try {
-      return await tool.execute(param.args, param.context);
+      return await executeWithBrowserScope(param.context, context => tool.execute(param.args, context));
     } catch (error) {
       console.error(`Tool execution failed for ${param.name}:`, error);
       return createErrorResponse(

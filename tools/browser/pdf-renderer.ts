@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 /**
  * HTML → PDF 渲染器（后台执行，全程无可见打印页面）
  *
@@ -67,7 +69,7 @@ const HEADER_FOOTER_INSET_MM = 10;
  * @param request 渲染请求
  * @returns 成功返回 base64 PDF；失败返回可读原因（不抛错）
  */
-export async function renderHtmlToPdf(request: PdfRenderRequest): Promise<PdfRenderResult> {
+export async function renderHtmlToPdf(request: PdfRenderRequest, context?: ToolExecutionContext): Promise<PdfRenderResult> {
   if (!request.html || !request.html.trim()) {
     return { ok: false, error: '待渲染的 HTML 为空' };
   }
@@ -82,7 +84,7 @@ export async function renderHtmlToPdf(request: PdfRenderRequest): Promise<PdfRen
 
   // chrome.debugger 只在 background 可用；本模块只在 background 侧调用
   // （sidepanel 侧经 pdf-channel 的消息通道转交过来）。
-  if (typeof chrome === 'undefined' || !chrome.debugger || !chrome.tabs) {
+  if (typeof chrome === 'undefined' || !browserChrome(context).debugger || !browserChrome(context).tabs) {
     return { ok: false, error: '当前上下文不支持 CDP（chrome.debugger 仅在后台可用）' };
   }
 
@@ -93,23 +95,23 @@ export async function renderHtmlToPdf(request: PdfRenderRequest): Promise<PdfRen
   let tabId: number | undefined;
   try {
     // 1. 准备一个渲染用标签页（不激活，用户无感）
-    tabId = await acquireRenderTab();
+    tabId = await acquireRenderTab(context);
     if (typeof tabId !== 'number') {
       return { ok: false, error: '创建渲染标签页失败：未获得标签页 id' };
     }
 
     // 2. 附加 CDP 会话
-    await cdpSession.attach(tabId);
+    await cdpSession.attach(tabId, context);
 
     // 3. 载入 HTML：Page.setDocumentContent 直接替换文档内容，
     //    比导航到 data: URL 更快，也避免超长 data: URL 的长度问题。
     //    部分 Chrome 版本要求先启用 Page 域，失败也不影响后续命令。
-    await sendCommand(tabId, 'Page.enable', {}).catch(() => undefined);
-    const frameId = await resolveMainFrameId(tabId);
-    await sendCommand(tabId, 'Page.setDocumentContent', { frameId, html: request.html });
+    await sendCommand(tabId, 'Page.enable', {}, context).catch(() => undefined);
+    const frameId = await resolveMainFrameId(tabId, context);
+    await sendCommand(tabId, 'Page.setDocumentContent', { frameId, html: request.html }, context);
 
     // 4. 等待页面就绪（字体 + 图片加载完成）
-    const ready = await waitForPageReady(tabId);
+    const ready = await waitForPageReady(tabId, context);
     if (!ready) {
       return { ok: false, error: '页面资源未能在时限内就绪（字体或图片加载超时）' };
     }
@@ -134,7 +136,7 @@ export async function renderHtmlToPdf(request: PdfRenderRequest): Promise<PdfRen
           ? `<div style="font-size:8px;width:100%;text-align:center;color:#888;margin-bottom:${HEADER_FOOTER_INSET_MM}mm;"><span class="pageNumber"></span> / <span class="totalPages"></span></div>`
           : undefined,
       transferMode: 'ReturnAsBase64',
-    });
+    }, context);
 
     const base64 = typeof result?.data === 'string' ? result.data : '';
     if (!base64) {
@@ -148,12 +150,12 @@ export async function renderHtmlToPdf(request: PdfRenderRequest): Promise<PdfRen
     // 6. 清理：脱离 CDP 并关闭临时标签页（无论成功失败）
     if (tabId !== undefined) {
       try {
-        await cdpSession.detach(tabId);
+        await cdpSession.detach(tabId, context);
       } catch {
         // 脱离失败不影响主流程
       }
       try {
-        await chrome.tabs.remove(tabId);
+        await browserChrome(context).tabs.remove(tabId);
       } catch {
         // 标签页可能已被用户关闭
       }
@@ -180,14 +182,14 @@ function normalizeMargin(value: unknown): number {
  * 状态。新建的标签页不激活（用户看不到焦点被抢走），渲染结束即删除，
  * 全程没有打印对话框，也没有打印预览页。
  */
-async function acquireRenderTab(): Promise<number | undefined> {
-  const created = await chrome.tabs.create({ url: 'about:blank', active: false });
+async function acquireRenderTab(context?: ToolExecutionContext): Promise<number | undefined> {
+  const created = await browserChrome(context).tabs.create({ url: 'about:blank', active: false });
   return created.id;
 }
 
 /** 取标签页主框架 id（Page.setDocumentContent 需要） */
-async function resolveMainFrameId(tabId: number): Promise<string> {
-  const tree = await sendCommand(tabId, 'Page.getFrameTree', {});
+async function resolveMainFrameId(tabId: number, context?: ToolExecutionContext): Promise<string> {
+  const tree = await sendCommand(tabId, 'Page.getFrameTree', {}, context);
   const frameId = tree?.frameTree?.frame?.id;
   if (typeof frameId !== 'string' || !frameId) {
     throw new Error('无法获取页面主框架 id');
@@ -199,7 +201,7 @@ async function resolveMainFrameId(tabId: number): Promise<string> {
  * 等待页面就绪：document.readyState 为 complete 且字体已就绪。
  * 用 Runtime.evaluate 轮询（awaitPromise + fonts.ready）。
  */
-async function waitForPageReady(tabId: number): Promise<boolean> {
+async function waitForPageReady(tabId: number, context?: ToolExecutionContext): Promise<boolean> {
   const deadline = Date.now() + PAGE_READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
     try {
@@ -214,7 +216,7 @@ async function waitForPageReady(tabId: number): Promise<boolean> {
           };
         })()`,
         returnByValue: true,
-      });
+      }, context);
       const value = result?.result?.value;
       if (value?.ready && !value.pendingImages && !value.fontsPending) {
         return true;
@@ -228,10 +230,10 @@ async function waitForPageReady(tabId: number): Promise<boolean> {
 }
 
 /** 发送 CDP 命令（带超时保护，避免后台无限等待） */
-async function sendCommand(tabId: number, method: string, params: Record<string, unknown>): Promise<any> {
+async function sendCommand(tabId: number, method: string, params: Record<string, unknown>, context?: ToolExecutionContext): Promise<any> {
   const timeout = method === 'Page.printToPDF' ? 60_000 : 15_000;
   return Promise.race([
-    chrome.debugger.sendCommand({ tabId }, method, params),
+    browserChrome(context).debugger.sendCommand({ tabId }, method, params),
     new Promise((_resolve, reject) =>
       setTimeout(() => reject(new Error(`${method} 超时（${timeout}ms）`)), timeout),
     ),

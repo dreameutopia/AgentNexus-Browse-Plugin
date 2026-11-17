@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 /**
  * 受限URL检查工具
  * 检查当前页面是否在 chrome:// 或 edge:// 等受限URL上
@@ -77,7 +79,7 @@ export class RestrictedUrlCheckerTool extends BaseNavigationTool {
   async execute(args: {
     targetUrl?: string;
     autoNavigate?: boolean;
-  }): Promise<ToolResult> {
+  }, context?: ToolExecutionContext): Promise<ToolResult> {
     try {
       const {
         targetUrl = DEFAULT_SAFE_URL,
@@ -87,7 +89,7 @@ export class RestrictedUrlCheckerTool extends BaseNavigationTool {
       this.log('Checking current page URL for restrictions...');
 
       // 获取当前活动标签页
-      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const [activeTab] = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
 
       if (!activeTab) {
         return this.createErrorResponse('No active tab found');
@@ -131,7 +133,7 @@ export class RestrictedUrlCheckerTool extends BaseNavigationTool {
       const navigationResult = await this.navigateToUrl(targetUrl, {
         waitForLoad: true,
         timeout: 30000
-      });
+      }, context);
 
       if (!navigationResult.success) {
         return this.createErrorResponse(

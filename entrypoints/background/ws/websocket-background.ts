@@ -242,6 +242,10 @@ class BackgroundWebSocket {
         this.handleCommandMessage(message as WebSocketMessage<CommandPayload>);
         break;
 
+      case MessageType.TOOL_EXECUTION_CANCEL:
+        if (message.correlationId) this.toolExecutor.cancel(message.correlationId);
+        break;
+
       case MessageType.TOOL_EXECUTION_REQUEST:
         this.handleToolExecutionRequest(message as WebSocketMessage<ToolExecutionPayload>);
         break;

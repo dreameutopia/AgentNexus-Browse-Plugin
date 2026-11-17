@@ -1,0 +1,708 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>历史会话抽屉 · 标签编辑 / 重命名预览</title>
+<style>
+  :root { color-scheme: light; }
+  body {
+    margin: 0;
+    background: #e9e7e2;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    color: #292824;
+    padding: 24px;
+  }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  .hint { font-size: 12px; color: #787671; margin: 0 0 18px; }
+  .stage {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    align-items: flex-start;
+  }
+  .panel {
+    background: #ffffff;
+    border: 1px solid #e4e2de;
+    border-radius: 12px;
+    padding: 14px;
+    width: 360px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+  }
+  .panel h2 {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    color: #9b9790;
+    margin: 0 0 10px;
+    text-transform: uppercase;
+  }
+  /* ── 设计 token（抽自 styles/app.css 的 .app-container） ── */
+  .app-tokens {
+  --surface-canvas: #faf9f7;
+  --surface-card: #ffffff;
+  --surface-soft: #f3f1ed;
+  --surface-hover: #eeece7;
+  --surface-user: #eeece7;
+  --line-soft: #e4e2de;
+  --ink-primary: #292824;
+  --ink-secondary: #787671;
+  --ink-muted: #9b9790;
+  --focus-ring: #a5a09a;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    color: var(--ink-primary);
+  }
+  /* ── 组件样式（chat-history-drawer.css 全文，与线上同源） ── */
+/* 历史会话抽屉样式 - 随组件加载（scoped）
+   说明：本组件渲染在 App.vue 之外层（弹窗级），父级 app.css 经 <style scoped> 导入后
+   作用域属性只匹配 App.vue 自身模板元素，子组件内部元素全部失配（曾导致样式整体失效），
+   因此抽屉样式必须由本组件自己持有。 */
+
+.history-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 1200;
+}
+
+.history-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 85%;
+  max-width: 360px;
+  background: #ffffff;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px 0 0 12px;
+  overflow: hidden;
+}
+
+.history-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--surface-soft, #f3f1ed);
+}
+
+.history-drawer-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-primary, #292824);
+}
+
+.history-drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-new-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--surface-hover, #eeece7);
+  color: var(--ink-secondary, #787671);
+  border: 1px solid var(--ink-secondary, #787671);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.history-new-btn:hover {
+  background: var(--surface-hover, #eeece7);
+}
+
+.history-close-btn {
+  background: none;
+  border: none;
+  color: var(--ink-secondary, #787671);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+}
+
+.history-close-btn:hover {
+  color: var(--ink-primary, #292824);
+}
+
+.history-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.history-empty {
+  padding: 40px 16px;
+  text-align: center;
+  color: var(--ink-muted, #9b9790);
+  font-size: 13px;
+}
+
+.history-item {
+  border: 1px solid var(--surface-soft, #f3f1ed);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.history-item:hover {
+  background: var(--surface-canvas, #faf9f7);
+  border-color: var(--line-soft, #e4e2de);
+}
+
+.history-item.active {
+  background: var(--surface-hover, #eeece7);
+  border-color: var(--ink-secondary, #787671);
+}
+
+.history-item-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.history-item-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-primary, #292824);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-item-time {
+  font-size: 11px;
+  color: var(--ink-muted, #9b9790);
+  flex-shrink: 0;
+}
+
+.history-item-preview {
+  font-size: 12px;
+  color: var(--ink-secondary, #787671);
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ──── 会话标签（标题下方 chip 行） ──── */
+
+.history-item-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.history-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  background: var(--surface-soft, #f3f1ed);
+  color: var(--ink-secondary, #787671);
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 内置标签（学习）：琥珀色，与普通自定义标签区分 */
+.history-tag--system {
+  color: #b45309;
+  border-color: rgba(217, 119, 6, 0.32);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.16), rgba(217, 119, 6, 0.07));
+}
+
+.history-tag-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  color: inherit;
+  padding: 0;
+  margin-left: 1px;
+  opacity: 0.6;
+  cursor: pointer;
+}
+
+.history-tag-remove:hover {
+  opacity: 1;
+}
+
+.history-tag-remove:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ──── 行内标签编辑器 ──── */
+
+.history-tag-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px dashed var(--line-soft, #e4e2de);
+  border-radius: 10px;
+  background: var(--surface-canvas, #faf9f7);
+  cursor: default;
+}
+
+.history-tag-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.history-tag-editor-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ink-secondary, #787671);
+}
+
+.history-tag-editor-count {
+  font-size: 10px;
+  color: var(--ink-muted, #9b9790);
+}
+
+.history-tag-editor-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 18px;
+}
+
+.history-tag-editor-empty {
+  font-size: 10px;
+  color: var(--ink-muted, #9b9790);
+}
+
+.history-tag-editor-input-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.history-tag-editor-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink-primary, #292824);
+  font-size: 11px;
+  outline: none;
+}
+
+.history-tag-editor-input:focus {
+  border-color: var(--ink-secondary, #787671);
+  box-shadow: 0 0 0 2px rgba(41, 40, 36, 0.06);
+}
+
+.history-tag-editor-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink-secondary, #787671);
+  cursor: pointer;
+}
+
+.history-tag-editor-add:hover:not(:disabled) {
+  background: var(--surface-hover, #eeece7);
+  color: var(--ink-primary, #292824);
+}
+
+.history-tag-editor-add:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.history-tag-editor-error {
+  margin: 0;
+  font-size: 10px;
+  color: #ef4444;
+}
+
+.history-tag-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.history-tag-editor-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--ink-secondary, #787671);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.history-tag-editor-btn:hover {
+  background: var(--surface-hover, #eeece7);
+  color: var(--ink-primary, #292824);
+}
+
+.history-tag-editor-btn.primary {
+  border-color: var(--ink-primary, #292824);
+  background: var(--ink-primary, #292824);
+  color: #ffffff;
+}
+
+.history-tag-editor-btn.primary:hover {
+  background: #3b3934;
+  color: #ffffff;
+}
+
+.history-tag-editor-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.history-item-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.history-badge {
+  font-size: 10px;
+  border-radius: 6px;
+  padding: 1px 6px;
+  border: 1px solid transparent;
+}
+
+.history-badge.agent {
+  color: var(--ink-secondary, #787671);
+  background: var(--surface-hover, #eeece7);
+  border-color: var(--ink-secondary, #787671);
+}
+
+.history-item-count {
+  font-size: 10px;
+  color: var(--ink-muted, #9b9790);
+}
+
+.history-item-ops {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.history-item:hover .history-item-ops {
+  opacity: 1;
+}
+
+.item-op {
+  background: none;
+  border: none;
+  color: var(--ink-secondary, #787671);
+  cursor: pointer;
+  padding: 3px;
+  display: inline-flex;
+  border-radius: 4px;
+}
+
+.item-op:hover {
+  background: var(--surface-soft, #f3f1ed);
+  color: var(--ink-primary, #292824);
+}
+
+.item-op.danger:hover {
+  color: #ef4444;
+}
+
+/* 键盘焦点可见性：标签编辑相关控件均需保持可辨焦点环 */
+.item-op:focus-visible,
+.history-tag-remove:focus-visible,
+.history-tag-editor-add:focus-visible,
+.history-tag-editor-btn:focus-visible {
+  outline: 2px solid var(--ink-secondary, #787671);
+  outline-offset: 1px;
+}
+
+/* ──── 行内重命名：输入框 + 确认/取消（与标签编辑器同一视觉语言） ──── */
+
+.history-rename {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.history-rename input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--ink-primary, #292824);
+  background: #ffffff;
+  outline: none;
+}
+
+.history-rename input:focus {
+  border-color: var(--ink-secondary, #787671);
+  box-shadow: 0 0 0 2px rgba(41, 40, 36, 0.06);
+}
+
+/* 图标按钮：去掉 UA 默认按钮底色/边框，改为与抽屉一致的描边圆角胶囊 */
+.rename-confirm,
+.rename-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 6px;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.rename-confirm {
+  color: #10b981;
+}
+
+.rename-confirm:hover {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.45);
+}
+
+.rename-cancel {
+  color: #ef4444;
+}
+
+.rename-cancel:hover {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.rename-confirm:focus-visible,
+.rename-cancel:focus-visible {
+  outline: 2px solid var(--ink-secondary, #787671);
+  outline-offset: 1px;
+}
+
+/* 抽屉过渡 */
+.drawer-fade-enter-active,
+.drawer-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.drawer-fade-enter-from,
+.drawer-fade-leave-to {
+  opacity: 0;
+}
+
+.drawer-slide-enter-active,
+.drawer-slide-leave-active {
+  transition: transform 0.25s ease;
+}
+
+.drawer-slide-enter-from,
+.drawer-slide-leave-to {
+  transform: translateX(100%);
+}
+
+  /* 预览页专用：把抽屉铺进固定面板（不改组件样式） */
+  .preview-drawer {
+    position: static;
+    width: auto;
+    max-width: none;
+    border-radius: 10px;
+    box-shadow: none;
+    border: 1px solid var(--line-soft, #e4e2de);
+    min-height: 200px;
+  }
+  .preview-drawer .history-drawer-body { padding: 0; overflow: visible; }
+  .preview-drawer .history-item { cursor: default; }
+  /* 悬停态操作按钮在预览里常显，便于查看图标 */
+  .preview-drawer .history-item-ops { opacity: 1; }
+</style>
+</head>
+<body>
+<h1>历史会话抽屉 · 标签编辑 / 重命名</h1>
+<p class="hint">样式抽取自 chat-history-drawer.css；图标与文案抽取自 ChatHistoryDrawer.vue / zh-CN.ts。悬停行可见操作按钮。</p>
+
+<div class="stage app-tokens">
+
+  <!-- 1. 常态列表：标签 chip 行 + 智能体徽标 + 操作按钮（含纯标签图标） -->
+  <section class="panel">
+    <h2>常态列表（标签 chip + 操作按钮）</h2>
+    <div class="history-drawer preview-drawer">
+      <div class="history-drawer-body">
+        <div class="history-list">
+          <div class="history-item active">
+            <div class="history-item-title-row">
+              <span class="history-item-title">帮我按照这个简历去投两个 ai agent 应用</span>
+              <span class="history-item-time">25 分钟前</span>
+            </div>
+            <div class="history-item-tags">
+              <span class="history-tag" title="工作">工作</span>
+              <span class="history-tag history-tag--system">学习</span>
+            </div>
+            <div class="history-item-preview">点击投递后进入了字节跳动登录页（手机号+验证码）…</div>
+            <div class="history-item-meta">
+              <span class="history-badge agent">文本通用助手</span>
+              <span class="history-item-count">4 条消息</span>
+              <span class="history-item-ops">
+                <button class="item-op" aria-label="编辑标签"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5.5,3H13.8L21,10.2V18.5A2.5,2.5 0 0,1 18.5,21H5.5A2.5,2.5 0 0,1 3,18.5V5.5A2.5,2.5 0 0,1 5.5,3M7,7A1.5,1.5 0 0,0 8.5,8.5A1.5,1.5 0 0,0 7,10A1.5,1.5 0 0,0 5.5,8.5A1.5,1.5 0 0,0 7,7Z" fill="currentColor"/></svg></button>
+                <button class="item-op" aria-label="重命名"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87L20.71,7.04M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z" fill="currentColor"/></svg></button>
+                <button class="item-op danger" aria-label="删除"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z" fill="currentColor"/></svg></button>
+              </span>
+            </div>
+          </div>
+          <div class="history-item">
+            <div class="history-item-title-row">
+              <span class="history-item-title">帮我分析一下数据吧</span>
+              <span class="history-item-time">刚刚</span>
+            </div>
+            <div class="history-item-preview">我先读取简历内容，了解你的背景，然后再去寻找…</div>
+            <div class="history-item-meta">
+              <span class="history-badge agent">文本通用助手</span>
+              <span class="history-item-count">2 条消息</span>
+              <span class="history-item-ops">
+                <button class="item-op" aria-label="编辑标签"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5.5,3H13.8L21,10.2V18.5A2.5,2.5 0 0,1 18.5,21H5.5A2.5,2.5 0 0,1 3,18.5V5.5A2.5,2.5 0 0,1 5.5,3M7,7A1.5,1.5 0 0,0 8.5,8.5A1.5,1.5 0 0,0 7,10A1.5,1.5 0 0,0 5.5,8.5A1.5,1.5 0 0,0 7,7Z" fill="currentColor"/></svg></button>
+                <button class="item-op" aria-label="重命名"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87L20.71,7.04M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z" fill="currentColor"/></svg></button>
+                <button class="item-op danger" aria-label="删除"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z" fill="currentColor"/></svg></button>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. 行内重命名：输入框 + 确认/取消（本次改造重点） -->
+  <section class="panel">
+    <h2>行内重命名（输入框 + 确认/取消）</h2>
+    <div class="history-drawer preview-drawer">
+      <div class="history-drawer-body">
+        <div class="history-list">
+          <div class="history-item">
+            <div class="history-rename">
+              <input value="帮我分析一下数据吧" placeholder="历史会话" />
+              <button class="rename-confirm" aria-label="确认"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9,16.17L4.83,12L3.41,13.41L9,19L21,7L19.59,5.59L9,16.17Z" fill="currentColor"/></svg></button>
+              <button class="rename-cancel" aria-label="取消"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z" fill="currentColor"/></svg></button>
+            </div>
+          </div>
+          <div class="history-item">
+            <div class="history-rename">
+              <input value="" placeholder="帮我按照这个简历去投两个 ai agent 应用" />
+              <button class="rename-confirm" aria-label="确认"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9,16.17L4.83,12L3.41,13.41L9,19L21,7L19.59,5.59L9,16.17Z" fill="currentColor"/></svg></button>
+              <button class="rename-cancel" aria-label="取消"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z" fill="currentColor"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. 标签编辑器：chip 草稿 + 输入添加 + 保存/取消 -->
+  <section class="panel">
+    <h2>标签编辑器（草稿 + 添加 + 保存）</h2>
+    <div class="history-drawer preview-drawer">
+      <div class="history-drawer-body">
+        <div class="history-list">
+          <div class="history-item active">
+            <div class="history-item-title-row">
+              <span class="history-item-title">帮我按照这个简历去投两个 ai agent 应用</span>
+              <span class="history-item-time">25 分钟前</span>
+            </div>
+            <div class="history-item-tags">
+              <span class="history-tag">工作</span>
+            </div>
+            <div class="history-item-preview">点击投递后进入了字节跳动登录页（手机号+验证码）…</div>
+            <div class="history-item-meta">
+              <span class="history-badge agent">文本通用助手</span>
+              <span class="history-item-count">4 条消息</span>
+              <span class="history-item-ops">
+                <button class="item-op" aria-label="编辑标签"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5.5,3H13.8L21,10.2V18.5A2.5,2.5 0 0,1 18.5,21H5.5A2.5,2.5 0 0,1 3,18.5V5.5A2.5,2.5 0 0,1 5.5,3M7,7A1.5,1.5 0 0,0 8.5,8.5A1.5,1.5 0 0,0 7,10A1.5,1.5 0 0,0 5.5,8.5A1.5,1.5 0 0,0 7,7Z" fill="currentColor"/></svg></button>
+                <button class="item-op" aria-label="重命名"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87L20.71,7.04M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z" fill="currentColor"/></svg></button>
+                <button class="item-op danger" aria-label="删除"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z" fill="currentColor"/></svg></button>
+              </span>
+            </div>
+            <div class="history-tag-editor">
+              <div class="history-tag-editor-head">
+                <span class="history-tag-editor-title">会话标签</span>
+                <span class="history-tag-editor-count">2/8</span>
+              </div>
+              <div class="history-tag-editor-chips">
+                <span class="history-tag">工作
+                  <button class="history-tag-remove" aria-label="移除"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z" fill="currentColor"/></svg></button>
+                </span>
+                <span class="history-tag history-tag--system">学习
+                  <button class="history-tag-remove" aria-label="移除"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z" fill="currentColor"/></svg></button>
+                </span>
+              </div>
+              <div class="history-tag-editor-input-row">
+                <input class="history-tag-editor-input" placeholder="输入标签后回车" />
+                <button class="history-tag-editor-add" aria-label="添加"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z" fill="currentColor"/></svg></button>
+              </div>
+              <div class="history-tag-editor-actions">
+                <button class="history-tag-editor-btn">取消</button>
+                <button class="history-tag-editor-btn primary">保存</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. 抽屉头部（关闭 / 新会话按钮） -->
+  <section class="panel">
+    <h2>抽屉头部</h2>
+    <div class="history-drawer preview-drawer">
+      <div class="history-drawer-header">
+        <h3>历史会话</h3>
+        <div class="history-drawer-actions">
+          <button class="history-new-btn"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z" fill="currentColor"/>
+                </svg> 新会话</button>
+          <button class="history-close-btn" aria-label="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z" fill="currentColor"/>
+                </svg></button>
+        </div>
+      </div>
+      <div class="history-drawer-body">
+        <div class="history-empty">暂无历史会话</div>
+      </div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

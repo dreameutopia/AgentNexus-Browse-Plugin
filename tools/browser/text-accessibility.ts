@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { cdpSession } from './cdp-session';
 import { textCommand, textTab, readableTextError } from './text-runtime';
 import { isRestrictedUrl } from '@/common/constants';
@@ -146,8 +148,8 @@ function forget(id: string) {
   for (const [ref, entry] of refs)
     if (entry.snapshotId === id) refs.delete(ref);
 }
-async function tree(tabId: number) {
-  const root = (await textCommand(tabId, 'Page.getFrameTree')).frameTree;
+async function tree(tabId: number, context?: ToolExecutionContext) {
+  const root = (await textCommand(tabId, 'Page.getFrameTree', undefined, undefined, context)).frameTree;
   if (!root?.frame || typeof root.frame.id !== 'string') throw new Error(`INVALID_RESULT：Page.getFrameTree 未返回标签页 ${tabId} 的有效 frame 树`);
   return root;
 }
@@ -164,20 +166,20 @@ export async function observeAccessibility(input: {
   /** 目标标签页（宿主已校验并切换为激活页；省略=当前活动页） */
   tabId?: number;
   signal?: AbortSignal;
-}) {
+}, context?: ToolExecutionContext) {
   input.signal?.throwIfAborted();
   if (input.xpath)
     throw new Error('XPath 仅适用于 DOM 视图，辅助功能视图请用 regex');
   const tab =
     input.tabId !== undefined
-      ? await chrome.tabs
+      ? await browserChrome(context).tabs
           .get(input.tabId)
           .catch(() => {
             throw new Error(
               `TAB_NOT_FOUND：标签页 ${input.tabId} 不存在（可能已关闭）。用 browser_tabs(action="list") 查看可用标签页。`
             );
           })
-      : await textTab();
+      : await textTab(context);
   if (typeof tab?.id !== 'number') throw new Error('TARGET_UNAVAILABLE：未找到可访问的标签页');
   if (isRestrictedUrl(tab.url))
     throw new Error(
@@ -210,8 +212,8 @@ export async function observeAccessibility(input: {
     const regex = (input.regex || '').trim();
     const filter = regex ? new RegExp(regex, 'i') : null;
     // CDP only guarantees stable AXNodeIds after enabling the Accessibility domain.
-    await textCommand(tab.id, 'Accessibility.enable');
-    const root = await tree(tab.id);
+    await textCommand(tab.id, 'Accessibility.enable', undefined, undefined, context);
+    const root = await tree(tab.id, context);
     const entries: AXEntry[] = [],
       warnings: string[] = [];
     let truncated = false;
@@ -235,7 +237,7 @@ export async function observeAccessibility(input: {
           tab.id,
           'Accessibility.getFullAXTree',
           { frameId: frame.id },
-          Math.max(1, Math.min(2500, axDeadline - performance.now())),
+          Math.max(1, Math.min(2500, axDeadline - performance.now())), context
         );
         for (const raw of result.nodes || []) {
           const node = normalize(raw);
@@ -298,7 +300,7 @@ export async function observeAccessibility(input: {
   const totalPages = Math.max(1, Math.ceil(snapshot.entries.length / 40));
   if (page > totalPages) throw new Error(`PAGE_OUT_OF_RANGE：共 ${totalPages} 页`);
   input.signal?.throwIfAborted();
-  await validateSnapshot(snapshot);
+  await validateSnapshot(snapshot, context);
   const delivered = snapshot.entries.slice((page - 1) * 40, page * 40);
   const invalidEntries = new Set<AXEntry>();
   const frameFailures: Array<{ frameId: string; stage: string; code: string; message: string }> = [];
@@ -318,7 +320,7 @@ export async function observeAccessibility(input: {
       tab.id!,
       'Accessibility.getFullAXTree',
       { frameId },
-      Math.min(2500, remaining),
+      Math.min(2500, remaining), context
     ), Math.min(2500, remaining), 'Validate AX references', input.signal);
     if (!Array.isArray(live.nodes)) throw new Error('INVALID_RESULT：辅助功能校验未返回节点列表');
     for (const entry of frameEntries) {
@@ -392,8 +394,8 @@ export async function observeAccessibility(input: {
     hint: '辅助功能树不保证包含未加载单元格。有 ElementId 可 focus/keys；无 ElementId 的节点只提供语义信息。写后重新观察；不要把 AX 行号当单元格地址。',
   };
 }
-async function validateSnapshot(snapshot: AXSnapshot) {
-  const tab = await textTab();
+async function validateSnapshot(snapshot: AXSnapshot, context?: ToolExecutionContext) {
+  const tab = await textTab(context);
   if (
     tab.id !== snapshot.tabId ||
     tab.url !== snapshot.url ||
@@ -404,17 +406,17 @@ async function validateSnapshot(snapshot: AXSnapshot) {
     throw new Error(
       `STALE_SNAPSHOT：页面或调试会话变化，请重采（该快照属于标签页 ${snapshot.tabId}；需要续读请传 tabId=${snapshot.tabId}）`
     );
-  const root = await tree(tab.id);
+  const root = await tree(tab.id, context);
   if (root.frame.loaderId !== snapshot.loaderId)
     throw new Error('STALE_SNAPSHOT：文档已导航，请重采');
   return frames(root);
 }
-export async function resolveAX(ref: string) {
+export async function resolveAX(ref: string, context?: ToolExecutionContext) {
   const stored = refs.get(ref),
     snapshot = stored ? snapshots.get(stored.snapshotId) : undefined;
   if (!stored || !snapshot)
     throw new Error('STALE_ELEMENT：辅助功能引用已过期，请重采');
-  const liveFrames = await validateSnapshot(snapshot);
+  const liveFrames = await validateSnapshot(snapshot, context);
   if (
     !liveFrames.some(
       (f) =>
@@ -428,7 +430,7 @@ export async function resolveAX(ref: string) {
     {
       backendNodeId: stored.entry.node.backendDOMNodeId,
       fetchRelatives: false,
-    },
+    }, undefined, context
   );
   const node = result.nodes?.find(
     (n) =>

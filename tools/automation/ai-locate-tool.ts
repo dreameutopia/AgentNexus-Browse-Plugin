@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { executeScriptBounded } from '../common/frame-read';
 /**
  * AI定位工具
@@ -75,7 +77,7 @@ export class AILocateTool extends BaseTool {
     }
   };
 
-  async execute(args: LocateParams): Promise<ToolResult> {
+  async execute(args: LocateParams, context?: ToolExecutionContext): Promise<ToolResult> {
     console.log('🎯 [AI定位工具] 开始执行');
     console.log('📥 [AI定位工具] 接收参数:', args);
     
@@ -91,7 +93,7 @@ export class AILocateTool extends BaseTool {
       
       // 获取当前页面截图
       console.log('📸 [AI定位工具] 正在获取页面截图...');
-      const screenshot = await this.captureScreenshot();
+      const screenshot = await this.captureScreenshot(context);
       if (!screenshot.success) {
         console.error('❌ [AI定位工具] 获取页面截图失败:', screenshot.error);
         return this.createErrorResponse('获取页面截图失败', screenshot.error);
@@ -117,7 +119,7 @@ export class AILocateTool extends BaseTool {
       // 如果需要高亮显示
       if (highlight && result.selector) {
         console.log('🎨 [AI定位工具] 正在高亮显示元素...');
-        await this.highlightElement(result.selector);
+        await this.highlightElement(result.selector, undefined, context);
         console.log('✅ [AI定位工具] 元素高亮显示完成');
       }
       
@@ -144,10 +146,10 @@ export class AILocateTool extends BaseTool {
   /**
    * 获取页面截图
    */
-  private async captureScreenshot(): Promise<ToolResult> {
+  private async captureScreenshot(context?: ToolExecutionContext): Promise<ToolResult> {
     try {
       console.log('🔍 [AI定位工具-截图] 查询活动标签页...');
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tabs = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
       if (!tabs[0]) {
         console.error('❌ [AI定位工具-截图] 未找到活动标签页');
         throw new Error('未找到活动标签页');
@@ -155,7 +157,7 @@ export class AILocateTool extends BaseTool {
       console.log('✅ [AI定位工具-截图] 找到活动标签页:', tabs[0].url);
       
       console.log('📸 [AI定位工具-截图] 正在捕获可见区域...');
-      const dataUrl = await chrome.tabs.captureVisibleTab(tabs[0].windowId, {
+      const dataUrl = await browserChrome(context).tabs.captureVisibleTab(tabs[0].windowId, {
         format: 'png',
         quality: 90
       });
@@ -316,11 +318,11 @@ export class AILocateTool extends BaseTool {
    * @param selector 元素选择器
    * @param options 高亮选项
    */
-  private async highlightElement(selector: string, options: any = {}): Promise<void> {
+  private async highlightElement(selector: string, options: any = {}, context?: ToolExecutionContext): Promise<void> {
     try {
       console.log('🎨 [AI定位工具-高亮] 开始高亮元素:', selector);
       
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tabs = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
       if (!tabs[0]) {
         console.error('❌ [AI定位工具-高亮] 未找到活动标签页');
         throw new Error('未找到活动标签页');
@@ -331,11 +333,11 @@ export class AILocateTool extends BaseTool {
       await executeScriptBounded({
         target: { tabId: tabs[0].id! },
         files: ['inject-scripts/vision/ai-highlight.js']
-      });
+      }, undefined, undefined, context);
       
       console.log('📤 [AI定位工具-高亮] 发送高亮指令...');
       // 发送高亮指令
-      const response = await chrome.tabs.sendMessage(tabs[0].id!, {
+      const response = await browserChrome(context).tabs.sendMessage(tabs[0].id!, {
         action: 'highlightElement',
         selector: selector,
         options: {

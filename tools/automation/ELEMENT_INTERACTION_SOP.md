@@ -1,6 +1,6 @@
 # 纯文本网页交互协议
 
-文本通用助手不配置视觉模型、截图或坐标动作。工具参数契约以工具 schema 为准；动作智能体和数据采集助手使用 utils/agents/element-interaction-sop.ts，网站学习/验证独立维护任务指南。
+文本通用助手不配置视觉模型、截图或坐标动作。工具参数契约以工具 schema 为准；动作智能体和数据采集助手使用 utils/agents/element-interaction-sop.ts。
 
 ## 工具分工
 
@@ -13,9 +13,9 @@
 | --- | --- | --- |
 | browser_observe | DOM 控件、输入、表格结构、选项、滚动容器、当前焦点、浏览器辅助功能树 | 未加载内容或整张工作簿的完整数据 |
 | browser_interact | click/fill/focus/keys/type/scroll，按节点引用操作 | 页面业务已保存、任意画布均可编辑 |
-| browser_network_capture | start/read/stop，被动观察 start 之后的真实请求与文本响应（urlIncludes/urlExcludes/types/includeHeaders/durationSec 可选过滤与窗口；read 支持 onlyMissing 对账），完整正文进入 dataRef（**仅数据采集 / 网站学习 / 技能验证场景具备；文本通用助手与视觉通用助手 不携带**） | start 之前的历史请求、二进制协议解码、接口写权限 |
+| browser_network_capture | start/read/stop，被动观察 start 之后的真实请求与文本响应（urlIncludes/urlExcludes/types/includeHeaders/durationSec 可选过滤与窗口；read 支持 onlyMissing 对账），完整正文进入 dataRef（**仅数据采集场景具备；文本通用助手与视觉通用助手 不携带**） | start 之前的历史请求、二进制协议解码、接口写权限 |
 | js_run | 指定 tab/frame 的脚本执行与工作区结果文件数据通道（每次执行结果自动落盘 results/，持久可分页核对） | 任意闭包、Worker、跨域 frame 自动可读 |
-| read_website | 全部可注入 frame、可访问 shadow root 的结构化 Markdown 正文（标题/表格/列表/代码块/链接；单页 3000 字符，完整正文落盘 content/*.md，按 path+page 续读，url= 可直读指定页） | 对 Canvas 像素的识别 |
+| read_website | 全部可注入 frame、可访问 shadow root 的结构化 Markdown 正文（标题/表格/列表/代码块/链接；单页 3000 字符，完整正文落盘 content/*.md，后续页用 file_util(action="read", path, index) 续读，url= 可直读指定页） | 对 Canvas 像素的识别 |
 
 页面菜单和少量编辑用交互；批量取数优先使用已确认且有权限的数据接口/导出。当前没有凭据配置的厂商 API 不作为可用工具承诺。
 
@@ -110,7 +110,7 @@ STALE_ELEMENT/STALE_SNAPSHOT/FOCUS_CHANGED 重采；WRONG_TAB 用 tabId=引用�
 | 原生文件/权限窗口、验证码、登录验证 | 不属于页面节点工具的通用处理范围，需要用户完成相应步骤 |
 | 协作修改、保护区域、筛选/隐藏行列 | 业务身份与当前权限再次核对；索引不等于记录身份，不绕过保护 |
 
-会话脚本求值统一由全局 js_run 提供，先创建脚本再按相对路径运行；内容脚本命令发送是不同能力，仍单独保留。
+会话脚本求值统一由全局 js_run 提供：先用 file_util(action="create", path="scripts/xxx.js", content=...) 保存脚本，再按相对路径运行；内容脚本命令发送是不同能力，仍单独保留。
 
 - tests/tools/element-interaction.test.ts：实际 DOM 引用、快照、跨 tab/frame、过期、竞态、Shadow DOM、标准输入校验。
 - tests/tools/text-automation.test.ts：辅助功能引用、原生键盘释放/取消、状态变更与真实响应捕获的协议模拟。

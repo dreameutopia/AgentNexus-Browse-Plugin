@@ -1,3 +1,6 @@
+import { browserChrome } from '@/tools/browser/browser-scope';
+import { parseBrowserScope } from './browser-scope';
+import type { ToolExecutionContext } from '@/tools/registry';
 /**
  * 网络被动观察工具（browser_network_capture）
  *
@@ -14,7 +17,7 @@
  * 4. 预算与诚实：100 请求 / 单正文 1M 字符 / 合计 4M 字符 / durationSec 窗口，
  *    超限、缓冲逐出、非文本都逐条标记原因并汇总进 stats，read 永不宣称全量；
  * 5. 描述层单一事实源：预算数字与参数语义写在 openaiSchema.description，
- *    data-harvester / SOP 文档 / learn-prompts 引用同一组常量，改动需同步。
+ *    data-harvester / SOP 文档 引用同一组常量，改动需同步。
  */
 import { BaseBrowserTool } from '../base/browser-tool';
 import type { ToolMetadata } from '../registry';
@@ -90,6 +93,9 @@ interface CaptureEntry {
 }
 
 interface Capture {
+  /** Each ongoing capture owns its scope; never capture the first listener's context. */
+  context?: ToolExecutionContext;
+  abortController?: AbortController;
   id: string;
   tabId: number;
   epoch: number;
@@ -148,7 +154,7 @@ function decodeBase64Utf8(b64: string): string {
  * 出队并启动正文抓取，直到队列空或达到并发上限。
  * 每次有抓取结束都会再次调用，形成持续泵送。
  */
-function pump(c: Capture): void {
+function pump(c: Capture, context?: ToolExecutionContext): void {
   while (c.queue.length > 0 && c.pending.size < MAX_CONCURRENT_BODIES) {
     const requestId = c.queue.shift()!;
     const entry = c.entries.get(requestId);
@@ -157,19 +163,21 @@ function pump(c: Capture): void {
       entry.bodyUnavailable = '合计容量已达上限';
       continue;
     }
-    const work = fetchBody(c, entry);
+    const work = fetchBody(c, entry, context);
     c.pending.add(work);
     const done = () => {
       c.pending.delete(work);
-      pump(c);
+      pump(c, context);
     };
     void work.then(done, done);
   }
 }
 
 /** 抓取单条正文：预算复检 → getResponseBody → 解码 → dataRef 落盘 */
-async function fetchBody(c: Capture, entry: CaptureEntry): Promise<void> {
+async function fetchBody(c: Capture, entry: CaptureEntry, context?: ToolExecutionContext): Promise<void> {
   try {
+    context = c.context ?? context;
+    context?.signal?.throwIfAborted();
     // 出发前确认会话仍在且 epoch 未变——绝不为一次读取重新 attach（见文件头不变量）
     if (
       !cdpSession.hasSession(c.tabId) ||
@@ -180,7 +188,9 @@ async function fetchBody(c: Capture, entry: CaptureEntry): Promise<void> {
     }
     const result = await textCommand(c.tabId, 'Network.getResponseBody', {
       requestId: entry.requestId,
-    });
+    }, undefined, context);
+    if (context?.browserScope) await browserChrome(context).tabs.get(c.tabId);
+    context?.signal?.throwIfAborted();
     if (cdpSession.getEpoch(c.tabId) !== c.epoch) {
       entry.bodyUnavailable = '调试会话已切换，正文未取回';
       return;
@@ -230,9 +240,9 @@ async function fetchBody(c: Capture, entry: CaptureEntry): Promise<void> {
 }
 
 /** 有界排空队列（stop 时调用）：让已入队的正文尽量落地，超时后交由标记兜底 */
-async function drainQueue(c: Capture): Promise<void> {
+async function drainQueue(c: Capture, context?: ToolExecutionContext): Promise<void> {
   const deadline = Date.now() + 7_000;
-  pump(c);
+  pump(c, context);
   while (
     (c.queue.length > 0 || c.pending.size > 0) &&
     Date.now() < deadline
@@ -243,7 +253,7 @@ async function drainQueue(c: Capture): Promise<void> {
         new Promise((r) => setTimeout(r, 200)),
       ]);
     }
-    pump(c);
+    pump(c, context);
     if (c.pending.size === 0 && c.queue.length === 0) break;
     // pump 本应至少启动一条；仍为 0 说明队列项已全部消化（条目被删/超预算标记）
     if (c.pending.size === 0) break;
@@ -260,20 +270,21 @@ async function drainQueue(c: Capture): Promise<void> {
  * 停止捕获（幂等）：清定时器/keepalive → 排空正文队列 → 关闭 Network 域。
  * timer 自动停止与手动 stop 共用同一 promise，绝不重复 disable。
  */
-function stop(c: Capture): Promise<void> {
+function stop(c: Capture, context?: ToolExecutionContext): Promise<void> {
   if (c.stopPromise) return c.stopPromise;
+  context = c.context ?? context;
   c.stopPromise = (async () => {
     const wasActive = c.active;
     c.active = false;
     clearTimeout(c.timer);
     clearInterval(c.keepalive);
-    if (wasActive) await drainQueue(c).catch(() => undefined);
+    if (wasActive) await drainQueue(c, context).catch(() => undefined);
     if (
       wasActive &&
       cdpSession.hasSession(c.tabId) &&
       cdpSession.getEpoch(c.tabId) === c.epoch
     )
-      await textCommand(c.tabId, 'Network.disable').catch(() => undefined);
+      await textCommand(c.tabId, 'Network.disable', undefined, undefined, context).catch(() => undefined);
   })();
   return c.stopPromise;
 }
@@ -282,6 +293,7 @@ function stop(c: Capture): Promise<void> {
 function abandon(c: Capture, warning: string): void {
   c.active = false;
   c.warning = warning;
+  c.abortController?.abort(new Error(warning));
   clearTimeout(c.timer);
   clearInterval(c.keepalive);
   for (const requestId of c.queue) {
@@ -292,15 +304,16 @@ function abandon(c: Capture, warning: string): void {
   c.queue.length = 0;
 }
 
-function listen(): void {
+function listen(context?: ToolExecutionContext): void {
   if (listening) return;
-  chrome.debugger.onEvent.addListener((source, method, raw) => {
+  browserChrome(context).debugger.onEvent.addListener((source, method, raw) => {
     if (typeof source.tabId !== 'number') return;
     const c = [...captures.values()].find(
       (c) => c.tabId === source.tabId && c.active,
     );
     if (!c || source.sessionId || cdpSession.getEpoch(c.tabId) !== c.epoch)
       return;
+    const context = c.context;
     const p = raw as any;
     if (method === 'Network.requestWillBeSent') {
       const url = String(p.request?.url || '');
@@ -381,13 +394,18 @@ function listen(): void {
         return;
       }
       c.queue.push(p.requestId);
-      pump(c);
+      pump(c, context);
     }
   });
-  chrome.debugger.onDetach.addListener((source) => {
+  browserChrome(context).debugger.onDetach.addListener((source) => {
     for (const c of captures.values())
       if (c.tabId === source.tabId && c.active)
         abandon(c, '调试会话已脱离，捕获停止');
+  });
+  browserChrome(context).tabs.onDetached?.addListener(tabId => {
+    for (const c of captures.values())
+      if (c.tabId === tabId && c.active && c.context?.browserScope)
+        abandon(c, '标签页已移出绑定窗口，捕获停止');
   });
   listening = true;
 }
@@ -536,7 +554,7 @@ export class NetworkObserverTool extends BaseBrowserTool {
     offset?: number;
     limit?: number;
     onlyMissing?: boolean;
-  }) {
+  }, context?: ToolExecutionContext) {
     this.ensureBackgroundContext();
     try {
       return await exclusiveText(async () => {
@@ -595,19 +613,23 @@ export class NetworkObserverTool extends BaseBrowserTool {
               );
             durationSec = p.durationSec;
           }
-          const tab = await textTab();
+          const tab = await textTab(context);
           if (
             [...captures.values()].some((c) => c.tabId === tab.id && c.active)
           )
             throw new Error('当前标签页已有捕获，请先 read/stop');
-          listen();
+          listen(context);
           await textCommand(tab.id, 'Network.enable', {
             maxTotalBufferSize: 8_000_000,
             maxResourceBufferSize: 1_000_000,
-          });
+          }, undefined, context);
           const id = crypto.randomUUID();
           const durationMs = durationSec * 1000;
+          const captureAbort = context?.browserScope ? new AbortController() : undefined;
           const c: Capture = {
+            ...(captureAbort ? { abortController: captureAbort, context: {
+              browserScope: parseBrowserScope(context?.browserScope), signal: captureAbort.signal,
+            } } : {}),
             id,
             tabId: tab.id,
             epoch: cdpSession.getEpoch(tab.id),
@@ -622,7 +644,7 @@ export class NetworkObserverTool extends BaseBrowserTool {
             bytes: 0,
             dropped: 0,
             timer: setTimeout(() => {
-              void stop(c);
+              void stop(c, c.context ?? context);
             }, durationMs),
             // 保活：窗口可长于会话 60s 闲置 TTL，touch 只刷新定时器不新增 attach
             keepalive: setInterval(() => {
@@ -637,13 +659,15 @@ export class NetworkObserverTool extends BaseBrowserTool {
                 abandon(c, '调试会话已脱离，捕获停止');
                 return;
               }
-              cdpSession.touch(c.tabId);
+              // TTL detach is cleanup of the original authorized debugger target;
+              // ongoing response reads use c.context, not this finished tool lease.
+              cdpSession.touch(c.tabId, context);
             }, KEEPALIVE_MS),
           };
           captures.set(id, c);
           while (captures.size > MAX_CAPTURES) {
             const oldest = captures.values().next().value!;
-            await stop(oldest);
+            await stop(oldest, oldest.context);
             captures.delete(oldest.id);
           }
           return this.createSuccessResponse({
@@ -663,8 +687,9 @@ export class NetworkObserverTool extends BaseBrowserTool {
         if (typeof p.captureId !== 'string' || !captures.has(p.captureId))
           throw new Error('captureId 不存在或已淘汰');
         const c = captures.get(p.captureId)!;
+        if (context?.browserScope) await browserChrome(context).tabs.get(c.tabId);
         if (p.action === 'stop') {
-          await stop(c);
+          await stop(c, context);
           return this.createSuccessResponse({
             captureId: c.id,
             active: false,

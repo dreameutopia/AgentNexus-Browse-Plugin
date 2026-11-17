@@ -27,6 +27,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 
+const boundaryAudit = spawnSync(process.execPath, ['tests/tools/window-binding-context-audit.mjs'], { stdio: 'inherit' });
+if (boundaryAudit.status !== 0) process.exit(boundaryAudit.status ?? 1);
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..', '..');
 

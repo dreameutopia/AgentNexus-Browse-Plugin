@@ -1,3 +1,4 @@
+import { browserChrome } from '@/tools/browser/browser-scope';
 /**
  * 页面净化工具（browser_clean_page）
  *
@@ -138,6 +139,33 @@ const BLOCK_RESOURCE_TYPES = [
   'websocket',
 ] as chrome.declarativeNetRequest.ResourceType[];
 
+// Separate from legacy global rules (91001–91099). Only Beta writes these IDs.
+const SCOPED_RULE_MIN = 1_000_000;
+const SCOPED_RULE_MAX = 1_099_999;
+let scopedRuleQueue: Promise<unknown> = Promise.resolve();
+function withScopedRules<T>(work: () => Promise<T>): Promise<T> {
+  const result = scopedRuleQueue.then(work, work);
+  scopedRuleQueue = result.catch(() => undefined);
+  return result;
+}
+function rulesForTab(rules: chrome.declarativeNetRequest.Rule[], tabId: number) {
+  return rules.filter(rule => rule.id >= SCOPED_RULE_MIN && rule.id <= SCOPED_RULE_MAX &&
+    rule.condition.tabIds?.length === 1 && rule.condition.tabIds[0] === tabId);
+}
+
+// Top-level MV3 listeners also survive worker restarts. They never change legacy
+// global rules. Moving a tab out of its window revokes these ongoing effects.
+if (typeof chrome !== 'undefined' && typeof document === 'undefined' && chrome.declarativeNetRequest?.getSessionRules) {
+  const clearMovedRules = (tabId: number) => {
+    void withScopedRules(async () => {
+      const rules = rulesForTab(await chrome.declarativeNetRequest.getSessionRules(), tabId);
+      if (rules.length) await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: rules.map(rule => rule.id) });
+    }).catch(error => console.warn('[BrowserScope] 清理标签页网络规则失败', error));
+  };
+  browserChrome().tabs.onDetached?.addListener(clearMovedRules);
+  browserChrome().tabs.onRemoved?.addListener(clearMovedRules);
+}
+
 interface CleanParams {
   /** 净化层面：dom=仅 DOM 隐藏（默认）/ network=仅网络拦截 / both=双层防护 */
   mode?: 'dom' | 'network' | 'both';
@@ -226,8 +254,8 @@ export class PageCleanTool extends BaseBrowserTool {
     try {
       // tabId 允许为 0：真值判断会把合法的 0 当作「未提供」而错选活动标签页
       const tab = requestedTabId !== undefined && requestedTabId !== null
-        ? await chrome.tabs.get(requestedTabId)
-        : (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+        ? await browserChrome(context).tabs.get(requestedTabId)
+        : (await browserChrome(context).tabs.query({ active: true, currentWindow: true }))[0];
       if (!tab || typeof tab.id !== 'number') {
         return this.createErrorResponse('No active tab found');
       }
@@ -244,8 +272,8 @@ export class PageCleanTool extends BaseBrowserTool {
 
       // —— 撤销路径 ——
       if (restore) {
-        const domRestored = mode !== 'network' ? await this.restoreDom(tabId) : null;
-        const netRestored = mode !== 'dom' ? await this.restoreNetwork() : null;
+        const domRestored = mode !== 'network' ? await this.restoreDom(tabId, context) : null;
+        const netRestored = mode !== 'dom' ? await this.restoreNetwork(tabId, context) : null;
         return this.createSuccessResponse(
           {
             tabId,
@@ -262,12 +290,12 @@ export class PageCleanTool extends BaseBrowserTool {
 
       // —— DOM 层净化 ——
       if (mode === 'dom' || mode === 'both') {
-        result.dom = await this.applyDomCleanup(tabId, scope, customSelectors);
+        result.dom = await this.applyDomCleanup(tabId, scope, customSelectors, context);
       }
 
       // —— 网络层拦截 ——
       if (mode === 'network' || mode === 'both') {
-        result.network = await this.applyNetworkBlocking();
+        result.network = await this.applyNetworkBlocking(tabId, context);
       }
 
       return this.createSuccessResponse(result, `Page cleanup applied (${mode} mode, ${scope} scope)`);
@@ -281,13 +309,13 @@ export class PageCleanTool extends BaseBrowserTool {
   private async applyDomCleanup(
     tabId: number,
     scope: 'light' | 'standard' | 'aggressive',
-    customSelectors: string[],
+    customSelectors: string[], context?: ToolExecutionContext
   ): Promise<Record<string, unknown>> {
     // 1. 注入隔离世界守护脚本（自带重复注入保护）
-    await this.injectContentScript(tabId, [CLEAN_HELPER_FILE]);
+    await this.injectContentScript(tabId, [CLEAN_HELPER_FILE], undefined, undefined, context);
 
     // 2. 注入统一隐藏样式（标记元素置空显示，author 级 !important 可覆盖行内样式）
-    await chrome.scripting.insertCSS({
+    await browserChrome(context).scripting.insertCSS({
       target: { tabId },
       css: HIDE_CSS,
       origin: 'AUTHOR',
@@ -302,7 +330,7 @@ export class PageCleanTool extends BaseBrowserTool {
         aggressive: scope === 'aggressive',
         persist: true,
       },
-    });
+    }, context);
 
     return {
       hidden: response?.hidden ?? 0,
@@ -313,19 +341,19 @@ export class PageCleanTool extends BaseBrowserTool {
   }
 
   /** 撤销 DOM 层净化：停止守护 + 移除标记 + 移除注入样式 */
-  private async restoreDom(tabId: number): Promise<Record<string, unknown>> {
+  private async restoreDom(tabId: number, context?: ToolExecutionContext): Promise<Record<string, unknown>> {
     let restoredElements = 0;
     try {
       const response = await this.sendMessageToTab(tabId, {
         action: 'clearClean',
-      });
+      }, context);
       restoredElements = response?.restored ?? 0;
     } catch {
       // 守护脚本未注入过（如页面已刷新）：无 DOM 状态可恢复，继续移除样式即可
     }
 
     try {
-      await chrome.scripting.removeCSS({
+      await browserChrome(context).scripting.removeCSS({
         target: { tabId },
         css: HIDE_CSS,
         origin: 'AUTHOR',
@@ -338,10 +366,28 @@ export class PageCleanTool extends BaseBrowserTool {
   }
 
   /** 网络层拦截：写入 declarativeNetRequest 会话规则 */
-  private async applyNetworkBlocking(): Promise<Record<string, unknown>> {
+  private async applyNetworkBlocking(tabId: number, context?: ToolExecutionContext): Promise<Record<string, unknown>> {
     if (typeof chrome === 'undefined' || !chrome.declarativeNetRequest) {
       return { applied: false, reason: 'declarativeNetRequest API 不可用（缺少权限）' };
     }
+
+    if (context?.browserScope) return withScopedRules(async () => {
+      await browserChrome(context).tabs.get(tabId);
+      const existing = await chrome.declarativeNetRequest.getSessionRules();
+      const previous = rulesForTab(existing, tabId);
+      const used = new Set(existing.map(rule => rule.id));
+      let nextId = SCOPED_RULE_MIN;
+      const addRules: chrome.declarativeNetRequest.Rule[] = NETWORK_BLOCK_RULES.map(({ domain }) => {
+        while (used.has(nextId) && nextId <= SCOPED_RULE_MAX) nextId++;
+        if (nextId > SCOPED_RULE_MAX) throw new Error('BOUND_RULE_CAPACITY：绑定窗口网络规则已达容量上限。');
+        return { id: nextId++, priority: 1, action: { type: 'block' as chrome.declarativeNetRequest.RuleActionType }, condition: {
+          tabIds: [tabId], requestDomains: [domain], resourceTypes: BLOCK_RESOURCE_TYPES,
+        } };
+      });
+      await browserChrome(context).tabs.get(tabId);
+      await chrome.declarativeNetRequest.updateSessionRules({ addRules, removeRuleIds: previous.map(rule => rule.id) });
+      return { applied: true, blockedDomains: addRules.length, tabId, note: '仅作用于绑定窗口中的目标标签页；不会修改全局规则。' };
+    });
 
     const addRules: chrome.declarativeNetRequest.Rule[] = NETWORK_BLOCK_RULES.map(
       ({ id, domain }) => ({
@@ -368,10 +414,17 @@ export class PageCleanTool extends BaseBrowserTool {
   }
 
   /** 撤销网络层拦截：移除保留区间的全部规则 */
-  private async restoreNetwork(): Promise<Record<string, unknown>> {
+  private async restoreNetwork(tabId: number, context?: ToolExecutionContext): Promise<Record<string, unknown>> {
     if (typeof chrome === 'undefined' || !chrome.declarativeNetRequest) {
       return { applied: false, reason: 'declarativeNetRequest API 不可用（缺少权限）' };
     }
+
+    if (context?.browserScope) return withScopedRules(async () => {
+      await browserChrome(context).tabs.get(tabId);
+      const rules = rulesForTab(await chrome.declarativeNetRequest.getSessionRules(), tabId);
+      await chrome.declarativeNetRequest.updateSessionRules({ addRules: [], removeRuleIds: rules.map(rule => rule.id) });
+      return { applied: true, removedRules: rules.length, tabId };
+    });
 
     await chrome.declarativeNetRequest.updateSessionRules({
       addRules: [],

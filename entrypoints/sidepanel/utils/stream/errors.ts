@@ -20,6 +20,7 @@
 import { t } from '@/utils/i18n/core';
 import { escapeXmlText } from '../xml-entities';
 import type { ProviderType } from './types';
+import { isClosedBrowserWindowError } from '@/utils/browser-window-lifecycle';
 
 /** 展示用响应体最大长度（完整内容始终保留在 rawBody 字段中） */
 const MAX_DISPLAY_BODY = 4000;
@@ -395,6 +396,12 @@ function apiErrorCardTitle(error: ApiRequestError): string {
  * 属性中的文本均经 XML 转义，正文结构不会被响应内容注入破坏。
  */
 export function toApiErrorBlock(error: unknown): string {
+  if (isClosedBrowserWindowError(error)) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `<api-error kind="error" title="${escapeXmlText(t('browserBinding.closedErrorTitle'))}" label="${escapeXmlText(t('browserBinding.closedErrorLabel'))}">\n` +
+      `<summary>${escapeXmlText(t('browserBinding.closedErrorHint'))}</summary>\n` +
+      `<raw>${escapeXmlText(message)}</raw>\n</api-error>`;
+  }
   if (error instanceof ApiRequestError) {
     const attrs = [
       `kind="${error.kind}"`,

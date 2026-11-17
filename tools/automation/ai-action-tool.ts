@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { executeScriptBounded } from '../common/frame-read';
 /**
  * AI操作工具
@@ -77,7 +79,7 @@ export class AIActionTool extends BaseTool {
     }
   };
 
-  async execute(args: ActionParams): Promise<ToolResult> {
+  async execute(args: ActionParams, context?: ToolExecutionContext): Promise<ToolResult> {
     console.log('🎬 [AI操作工具] 开始执行');
     console.log('📥 [AI操作工具] 已接收操作请求');
     
@@ -93,7 +95,7 @@ export class AIActionTool extends BaseTool {
       
       // 获取当前页面截图
       console.log('📸 [AI操作工具] 正在获取页面截图...');
-      const screenshotResult = await this.captureScreenshot();
+      const screenshotResult = await this.captureScreenshot(context);
       if (!screenshotResult.success) {
         console.error('❌ [AI操作工具] 获取页面截图失败:', screenshotResult.error);
         return this.createErrorResponse('获取页面截图失败', screenshotResult.error);
@@ -114,7 +116,7 @@ export class AIActionTool extends BaseTool {
       
       // 执行操作
       console.log(`🎬 [AI操作工具] 正在执行${action}操作...`);
-      const actionResult = await this.executeAction(selector, action, value);
+      const actionResult = await this.executeAction(selector, action, value, context);
       if (!actionResult.success) {
         console.error('❌ [AI操作工具] 执行操作失败:', actionResult.error);
         return this.createErrorResponse('执行操作失败', actionResult.error);
@@ -132,7 +134,7 @@ export class AIActionTool extends BaseTool {
       let afterScreenshot = null;
       if (screenshot) {
         console.log('📸 [AI操作工具] 正在获取操作后截图...');
-        const afterResult = await this.captureScreenshot();
+        const afterResult = await this.captureScreenshot(context);
         if (afterResult.success) {
           afterScreenshot = afterResult.data.dataUrl;
           console.log('✅ [AI操作工具] 操作后截图获取成功');
@@ -165,10 +167,10 @@ export class AIActionTool extends BaseTool {
   /**
    * 获取页面截图
    */
-  private async captureScreenshot(): Promise<ToolResult> {
+  private async captureScreenshot(context?: ToolExecutionContext): Promise<ToolResult> {
     try {
       console.log('🔍 [AI操作工具-截图] 查询活动标签页...');
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tabs = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
       if (!tabs[0]) {
         console.error('❌ [AI操作工具-截图] 未找到活动标签页');
         throw new Error('未找到活动标签页');
@@ -176,7 +178,7 @@ export class AIActionTool extends BaseTool {
       console.log('✅ [AI操作工具-截图] 找到活动标签页:', tabs[0].url);
       
       console.log('📸 [AI操作工具-截图] 正在捕获可见区域...');
-      const dataUrl = await chrome.tabs.captureVisibleTab(tabs[0].windowId, {
+      const dataUrl = await browserChrome(context).tabs.captureVisibleTab(tabs[0].windowId, {
         format: 'png',
         quality: 90
       });
@@ -336,14 +338,14 @@ export class AIActionTool extends BaseTool {
   /**
    * 执行具体操作
    */
-  private async executeAction(selector: string, action: string, value: string): Promise<ToolResult> {
+  private async executeAction(selector: string, action: string, value: string, context?: ToolExecutionContext): Promise<ToolResult> {
     try {
       console.log('🎬 [AI操作工具-执行] 开始执行操作');
       console.log('📍 [AI操作工具-执行] 目标选择器:', selector);
       console.log('🎯 [AI操作工具-执行] 操作类型:', action);
       console.log('📝 [AI操作工具-执行] 是否提供操作值:', value !== undefined && value !== '');
       
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tabs = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
       if (!tabs[0]) {
         console.error('❌ [AI操作工具-执行] 未找到活动标签页');
         throw new Error('未找到活动标签页');
@@ -479,7 +481,7 @@ export class AIActionTool extends BaseTool {
           }
         },
         args: [selector, action, value]
-      });
+      }, undefined, undefined, context);
       
       console.log('📥 [AI操作工具-执行] 收到脚本执行结果');
       const executeResult = result[0].result;

@@ -28,7 +28,7 @@ for (const name of ['browser_interact', 'browser_page_exec', 'vision_gui', 'brow
   assert.equal((schema.parameters.properties as any).confirm.description, CONFIRM_PARAMETER_DESCRIPTION);
 }
 for (const file of ['utils/agents/element-interaction-sop.ts', 'utils/agents/vision-gui-prompt.ts',
-  'utils/agents/presets/vision-action.ts', 'utils/learn/learn-prompts.ts'])
+  'utils/agents/presets/vision-action.ts'])
   assert.doesNotMatch(readFileSync(file, 'utf8'), /confirm\s*[=:]\s*true/, `${file} must not duplicate confirmation policy`);
 
 // Exercise the real execution gateway: wait for a user's decision before a

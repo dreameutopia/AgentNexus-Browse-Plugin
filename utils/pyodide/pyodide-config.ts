@@ -10,8 +10,12 @@
  *   二次使用零网络（"重型载荷"层）。锁文件提供每个 wheel 的 sha256，
  *   loadPackage 下载时自动做子资源完整性校验。
  *
- * 版本升级方法：改 PYODIDE_VERSION + npm install pyodide@<同一版本>，
- * 两处必须一致（loadPyodide 的 checkAPIVersion 会校验 JS 层与 wasm 层匹配）。
+ * 版本升级方法：改 PYODIDE_VERSION + 安装 pyodide@<同一版本>（精确版本，
+ * 不用 ^ 范围——caret 会让 pnpm/npm update 漂移到新 patch，而 CDN 寻址仍按
+ * 本常量，胶水与 wasm 错配会以 ASM_CONSTS[e] is not a function 崩在启动期）。
+ * 注意 loadPyodide 的 checkAPIVersion 只比对加载器与胶水两个 JS 的版本
+ * （同出一个 npm 包，恒相等），不校验 CDN 上的 wasm——三方一致只能靠本注释
+ * 的流程约束，升级时必须同批改齐。
  */
 
 /** 随扩展打包的 pyodide npm 包版本（与 CDN 下载的 wasm/包版本严格一致） */

@@ -66,7 +66,7 @@ export const deepSearchConfig: PresetAgentConfig = {
   结果表逐条给出标题、链接与摘要——**可信度由你自己按来源域名判断**：官方/一手站点（机构官网、交易所与监管披露、上市公司公告、通讯社与主流媒体、官方文档）可信度高；百科与社区问答、聚合站、自媒体与论坛只是线索入口、不能作为唯一定论。关键结论必须再换一个独立域名（不同注册域）读原文核对。
   返回的 results 解析失败时页面已就位：用 read_website 读取当前页自行提取条目。
 页面深访（正文优先级从高到低）：
-- read_website：把当前页（或 url= 指定页面）转为结构化 Markdown——保留标题层级、表格（含合并单元格）、列表、代码块及语言、链接目标；覆盖全部 iframe 与可访问 shadow root。需结构信息（表格/代码）或要读 URL 指定页时优先。完整正文落盘 content/*.md，CSV 返回 content,page,totalPages,path（单页 3000 字符，按 path+page 续读）。url= 会在**前台**新建并激活标签页打开目标页、等加载完成再提取，标签页保留在用户眼前（不后台打开）——页面若弹人机验证，让用户在该标签页完成验证后重试，或换来源。
+- read_website：把当前页（或 url= 指定页面）转为结构化 Markdown——保留标题层级、表格（含合并单元格）、列表、代码块及语言、链接目标；覆盖全部 iframe 与可访问 shadow root。需结构信息（表格/代码）或要读 URL 指定页时优先。完整正文落盘 content/*.md，CSV 返回 content,page,totalPages,path（单页 3000 字符，后续页用 file_util(action="read", path=该文件, index=页码) 续读）。url= 会在**前台**新建并激活标签页打开目标页、等加载完成再提取，标签页保留在用户眼前（不后台打开）——页面若弹人机验证，让用户在该标签页完成验证后重试，或换来源。
 - browser_navigation：action="open" 访问搜索结果中的具体链接（waitForLoad=true）；action="back" 返回结果页（默认等加载就绪）；action="wait" 在导航超时后补等页面就绪。browser_get_page_info 诊断加载状态。
 动态页面与结构化提取（按需，从轻到重）：
 - browser_observe：文本化观察页面（控件/按钮/输入框/结构/无障碍树）——先观察再动手，判断页面形态与登录墙。

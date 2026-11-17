@@ -83,7 +83,7 @@ const FOREGROUND_SWITCHING_TOOLS = new Set([
  * 落回第 4 条保守重拍。参数解析失败（argsKnown=false）同样保守重拍。
  */
 const PURE_READ_ACTIONS: Readonly<Record<string, readonly string[]>> = {
-  js_run: ['create', 'edit', 'delete', 'read', 'list'],
+  file_util: ['read', 'list', 'search', 'grep'],
   browser_tabs: ['list', 'windows'],
   browser_navigation: ['wait'],
 };

@@ -9,6 +9,9 @@ import { JSDOM } from 'jsdom';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
+const browserWindowPicker = spawnSync(process.execPath, [path.resolve('tests/chat-ui/browser-window-picker.test.mjs')], { stdio: 'inherit' });
+assert.equal(browserWindowPicker.status, 0, 'Beta browser window picker regression');
+
 const file=path.resolve('entrypoints/sidepanel/components/chat/ChatMessageList.vue');
 const {descriptor}=parse(readFileSync(file,'utf8'),{filename:file});
 const script=compileScript(descriptor,{id:'chat-list-regression'});
@@ -43,16 +46,8 @@ try{
 }finally{app.unmount();dom.window.close();}
 // 使用统计 UI 已迁至管理中心，覆盖随组件迁至 tests/hub/usage-python.test.mjs
 // （侧边栏旧组件与其回归用例一并移除，避免悬空测试）
-const learn = spawnSync(process.execPath, [path.resolve('tests/chat-ui/learn-session.test.mjs')], { stdio: 'inherit' });
-assert.equal(learn.status, 0, 'Learning/validation chat UI regression');
 const questions = spawnSync(process.execPath, [path.resolve('tests/chat-ui/questions.test.mjs')], { stdio: 'inherit' });
 assert.equal(questions.status, 0, 'Shared user question callback regression');
-const limits = spawnSync(process.execPath, [path.resolve('tests/chat-ui/learn-limits.test.mjs')], { stdio: 'inherit' });
-assert.equal(limits.status, 0, 'Learning/validation budget choices regression');
-const handoff = spawnSync(process.execPath, [path.resolve('tests/chat-ui/learn-handoff.test.mjs')], { stdio: 'inherit' });
-assert.equal(handoff.status, 0, 'Learning result durable handoff regression');
-const recovery = spawnSync(process.execPath, [path.resolve('tests/chat-ui/learn-recovery.test.mjs')], { stdio: 'inherit' });
-assert.equal(recovery.status, 0, 'Learning result receipt sync and persistent dismissal regression');
 const scroll = spawnSync(process.execPath, [path.resolve('tests/chat-ui/scroll-follow.test.mjs')], { stdio: 'inherit' });
 assert.equal(scroll.status, 0, 'Scroll follow regression');
 const retry = spawnSync(process.execPath, [path.resolve('tests/chat-ui/api-error-retry.test.mjs')], { stdio: 'inherit' });
@@ -89,3 +84,6 @@ assert.equal(agentImageViewer.status,0,'Agent image card (no id caption) and sha
 
 const messageUploads = spawnSync(process.execPath, [path.resolve('tests/chat-ui/message-uploads.test.mjs')], {stdio:'inherit'});
 assert.equal(messageUploads.status,0,'Uploaded file elements (image zoom / web preview / download only)');
+
+const historyDrawerTags = spawnSync(process.execPath, [path.resolve('tests/chat-ui/history-drawer-tags.test.mjs')], {stdio:'inherit'});
+assert.equal(historyDrawerTags.status,0,'History drawer tag edit/save/flush, focus and rename UI regression');

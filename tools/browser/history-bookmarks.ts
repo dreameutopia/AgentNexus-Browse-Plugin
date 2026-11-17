@@ -1,3 +1,4 @@
+import { browserChrome } from '@/tools/browser/browser-scope';
 /**
  * 统一浏览历史与书签工具（browser_history_bookmarks）
  *
@@ -489,7 +490,7 @@ export class BrowserHistoryBookmarksTool extends BaseBrowserTool {
 
     const items: RecallItem[] = [];
     if (source === 'history' || source === 'both') {
-      items.push(...(await this.searchHistory(query, since, until, limit, args.excludeCurrentTabs === true)));
+      items.push(...(await this.searchHistory(query, since, until, limit, args.excludeCurrentTabs === true, context)));
     }
     if (source === 'bookmark' || source === 'both') {
       items.push(...(await this.searchBookmarks(query, limit)));
@@ -784,7 +785,7 @@ export class BrowserHistoryBookmarksTool extends BaseBrowserTool {
     since: number,
     until: number,
     limit: number,
-    excludeCurrentTabs: boolean,
+    excludeCurrentTabs: boolean, context?: ToolExecutionContext
   ): Promise<RecallItem[]> {
     const raw = await requireHistoryApi().search({
       text: query,
@@ -796,7 +797,7 @@ export class BrowserHistoryBookmarksTool extends BaseBrowserTool {
     let items = raw.filter(item => !!item.url);
 
     if (excludeCurrentTabs && items.length > 0) {
-      const tabs = await chrome.tabs.query({});
+      const tabs = await browserChrome(context).tabs.query({});
       const openUrls = new Set(tabs.map(tab => tab.url).filter(Boolean) as string[]);
       items = items.filter(item => !item.url || !openUrls.has(item.url));
     }

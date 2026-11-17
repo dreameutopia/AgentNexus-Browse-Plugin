@@ -1,3 +1,4 @@
+import type { ToolExecutionContext } from '@/tools/registry';
 import { GuiError } from './gui-errors';
 import { injectScript } from './injection';
 import { finiteRange, type Viewport } from './coordinates';
@@ -19,10 +20,10 @@ export function observationViewportPayload(candidate: string) {
     zoom: 1 };
 }
 
-export async function observationViewport(tabId: number): Promise<{ viewport: Viewport; documentId: string }> {
+export async function observationViewport(tabId: number, context?: ToolExecutionContext): Promise<{ viewport: Viewport; documentId: string }> {
   const rows = await injectScript(
     { tabId, frameIds: [0], world: 'ISOLATED', func: observationViewportPayload, args: [crypto.randomUUID()] },
-    { operation: 'Read observation viewport', timeoutMs: 3000 });
+    { operation: 'Read observation viewport', timeoutMs: 3000 }, context);
   const value = rows[0]?.result;
   if (!value || typeof value.documentId !== 'string' || !value.documentId)
     throw new GuiError('TARGET_UNAVAILABLE', 'Observation document unavailable');

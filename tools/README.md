@@ -47,7 +47,7 @@ tools/
 
 浏览器导航只在**现有窗口**内进行：`browser_navigation({action:"open", url})` 默认新标签页，`newTab:false` 使用当前标签页，同 URL 标签可复用；历史前进后退与加载等待同属该工具（`action` 为 `back` / `forward` / `refresh` / `wait`）。`newWindow` 已从导航接口删除，导航没有新建窗口兜底；没有现成窗口时返回错误，标签创建始终显式绑定现有 windowId。
 
-`generic_wait({waitSeconds})` 接受非负有限秒数，超过 600 自动按 600 秒执行，支持中止；视觉循环在工具完成后另强制间隔 3 秒再自动截图。等待仅表示时间经过，完成状态仍需重新观察。
+`browser_wait({conditions})` 接受非负有限秒数，超过 600 自动按 600 秒执行，支持中止；视觉循环在工具完成后另强制间隔 3 秒再自动截图。等待仅表示时间经过，完成状态仍需重新观察。
 
 ```typescript
 import { toolRegistry } from './tools';
@@ -372,4 +372,4 @@ const result = await toolRegistry.getTool('browser_navigation')?.execute({ actio
 
 MIT License - 详见 LICENSE 文件
 
-会话 JavaScript 统一使用全局默认 `js_run`：先 create 保存 `scripts/*.js`，再 run 传相对路径与 JSON `args`（脚本通过 `$args` 读取）。文本编辑与 Python 共用引擎，支持精确/显式缩进匹配、原子 `edits` 及可选 SHA-256 冲突检查。原内联页面执行工具实现保持不变，仅供 backend；两个脚本入口均不出现在智能体工具组中。
+会话 JavaScript 统一使用全局默认 `js_run`：先用 `file_util(action="create", path="scripts/x.js", content=...)` 保存脚本，再 `js_run(action="run", path="scripts/x.js", args=...)` 执行（脚本通过 `$args` 读取）。工作区文件的创建/分页读取/编辑/删除统一由 `file_util` 承载（创建、编辑、删除仅支持文本文件；读取支持文本与 docx/pptx/xlsx，每页 3000 字符）。原内联页面执行工具实现保持不变，仅供 backend；两个脚本入口均不出现在智能体工具组中。

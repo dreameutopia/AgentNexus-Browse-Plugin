@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { BaseTool } from '../base-tool';
 import { ToolResult } from '@/common/tool-handler';
 import { ToolMetadata } from '../registry';
@@ -97,7 +99,7 @@ export class FileUploaderTool extends BaseTool {
     return mimeTypes[ext || ''] || 'application/octet-stream';
   }
 
-  async execute(args: { selector: string; filePath: string; frameId?: number }): Promise<ToolResult> {
+  async execute(args: { selector: string; filePath: string; frameId?: number }, context?: ToolExecutionContext): Promise<ToolResult> {
     const startTime = Date.now();
     try {
       const { selector, filePath, frameId = 0 } = args;
@@ -111,7 +113,7 @@ export class FileUploaderTool extends BaseTool {
       this.log(`文件路径: ${filePath}`);
       this.log(`Frame ID: ${frameId}`);
 
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tabs = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
       if (!tabs[0] || !tabs[0].id) {
         return this.createErrorResponse('No active tab with ID found');
       }
@@ -148,23 +150,23 @@ export class FileUploaderTool extends BaseTool {
       // 2. 使用从后端获取的文件数据进行上传
       this.log('使用文件数据进行上传...');
 
-      await this.ensureDebuggerAttached(tabId);
+      await this.ensureDebuggerAttached(tabId, context);
 
-      await chrome.debugger.sendCommand({ tabId }, 'DOM.enable');
-      await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable');
+      await browserChrome(context).debugger.sendCommand({ tabId }, 'DOM.enable');
+      await browserChrome(context).debugger.sendCommand({ tabId }, 'Runtime.enable');
 
-      const { root } = await chrome.debugger.sendCommand(
+      const { root } = await browserChrome(context).debugger.sendCommand(
         { tabId },
         'DOM.getDocument',
         { depth: -1, pierce: true }
       ) as any;
 
-      const targetNodeId = await this.findTargetInputNodeId(tabId, root.nodeId, selector, frameId);
+      const targetNodeId = await this.findTargetInputNodeId(tabId, root.nodeId, selector, frameId, context);
 
       // 方案1：优先使用 CDP setFileInputFiles（最可靠）
       if (targetNodeId) {
         this.log(`尝试使用 CDP setFileInputFiles 上传，nodeId=${targetNodeId}...`);
-        const cdpResult = await this.uploadViaCDP(tabId, targetNodeId, fileData, fileName, filePath);
+        const cdpResult = await this.uploadViaCDP(tabId, targetNodeId, fileData, fileName, filePath, context);
         if (cdpResult.success) {
           const duration = Date.now() - startTime;
           this.log(`CDP 上传成功，耗时: ${duration}ms`);
@@ -188,7 +190,7 @@ export class FileUploaderTool extends BaseTool {
         selector,
         fileData,
         fileName,
-        targetNodeId
+        targetNodeId, context
       );
       
       if (!uploadResult.success) {
@@ -217,7 +219,7 @@ export class FileUploaderTool extends BaseTool {
     } finally {
       try {
         if (typeof (chrome as any)?.debugger !== 'undefined') {
-          this.scheduleDebuggerDetach();
+          this.scheduleDebuggerDetach(context);
         }
       } catch {
         // 清理阶段不因调度分离失败而掩盖上传结果
@@ -225,7 +227,7 @@ export class FileUploaderTool extends BaseTool {
     }
   }
 
-  private async ensureDebuggerAttached(tabId: number): Promise<void> {
+  private async ensureDebuggerAttached(tabId: number, context?: ToolExecutionContext): Promise<void> {
     const existingTimer = FileUploaderTool.detachTimers.get(tabId);
     if (existingTimer) {
       clearTimeout(existingTimer);
@@ -235,7 +237,7 @@ export class FileUploaderTool extends BaseTool {
     if (FileUploaderTool.attachedTabs.has(tabId)) return;
 
     try {
-      await chrome.debugger.attach({ tabId }, '1.3');
+      await browserChrome(context).debugger.attach({ tabId }, '1.3');
       FileUploaderTool.attachedTabs.add(tabId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -247,8 +249,8 @@ export class FileUploaderTool extends BaseTool {
     }
   }
 
-  private scheduleDebuggerDetach(): void {
-    chrome.tabs.query({ active: true, currentWindow: true }).then(tabs => {
+  private scheduleDebuggerDetach(context?: ToolExecutionContext): void {
+    browserChrome(context).tabs.query({ active: true, currentWindow: true }).then(tabs => {
       const tabId = tabs[0]?.id;
       if (!tabId) return;
 
@@ -257,7 +259,7 @@ export class FileUploaderTool extends BaseTool {
 
       const timer = setTimeout(async () => {
         try {
-          await chrome.debugger.detach({ tabId });
+          await browserChrome(context).debugger.detach({ tabId });
         } catch {
           // 目标可能已自行分离/关闭，重复 detach 报错可安全忽略
         }
@@ -278,11 +280,11 @@ export class FileUploaderTool extends BaseTool {
     nodeId: number,
     fileData: ArrayBuffer,
     fileName: string,
-    originalFilePath: string
+    originalFilePath: string, context?: ToolExecutionContext
   ): Promise<{ success: boolean; error?: string }> {
     try {
       // 1. 获取 backendNodeId
-      const nodeInfo = await chrome.debugger.sendCommand(
+      const nodeInfo = await browserChrome(context).debugger.sendCommand(
         { tabId },
         'DOM.describeNode',
         { nodeId }
@@ -311,7 +313,7 @@ export class FileUploaderTool extends BaseTool {
       // 3. 使用 CDP setFileInputFiles - 直接用原始文件路径
       // 这是最可靠的方式，CDP 会直接读取本地文件
       try {
-        await chrome.debugger.sendCommand(
+        await browserChrome(context).debugger.sendCommand(
           { tabId },
           'DOM.setFileInputFiles',
           {
@@ -321,7 +323,7 @@ export class FileUploaderTool extends BaseTool {
         );
         
         // 4. 触发事件确保框架响应
-        await this.dispatchUploadEvents(tabId, nodeId);
+        await this.dispatchUploadEvents(tabId, nodeId, context);
         
         return { success: true };
       } catch (cdpError) {
@@ -329,7 +331,7 @@ export class FileUploaderTool extends BaseTool {
         this.log(`CDP setFileInputFiles 失败: ${cdpError}，尝试通过 Blob URL 方式...`);
         
         // 5. 备选方案：通过页面注入文件数据
-        return await this.uploadViaPageInjection(tabId, nodeId, fileData, fileName);
+        return await this.uploadViaPageInjection(tabId, nodeId, fileData, fileName, context);
       }
     } catch (error) {
       return { 
@@ -346,11 +348,11 @@ export class FileUploaderTool extends BaseTool {
     tabId: number,
     nodeId: number,
     fileData: ArrayBuffer,
-    fileName: string
+    fileName: string, context?: ToolExecutionContext
   ): Promise<{ success: boolean; error?: string }> {
     try {
       // 获取元素的 objectId
-      const resolveResult = await chrome.debugger.sendCommand(
+      const resolveResult = await browserChrome(context).debugger.sendCommand(
         { tabId },
         'DOM.resolveNode',
         { nodeId }
@@ -366,7 +368,7 @@ export class FileUploaderTool extends BaseTool {
       const mimeType = this.getMimeType(fileName);
 
       // 在页面上下文中设置文件
-      const result = await chrome.debugger.sendCommand(
+      const result = await browserChrome(context).debugger.sendCommand(
         { tabId },
         'Runtime.callFunctionOn',
         {
@@ -452,10 +454,10 @@ export class FileUploaderTool extends BaseTool {
     }
   }
 
-  private async findTargetInputNodeId(tabId: number, rootNodeId: number, selector: string, frameId: number): Promise<number | null> {
+  private async findTargetInputNodeId(tabId: number, rootNodeId: number, selector: string, frameId: number, context?: ToolExecutionContext): Promise<number | null> {
     const query = async (contextNodeId: number, sel: string) => {
       try {
-        const res = await chrome.debugger.sendCommand(
+        const res = await browserChrome(context).debugger.sendCommand(
           { tabId },
           'DOM.querySelector',
           { nodeId: contextNodeId, selector: sel }
@@ -468,7 +470,7 @@ export class FileUploaderTool extends BaseTool {
 
     const describe = async (nid: number) => {
       try {
-        return await chrome.debugger.sendCommand(
+        return await browserChrome(context).debugger.sendCommand(
           { tabId },
           'DOM.describeNode',
           { nodeId: nid }
@@ -494,7 +496,7 @@ export class FileUploaderTool extends BaseTool {
 
     // 通过 Runtime.evaluate 执行智能解析（含 Shadow DOM）
     const selectorLiteral = JSON.stringify(selector);
-    const resolveResult = await chrome.debugger.sendCommand(
+    const resolveResult = await browserChrome(context).debugger.sendCommand(
       { tabId },
       'Runtime.evaluate',
       {
@@ -579,7 +581,7 @@ export class FileUploaderTool extends BaseTool {
 
     const resolvedObjectId = resolveResult?.result?.objectId;
     if (resolvedObjectId) {
-      const requestNodeResult = await chrome.debugger.sendCommand(
+      const requestNodeResult = await browserChrome(context).debugger.sendCommand(
         { tabId },
         'DOM.requestNode',
         { objectId: resolvedObjectId }
@@ -588,7 +590,7 @@ export class FileUploaderTool extends BaseTool {
     }
 
     // 兜底：选取页面中最“可用”的 file input
-    const bestInputResult = await chrome.debugger.sendCommand(
+    const bestInputResult = await browserChrome(context).debugger.sendCommand(
       { tabId },
       'Runtime.evaluate',
       {
@@ -646,7 +648,7 @@ export class FileUploaderTool extends BaseTool {
 
     const bestObjectId = bestInputResult?.result?.objectId;
     if (bestObjectId) {
-      const requestNodeResult = await chrome.debugger.sendCommand(
+      const requestNodeResult = await browserChrome(context).debugger.sendCommand(
         { tabId },
         'DOM.requestNode',
         { objectId: bestObjectId }
@@ -657,8 +659,8 @@ export class FileUploaderTool extends BaseTool {
     return null;
   }
 
-  private async dispatchUploadEvents(tabId: number, nodeId: number): Promise<void> {
-    const resolveObj = await chrome.debugger.sendCommand(
+  private async dispatchUploadEvents(tabId: number, nodeId: number, context?: ToolExecutionContext): Promise<void> {
+    const resolveObj = await browserChrome(context).debugger.sendCommand(
       { tabId },
       'DOM.resolveNode',
       { nodeId }
@@ -666,7 +668,7 @@ export class FileUploaderTool extends BaseTool {
     const objectId = resolveObj?.object?.objectId;
     if (!objectId) return;
 
-    await chrome.debugger.sendCommand(
+    await browserChrome(context).debugger.sendCommand(
       { tabId },
       'Runtime.callFunctionOn',
       {
@@ -694,10 +696,10 @@ export class FileUploaderTool extends BaseTool {
     );
   }
 
-  private async tryDropUpload(tabId: number, selector: string, filePath: string): Promise<{ success: boolean; error?: string }> {
+  private async tryDropUpload(tabId: number, selector: string, filePath: string, context?: ToolExecutionContext): Promise<{ success: boolean; error?: string }> {
     const selectorLiteral = JSON.stringify(selector);
     const filePathLiteral = JSON.stringify(filePath);
-    const result = await chrome.debugger.sendCommand(
+    const result = await browserChrome(context).debugger.sendCommand(
       { tabId },
       'Runtime.evaluate',
       {
@@ -779,7 +781,7 @@ export class FileUploaderTool extends BaseTool {
     selector: string,
     fileData: ArrayBuffer,
     fileName: string,
-    targetNodeId: number | null
+    targetNodeId: number | null, context?: ToolExecutionContext
   ): Promise<{ success: boolean; error?: string }> {
     const selectorLiteral = JSON.stringify(selector);
     const fileNameLiteral = JSON.stringify(fileName);
@@ -790,7 +792,7 @@ export class FileUploaderTool extends BaseTool {
     const mimeType = this.getMimeType(fileName);
     const mimeTypeLiteral = JSON.stringify(mimeType);
     
-    const result = await chrome.debugger.sendCommand(
+    const result = await browserChrome(context).debugger.sendCommand(
       { tabId },
       'Runtime.evaluate',
       {

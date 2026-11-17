@@ -1,3 +1,4 @@
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { saveDataRefJson, getDataRef, listDataRefs } from '@/utils/data-ref-store';
 import { readPageFrames, PageReadError, isFrameReadReport, withDeadline, addFrameIssue } from '../common/frame-read';
 import { injectionErrorText } from '../common/script-injection';
@@ -189,7 +190,7 @@ export class GetPageTextTool extends BaseBrowserTool {
       requestedUrl: target.url,
       loadNote: target.loadNote,
       signal: context?.signal,
-    });
+    }, context);
     if (!extracted.ok) return { ...this.createErrorResponse(extracted.error), data: { frameDiagnostics: extracted.frameDiagnostics } };
     return await this.buildResponse(extracted, page);
     } catch (error) { return this.createErrorResponse(`PAGE_TEXT_FAILED：${injectionErrorText(error)}`); }
@@ -379,8 +380,8 @@ export class GetPageHTMLTool extends BaseBrowserTool {
         : 200_000;
 
       const tab = typeof args?.tabId === 'number'
-        ? await withDeadline(() => chrome.tabs.get(args.tabId!), 5000, 'Read HTML target', context?.signal)
-        : await withDeadline(() => this.getActiveTab(), 5000, 'Read active HTML target', context?.signal);
+        ? await withDeadline(() => browserChrome(context).tabs.get(args.tabId!), 5000, 'Read HTML target', context?.signal)
+        : await withDeadline(() => this.getActiveTab(context), 5000, 'Read active HTML target', context?.signal);
 
       if (!tab || typeof tab.id !== 'number') {
         return this.createErrorResponse('No active tab found');
@@ -396,7 +397,7 @@ export class GetPageHTMLTool extends BaseBrowserTool {
         },
         args: [format === 'text', maxChars],
       }, { operation: 'page-source', signal: context?.signal, maxResultChars: Math.ceil(maxChars + 1),
-        measureResult: (value: unknown) => typeof value === 'string' ? value.length : typeof (value as { content?: unknown } | null)?.content === 'string' ? (value as { content: string }).content.length : 0 });
+        measureResult: (value: unknown) => typeof value === 'string' ? value.length : typeof (value as { content?: unknown } | null)?.content === 'string' ? (value as { content: string }).content.length : 0 }, context);
 
       // 多 frame 时按 frameId 排序：主 frame（frameId 0）置首，其余保持注入顺序
       const frames: Array<{ frameId: number; content: string; totalLength: number }> = [];
@@ -482,8 +483,8 @@ export class GetCurrentPageInfoTool extends BaseBrowserTool {
 
     try {
       const tab = typeof args?.tabId === 'number'
-        ? await withDeadline(() => chrome.tabs.get(args.tabId!), 5000, 'Read page-info target', context?.signal)
-        : await withDeadline(() => this.getActiveTab(), 5000, 'Read active page-info target', context?.signal);
+        ? await withDeadline(() => browserChrome(context).tabs.get(args.tabId!), 5000, 'Read page-info target', context?.signal)
+        : await withDeadline(() => this.getActiveTab(context), 5000, 'Read active page-info target', context?.signal);
 
       if (!tab || typeof tab.id !== 'number') {
         return this.createErrorResponse('No active tab found');
@@ -509,7 +510,7 @@ export class GetCurrentPageInfoTool extends BaseBrowserTool {
             visibleHeight: window.innerHeight
           };
         }
-      }, { operation: 'page-info', signal: context?.signal });
+      }, { operation: 'page-info', signal: context?.signal }, context);
 
       const pageDetails = results?.[0]?.result || {};
       if (typeof pageDetails !== 'object' || Array.isArray(pageDetails) || typeof (pageDetails as { readyState?: unknown }).readyState !== 'string') {

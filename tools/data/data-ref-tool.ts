@@ -8,7 +8,7 @@
  *     results/ 下持久保存；也接受脚本产出的任意工作区 JSON 数组或 CSV 表文件）。
  *
  * 治理动作（产物统一为 results/ 下的新结果文件——持久、可再治理、可导出）：
- *   - list   ：盘点暂存区批次（refs 侧；工作区文件用 js_run action="list"）；
+ *   - list   ：盘点暂存区批次（refs 侧；工作区文件用 file_util action="list"）；
  *   - info   ：查看单个数据源的字段结构与首行预览（ref 或 file 二选一）；
  *   - merge  ：把多个数据源按顺序拼接成一个结果文件；
  *   - project：把复合数据**投影为一张关系表**——路径指向对象时提升为单行
@@ -16,7 +16,7 @@
  *              按来源路径带成列（关系模型的外键）；
  *   - dedupe ：按主键字段（或整行）去重——滚动增量抓取产生重复行的治理通道
  *              （多源 dedupe 即「拼接+去重」一步完成，可替代 merge）；
- *   - delete ：清理暂存区批次（结果文件用 js_run action="delete" 删除）。
+ *   - delete ：清理暂存区批次（结果文件用 file_util action="delete" 删除）。
  *
  * 设计约束：任何 action 都不把全量数据回传对话——数据只在数据源与
  * xlsx_tool（dataFiles/dataRef 表）之间流转，彻底避免模型转抄造成的
@@ -55,7 +55,7 @@ const ACTION_ENUM = [
 ] as const;
 
 /**
- * 按 action 的参数白名单（对齐 js_run 的 keys 契约）：跨 action 误传参数
+ * 按 action 的参数白名单（与 file_util 的 keys 契约同款纪律）：跨 action 误传参数
  * 显式拒绝而不是静默忽略——「传了但没生效」会让模型误以为已按预期执行。
  */
 const ACTION_PARAMS: Record<(typeof ACTION_ENUM)[number], readonly string[]> = {
@@ -239,7 +239,7 @@ function resultFileGuide(path: string): string {
     `后续：xlsx_tool(action="create_from_data", sheets:[{name, dataFiles:["${path}"], fields, headers}]) 直接导出；` +
     `继续治理（合并/去重）用 files=["${path}"]（单个文件也可直接 file="…"）；` +
     `查看结构用 action="info", file="${path}"，投影用 action="project", file="${path}"；` +
-    `分页核对用 js_run(action="read", path="${path}", index=N)。`
+    `分页核对用 file_util(action="read", path="${path}", index=N)。`
   );
 }
 
@@ -316,11 +316,11 @@ export class DataRefTool extends BaseTool {
         "merge/dedupe 用 refs 或 files（二选一，按数据先后顺序）；project/info 用 ref 或 file（二选一）。" +
         "单/复数写法互通：merge/dedupe 也接受单数字段 file/ref（自动包装为数组）；project/info 也接受单元素数组（自动解包）——同时提供单数与复数会被拒绝。" +
         '治理产物统一保存为 results/ 下的新结果文件，用 xlsx_tool(action="create_from_data", sheets[].dataFiles=[路径]) 直接导出；' +
-        '分页核对数据片段用 js_run(action="read", path=路径, index=N)（每页 ≤2000 字符）。' +
+        '分页核对数据片段用 file_util(action="read", path=路径, index=N)（每页 3000 字符）。' +
         "action=dedupe 可替代 merge：多源拼接+去重一步完成（滚动增量/多轮抓取出现重复行时优先 dedupe，by 指定主键字段，整行去重省略 by）；" +
         "action=project 把复合数据（信封响应、一格两表）投影为关系表：path 指向对象得单行记录、指向数组每个元素一行，" +
         "carry 把父级字段按来源路径带成列（子表与父表的关联键），flatten=true 展平嵌套对象为点号列；" +
-        'action=list 盘点暂存批次（工作区文件用 js_run action="list"）；action=delete 清理批次（结果文件用 js_run action="delete"）。',
+        'action=list 盘点暂存批次（工作区文件用 file_util action="list"）；action=delete 清理批次（结果文件用 file_util action="delete"）。',
       parameters: {
         type: "object",
         properties: {
@@ -448,13 +448,13 @@ export class DataRefTool extends BaseTool {
     return this.createErrorResponse(`未知 action: ${String(action)}`);
   }
 
-  /** list：暂存区批次的元数据盘点（工作区数据文件走 js_run list） */
+  /** list：暂存区批次的元数据盘点（工作区数据文件走 file_util list） */
   private async handleList(): Promise<ToolResult> {
     const metas = await dataRefStore.list();
     if (metas.length === 0) {
       return this.createSuccessResponse(
         { count: 0 },
-        '暂存区为空（暂存批次由 browser_network_capture 等被动捕获产生）。js_run run/crawl 的执行结果是工作区 results/ 文件，用 js_run(action="list", path="results") 盘点。',
+        '暂存区为空（暂存批次由 browser_network_capture 等被动捕获产生）。js_run run/crawl 的执行结果是工作区 results/ 文件，用 file_util(action="list", path="results") 盘点。',
       );
     }
     const totalBytes = metas.reduce((sum, m) => sum + m.bytes, 0);
@@ -462,7 +462,7 @@ export class DataRefTool extends BaseTool {
     return this.createSuccessResponse(
       { count: metas.length, totalBytes, refs: metas },
       `暂存区共 ${metas.length} 个批次（合计 ${(totalBytes / 1024 / 1024).toFixed(2)}MB）：\n${lines}\n` +
-        '导出用 xlsx_tool(action="create_from_data")；多批次治理（merge/dedupe/project）产物为持久结果文件；工作区结果文件用 js_run(action="list", path="results") 盘点。',
+        '导出用 xlsx_tool(action="create_from_data")；多批次治理（merge/dedupe/project）产物为持久结果文件；工作区结果文件用 file_util(action="list", path="results") 盘点。',
     );
   }
 
@@ -866,7 +866,7 @@ export class DataRefTool extends BaseTool {
     );
   }
 
-  /** delete：清理暂存批次（单个/批量/全部；工作区结果文件用 js_run delete） */
+  /** delete：清理暂存批次（单个/批量/全部；工作区结果文件用 file_util delete） */
   private async handleDelete(ref: unknown, refs: unknown): Promise<ToolResult> {
     const parsed = this.parseDeleteIds(ref, refs);
     if ("error" in parsed) return this.createErrorResponse(parsed.error);
@@ -874,7 +874,7 @@ export class DataRefTool extends BaseTool {
     return this.createSuccessResponse(
       { deleted: count },
       count > 0
-        ? `已删除 ${count} 个暂存批次。工作区结果文件（results/）请用 js_run(action="delete", path=文件路径) 删除。`
+        ? `已删除 ${count} 个暂存批次。工作区结果文件（results/）请用 file_util(action="delete", path=文件路径) 删除。`
         : "没有匹配的批次被删除（ID 可能已过期）。",
     );
   }
@@ -899,7 +899,7 @@ export class DataRefTool extends BaseTool {
     if (typeof ref === "string" && ref.trim()) return { ids: [ref.trim()] };
     return {
       error:
-        'delete 需要提供 ref（单个批次 ID）、refs（批量）或 ref="all"（清空全部暂存批次）；工作区结果文件用 js_run(action="delete") 删除',
+        'delete 需要提供 ref（单个批次 ID）、refs（批量）或 ref="all"（清空全部暂存批次）；工作区结果文件用 file_util(action="delete") 删除',
     };
   }
 }

@@ -11,9 +11,9 @@
  *
  *      串行的作用域是**一个扩展上下文**：每个 JS 上下文（sidepanel /
  *      background worker）各持一个引擎实例与一条队列。因此「同一上下文
- *      内的全部工具调用严格串行」成立；不同上下文之间（如 sidepanel 上的
- *      学习会话 与 background 里的聊天会话）各自的工具仍可能并行——那是
- *      既有的进程边界，不在本引擎的职责内。
+ *      内的全部工具调用严格串行」成立；不同上下文之间（如 sidepanel 与
+ *      background worker）各自的工具仍可能并行——那是既有的进程边界，
+ *      不在本引擎的职责内。
  *
  *   2. **强制中断**：每个调用持有独立的 AbortController，合流「轮次中止」
  *      与「单工具超时」。工具经 ToolExecutionContext.signal 感知中止；

@@ -44,7 +44,7 @@ export type Question = {
 };
 export type RuntimeCommand =
   | { id: string; type: "run"; runtime: ConversationRuntime; windowId?: number }
-  | { id: string; type: "preparingGlow"; active: boolean; windowId?: number }
+  | { id: string; type: "preparingGlow"; active: boolean; windowId?: number; browserScope?: import('@/tools/browser/browser-scope').BrowserScope }
   | { id: string; type: "attach" | "abort" | "abortAndWait"; chatId: string }
   | {
       id: string;

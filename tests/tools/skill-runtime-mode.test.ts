@@ -31,13 +31,31 @@ try {
   // 工具面含 python_run 时必须注入 Python 规程分区（决策协议进系统提示词，
   // 而非只塞进工具描述——描述会被读到但不生效）
   assert.equal(installed.systemPrompt.split('<python-scripting>').length-1,1,'有 python_run 时注入 Python 规程分区');
-  assert.match(installed.systemPrompt,/先 action="create"[\s\S]*再 action="run"/,'规程写明先产出脚本再运行');
+  assert.match(installed.systemPrompt,/file_util\(action="create"[\s\S]*python_run\(action="run"/,'规程写明先用 file_util 产出脚本再运行');
   assert.match(installed.systemPrompt,/dependencyMode="pypi"/,'规程点明依赖解析参数');
   assert.deepEqual(openaiToolsConverter.getToolsByIds(['skill_tool'],installed)[0],schema);
-  const learning=await runtimeBuilder.build({...input,disableSkillDiscovery:true});
+  const learning=await runtimeBuilder.build({...input,skillNames:[]});
   assert.ok(learning.toolIds.includes('skill_tool')); assert.deepEqual(learning.availableSkillIds,['4','5']); assert.equal(learning.activationContext.length,0);
   const observer=await runtimeBuilder.build({...input,agentName:'视觉助手'});
-  assert.ok(observer.toolIds.includes('skill_tool')); assert.ok(observer.availableSkillIds?.includes('4')); assert.ok(observer.availableSkillIds?.includes('5')); assert.ok(!observer.toolIds.includes('python_run'));
+  assert.ok(observer.toolIds.includes('skill_tool'));
+  // 视觉助手没有 js_run：skill-create / skill-edit 的 allowed-tools 无法满足，
+  // 按 advertised ⊆ executable 不变量不得进入技能清单
+  assert.ok(!observer.availableSkillIds?.includes('4'));
+  assert.ok(!observer.availableSkillIds?.includes('5'));
+  assert.ok(!observer.toolIds.includes('python_run'));
+  // 显式预选的技能不受「工具是否齐全」过滤：技能照样加载，越界工具在交付面
+  // 裁剪，并以 <capability-boundary> 告知模型按真实能力调整执行方式。
+  const visionLimited=await setCustomSkill({name:'mode-vision-limited',allowedTools:['browser_interact','interact'],files:{'SKILL.md':'---\nname: mode-vision-limited\ndescription: Vision limited fixture\n---\nRead fixture.'}});
+  assert.ok(visionLimited.ok);
+  const visionSkillId=visionLimited.ok?visionLimited.skill.id:'';
+  try {
+    const limited=await runtimeBuilder.build({...input,agentName:'视觉助手',skillNames:[visionSkillId]});
+    assert.ok(limited.activationContext.length > 0,'显式预选技能不得因部分工具不可用被丢弃');
+    assert.ok(!limited.toolIds.includes('browser_interact'),'越界工具仍由交付面裁剪');
+    assert.ok(limited.systemPrompt.includes('<capability-boundary>'),'能力裁剪需告知模型');
+  } finally {
+    if(visionSkillId) await removeCustomSkill(visionSkillId);
+  }
 } finally {
   modelRegistry.require=savedRequire;
   for(const id of ids) await removeCustomSkill(id);

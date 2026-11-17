@@ -1,3 +1,4 @@
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { readPageFrames, PageReadError, addFrameIssue, type FrameReadReport } from '../common/frame-read';
 /**
  * Resource discovery and capture management. download/fetch/export persist deliverables
@@ -224,7 +225,7 @@ export class BrowserResourcesTool extends BaseBrowserTool {
     try {
       switch (args.action) {
         case 'sniff':
-          return await this.handleSniff(args);
+          return await this.handleSniff(args, context);
         case 'list':
           return await this.handleList();
         case 'download':
@@ -367,14 +368,14 @@ export class BrowserResourcesTool extends BaseBrowserTool {
   // ──── action 实现 ────
 
   /** sniff：嗅探页面可下载资源 */
-  private async handleSniff(args: ResourcesArgs): Promise<ToolResult> {
+  private async handleSniff(args: ResourcesArgs, context?: ToolExecutionContext): Promise<ToolResult> {
     const fileTypes = args.fileTypes ?? [];
     const maxResults = args.maxResults ?? DEFAULT_SNIFF_LIMIT;
     const includeImages = args.includeImages === true;
 
     const tab = args.tabId !== undefined
-      ? await chrome.tabs.get(args.tabId)
-      : (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+      ? await browserChrome(context).tabs.get(args.tabId)
+      : (await browserChrome(context).tabs.query({ active: true, currentWindow: true }))[0];
 
     if (!tab || tab.id === undefined) {
       return this.createErrorResponse(
@@ -394,7 +395,7 @@ export class BrowserResourcesTool extends BaseBrowserTool {
         target: { tabId: tab.id },
         func: sniffResourcesInPage,
         args: [{ fileTypes, maxResults, includeImages }],
-      });
+      }, undefined, context);
       frameDiagnostics = results.frameDiagnostics;
       const payload = results?.[0]?.result;
       if (Array.isArray(payload)) resources = payload as ResourceInfo[];

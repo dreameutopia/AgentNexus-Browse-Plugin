@@ -4,6 +4,8 @@
  * 对齐 Claude Code（AskUserQuestion）/ Codex 桌面端的人机交互实践：
  * 模型在「需要用户决策 / 需要敏感操作授权 / 缺少必要信息」时调用本工具，
  * 界面弹出询问窗口——用户可点选预设选项，也始终可以输入自定义答复。
+ * 选项既可单选（点选项即提交），也可经 multiSelect=true 走多选（复选勾选后
+ * 一次性提交，答复原文由本层按 MULTI_ANSWER_SEPARATOR 拼接）。
  *
  * 执行链路：参数清洗 → 经 UI 桥接（interact-ui-bridge）交给 sidepanel 弹窗 →
  * 等待真实用户操作 → 把收敛结果（答复 / 拒绝 / 超时）转写回模型可读的
@@ -41,6 +43,13 @@ const OPTION_LABEL_MAX_CHARS = 120;
 const OPTION_DESC_MAX_CHARS = 300;
 /** 选项数量上限（对齐 Claude Code AskUserQuestion 的 4-5 项惯例；schema 侧同值约束） */
 const MAX_OPTIONS = 5;
+
+/**
+ * 多选答复的拼接分隔符（单一事实源）。
+ * UI 只回传勾选的 label 数组，答复原文由工具层在此拼接——格式化只发生一次，
+ * 弹窗文案与测试都引用本常量，避免「、」散落多处后漂移。
+ */
+export const MULTI_ANSWER_SEPARATOR = '、';
 
 /**
  * 宽容收敛为文本：字符串去空白；有限数字 / 布尔转字符串（模型偶发以标量
@@ -109,11 +118,34 @@ function sanitizeOptions(raw: unknown): InteractOption[] {
   return normalizeRecommendedOption(cleaned).slice(0, MAX_OPTIONS);
 }
 
+/**
+ * 清洗多选答复：只保留非空字符串、去首尾空白、按出现顺序去重、数量截断
+ * （多选不可能超过候选数，MAX_OPTIONS 是天然上界）。非数组 / 空数组返回 []，
+ * 由调用方按「无多选答复」处理。
+ */
+function sanitizeAnswers(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+  for (const item of raw) {
+    if (cleaned.length >= MAX_OPTIONS) break;
+    const text = typeof item === 'string' ? item.trim() : '';
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    cleaned.push(text);
+  }
+  return cleaned;
+}
+
 /** 收敛结果 → 模型可读文案（工具与用户之间唯一的语义翻译层） */
 function resolutionToText(resolution: InteractResolution): string {
   if (resolution.answered) {
     const sourceLabel =
       resolution.source === 'custom' ? '自定义输入' : resolution.source === 'option' ? '选择预设选项' : '答复';
+    // 多选：明示「这是若干条独立选项」，避免模型把「、」连接串误读成单个 label
+    if ((resolution.answers?.length ?? 0) > 1) {
+      return `用户已答复（多选 ${resolution.answers?.length} 项，来源：${sourceLabel}）：\n${resolution.answer ?? ''}`;
+    }
     return `用户已答复（来源：${sourceLabel}）：\n${resolution.answer ?? ''}`;
   }
   switch (resolution.status) {
@@ -142,9 +174,9 @@ export class InteractTool extends BaseTool {
   metadata: ToolMetadata = {
     name: 'interact',
     description:
-      '向用户提问、澄清需求或请求手动处理：弹出询问窗口，等待预设选项或自定义答复。支持 confirm 的操作通过工具自身审批，不重复询问。',
+      '向用户提问、澄清需求或请求手动处理：弹出询问窗口，等待预设选项（单选或多选）或自定义答复。支持 confirm 的操作通过工具自身审批，不重复询问。',
     category: 'interact',
-    version: '1.0.0',
+    version: '1.1.0',
     author: 'AgentNexus',
     tags: ['interact', 'ask-user', 'confirmation', 'authorization'],
     // 纯对话工具（弹窗征询，不触碰页面）：视觉循环无需重拍
@@ -156,7 +188,7 @@ export class InteractTool extends BaseTool {
     function: {
       name: 'interact',
       description:
-        '向用户提问、请求补充信息或手动处理，界面弹窗等待选项或自定义答复。用于关键需求歧义、缺少必要信息或需要用户亲自登录/完成验证码；后者 sensitive=true，只请用户在网站中处理，不索取明文密码、验证码或密钥。支持 confirm 的执行工具按其统一说明传 confirm=true，由审批回调请求同一操作的授权，不先调用 interact 重复询问。搜索、筛选、导航、读取公开 API 等普通操作不需要授权询问。提供 options 时用户仍可自定义答复；同一问题不重复询问，拒绝或未答复后停止依赖该答复的操作。提供两个及以上选项时必须给出唯一推荐选项并排在第一位，在该选项的 description 开头标注「（推荐：一句简短理由）」（详见 options 参数说明）。',
+        '向用户提问、请求补充信息或手动处理，界面弹窗等待选项或自定义答复。用于关键需求歧义、缺少必要信息或需要用户亲自登录/完成验证码；后者 sensitive=true，只请用户在网站中处理，不索取明文密码、验证码或密钥。支持 confirm 的执行工具按其统一说明传 confirm=true，由审批回调请求同一操作的授权，不先调用 interact 重复询问。搜索、筛选、导航、读取公开 API 等普通操作不需要授权询问。提供 options 时用户仍可自定义答复；同一问题不重复询问，拒绝或未答复后停止依赖该答复的操作。提供两个及以上选项时必须给出唯一推荐选项并排在第一位，在该选项的 description 开头标注「（推荐：一句简短理由）」（详见 options 参数说明）。需要用户一次挑选多个候选项（如多个字段、多个目标、多个待处理项）时传 multiSelect=true，由用户勾选后一次性答复；只在候选中选其一时不要传。',
       parameters: {
         type: 'object',
         properties: {
@@ -192,6 +224,14 @@ export class InteractTool extends BaseTool {
               required: ['label'],
             },
           },
+          multiSelect: {
+            type: 'boolean',
+            description:
+              '是否允许用户多选候选选项：true 时弹窗以复选呈现，用户可勾选任意多个选项后一次性提交，' +
+              '答复为所选 label 按选项顺序用「、」连接（模型收到的 answer 即该拼接串）。' +
+              'false（默认）为单选：点选项立即提交。仅当 options 提供至少 2 个候选时生效，否则按单选处理；' +
+              '推荐项规则不变，推荐项仍排第一位，多选时作为优先勾选建议。',
+          },
           sensitive: {
             type: 'boolean',
             description: '问题是否涉及资金、凭据、账号安全或隐私；true 仅改变询问警示样式，不替代执行工具的 confirm 审批。',
@@ -217,6 +257,10 @@ export class InteractTool extends BaseTool {
     const options = sanitizeOptions(args.options);
     // 宽容接受布尔 true 与字符串 "true"（模型偶发的类型偏差，语义无损）
     const sensitive = args.sensitive === true || args.sensitive === 'true';
+    // 多选只在真有可挑的候选时才有意义：无选项 / 单选项一律按单选收敛，
+    // 避免 UI 出现「只有一个复选框却要再点一次提交」的无谓往返
+    const multiSelect =
+      (args.multiSelect === true || args.multiSelect === 'true') && options.length >= 2;
 
     // ── UI 处理器就绪检查：无弹窗上下文（background 等）时立即失败，绝不悬挂 ──
     const handler = getInteractHandler();
@@ -230,6 +274,7 @@ export class InteractTool extends BaseTool {
       question,
       ...(context !== undefined ? { context } : {}),
       options,
+      multiSelect,
       sensitive,
     };
 
@@ -247,6 +292,13 @@ export class InteractTool extends BaseTool {
     if (resolution === null || typeof resolution !== 'object') {
       console.warn('[interact] UI 处理器返回非法结果，已按询问被中断处理:', resolution);
       resolution = { answered: false, status: 'dismissed' };
+    }
+
+    // ── 多选答复收敛：UI 只回传勾选的 label 数组，答复原文由本层拼接——
+    //    格式化只发生这一次（分隔符见 MULTI_ANSWER_SEPARATOR），UI 不参与文案 ──
+    const answers = sanitizeAnswers(resolution.answers);
+    if (resolution.answered && answers.length > 0) {
+      resolution = { ...resolution, answer: answers.join(MULTI_ANSWER_SEPARATOR) };
     }
 
     // ── 结果防御：answered=true 必须携带非空字符串答复（非字符串形态按
@@ -268,7 +320,12 @@ export class InteractTool extends BaseTool {
       data: {
         answered: resolution.answered,
         ...(resolution.answered
-          ? { answer, source: resolution.source ?? 'custom' }
+          ? {
+              answer,
+              source: resolution.source ?? 'custom',
+              // 多选时附带结构化清单：模型与 UI 都能拿到逐项 label，不依赖分隔符回切
+              ...(answers.length > 0 ? { answers } : {}),
+            }
           : { status: resolution.status ?? 'dismissed' }),
         sensitive,
       },

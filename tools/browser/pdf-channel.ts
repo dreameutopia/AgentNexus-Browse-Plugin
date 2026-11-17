@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { parseBrowserScope } from './browser-scope';
 /**
  * PDF 渲染通道（background 侧服务端）
  *
@@ -42,6 +44,11 @@ export function initPdfRenderChannel(): () => void {
 
     void (async () => {
       try {
+        const rawScope = (message as { __browserScope?: unknown }).__browserScope;
+        if (rawScope !== undefined && !(_sender.id === chrome.runtime.id && !_sender.tab && _sender.url?.startsWith(chrome.runtime.getURL(''))))
+          throw new Error('UNTRUSTED_BROWSER_SCOPE');
+        const browserScope = parseBrowserScope(rawScope);
+        const context: ToolExecutionContext | undefined = browserScope ? { browserScope } : undefined;
         const html = typeof request.html === 'string' ? request.html : '';
         if (!html.trim()) {
           sendResponse({ ok: false, error: '待渲染的 HTML 为空' });
@@ -62,7 +69,7 @@ export function initPdfRenderChannel(): () => void {
           marginInches: typeof request.marginInches === 'number' ? request.marginInches : undefined,
           headerText: typeof request.headerText === 'string' ? request.headerText : undefined,
           pageNumbers: typeof request.pageNumbers === 'boolean' ? request.pageNumbers : undefined,
-        });
+        }, context);
         sendResponse(result);
       } catch (error) {
         sendResponse({

@@ -521,7 +521,7 @@ export class BrowserPageHttpTool extends BaseBrowserTool {
           ],
         },
         totalTimeoutMs,
-        context.signal,
+        context.signal, context
       );
       const raw = injected[0]?.result;
       if (!Array.isArray(raw)) {

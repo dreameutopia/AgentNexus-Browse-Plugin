@@ -1,3 +1,4 @@
+import { browserChrome, parseBrowserScope, browserErrorText } from '@/tools/browser/browser-scope';
 /**
  * 工具管理器监听器 - 处理来自侧边栏和其他页面的工具调用请求
  */
@@ -6,9 +7,8 @@ import { JS_RUN_TOOL_ID } from '@/tools/javascript/js-contract';
 import type { ToolExecutionContext } from '@/tools/registry';
 import { handleCallTool } from '.';
 import { createErrorResponse } from '@/common/tool-handler';
-import { ERROR_MESSAGES } from '@/common/constants';
 import { toolRegistry as highLevelToolRegistry } from '@/tools/registry';
-import { cancelGuiRequest } from '@/tools/vision/gui-cancellation';
+import { cancelGuiRequest, withGuiCancellation } from '@/tools/vision/gui-cancellation';
 import { PAGE_TOOL_TARGET_MESSAGE } from '@/entrypoints/sidepanel/core/conversation/runtime-protocol';
 
 /**
@@ -26,7 +26,7 @@ const TOOL_MESSAGE_TYPES = {
 /**
  * 处理 browser_set_zoom - 目前没有对应的注册工具，直接内联处理
  */
-async function handleSetZoom(params: any) {
+async function handleSetZoom(params: any, context?: ToolExecutionContext) {
   try {
     const { tabId, zoomFactor } = params;
     // typeof NaN 仍为 'number'，必须用 isFinite 排除 NaN/Infinity 脏值
@@ -34,16 +34,16 @@ async function handleSetZoom(params: any) {
       return createErrorResponse('zoomFactor is required and must be a finite number');
     }
     const tabs = tabId !== undefined && tabId !== null
-      ? [await chrome.tabs.get(tabId)]
-      : await chrome.tabs.query({ active: true, currentWindow: true });
+      ? [await browserChrome(context).tabs.get(tabId)]
+      : await browserChrome(context).tabs.query({ active: true, currentWindow: true });
     const activeTabId = tabs[0]?.id;
     if (typeof activeTabId !== 'number') {
       return createErrorResponse('No active tab found');
     }
-    await chrome.tabs.setZoom(activeTabId, zoomFactor);
+    await browserChrome(context).tabs.setZoom(activeTabId, zoomFactor);
     return { success: true, data: { tabId: activeTabId, zoomFactor } };
   } catch (error) {
-    return createErrorResponse(error instanceof Error ? error.message : 'Failed to set zoom');
+    return createErrorResponse(browserErrorText(error));
   }
 }
 
@@ -79,7 +79,7 @@ export const initToolsManagerListener = () => {
     const params = message;
 
     // 移除type字段，避免传递给工具
-    const { type, __visionRequestId, __pageTargetRequestId, __scriptContext, ...toolParams } = params;
+    const { type, __visionRequestId, __pageTargetRequestId, __scriptContext, __browserScope, ...toolParams } = params;
     const onTabTarget = typeof __pageTargetRequestId === 'string' && __pageTargetRequestId.length === 36 &&
       sender.id === chrome.runtime.id && sender.url === chrome.runtime.getURL('sidepanel.html')
       ? (tabId: number) => {
@@ -103,27 +103,39 @@ export const initToolsManagerListener = () => {
     (async () => {
       try {
         let result;
+        const trustedUi = sender.id === chrome.runtime.id && !sender.tab &&
+          typeof sender.url === 'string' && sender.url.startsWith(chrome.runtime.getURL(''));
+        if (__browserScope !== undefined && !trustedUi)
+          throw new Error('UNTRUSTED_BROWSER_SCOPE：窗口上下文只能由扩展运行时提供。');
+        const browserScope = trustedUi ? parseBrowserScope(__browserScope) : undefined;
+        const context: ToolExecutionContext = { ...scriptContext, ...(browserScope ? { browserScope } : {}) };
 
-        if (messageType === TOOL_MESSAGE_TYPES.BROWSER_SET_ZOOM) {
-          result = await handleSetZoom(toolParams);
-        } else {
+        const scopedRequest = browserScope && typeof __visionRequestId === 'string' && __visionRequestId.length <= 128
+          ? __visionRequestId : undefined;
+        const execute = async (signal?: AbortSignal) => {
+          if (messageType === TOOL_MESSAGE_TYPES.BROWSER_SET_ZOOM)
+            return handleSetZoom(toolParams, { ...context, ...(signal ? { signal } : {}) });
           // 消息类型直接作为工具名（已注册工具经注册表兜底路由到此处）
-          result = await handleCallTool({
+          return handleCallTool({
             name: messageType,
             args: toolParams,
             context: {
-              ...scriptContext,
-              ...(typeof __visionRequestId === 'string' && __visionRequestId.length <= 128 ? { requestId: __visionRequestId } : {}),
+              ...context,
+              ...(signal ? { signal } : {}),
+              ...(!scopedRequest && typeof __visionRequestId === 'string' && __visionRequestId.length <= 128 ? { requestId: __visionRequestId } : {}),
               ...(onTabTarget ? { onTabTarget } : {}),
             },
           });
-        }
+        };
+        // The outer registry owns this ID; inner tools receive the AbortSignal
+        // instead of re-registering the same ID and failing as a duplicate.
+        result = scopedRequest ? await withGuiCancellation(scopedRequest, execute) : await execute();
 
         sendResponse(result);
       } catch (error) {
         console.error(`Tool execution failed for ${messageType}:`, error);
         sendResponse(createErrorResponse(
-          error instanceof Error ? error.message : ERROR_MESSAGES.TOOL_EXECUTION_FAILED
+          browserErrorText(error)
         ));
       }
     })();

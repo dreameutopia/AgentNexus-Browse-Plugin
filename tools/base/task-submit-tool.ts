@@ -1,3 +1,5 @@
+import { browserChrome } from '@/tools/browser/browser-scope';
+import type { ToolExecutionContext } from '../registry';
 import { BaseTool } from '../base-tool';
 import { ToolResult } from '@/common/tool-handler';
 import { ToolMetadata } from '../registry';
@@ -190,7 +192,7 @@ export class TaskSubmitTool extends BaseTool {
     }
   };
 
-  async execute(params: TaskSubmitParams): Promise<ToolResult> {
+  async execute(params: TaskSubmitParams, executionContext?: ToolExecutionContext): Promise<ToolResult> {
     try {
       this.validateArgs(params, ['taskType', 'taskConfig']);
       
@@ -199,7 +201,7 @@ export class TaskSubmitTool extends BaseTool {
       this.log(`Submitting ${taskType} task`);
       
       // 获取当前页面信息作为上下文
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tabs = await browserChrome(executionContext).tabs.query({ active: true, currentWindow: true });
       const currentTab = tabs[0];
       
       const taskData = {

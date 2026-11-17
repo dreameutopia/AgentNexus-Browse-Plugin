@@ -12,7 +12,7 @@
   <Transition name="drawer-fade">
     <div v-if="visible" class="history-drawer-overlay" @click.self="$emit('close')">
       <Transition name="drawer-slide" appear>
-        <div class="history-drawer">
+        <div ref="drawerRef" class="history-drawer">
           <div class="history-drawer-header">
             <h3>{{ t('sidepanel.app.historyDrawer') }}</h3>
             <div class="history-drawer-actions">
@@ -62,19 +62,34 @@
                     <span class="history-item-title">{{ session.title }}</span>
                     <span class="history-item-time">{{ formatRelativeTime(session.updatedAt) }}</span>
                   </div>
+                  <!-- 会话标签：标题下方一行 chip；内置标签走 i18n，自定义标签原样展示 -->
+                  <div v-if="session.tags?.length" class="history-item-tags">
+                    <span
+                      v-for="tag in session.tags"
+                      :key="tag.id"
+                      class="history-tag"
+                      :class="{ 'history-tag--system': isSystemConversationTag(tag) }"
+                      :title="tagText(tag)"
+                    >{{ tagText(tag) }}</span>
+                  </div>
                   <div class="history-item-preview">{{ session.lastMessagePreview || '—' }}</div>
                   <div class="history-item-meta">
-                    <!-- 会话自身类型徽章（kind 由转录引擎落库；旧记录无 kind 归一为 chat 不显示） -->
-                    <span
-                      v-if="session.kind === 'site-learn'"
-                      class="history-badge learn"
-                    >{{ t('sidepanel.learn.sessionBadge') }}</span>
                     <span
                       v-if="session.agentName || session.agentId"
                       class="history-badge agent"
                     >{{ agentDisplayName(session) }}</span>
                     <span class="history-item-count">{{ t('sidepanel.app.historyMessages', { count: session.messageCount }) }}</span>
                     <span class="history-item-ops" @click.stop>
+                      <!-- 标签编辑：按钮组最左侧；行内展开，不遮挡列表 -->
+                      <button
+                        class="item-op"
+                        :data-tag-edit="session.chatId"
+                        v-tip="t('sidepanel.app.tagsEdit')"
+                        :aria-label="t('sidepanel.app.tagsEdit')"
+                        @click="startTagEdit(session)"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5.5,3H13.8L21,10.2V18.5A2.5,2.5 0 0,1 18.5,21H5.5A2.5,2.5 0 0,1 3,18.5V5.5A2.5,2.5 0 0,1 5.5,3M7,7A1.5,1.5 0 0,0 8.5,8.5A1.5,1.5 0 0,0 7,10A1.5,1.5 0 0,0 5.5,8.5A1.5,1.5 0 0,0 7,7Z" fill="currentColor"/></svg>
+                      </button>
                       <button class="item-op" v-tip="t('sidepanel.app.renameSession')" @click="startRename(session)">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87L20.71,7.04M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z" fill="currentColor"/></svg>
                       </button>
@@ -82,6 +97,66 @@
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z" fill="currentColor"/></svg>
                       </button>
                     </span>
+                  </div>
+
+                  <!-- 行内标签编辑器：点击标签按钮展开，保存/取消后收起 -->
+                  <div
+                    v-if="tagEditingId === session.chatId"
+                    class="history-tag-editor"
+                    @click.stop
+                    @keydown.esc="onTagEditorEsc"
+                  >
+                    <div class="history-tag-editor-head">
+                      <span class="history-tag-editor-title">{{ t('sidepanel.app.tagsTitle') }}</span>
+                      <span class="history-tag-editor-count">{{ tagDraft.length }}/{{ MAX_CONVERSATION_TAGS }}</span>
+                    </div>
+                    <div class="history-tag-editor-chips">
+                      <span
+                        v-for="tag in tagDraft"
+                        :key="tag.id"
+                        class="history-tag"
+                        :class="{ 'history-tag--system': isSystemConversationTag(tag) }"
+                      >
+                        {{ tagText(tag) }}
+                        <button
+                          type="button"
+                          class="history-tag-remove"
+                          :title="t('sidepanel.app.tagsRemove')"
+                          :aria-label="t('sidepanel.app.tagsRemove')"
+                          :disabled="tagSaving"
+                          @click="removeTagFromDraft(tag.id)"
+                        >
+                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z" fill="currentColor"/></svg>
+                        </button>
+                      </span>
+                      <span v-if="!tagDraft.length" class="history-tag-editor-empty">{{ t('sidepanel.app.tagsEmpty') }}</span>
+                    </div>
+                    <div class="history-tag-editor-input-row">
+                      <input
+                        v-model="tagInput"
+                        class="history-tag-editor-input"
+                        :placeholder="t('sidepanel.app.tagsPlaceholder')"
+                        :maxlength="MAX_CONVERSATION_TAG_LABEL_LENGTH"
+                        :disabled="tagSaving"
+                        @input="tagError = ''"
+                        @keydown.enter="onTagInputEnter"
+                      />
+                      <button
+                        type="button"
+                        class="history-tag-editor-add"
+                        :disabled="tagSaving || !tagInput.trim() || tagDraft.length >= MAX_CONVERSATION_TAGS"
+                        :title="t('sidepanel.app.tagsAdd')"
+                        :aria-label="t('sidepanel.app.tagsAdd')"
+                        @click="addTagToDraft"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z" fill="currentColor"/></svg>
+                      </button>
+                    </div>
+                    <p v-if="tagError" class="history-tag-editor-error" role="alert">{{ tagError }}</p>
+                    <div class="history-tag-editor-actions">
+                      <button type="button" class="history-tag-editor-btn" :disabled="tagSaving" @click="cancelTagEditWithFocus">{{ t('sidepanel.app.tagsCancel') }}</button>
+                      <button type="button" class="history-tag-editor-btn primary" :disabled="tagSaving" @click="saveTags">{{ t('sidepanel.app.tagsSave') }}</button>
+                    </div>
                   </div>
                 </template>
               </div>
@@ -104,6 +179,16 @@ import {
 } from '../../core';
 import { showConfirm } from '../../composables/use-app-dialog';
 import { useAgentDisplay } from '@/common/use-agent-display';
+import {
+  LEARN_CONVERSATION_TAG_ID,
+  MAX_CONVERSATION_TAGS,
+  MAX_CONVERSATION_TAG_LABEL_LENGTH,
+  appendConversationTag,
+  isSystemConversationTag,
+  normalizeConversationTagLabel,
+  normalizeConversationTags,
+  type ConversationTag,
+} from '@/utils/sessions/conversation-tags';
 
 const { displayNameOf } = useAgentDisplay();
 
@@ -124,6 +209,8 @@ const sessions = ref<ChatSessionMeta[]>([]);
 const loading = ref(false);
 const renamingId = ref('');
 const renameValue = ref('');
+/** 抽屉根节点：用于编辑器关闭后把焦点还给触发按钮 */
+const drawerRef = ref<HTMLElement | null>(null);
 
 /** 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / 超过 7 天显示日期 */
 const formatRelativeTime = (timestamp: number): string => {
@@ -152,7 +239,14 @@ const agentDisplayName = (session: ChatSessionMeta): string => {
 const loadSessions = async () => {
   loading.value = true;
   try {
-    sessions.value = await transcriptEngine.listSessions({ limit: 100 });
+    const list = await transcriptEngine.listSessions({ limit: 100 });
+    // 展示前统一归一化标签：历史/外部写入可能带重复、空标签或超长文本，
+    // 模板与筛选逻辑只接受干净结构（写入口同样归一，这是读取侧兜底）
+    sessions.value = list.map(session => {
+      if (!session.tags) return session;
+      const tags = normalizeConversationTags(session.tags);
+      return tags.length > 0 ? { ...session, tags } : { ...session, tags: undefined };
+    });
   } catch (error) {
     console.warn('[ChatHistoryDrawer] 加载会话列表失败:', error);
     sessions.value = [];
@@ -169,6 +263,7 @@ watch(
     else {
       renamingId.value = '';
       renameValue.value = '';
+      cancelTagEdit();
     }
   },
 );
@@ -176,6 +271,10 @@ watch(
 // ──── 重命名 ────
 
 const startRename = async (session: ChatSessionMeta) => {
+  // 保存标签期间不切换编辑态：避免把已提交的草稿与行内输入框状态搅在一起
+  if (tagSaving.value) return;
+  // 与标签编辑互斥：同一行只保留一个编辑态，避免输入框互相抢焦点
+  cancelTagEdit();
   renamingId.value = session.chatId;
   renameValue.value = session.title;
   await nextTick();
@@ -200,6 +299,167 @@ const commitRename = async () => {
 const cancelRename = () => {
   renamingId.value = '';
   renameValue.value = '';
+};
+
+// ──── 标签编辑 ────
+
+const tagEditingId = ref('');
+const tagDraft = ref<ConversationTag[]>([]);
+const tagInput = ref('');
+const tagError = ref('');
+const tagSaving = ref(false);
+
+/** 标签展示文案：内置标签走 i18n，自定义标签原样展示 */
+const tagText = (tag: ConversationTag): string =>
+  tag.id === LEARN_CONVERSATION_TAG_ID
+    ? t('sidepanel.app.tagsLearn')
+    : tag.label ?? '';
+
+const startTagEdit = (session: ChatSessionMeta) => {
+  if (tagSaving.value) return;
+  // 与重命名互斥：同一行只保留一个编辑态，避免输入框互相抢焦点
+  renamingId.value = '';
+  renameValue.value = '';
+  tagEditingId.value = session.chatId;
+  tagDraft.value = session.tags ? session.tags.map(tag => ({ ...tag })) : [];
+  tagInput.value = '';
+  tagError.value = '';
+  focusTagInput();
+};
+
+/**
+ * 聚焦标签输入框。
+ * 不用模板 ref：编辑器整体位于 v-for="session in sessions" 内，编译器会给
+ * ref 打上 ref_for（值被 Vue 收集成数组），focus 必抛 TypeError——
+ * 与重命名一致，按类名从抽屉根节点查询。
+ */
+const focusTagInput = () => {
+  void nextTick(() => {
+    drawerRef.value?.querySelector<HTMLInputElement>('.history-tag-editor-input')?.focus();
+  });
+};
+
+/** 收起编辑器并清空草稿（不处理焦点，供抽屉关闭等非交互路径使用） */
+const resetTagEditor = () => {
+  tagEditingId.value = '';
+  tagDraft.value = [];
+  tagInput.value = '';
+  tagError.value = '';
+};
+
+const cancelTagEdit = () => resetTagEditor();
+
+/** 把焦点还给触发标签编辑的按钮（保存/取消/Esc 后键盘用户不丢失位置） */
+const focusTagEditButton = (chatId: string) => {
+  if (!chatId) return;
+  void nextTick(() => {
+    const root = drawerRef.value;
+    if (!root) return;
+    const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>('[data-tag-edit]'));
+    buttons.find(button => button.dataset.tagEdit === chatId)?.focus();
+  });
+};
+
+/** 用户主动取消：收起并归还焦点 */
+const cancelTagEditWithFocus = () => {
+  const chatId = tagEditingId.value;
+  resetTagEditor();
+  focusTagEditButton(chatId);
+};
+
+/** 输入法组合中的 Enter/Esc 是候选词操作，不能当作提交/取消 */
+const isComposingEvent = (event: KeyboardEvent): boolean =>
+  event.isComposing || event.keyCode === 229;
+
+const onTagInputEnter = (event: KeyboardEvent) => {
+  if (isComposingEvent(event)) return;
+  event.preventDefault();
+  addTagToDraft();
+};
+
+const onTagEditorEsc = (event: KeyboardEvent) => {
+  if (isComposingEvent(event)) return;
+  event.stopPropagation();
+  event.preventDefault();
+  cancelTagEditWithFocus();
+};
+
+const addTagToDraft = () => {
+  if (tagSaving.value) return;
+  if (tagDraft.value.length >= MAX_CONVERSATION_TAGS) {
+    tagError.value = t('sidepanel.app.tagsLimit', { count: MAX_CONVERSATION_TAGS });
+    return;
+  }
+  const label = normalizeConversationTagLabel(tagInput.value);
+  if (!label) {
+    tagError.value = '';
+    return;
+  }
+  if (tagDraft.value.some(tag => tag.label?.toLocaleLowerCase() === label.toLocaleLowerCase())) {
+    tagError.value = t('sidepanel.app.tagsDuplicate');
+    return;
+  }
+  tagDraft.value = appendConversationTag(tagDraft.value, label);
+  tagInput.value = '';
+  tagError.value = '';
+  focusTagInput();
+};
+
+const removeTagFromDraft = (tagId: string) => {
+  if (tagSaving.value) return;
+  tagDraft.value = tagDraft.value.filter(tag => tag.id !== tagId);
+  tagError.value = '';
+};
+
+/**
+ * 保存前把输入框里未点「添加」的文本并入草稿。
+ *
+ * 中文输入法的 Enter 常先用于确认候选词（isComposing 守卫不会把它当添加），
+ * 文本会留在输入框里；若保存时不同步并入，这段文字会被静默丢弃——
+ * 表现为「点了保存，再点编辑却看不到任何标签」。
+ * 并入失败（超上限）时保留输入框原文，返回 false 中止保存。
+ */
+const flushPendingTagInput = (): boolean => {
+  const label = normalizeConversationTagLabel(tagInput.value);
+  if (!label) {
+    tagInput.value = '';
+    return true;
+  }
+  // 同文本已在草稿中：清掉输入即可，视为已并入
+  if (tagDraft.value.some(tag => tag.label?.toLocaleLowerCase() === label.toLocaleLowerCase())) {
+    tagInput.value = '';
+    return true;
+  }
+  if (tagDraft.value.length >= MAX_CONVERSATION_TAGS) {
+    tagError.value = t('sidepanel.app.tagsLimit', { count: MAX_CONVERSATION_TAGS });
+    return false;
+  }
+  tagDraft.value = appendConversationTag(tagDraft.value, label);
+  tagInput.value = '';
+  return true;
+};
+
+const saveTags = async () => {
+  const chatId = tagEditingId.value;
+  if (!chatId || tagSaving.value) return;
+  if (!flushPendingTagInput()) return;
+  tagSaving.value = true;
+  try {
+    const updated = await transcriptEngine.setSessionTags(chatId, tagDraft.value);
+    if (!updated) {
+      tagError.value = t('sidepanel.app.tagsSaveFailed');
+      return;
+    }
+    const index = sessions.value.findIndex(session => session.chatId === chatId);
+    if (index !== -1) sessions.value[index] = updated;
+    resetTagEditor();
+    focusTagEditButton(chatId);
+  } catch (error) {
+    console.warn('[ChatHistoryDrawer] 保存会话标签失败:', error);
+    tagError.value = t('sidepanel.app.tagsSaveFailed');
+  } finally {
+    tagSaving.value = false;
+  }
 };
 
 // ──── 删除 ────

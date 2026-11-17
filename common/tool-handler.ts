@@ -120,6 +120,96 @@ export function projectToolPayload(result: ToolResult): ToolPayloadProjection {
   return { kind: 'payload', value: (result as unknown as Record<string, unknown>) ?? {} };
 }
 
+/** 单条 issue 的消息截断长度（诊断价值在 code/frameId，message 只需可读） */
+const FRAME_ISSUE_MESSAGE_MAX = 200;
+/** 单次交付的 issue 总数上限：超出即计数收敛，防止病态页面把载荷重新撑爆 */
+const FRAME_ISSUE_MAX = 20;
+
+interface CompactFrameIssue {
+  code?: string;
+  stage?: string;
+  frameId?: number;
+  scope?: string;
+  elementIds?: string[];
+  message?: string;
+}
+
+/**
+ * 模型侧 frameDiagnostics 瘦身（与 projectToolPayload 同址的单一事实源）。
+ *
+ * 完整诊断（含 documents/documentId 元数据与逐操作全量报告）保留在
+ * ToolResult 原始记录里供工具面板与日志消费；**模型上下文只需要事实结论**：
+ * 覆盖状态、涉及的 frame、以及全部 issues（可执行的失败原因）。实测一次
+ * observe 的完整诊断约 1.2K 字符，其中 documents 等簿记占大头且模型从未
+ * 引用——压缩后干净页面约 100 字符，带问题时也只剩 issues 本身。
+ *
+ * 形态防御：frameDiagnostics 可能是报告数组（browser_observe 多阶段）或
+ * 单个报告对象（部分工具单阶段）；两者都收敛成同一个紧凑对象。
+ * 不合法/缺失时原样返回——压缩器绝不吞掉字段制造「诊断消失」的假象。
+ */
+export function compactFrameDiagnosticsForModel<T>(data: T): T {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+  const source = data as Record<string, unknown>;
+  const raw = source.frameDiagnostics;
+  if (raw === undefined || raw === null) return data;
+  const reports = Array.isArray(raw) ? raw : [raw];
+  if (!reports.every(r => r && typeof r === 'object' && !Array.isArray(r)))
+    return data;
+
+  const statuses = new Set<string>();
+  const frames = new Set<number>();
+  const issues: CompactFrameIssue[] = [];
+  let elapsedMs = 0;
+  let issueTotal = 0;
+  for (const report of reports as Array<Record<string, unknown>>) {
+    if (typeof report.status === 'string') statuses.add(report.status);
+    if (Array.isArray(report.successfulFrameIds))
+      for (const id of report.successfulFrameIds)
+        if (typeof id === 'number') frames.add(id);
+    if (typeof report.elapsedMs === 'number' && Number.isFinite(report.elapsedMs))
+      elapsedMs += report.elapsedMs;
+    const reportIssues = Array.isArray(report.issues) ? report.issues : [];
+    for (const rawIssue of reportIssues) {
+      issueTotal++;
+      if (issues.length >= FRAME_ISSUE_MAX) continue;
+      if (!rawIssue || typeof rawIssue !== 'object') continue;
+      const issue = rawIssue as Record<string, unknown>;
+      const compact: CompactFrameIssue = {};
+      if (typeof issue.code === 'string') compact.code = issue.code;
+      if (typeof issue.stage === 'string') compact.stage = issue.stage;
+      if (typeof issue.frameId === 'number') compact.frameId = issue.frameId;
+      if (typeof issue.scope === 'string') compact.scope = issue.scope;
+      if (Array.isArray(issue.elementIds))
+        compact.elementIds = issue.elementIds
+          .filter((id): id is string => typeof id === 'string')
+          .slice(0, 8);
+      if (typeof issue.message === 'string')
+        compact.message =
+          issue.message.length > FRAME_ISSUE_MESSAGE_MAX
+            ? issue.message.slice(0, FRAME_ISSUE_MESSAGE_MAX) + '…'
+            : issue.message;
+      issues.push(compact);
+    }
+  }
+  // 状态聚合取最差：complete < partial < failed 的文本序不成立，显式定序
+  const worst =
+    statuses.has('failed') || statuses.has('error')
+      ? 'failed'
+      : statuses.has('partial')
+        ? 'partial'
+        : statuses.size
+          ? 'complete'
+          : 'unknown';
+  const compacted = {
+    status: worst,
+    frames: [...frames].sort((a, b) => a - b),
+    elapsedMs: Math.round(elapsedMs),
+    issues,
+    ...(issueTotal > issues.length ? { issuesOmitted: issueTotal - issues.length } : {}),
+  };
+  return { ...source, frameDiagnostics: compacted } as unknown as T;
+}
+
 export const createErrorResponse = (
   message: string = 'Unknown error, please try again',
 ): ToolResult => {

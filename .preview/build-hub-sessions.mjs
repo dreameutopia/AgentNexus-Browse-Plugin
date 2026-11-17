@@ -60,7 +60,7 @@ seed({ chatId: 'chat_6', title: '会议纪要整理', updatedAt: now - 12 * DAY,
 seed({ chatId: 'chat_7', title: '文案 A/B 测试方案', updatedAt: now - 5 * DAY, archivedAt: now - 3 * DAY,
   messageCount: 16, lastMessagePreview: '两版落地页文案的分流方案与观测指标' });
 seed({ chatId: 'chat_8', title: '站点学习：文档站速览', updatedAt: now - 6 * HOUR, messageCount: 31,
-  lastMessagePreview: '已抓取文档站目录结构，准备生成技能', kind: 'site-learn' });
+  lastMessagePreview: '已抓取文档站目录结构，准备生成技能', tags: [{ id: 'learn' }] });
 
 state.busy.add('chat_3');
 state.messages.set('chat_1', [
@@ -159,8 +159,7 @@ export const sessionDeletionEngine = {
     fireChange('deleted');
     return {
       transcriptDeleted: true, imagesDeleted: 0, filesDeleted: 0,
-      learnDraftsPurged: 0, activePointerCleared: false, localRunRegistryCleared: false,
-      runAborted: false, issues: [],
+      activePointerCleared: false, runAborted: false, issues: [],
     };
   },
 };
@@ -187,9 +186,6 @@ export function watchSessionsChanged(handler) {
   return () => state.changeHandlers.delete(handler);
 }
 export async function queryWorkerBusySessions() { return []; }
-export async function readSidepanelLocalRunningChats() { return []; }
-export async function setLocalRunningChat() {}
-export const SIDEPANEL_LOCAL_RUNNING_KEY = 'sidepanel.localRunningChats';
 
 export const SESSION_ARCHIVE_POLICY_STORAGE_KEY = 'agentNexusSessionArchivePolicy';
 export const SESSION_ARCHIVE_MIN_RETENTION_DAYS = 1;

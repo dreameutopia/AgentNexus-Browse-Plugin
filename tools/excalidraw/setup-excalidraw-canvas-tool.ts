@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { executeScriptBounded } from '../common/frame-read';
 /**
  * Excalidraw画布初始化工具 (Final Production Version)
@@ -39,11 +41,12 @@ export class SetupExcalidrawCanvasTool extends BaseTool {
     }
   };
 
-  private _sendMessageToTab<T>(tabId: number, message: any): Promise<T> {
+  private _sendMessageToTab<T>(tabId: number, message: any, context?: ToolExecutionContext): Promise<T> {
     return new Promise((resolve) => {
-      chrome.tabs.sendMessage(tabId, message, (response) => {
-        if (chrome.runtime.lastError) {
-          resolve({ error: chrome.runtime.lastError.message } as T);
+      browserChrome(context).tabs.sendMessage(tabId, message, (response) => {
+        const lastError = browserChrome(context).runtime.lastError;
+        if (lastError) {
+          resolve({ error: lastError.message } as T);
         } else {
           resolve(response);
         }
@@ -51,7 +54,7 @@ export class SetupExcalidrawCanvasTool extends BaseTool {
     });
   }
 
-  private async _waitForScriptReady(tabId: number, maxAttempts: number = 20): Promise<boolean> {
+  private async _waitForScriptReady(tabId: number, maxAttempts: number = 20, context?: ToolExecutionContext): Promise<boolean> {
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
           console.log(`正在确认脚本就绪状态... 尝试次数: ${attempt}`);
           // 使用桥接协议，向 MAIN 世界发送一个 getSceneElements 探测请求
@@ -60,7 +63,7 @@ export class SetupExcalidrawCanvasTool extends BaseTool {
             // excalidraw.js 期望 payload 是字符串化的 JSON
             payload: '{}',
             targetWorld: 'MAIN'
-          });
+          }, context);
           if (response && !('error' in response) && response?.data !== undefined) {
               console.log('✅ 主世界控制脚本已就绪!');
               return true;
@@ -70,23 +73,23 @@ export class SetupExcalidrawCanvasTool extends BaseTool {
       return false;
   }
 
-  async execute(params: { reset: boolean }): Promise<ToolResult> {
+  async execute(params: { reset: boolean }, context?: ToolExecutionContext): Promise<ToolResult> {
     try {
       console.log('开始初始化Excalidraw画布...', params);
 
       if (params.reset) {
         // 直接使用 Chrome API 关闭已有的 Excalidraw 标签页
-        const allTabs = await chrome.tabs.query({});
+        const allTabs = await browserChrome(context).tabs.query({});
         const excalidrawTabs = allTabs.filter((tab) => tab.url && tab.url.includes('excalidraw.com'));
         for (const tab of excalidrawTabs) {
           if (tab.id) {
-            await chrome.tabs.remove(tab.id).catch(e => console.warn(`关闭标签页 ${tab.id} 失败:`, e));
+            await browserChrome(context).tabs.remove(tab.id).catch(e => console.warn(`关闭标签页 ${tab.id} 失败:`, e));
           }
         }
       }
 
       // 直接使用 Chrome API 创建新标签页
-      const newTab = await chrome.tabs.create({ url: 'https://excalidraw.com/', active: true });
+      const newTab = await browserChrome(context).tabs.create({ url: 'https://excalidraw.com/', active: true });
       if (!newTab?.id) {
         return { success: false, error: '导航到Excalidraw失败: 未能获取新标签页ID' };
       }
@@ -97,7 +100,7 @@ export class SetupExcalidrawCanvasTool extends BaseTool {
       //    直接等待刚创建的目标标签页，而非旧实现的「活动标签页」——
       //    等待期间用户切换标签也不会等错对象）
       this.log(`[${new Date().toISOString()}] 等待页面加载完成...`);
-      const waitOutcome = await waitForTabReady(targetTabId, { timeoutMs: 30_000 });
+      const waitOutcome = await waitForTabReady(targetTabId, { timeoutMs: 30_000 }, context);
       if (!waitOutcome.ready) {
         this.log(
           `[${new Date().toISOString()}] 页面加载等待${waitOutcome.reason === 'closed' ? '失败（标签页被关闭）' : '超时'}，继续尝试注入`,
@@ -114,7 +117,7 @@ export class SetupExcalidrawCanvasTool extends BaseTool {
           target: { tabId: targetTabId },
           files: ['inject-scripts/core/inject-bridge.js'],
           world: 'ISOLATED'
-        });
+        }, undefined, undefined, context);
 
       // 注入主世界控制脚本
       this.log('正在注入Excalidraw主世界控制脚本 (ui/excalidraw.js)...');
@@ -122,10 +125,10 @@ export class SetupExcalidrawCanvasTool extends BaseTool {
           target: { tabId: targetTabId },
           files: ['inject-scripts/ui/excalidraw.js'],
           world: 'MAIN'
-        });
+        }, undefined, undefined, context);
       this.log('脚本注入命令已发送。');
 
-      const isReady = await this._waitForScriptReady(targetTabId);
+      const isReady = await this._waitForScriptReady(targetTabId, undefined, context);
       if (!isReady) {
           return { success: false, error: '注入的脚本在20秒内未能成功初始化或找到API。页面可能加载缓慢或存在问题。' };
       }

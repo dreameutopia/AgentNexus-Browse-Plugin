@@ -330,8 +330,11 @@ try {
     skillNames:dangerous.ok?[dangerous.skill.id]:[],extraToolIds:['browser_page_exec','vision_gui'],priorRecords:[]});
   assert.equal(built.toolPolicy,'vision-assistant');
   assert.equal(built.toolIds.every(isVisionAssistantTool),true);
-  assert.equal(built.activationContext.length,0);
-  assert.ok(built.systemPrompt.includes('已跳过激活'));
+  // 显式预选技能仍然加载（用户授权），越界工具由交付面裁剪，并以能力边界
+  // 告知模型——不再整个技能静默跳过
+  assert.ok(built.activationContext.length > 0, '显式预选技能不得被静默丢弃');
+  assert.ok(built.systemPrompt.includes('<capability-boundary>'),'越界工具被裁剪需告知模型');
+  assert.equal(built.systemPrompt.includes('已跳过激活'),false);
   assert.equal(built.systemPrompt.includes('必须优先调用 read_website'),false);
   assert.ok(built.systemPrompt.includes('<observation-boundary>'),'观察者获得观察变体规程');
   const action = await runtimeBuilder.build({chatId:'action-build',userInput:'执行',agentName:'视觉通用助手',skillNames:[],priorRecords:[]});

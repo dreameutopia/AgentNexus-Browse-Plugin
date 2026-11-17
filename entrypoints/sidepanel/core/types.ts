@@ -15,19 +15,12 @@ import type { MessageFeedback, MessagePart, SkillPartEntry, ToolCallUI } from '.
 import type { ModelRef, ResolvedModelEndpoint } from '../utils/channels';
 import type { PageQuote } from '../utils/chat/page-quote';
 import type { UploadedFileEntry } from '@/utils/upload-files/upload-file-manifest';
+import type { CapturedElement } from '@/utils/element-capture/types';
+import type { ConversationTag } from '@/utils/sessions/conversation-tags';
 
 // ==================== 用户面：会话与消息记录（IndexedDB，无长度限制） ====================
 
-/**
- * 会话类型。
- * - 'chat'       普通对话（缺省；旧记录无 kind 字段时读取侧归一到此值）
- * - 'site-learn' 网站学习会话（含其验证段——两段共用同一会话，历史连续可回溯）
- *
- * 用独立字段而非智能体名承载：学习会话的智能体是运行期动态装配的
- * （不落 agent-store），名字可能随版本变化，且「这是什么会话」本就属于
- * 会话自身的属性而非所选智能体的属性。
- */
-export type ChatSessionKind = 'chat' | 'site-learn';
+export type { ConversationTag } from '@/utils/sessions/conversation-tags';
 
 /** 会话元信息（sessions store，keyPath: chatId） */
 export interface ChatSessionMeta {
@@ -82,11 +75,10 @@ export interface ChatSessionMeta {
   /** 最近一次压缩时间（毫秒时间戳；用于摘要头部标注与调试） */
   compactionUpdatedAt?: number;
   /**
-   * 会话类型（缺省 = 'chat'；早于该字段引入的历史记录没有它，读取侧一律
-   * 归一为 'chat'）。站点学习会话据此在历史列表打标，并在恢复时读回
-   * 持久化的技能草稿做成果兜底（草稿暂存失败的降级路径）。
+   * 会话标签（多标签，用户可编辑；内置「学习」标签只存稳定 id）。
+   * 缺省/空数组 = 无标签。标签只服务列表展示与检索，不进入模型上下文。
    */
-  kind?: ChatSessionKind;
+  tags?: ConversationTag[];
   /**
    * 归档时间戳（毫秒）。**缺省 = 未归档**；有值 = 已归档。
    *
@@ -172,6 +164,15 @@ export interface ChatMessageRecord {
    */
   pageQuote?: PageQuote;
   /**
+   * 本条用户消息携带的「网页元素选择」快照（用户在网页中 Ctrl+左键捕获）。
+   *
+   * 用户可见气泡据此渲染元素 chip（截图预览 + 类型图标 + 唯一选择器 + 备注），
+   * 模型面另走 runtime.selectedElementsPrompt（<selected_elements> 信封）。
+   * 截图本体存于图片库（screenshotRef），并计入 imageRefs 以保证会话删除时回收。
+   * 缺省 = 本轮未选择元素（旧记录天然缺此字段）。
+   */
+  capturedElements?: CapturedElement[];
+  /**
    * 本条用户消息发送时绑定的智能体（稳定 ID + 可读名，仅 user 角色）。
    *
    * 用户气泡底部据此展示「@的是哪个智能体」：优先按 id 解析当前记录
@@ -241,8 +242,8 @@ export interface RuntimeLimits {
    * （数据采集、Python 计算、页面等待）截断成「工具未执行」，而这类任务本来
    * 就该由**单工具超时**与**轮次上限**兜底。
    *
-   * 只有学习/验证等**长任务**经 limitsOverride 显式给出时长预算时才启用时长
-   * 守卫与工具批次截止点（见 runtime-builder 的 limitsOverride）。
+   * 只有装配方在 RuntimeLimits 上显式给出时长预算时才启用时长守卫与
+   * 工具批次截止点；普通对话缺省即「不限」。
    */
   maxDurationMs?: number;
   /** 单个工具执行超时（毫秒） */
@@ -261,6 +262,7 @@ export type { VisionRuntimeConfigImpl as VisionRuntimeConfig };
 type VisionRuntimeConfig = VisionRuntimeConfigImpl;
 
 export interface ConversationRuntime {
+  browserScope?: import('@/tools/browser/browser-scope').BrowserScope;
   /** Retry resumes this failed record, guarded against stale requests. */
   retryTarget?: { messageId: string; content: string };
   /**
@@ -353,6 +355,23 @@ export interface ConversationRuntime {
    * 落库（用户气泡据此渲染引用块）。缺省 = 本轮无引用。
    */
   pageQuote?: PageQuote;
+  /**
+   * 本轮用户选择网页元素（用户在网页中 Ctrl+左键捕获，最多 100 个）。
+   *
+   * 三个用途：
+   *   - selectedElementsPrompt：注入模型用户消息的 <selected_elements> 信封；
+   *   - 随用户消息落库（用户气泡渲染元素 chip 与备注）；
+   *   - 截图引用（screenshotRef）并入消息 imageRefs，保证会话删除时回收。
+   * 缺省 = 本轮未选择元素。
+   */
+  capturedElements?: CapturedElement[];
+  /**
+   * 本轮网页元素选择的模型信封（<selected_elements> XML）。
+   *
+   * 与 capturedElements 同源：信封给模型读、数组给用户看。
+   * 位置在 <page_quote> 之后、<upload_file> 之前。空串 = 本轮无元素。
+   */
+  selectedElementsPrompt?: string;
   /** AI 面初始上下文（历史派生，不含本轮用户消息与 system） */
   initialContext: ChatMessage[];
   /**
@@ -508,7 +527,7 @@ export type ConversationEvent =
       /**
        * 上下文用量快照：引擎主循环每轮测量（及压缩成功后复测）时发射。
        * 数据与该次真实请求的全量口径一致（系统提示词 + 工具定义 + 消息），
-       * 普通对话的用量环与学习/验证状态条共用同一事件源——任何运行期间
+       * 普通对话的用量环与运行期状态展示共用同一事件源——任何运行期间
        * 展示的都是「最近一次请求的真实负载」，而非发送前的静态估算。
        */
       type: 'context-usage';

@@ -4,6 +4,7 @@
  */
 
 import { ToolExecutor, ToolResult } from '@/common/tool-handler';
+import { executeWithBrowserScope } from './browser/browser-scope';
 import { OpenAITool } from '@/common/openai-types';
 
 // 工具元数据接口
@@ -66,19 +67,6 @@ export interface ToolMetadata {
   /** Restrict semantic confirmation to these actions in a unified tool. */
   requiresConfirmActions?: string[];
   /**
-   * 终止型工具：**成功执行**后会话引擎结束本轮运行。
-   *
-   * 用于「任务提交」类工具（submit_skill / submit_validation）：模型调用它
-   * 即宣告当前阶段完成，引擎在本轮工具全部执行完、结果已回传模型后正常
-   * 收尾（status='done'），不再发起下一次请求。
-   *
-   * 关键语义：
-   *   - 仅 success 触发；失败回传模型自纠（参数不合法时模型可修正后重交），
-   *     绝不因一次提交失败就终止整个运行；
-   *   - 工具结果照常进入转录与事件流，UI 与历史可完整回溯「提交了什么」。
-   */
-  terminal?: boolean;
-  /**
    * 零成本状态工具：执行只改会话内状态（计划/笔记/批次台账），不触达页面、
    * 不发起网络请求、耗时恒为毫秒级。
    *
@@ -116,6 +104,8 @@ export interface ToolMetadata {
 // 会话感知工具（如 plan_tool）据此做数据隔离；不感知会话的工具可安全忽略
 // （可选参数，不破坏既有工具的 execute(args) 契约）。
 export interface ToolExecutionContext {
+  /** Beta: absent preserves legacy target selection and focus behavior. */
+  browserScope?: import('./browser/browser-scope').BrowserScope;
   agentId?: string;
   loadedSkillIds?: readonly string[];
   toolPolicy?: 'vision-assistant';
@@ -281,19 +271,19 @@ class ToolRegistry {
   /**
    * 执行工具
    */
-  async execute(name: string, args: any): Promise<ToolResult> {
+  async execute(name: string, args: any, context?: ToolExecutionContext): Promise<ToolResult> {
     const tool = this.get(name);
     if (!tool) {
       throw new Error(`Tool not found: ${name}`);
     }
-    return await tool.execute(args);
+    return await executeWithBrowserScope(context, scopedContext => tool.execute(args, scopedContext));
   }
 
   /**
    * 执行工具（别名方法，用于兼容性）
    */
-  async executeTool(name: string, args: any): Promise<ToolResult> {
-    return await this.execute(name, args);
+  async executeTool(name: string, args: any, context?: ToolExecutionContext): Promise<ToolResult> {
+    return await this.execute(name, args, context);
   }
 
   /**

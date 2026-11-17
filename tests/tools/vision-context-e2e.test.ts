@@ -45,11 +45,13 @@ function makeEngine(options: {
     onToolCall?: (call: { id: string; type: string; function: { id: string; name: string; arguments: string } }) => void;
   }>;
   captureResult?: unknown;
+  onExecute?: (name: string, context: any) => void;
 }) {
   const requests: any[][] = [];
   let round = 0;
   const engine = new ConversationEngine({
-    executeTool: async (name: string) => {
+    executeTool: async (name: string, _args: unknown, context: any) => {
+      options.onExecute?.(name, context);
       if (name === 'screenshot' && options.captureResult !== undefined) return options.captureResult as any;
       return (options.toolResults[name] ?? { success: true, data: { text: 'ok' } }) as any;
     },
@@ -302,4 +304,22 @@ const visionRuntime = (overrides: Record<string, unknown> = {}) => ({
   }
 }
 
-console.log('[vision-context-e2e] Single-screenshot contract, pure-read batches, cross-round dedup and upload-ref normalization passed.');
+// Automatic first/continuation captures must inherit exactly the same window as tools.
+{
+  const binding = { mode: 'bound-window' as const, windowId: 72 };
+  const contexts: any[] = [];
+  const { engine } = makeEngine({
+    toolResults: {}, rounds: [],
+    captureResult: { success: true, data: { screenshot: 'data:image/png;base64,cG5n', text: 'bound screenshot' } },
+    onExecute: (name, context) => { assert.equal(name, 'screenshot'); contexts.push(context); },
+  });
+  const runtime = visionRuntime({ browserScope: binding });
+  await engine.captureScreenshot(runtime);
+  await engine.captureScreenshot(runtime);
+  assert.equal(contexts.length, 2);
+  assert.ok(contexts.every(context => context.browserScope === binding));
+  contexts.length = 0;
+  await engine.captureScreenshot(visionRuntime());
+  assert.equal(contexts[0].browserScope, undefined, 'Default automatic captures stay unbound');
+}
+console.log('[vision-context-e2e] Single-screenshot contract, pure-read batches, cross-round dedup, upload refs and bound automatic captures passed.');

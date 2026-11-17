@@ -39,9 +39,9 @@ export const dataHarvesterConfig: PresetAgentConfig = {
 
 <core-channel>
 本智能体的核心纪律：批量数据只走「脚本/capture → 数据文件 → Excel」通道，绝不进对话。
-1. js_run(action="run",path="scripts/collect.js",args=[采集参数],label="批次名")：复用已创建的采集脚本；每次执行的完整结果自动保存为 results/ 下的独立 JSON 结果文件（跨浏览器重启持久，label 进入文件名），响应只回传前 2000 字符——需要核对后续片段用 js_run(action="read",path="结果文件",index=2) 按页抽样（每页 2000 字符），不把全量数据抄回对话。
+1. js_run(action="run",path="scripts/collect.js",args=[采集参数],label="批次名")：复用已创建的采集脚本；每次执行的完整结果自动保存为 results/ 下的独立 JSON 结果文件（跨浏览器重启持久，label 进入文件名），响应只回传前 2000 字符——需要核对后续片段用 file_util(action="read",path="结果文件",index=1) 按页抽样（每页 3000 字符），不把全量数据抄回对话。
 2. browser_network_capture：签名/风控接口无法直调时的被动收割通道——start（建议 types=["XHR","Fetch"] 排除图片脚本噪音，可选 urlIncludes/urlExcludes 过滤、includeHeaders 记录请求头供签名分析、durationSec 调窗口）→ 页面自己翻页/滚动触发请求 → read 把响应正文收进暂存区（refs 批次；onlyMissing=true 只看尚未取得正文的条目做对账）→ stop。单轮预算：100 请求、单正文 1MB、合计 4MB、默认 55 秒（durationSec 10–300 可调）；read 分页每页 ≤20 条，按「start → 触发 → read 读尽 → stop」多轮循环，stats 给出已存/缺失/在途对账，超限标记缺失的条目用下一轮补齐。信封包装的响应（如 {data:{items:[...]}}）必须先经 data_ref_tool(action="project", ref=该ID, path=提取路径) 转成结果文件，才能进入合并/导出链（暂存批次约 12 小时有效，尽早治理落盘）。
-3. data_ref_tool：数据治理——merge/dedupe/project 接受 files=[结果文件路径列表]（按数据先后顺序）或 refs=[暂存批次]（二选一；单个文件/批次可直接用 file=/ref=，工具自动包装为数组，同时提供单复数会被拒绝），产物统一为 results/ 下持久的结果文件，可继续串联治理；action="info"（ref 或 file）查看字段结构，用于设计导出列。有重复可能（滚动增量/capture 多轮）时 dedupe 一步完成拼接+去重（by 指定主键字段如 ["id"]，缺字段行保留不误删；整行去重省略 by）；确认无重复用 merge 拼接；复合批次（对象里套列表）用 project 投影成关系表（path 指向对象/数组，carry 携带父键列，flatten 展平嵌套）。action="list" 盘点暂存批次、action="delete" 清理；工作区结果文件用 js_run(action="list", path="results") 盘点、action="delete" 清理（results/ 在首个结果文件落盘后出现，首次盘点报错时继续采集即可，不必反复探测）。
+3. data_ref_tool：数据治理——merge/dedupe/project 接受 files=[结果文件路径列表]（按数据先后顺序）或 refs=[暂存批次]（二选一；单个文件/批次可直接用 file=/ref=，工具自动包装为数组，同时提供单复数会被拒绝），产物统一为 results/ 下持久的结果文件，可继续串联治理；action="info"（ref 或 file）查看字段结构，用于设计导出列。有重复可能（滚动增量/capture 多轮）时 dedupe 一步完成拼接+去重（by 指定主键字段如 ["id"]，缺字段行保留不误删；整行去重省略 by）；确认无重复用 merge 拼接；复合批次（对象里套列表）用 project 投影成关系表（path 指向对象/数组，carry 携带父键列，flatten 展平嵌套）。action="list" 盘点暂存批次、action="delete" 清理；工作区结果文件用 file_util(action="list", path="results") 盘点、file_util(action="delete", path=…) 清理（results/ 在首个结果文件落盘后出现，首次盘点报错时继续采集即可，不必反复探测）。
 4. xlsx_tool(action="create_from_data")：sheets[].dataFiles=[结果文件路径列表] 按列表顺序拼接成一张表，fields 选列、headers 定表头，数据直接生成 Excel，零转录；可与手写 rows 表混排（如公式汇总表）在同一次调用中生成。
 铁律：禁止把抓到的数据行抄写进对话；禁止用 create 手写 rows 复现批量数据；禁止编造或"补全"任何单元格值。
 通道降级：本轮工具清单没有 js_run 时（以实际可用工具为准，不要凭记忆假设），整条通道降级为「browser_extract_data(save=auto) 逐页落盘 → data_ref_tool 治理 → xlsx_tool(dataFiles)」，能力等价、只是取数来源从脚本改为 DOM 直抓；JSON 接口数据优先 browser_network_capture。不要反复调用清单里不存在的工具，也不要声称已完成未实际发生的落盘。
@@ -57,7 +57,7 @@ export const dataHarvesterConfig: PresetAgentConfig = {
 - browser_extract_data：DOM 结构明确（标准 table 或重复列表项）时直接抓取。save 默认 auto——超过 20 行自动落为 results/ 数据文件，只回传预览与字段统计（≤20 行才内联返回，便于核对字段），返回的 saved.path 可直接进 xlsx_tool(dataFiles) 与 data_ref_tool(files)。需要给用户 csv/markdown 时用 saveTo="outputs/xxx.csv|.md"；数据管道不要指定 saveTo。单次上限 500 行，超过就按页/滚动分批，每批用 label 命名（如 label="第3页"）。fields 必须是对象映射（{"title":{"selector":"h2"}}），不是字符串。
 - browser_network_request：侦察阶段确认的 JSON 接口可直连获取（免渲染；签名/风控接口除外——见 data-source-recon 第 1 级，脚本直调与页面内 fetch 都禁止，改走 capture）；返回仍走上下文，数据量大时（非签名接口）改为页面内 fetch + 结果文件通道。
 网页操作（与文本通用助手相同的基础设施）：
-- browser_navigation（action="open" 务必 waitForLoad=true；action="back"/"forward" 前进后退；action="wait" 等待点击翻页/重渲染后的加载完成）、web_search（通用网页检索，engine 枚举 bing/baidu，仅网址不明确时；自带导航，禁止同一轮并发调用）、browser_observe / browser_extract_data（判定页面形态与字段结构，抓取首选）、read_website（确需正文阅读时读当前页并落盘 content/，长页按 path+page 续读）、browser_get_page_info（诊断加载状态）、generic_wait。
+- browser_navigation（action="open" 务必 waitForLoad=true；action="back"/"forward" 前进后退；action="wait" 等待点击翻页/重渲染后的加载完成）、web_search（通用网页检索，engine 枚举 bing/baidu，仅网址不明确时；自带导航，禁止同一轮并发调用）、browser_observe / browser_extract_data（判定页面形态与字段结构，抓取首选）、read_website（确需正文阅读时读当前页并落盘 content/，长页按 path+page 续读）、browser_get_page_info（诊断加载状态）、browser_wait（按条件等待）。
 - browser_observe / browser_interact：控件、表格结构、辅助功能、焦点、原生按键与容器滚动，遵守共享 SOP。
 - browser_network_capture：被动物理收割签名接口的主通道（不重放请求、无需伪造签名），能力与预算见 core-channel 第 2 条。节奏：start（types=["XHR","Fetch"] + urlIncludes 过滤）→ 页面翻页/滚动触发 → read 分页读尽（每页 ≤20 条；信封响应 project 后落为结果文件，onlyMissing 对账缺口）→ stop → 下一轮；超限条目标记缺失不可视为全量。
 </tools>
@@ -76,19 +76,19 @@ export const dataHarvesterConfig: PresetAgentConfig = {
 </data-source-recon>
 
 <workflow>
-0. 通道自检（本会话首次采集前做一次）：对照本轮真实工具清单确认 js_run 是否可用——不要凭历史会话记忆推断。可用时先用 js_run(action="list",path="results") 盘点既有结果文件，避免重复抓取；不可用时按 core-channel 末段的降级通道执行（browser_extract_data 逐页落盘，label 命名即批次索引），并在开场告知用户本次用 DOM 直抓；此时没有文件盘点工具，靠 label 与页面页码自证覆盖范围。
+0. 通道自检（本会话首次采集前做一次）：对照本轮真实工具清单确认 js_run 是否可用——不要凭历史会话记忆推断。无论脚本通道是否可用，都先用 file_util(action="list", path="results") 盘点既有结果文件，避免重复抓取；js_run 不可用时按 core-channel 末段的降级通道执行（browser_extract_data 逐页落盘，label 命名即批次索引），并在开场告知用户本次用 DOM 直抓——文件盘点仍由 file_util 承担，另靠 label 与页面页码自证覆盖范围。
 1. 明确目标：抓什么字段、目标量级、来源站点；先 browser_extract_data / browser_observe 确认页面形态与字段（确需正文时 read_website，结果落盘 content/，不会把整页塞进上下文）。
 2. 侦察数据源：按 data-source-recon 的 0~3 级优先确定取数通道；发现接口则记录 URL 与翻页参数规律；同时记录对账基准——页面宣称的条目总数（「共 N 条」类文案）或接口返回的 total/总页数字段（两者皆无则在第 7 步汇报中声明无对账基准），并确认分页形态与展开按钮（见 data-source-recon 末段）。
-3. 样本试抓：先创建 scripts/collect.js，把样本上限与页码参数化，再用 js_run(action="run",path="scripts/collect.js",args=[{limit:3,page:1}],label="样本")（js_run 不可用时用 browser_extract_data 的 ≤20 行内联结果做样本）；核对返回预览的字段与内容是否符合目标列、文本是否完整（有无省略号/「展开」截断迹象），不符合就调整选择器/字段映射，同一方案最多迭代 3 次。**探测要一次覆盖多维度**：一个脚本同时探「规格项结构 + 标题选择器 + 价格容器 + 图集选择器」，不要一次只探一个维度——逐维度试探会把探测轮数放大数倍。
+3. 样本试抓：先用 file_util(action="create", path="scripts/collect.js", content=...) 创建 scripts/collect.js（把样本上限与页码参数化），再用 js_run(action="run",path="scripts/collect.js",args=[{limit:3,page:1}],label="样本")（js_run 不可用时用 browser_extract_data 的 ≤20 行内联结果做样本）；核对返回预览的字段与内容是否符合目标列、文本是否完整（有无省略号/「展开」截断迹象），不符合就调整选择器/字段映射，同一方案最多迭代 3 次。**探测要一次覆盖多维度**：一个脚本同时探「规格项结构 + 标题选择器 + 价格容器 + 图集选择器」，不要一次只探一个维度——逐维度试探会把探测轮数放大数倍。
 4. 字段确认：data_ref_tool(action="info", file=样本结果文件) 查看完整字段列表，敲定导出的 fields 顺序与 headers 文案（extract_data 内联返回里的 fields 字段统计已给出列名与空值情况，可直接据此定列；需要 info 时用 save="always" 生成样本文件）。
 5. 批量循环：按目标形态选通道——**目标已知且互不相邻时用 crawl，不要自己写循环**：
    - **多页详情/多 URL 逐个取数（crawl）**：js_run(action="crawl",path="scripts/collect.js",targets=[{url,label,expectUrlIncludes?,expectTextIncludes?}]) 一次跑完全部目标——工具内部完成导航与就绪等待、页面间随机停顿、同源串行，逐目标隔离失败并给出账本（含「未执行」）。expectUrlIncludes 用于识别跳转与链接结构变更，expectTextIncludes 用于识别软 404（URL 正常但内容是错误页）；命中风控页时工具会停止并请你手动完成验证。
    - 翻页按钮（同一列表的下一页）：browser_interact(action="click") 点「下一页」→ browser_navigation(action="wait") 等就绪 → js_run(action="run",path="scripts/collect.js",args=[{page:N}],label="第N页") 抓取；
    - URL 页码：browser_navigation(action="open") 逐页 → 抓取；
-   - 无限滚动：browser_interact(action="scroll") 到底部 → generic_wait 1~2 秒 → 抓取增量；
+   - 无限滚动：browser_interact(action="scroll") 到底部 → browser_wait 等增量元素出现 → 抓取增量；
    - 签名接口（recon 第 1 级判定不可直调时）：browser_network_capture(action="start", types=["XHR","Fetch"]) → 翻页/滚动触发一页 → action="read" 分页读尽本轮条目（信封响应先 data_ref_tool(action="project", ref=该ID) 提取列表落为结果文件；onlyMissing=true 核对缺口）→ action="stop" → 下一轮 start；单轮预算与对账口径见 core-channel 第 2 条，缺口靠多轮补齐。
    每批后立即记下落盘路径与行数：js_run 取响应的 resultFile.path，browser_extract_data 取 saved.path，并核对 count 是否等于 matched（不相等即被 limit 截断）。后续合并、导出、汇报一律用这些路径，不凭记忆复述数据。某批行数异常（为 0 或翻倍、或 matched 远大于 count）说明重复抓取、选择器失效或 limit 截断，立即检查。crawl 的账本逐目标给出状态（成功/为空/失败/超时/被风控/链接漂移/未执行）——「为空」与「链接漂移」都要当异常查（多为选择器失配或站点改了链接结构），「未执行」说明熔断或预算耗尽。
-   每 3~5 批 js_run(action="list", path="results") 盘点结果文件数量（工作区配额 2048 条目，结果文件过多时先分段导出再用 js_run(action="delete") 清理已导出文件）；capture 暂存批次用 data_ref_tool(action="list") 核对 totalBytes（8MB，达 70% 先治理落盘并 delete 已导出批次）。
+   每 3~5 批 file_util(action="list", path="results") 盘点结果文件数量（工作区配额 2048 条目，结果文件过多时先分段导出再用 file_util(action="delete", path=…) 清理已导出文件）；capture 暂存批次用 data_ref_tool(action="list") 核对 totalBytes（8MB，达 70% 先治理落盘并 delete 已导出批次）。
    展开纪律：列表项文本以省略号或「展开」结尾即视为截断——优先在抓取脚本里取完整文本（完整 DOM 节点/接口字段），取不到再点开「展开」重抓；用户要求全量含回复/二级列表时，逐个点开「展开 N 条回复」类按钮再抓，展开出的行按新批次计入。无法展开或取不完整的字段，必须在第 7 步汇报中如实声明，禁止当作完整数据交付。
 6. 合并导出：把分页结果文件按页序合成导出——存在重复可能（滚动增量/capture 多轮）时用 data_ref_tool(action="dedupe", files=[按页序], by=[主键字段])，拼接与去重一步完成（整行去重省略 by）；确认无重复时用 data_ref_tool(action="merge", files=[按页序])。随后 xlsx_tool(action="create_from_data", sheets=[{name, dataFiles:[结果文件], fields, headers}])——不想预先合并时也可把多个结果文件直接列进 dataFiles 按序拼接；需要公式汇总时把汇总表作为手写 rows 表与数据表混排在同一次调用中。
    容量换算：预计总格数 = 行数 × 列数，50000 ÷ 导出列数 = 单文件行数上限——预计超限时先按页/类别规划拆 sheet 或分文件，不要撞报错再拆。
@@ -103,7 +103,7 @@ export const dataHarvesterConfig: PresetAgentConfig = {
 - 抓取失败按序诊断：browser_get_page_info 看加载状态 → 减小批量/加大 timeout 重试 → strategy="cdp" → 换数据源；同一方案最多重试 2 次。
 - 遇到登录墙、验证码、付费墙、明确反爬拦截：立即停止，说明卡点与需要用户完成的操作，绝不绕过或反复尝试。
 - 遵守页面节奏：不对同一页面发起高频密集请求；只采集用户目标所需的字段与数量。多页抓取用 crawl（内置随机停顿与同源串行），不要自己高频连续导航。
-- 存储口径：结果文件随会话工作区持久保存（无时间限制，浏览器重启不丢）；capture 暂存批次约 12 小时有效且合计 8MB——capture 数据尽早治理落盘为结果文件。长任务边抓边分段导出，导出完成的旧结果文件可用 js_run(action="delete") 清理。
+- 存储口径：结果文件随会话工作区持久保存（无时间限制，浏览器重启不丢）；capture 暂存批次约 12 小时有效且合计 8MB——capture 数据尽早治理落盘为结果文件。长任务边抓边分段导出，导出完成的旧结果文件可用 file_util(action="delete") 清理。
 </constraints>`,
   tools: getPresetToolIds('dataHarvest'),
   // 显式关联技能：Excel 生成规范与输出契约由该技能约束（工具映射兜底也会命中，双保险）。

@@ -1,3 +1,5 @@
+import { browserChrome, parseBrowserScope, type BrowserScope } from '@/tools/browser/browser-scope';
+
 const PORT_NAME = 'agentnexus:page-glow-v2';
 const SCRIPT = 'inject-scripts/page-glow.js';
 const MAX_ATTEMPTS = 3;
@@ -5,13 +7,15 @@ const ACK_TIMEOUT_MS = 1200;
 const BROWSER_TIMEOUT_MS = 2500;
 
 type Owner = string | symbol;
-type Run = { tabId?: number; operation?: symbol };
+type Run = { tabId?: number; operation?: symbol; browserScope?: BrowserScope };
 type Target = {
   tabId: number;
   documentId?: string;
   attempts: number;
   retry?: ReturnType<typeof setTimeout>;
   loadRecoveryUsed?: boolean;
+  browserScope?: BrowserScope;
+  controller?: AbortController;
 };
 type Link = {
   target: Target;
@@ -57,11 +61,20 @@ class PageGlow {
   private selection = 0;
   private foregroundEpoch = 0;
 
-  start(owner: Owner, panelWindowId?: number): void {
+  start(owner: Owner, panelWindowId?: number, browserScope?: BrowserScope): void {
+    const previousScope = this.owner === undefined ? undefined : this.runs.get(this.owner)?.browserScope;
+    const scope = parseBrowserScope(browserScope);
     if (!this.runs.size) this.listen(true);
-    this.claim(owner, {});
-    const windowId = typeof panelWindowId === 'number' && Number.isInteger(panelWindowId) && panelWindowId >= 0
-      ? panelWindowId : undefined;
+    this.claim(owner, { ...(scope ? { browserScope: scope } : {}) });
+    const windowId = scope?.windowId ?? (typeof panelWindowId === 'number' && Number.isInteger(panelWindowId) && panelWindowId >= 0
+      ? panelWindowId : undefined);
+    if (scope || previousScope) {
+      this.pendingFocusWindow = undefined;
+      this.foregroundWindow = windowId;
+      this.select(undefined);
+      this.queryForeground(windowId);
+      return;
+    }
     console.info('[PageGlow] start', { source: typeof owner === 'string' ? 'conversation' : owner.description, windowId });
     if (windowId !== undefined && windowId !== this.foregroundWindow) {
       this.pendingFocusWindow = undefined;
@@ -75,10 +88,18 @@ class PageGlow {
   }
 
   stop(owner: Owner): void {
+    const stoppedScope = this.runs.get(owner)?.browserScope;
     if (!this.runs.delete(owner) || this.owner !== owner) return;
     this.owner = Array.from(this.runs.keys()).pop();
     if (this.owner !== undefined) {
-      const tabId = this.runs.get(this.owner)?.tabId ?? this.foregroundTab;
+      const run = this.runs.get(this.owner)!;
+      if (run.browserScope || stoppedScope) {
+        this.select(undefined);
+        this.foregroundWindow = run.browserScope?.windowId;
+        this.queryForeground(this.foregroundWindow);
+        return;
+      }
+      const tabId = run.tabId ?? this.foregroundTab;
       this.select(tabId);
       if (tabId === undefined) this.queryForeground(this.foregroundWindow);
       return;
@@ -99,13 +120,33 @@ class PageGlow {
     const epoch = this.foregroundEpoch;
     run.operation = operation;
     if (followForeground) {
+      const previousScope = this.owner === undefined ? undefined : this.runs.get(this.owner)?.browserScope;
       run.tabId = undefined;
       this.claim(owner, run);
-      this.select(this.foregroundTab);
+      if (run.browserScope) {
+        this.foregroundWindow = run.browserScope.windowId;
+        this.select(undefined);
+        this.queryForeground(run.browserScope.windowId);
+      } else if (previousScope) {
+        this.foregroundWindow = undefined;
+        this.select(undefined);
+        this.queryForeground();
+      } else this.select(this.foregroundTab);
     }
     return tabId => {
       if (!Number.isInteger(tabId) || tabId < 0 || this.runs.get(owner) !== run ||
-          run.operation !== operation || this.foregroundEpoch !== epoch) return;
+          run.operation !== operation || (!run.browserScope && this.foregroundEpoch !== epoch)) return;
+      if (run.browserScope) {
+        const context = { browserScope: run.browserScope };
+        void browserChrome(context).tabs.get(tabId).then(() => {
+          if (this.runs.get(owner) !== run || run.operation !== operation) return;
+          run.tabId = tabId;
+          this.claim(owner, run);
+          this.foregroundWindow = run.browserScope!.windowId;
+          this.select(tabId);
+        }).catch(error => report('bound-tool-target', error, tabId));
+        return;
+      }
       run.tabId = tabId === this.foregroundTab ? undefined : tabId;
       this.claim(owner, run);
       this.select(tabId);
@@ -121,11 +162,14 @@ class PageGlow {
   private useForeground(tabId?: number): void {
     this.foregroundEpoch++;
     this.foregroundTab = tabId;
-    for (const run of this.runs.values()) run.tabId = undefined;
+    for (const run of this.runs.values())
+      if (!run.browserScope || run.browserScope.windowId === this.foregroundWindow) run.tabId = undefined;
     this.select(tabId);
   }
 
   private queryForeground(windowId?: number, fromFocus = false): void {
+    const scope = this.owner === undefined ? undefined : this.runs.get(this.owner)?.browserScope;
+    windowId = scope?.windowId ?? windowId;
     const selection = ++this.selection;
     void (async () => {
       const query: chrome.tabs.QueryInfo = windowId === undefined
@@ -135,6 +179,7 @@ class PageGlow {
         if (selection !== this.selection || !this.runs.size) return;
         try {
           let [tab] = await bounded(chrome.tabs.query(query), '查询活动标签页');
+          if (scope && tab && tab.windowId !== scope.windowId) throw new Error('高亮查询返回了绑定窗口之外的标签页，已忽略。');
           if (!tab && windowId === undefined && selection === this.selection) {
             const tabs = await bounded(chrome.tabs.query({ active: true, windowType: 'normal' }), '查找普通浏览器窗口');
             if (tabs.length === 1) [tab] = tabs;
@@ -166,9 +211,12 @@ class PageGlow {
   }
 
   private select(tabId?: number, documentId?: string, replace = false): void {
-    if (!replace && this.target?.tabId === tabId) return;
+    const scope = this.owner === undefined ? undefined : this.runs.get(this.owner)?.browserScope;
+    if (!replace && this.target?.tabId === tabId && this.target?.browserScope?.windowId === scope?.windowId) return;
     clearTimeout(this.target?.retry);
-    this.target = tabId !== undefined && tabId >= 0 ? { tabId, documentId, attempts: 0 } : undefined;
+    this.target?.controller?.abort();
+    this.target = tabId !== undefined && tabId >= 0 ? { tabId, documentId, attempts: 0,
+      ...(scope ? { browserScope: scope, controller: new AbortController() } : {}) } : undefined;
     if (this.target) console.info('[PageGlow] target', { tabId, windowId: this.foregroundWindow });
     this.reconcile();
   }
@@ -187,7 +235,9 @@ class PageGlow {
     target.attempts++;
     const { tabId, documentId } = target;
     try {
-      const [injection] = await bounded(chrome.scripting.executeScript({
+      const browser = browserChrome(target.browserScope ? { browserScope: target.browserScope, signal: target.controller?.signal } : undefined);
+      if (this.target !== target) return;
+      const [injection] = await bounded(browser.scripting.executeScript({
         target: documentId ? { tabId, documentIds: [documentId] } : { tabId, frameIds: [0] },
         files: [SCRIPT],
         injectImmediately: true,
@@ -195,7 +245,7 @@ class PageGlow {
       if (this.target !== target) return;
       if (!injection) throw new Error('主文档没有返回脚本注入结果');
       target.documentId = injection.documentId ?? documentId;
-      const port = chrome.tabs.connect(tabId, {
+      const port = browser.tabs.connect(tabId, {
         name: PORT_NAME,
         ...(target.documentId ? { documentId: target.documentId } : { frameId: 0 }),
       });
@@ -203,7 +253,7 @@ class PageGlow {
       this.link = link;
       port.onMessage.addListener(message => this.receive(link, message));
       port.onDisconnect.addListener(() => {
-        const reason = chrome.runtime.lastError?.message;
+        const reason = browser.runtime.lastError?.message;
         this.release(link, reason ?? '文档连接已断开');
       });
       this.awaitAck(link);
@@ -295,6 +345,8 @@ class PageGlow {
 
   private readonly activated = ({ tabId, windowId }: chrome.tabs.TabActiveInfo) => {
     if (!this.runs.size) return;
+    const boundWindow = this.owner === undefined ? undefined : this.runs.get(this.owner)?.browserScope?.windowId;
+    if (boundWindow !== undefined && windowId !== boundWindow) return;
     if (this.pendingFocusWindow !== undefined) {
       if (this.pendingFocusWindow === windowId) this.queryForeground(windowId, true);
     } else if (this.foregroundWindow === undefined) {
@@ -308,6 +360,7 @@ class PageGlow {
 
   private readonly focused = (windowId: number) => {
     if (windowId < 0 || !this.runs.size) return;
+    if (this.owner !== undefined && this.runs.get(this.owner)?.browserScope) return;
     if (this.foregroundWindow === windowId) {
       if (this.pendingFocusWindow !== undefined) {
         this.pendingFocusWindow = windowId;
@@ -377,6 +430,11 @@ class PageGlow {
   };
 
   private listening = false;
+  private readonly detached = (tabId: number) => {
+    if (this.target?.tabId !== tabId || !this.target.browserScope) return;
+    this.select(undefined);
+    this.queryForeground();
+  };
   private listen(enabled: boolean): void {
     if (this.listening === enabled) return;
     this.listening = enabled;
@@ -385,9 +443,11 @@ class PageGlow {
     chrome.tabs?.onUpdated?.[method](this.updated);
     chrome.tabs?.onRemoved?.[method](this.removed);
     chrome.tabs?.onReplaced?.[method](this.replaced);
+    chrome.tabs?.onDetached?.[method](this.detached);
     chrome.windows?.onFocusChanged?.[method](this.focused);
     chrome.webNavigation?.onCommitted?.[method](this.committed);
   }
 }
 
 export const pageGlow = new PageGlow();
+

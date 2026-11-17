@@ -182,7 +182,7 @@ export async function executeZoom(
             imageKind: "region",
             text: `Zoom viewId=${viewId}, parent screenshotId=${s.id}; crop region=${JSON.stringify(cropped.region)} in full-image 0..1000 coordinates. To act on a crop point use parent screenshotId AND viewId. Without viewId every point means FULL screenshot coordinates. Rounding-adjusted region is authoritative; no new pixels were captured.`,
           };
-        }),
+        }, context),
       context?.signal,
     );
     const { screenshot: _image, ...metadata } = data;
@@ -240,7 +240,7 @@ export async function executeCheck(
                     args.expect ?? {},
                   ],
                 },
-                { operation: "Check visual target", timeoutMs: 2000 },
+                { operation: "Check visual target", timeoutMs: 2000 }, context
               );
               last = rows[0]?.result;
               samples++;
@@ -316,7 +316,7 @@ export async function executeCheck(
               waitBudgetMs: end - start,
               text: `Checks=${status}; target/metadata stable=${stable}. Only the explicit requested conditions are evaluated. ${guardId ? `guardId=${guardId} binds this original action point and screenshot.` : "No target guard issued."} Unknown is not failure or proof of success. No gesture was sent.`,
             };
-          },
+          }, context
         ),
       context?.signal,
     );

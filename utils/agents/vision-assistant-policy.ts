@@ -1,4 +1,3 @@
-import { JS_RUN_TOOL_ID } from '@/tools/javascript/js-contract';
 import { SKILL_TOOL_ID } from '@/utils/skills/skill-tool-contract';
 import { FILE_UTIL_TOOL_ID } from '@/tools/file-util/file-util-prompt';
 
@@ -8,16 +7,20 @@ import { FILE_UTIL_TOOL_ID } from '@/tools/file-util/file-util-prompt';
  * 写笔记、建计划与读写用户上传文件都不触碰页面（观察者边界约束的是对页面的
  * 代操作，不是会话内状态与用户数据文件的读取），故对观察型智能体同样放行。
  *
- * python_run：计算类工具（工作区脚本 + Pyodide 沙箱），不触碰页面 DOM，
- * 与 js_run 同属「会话内执行」而非「代操作页面」。它仅在用户于管理中心
+ * python_run：计算类工具（工作区脚本 + Pyodide 沙箱），不触碰页面 DOM；
+ * 其脚本对工作区的读写属于用户数据面而非页面代操作。它仅在用户于管理中心
  * 「Python 环境」页面显式给本智能体注入、且环境就绪时才会出现在工具面
  * （见 runtime-builder 的注入逻辑），因此不扩大观察型智能体的默认能力。
+ *
+ * js_run 不在白名单：其仅剩的 run/crawl 都在页面内执行脚本，属于观察者
+ * 边界内的代操作能力；原先允许的 create/read/edit/delete/list 已统一收敛
+ * 到 file_util，观察型智能体仍可通过 file_util 读写工作区文件。
  *
  * vision_gui：只读观察已并入其 action 面（原 vision_read* 工具随之删除），
  * 因此列入白名单——但观察者边界下沉到 action 级（VISION_ASSISTANT_GUI_ACTIONS），
  * 由会话引擎在执行前拒绝手势类 action（见 conversation-engine 执行闸门）。 */
 export const VISION_ASSISTANT_TOOLS = [
-  'screenshot', 'vision_gui', 'generic_wait', JS_RUN_TOOL_ID, 'python_run',
+  'screenshot', 'vision_gui', 'browser_wait', 'python_run',
   'read_website', 'interact', 'plan_tool', 'note_tool', FILE_UTIL_TOOL_ID, SKILL_TOOL_ID,
 ] as const;
 

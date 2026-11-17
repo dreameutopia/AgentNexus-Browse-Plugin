@@ -15,39 +15,20 @@ import {
 import type {
   ToolExecutionContext,
   ToolMetadata,
-  ToolSchemaOptions,
 } from "../registry";
 import type { OpenAITool } from "@/common/openai-types";
 import type { ToolResult } from "@/common/tool-handler";
 import {
-  executeWorkspaceFileAction,
-  WORKSPACE_EDIT_PROPERTIES,
-} from "@/utils/python-workspace/file-action";
-import {
   parseWorkspaceFilePath,
-  readWorkspaceFilePage,
   readWorkspaceTextFile,
   WORKSPACE_READ_PAGE_CHARS,
 } from "@/utils/python-workspace/workspace-files";
-import {
-  listPageParams,
-  listWorkspaceEntries,
-} from "@/utils/python-workspace/workspace-listing";
 import { saveWorkspaceResultFile } from "@/utils/python-workspace/data-files";
 import { analyzeValue } from "@/utils/data-ref-rows";
-import { chatDatabase } from "@/entrypoints/sidepanel/core/context/chat-database";
 import { requireWorkspaceChatId } from "@/utils/python-workspace/artifact-contract";
 import { JS_RUN_TOOL_ID } from "./js-contract";
 import { toolErrorDetails } from "@/utils/shared/error-details";
-const actions = [
-  "create",
-  "edit",
-  "delete",
-  "read",
-  "list",
-  "run",
-  "crawl",
-] as const;
+const actions = ["run", "crawl"] as const;
 const runKeys = [
   "args",
   "world",
@@ -67,20 +48,6 @@ const crawlKeys = [
   "totalTimeout",
 ] as const;
 const keys: Record<string, readonly string[]> = {
-  create: ["path", "content"],
-  edit: [
-    "path",
-    "content",
-    "find",
-    "replace",
-    "replaceAll",
-    "edits",
-    "matchMode",
-    "expectedHash",
-  ],
-  delete: ["path"],
-  read: ["path", "index"],
-  list: ["path", "offset", "limit"],
   run: ["path", "expectedHash", ...runKeys],
   crawl: ["path", "expectedHash", ...runKeys, ...crawlKeys],
 };
@@ -122,8 +89,8 @@ function jsonArguments(raw: unknown): unknown[] {
 }
 /**
  * list 的目录盘点语义（缺失目录提示、文件/目录区分、分页口径）见
- * utils/python-workspace/workspace-listing —— js_run 与 python_run 共用同一实现，
- * 两工具在同一会话里盘点同一工作区时返回形状与报错文案逐字一致。
+ * utils/python-workspace/workspace-listing —— 文件读写与盘点统一走 file_util，
+ * js_run 只负责页面脚本执行与结果落盘。
  */
 
 /** Reuse the unchanged backend execution implementation, with file-backed session input. */
@@ -132,10 +99,10 @@ export class JsRunTool extends BaseBrowserTool {
   metadata: ToolMetadata = {
     name: this.name,
     category: "code",
-    version: "1.2.0",
+    version: "1.3.0",
     author: "AgentNexus",
     description:
-      "会话工作区文本文件创建、按页读取、原子编辑、删除及已保存 JavaScript 页面脚本执行（含多页批量抓取）；执行结果自动持久化为工作区结果文件",
+      "已保存 JavaScript 页面脚本执行（含多页批量抓取）；每次执行结果自动持久化为工作区结果文件（读取/编辑工作区文件请用 file_util）",
     tags: ["javascript", "workspace", "script", "cdp", "crawl", "results"],
     permissions: ["scripting", "debugger"],
     requiresConfirm: true,
@@ -155,37 +122,40 @@ export class JsRunTool extends BaseBrowserTool {
       function: {
         name: this.name,
         description:
-          "当前会话工作区文件与 JavaScript 工具。create/edit/delete 适用于所有扩展名的 UTF-8 文本；read 按 path 分页读取任意工作区文本文件（index 指定页码，每页 ≤2000 字符，响应携带当前页码与总页数）；list 盘点已存在目录（省略 path 或传 \".\" 列根目录；不创建目录，子目录不存在会报错并给出下一步）。run 只接受已保存的 .js/.mjs/.cjs 相对路径，绝不接收内联 code；每次执行的完整结果自动保存为 results/ 下的独立 JSON 文件（≤10MB，跨浏览器重启持久；results/ 由首次写入自动创建），响应只回传前 2000 字符、超出部分用 read 续读。结果文件可直接交给 data_ref_tool(action=\"info\", file=…) 查看字段结构、data_ref_tool(files=[…]) 合并/去重/投影、xlsx_tool(action=\"create_from_data\", sheets:[{name, dataFiles:[结果文件路径]}]) 导出，无需再读内容。crawl 把同一个已保存脚本按 targets 列表跑遍多个页面：工具内部完成导航、等待就绪与逐页执行，页面间随机停顿防风控，每页独立失败并给出逐目标账本，结果合成一张带来源列的表并同样落盘为结果文件。页面执行策略、世界、frame、Promise 与超时完整保留；通过 $args 使用 args 数组动态传参（crawl 时 $args[0] 是本次目标信息）。操作顺序、复用、编辑和交付规则见全局脚本规范。",
+          '<js-run>\n' +
+          '  <capability>已保存 JavaScript 页面脚本的执行工具。脚本文件本身用 file_util 创建/读取/编辑/删除。</capability>\n' +
+          '  <actions>\n' +
+          '    <action name="run">执行**已保存**的 .js/.mjs/.cjs 脚本——脚本文件的新建/读取/编辑/删除一律用 file_util（本工具不提供任何文件 CRUD action）。只接受工作区内相对路径，**绝不接收内联 code**。</action>\n' +
+          '    <action name="crawl">把同一个脚本按 targets 列表跑遍多个页面：工具内部完成导航、等待就绪与逐页执行，页面间随机停顿防风控，每页独立失败并给出逐目标账本。</action>\n' +
+          '  </actions>\n' +
+          '  <result>每次执行的完整结果自动保存为 results/ 下的独立 JSON 文件（≤10MB，跨浏览器重启持久；results/ 由首次写入自动创建）。响应只回传前 2000 字符，超出部分用 file_util(action="read", path=结果文件路径, index=1) 按页续读（每页 3000 字符）。</result>\n' +
+          '  <downstream>结果文件可直接交给 data_ref_tool(action="info", file=…) 查看字段结构、data_ref_tool(files=[…]) 合并/去重/投影、xlsx_tool(action="create_from_data", sheets:[{name, dataFiles:[结果文件路径]}]) 导出，无需再读内容。</downstream>\n' +
+          '  <script-contract>脚本是目标页面内的 async 函数体：允许 await，必须 return 所需结果。通过 $args 使用 args 数组动态传参（crawl 时 $args[0] 是本次目标信息）。页面执行策略、世界、frame、Promise 与超时完整保留。</script-contract>\n' +
+          '  <access-discipline>站点访问纪律「慢、少、撞墙即停」——适用于脚本内网络请求（fetch/XHR 循环翻页取数）、逐页连续 run（翻页按钮/页码 URL 场景）、多页抓取；无网络往返的本地只读探测不需要等待：\n' +
+          '    ① 慢——相邻网络请求之间加约 ' +
+          `${CRAWL_DEFAULT_PACE_MIN_MS / 1000}~${CRAWL_DEFAULT_PACE_MAX_MS / 1000}` +
+          ' 秒随机等待，用随机而非固定间隔（固定节奏与突发流量一样容易被判定为自动化）；多页已知 URL 优先交给 crawl，它已内置页面间随机停顿与同源串行。\n' +
+          '    ② 少——只请求达成目标所需的页数与字段，先小样本再全量；不对同一站点并发连发请求（如 Promise.all 批量 fetch）。含等待的循环要相应加大 timeout（默认 30000 毫秒）或缩小批次，避免等待本身耗尽超时预算。\n' +
+          '    ③ 撞墙即停——收到 429/403 或疑似验证/风控响应时立即停止，把状态码与响应摘要作为结果返回，禁止循环重试轰炸；命中风控/人机验证页时停止并交用户手动完成，绝不尝试绕过。随机等待只管请求节奏，页面就绪请按条件判断，不用固定 sleep 猜时长。\n' +
+          '  </access-discipline>\n' +
+          '  <usage>操作顺序、复用、编辑和交付规则见全局脚本规范。</usage>\n' +
+          '</js-run>',
         parameters: {
           type: "object",
           additionalProperties: false,
           required: ["action"],
           properties: {
-            action: { type: "string", enum: [...actions] },
+            action: {
+              type: "string",
+              enum: [...actions],
+              description:
+                "run=执行已保存的页面脚本；crawl=同一脚本按 targets 多页批量抓取（脚本文件的新建/读取/编辑/删除一律用 file_util）",
+            },
             path: {
               type: "string",
               description:
-                "当前会话工作区相对路径，如 scripts/collect.js 或 results/run-….json。run/crawl 必填且指向 .js/.mjs/.cjs 脚本；read 必填且一次只读一个文件；list 可省略（或传 \".\"）以列出根目录——list 只盘点已存在目录，不会创建目录，results/ 由首次 run/治理写入自动创建。",
+                "当前会话工作区相对路径，如 scripts/collect.js。run/crawl 必填且指向已保存的 .js/.mjs/.cjs 脚本；脚本的新建/读取/编辑/删除请用 file_util。",
             },
-            content: {
-              type: "string",
-              description:
-                "create 必填；edit 时全量重写，与 find/replace 和 edits 互斥。",
-            },
-            find: {
-              type: "string",
-              description:
-                "edit 精确定位串，默认必须唯一命中；与 replace 成对。",
-            },
-            replace: {
-              type: "string",
-              description: "edit 替换文本，按字面处理，允许空串。",
-            },
-            replaceAll: {
-              type: "boolean",
-              description: "edit 是否替换全部命中，默认 false。",
-            },
-            ...WORKSPACE_EDIT_PROPERTIES,
             ...Object.fromEntries(
               runKeys
                 .filter((key) => key !== "label")
@@ -241,58 +211,20 @@ export class JsRunTool extends BaseBrowserTool {
               minimum: 1000,
               description: `仅 crawl：整批的总预算，毫秒（缺省按目标数与停顿估算）。预算耗尽时停止并交出已完成部分的账本——未执行的目标标为 skipped。`,
             },
-            index: {
-              type: "integer",
-              minimum: 1,
-              description: `仅 read：页码（1 起，默认 1）。每页最多 ${WORKSPACE_READ_PAGE_CHARS} 字符，响应携带 index/pageCount/hasMore/nextIndex；续读直接传 nextIndex。`,
-            },
-            offset: {
-              type: "integer",
-              minimum: 0,
-              description: "仅 list：条目偏移，默认 0。",
-            },
-            limit: {
-              type: "integer",
-              minimum: 1,
-              description:
-                "仅 list：每页最多返回的条目数（默认 100、最多 200）。",
-            },
           },
           anyOf: actions.map((action) => ({
             properties: { action: { type: "string", enum: [action] } },
-            required:
-              action === "create"
-                ? ["action", "path", "content"]
-                : ["edit", "delete", "run", "crawl"].includes(action)
-                  ? ["action", "path"]
-                  : ["action"],
+            required: ["action", "path"],
           })),
         },
       },
     };
   }
-  getSchema(options: ToolSchemaOptions): OpenAITool {
-    if (options.toolPolicy !== "vision-assistant") return this.openaiSchema;
-    const copy = structuredClone(this.openaiSchema);
-    (
-      copy.function.parameters.properties!.action as {
-        enum: string[];
-      }
-    ).enum = actions.filter((action) => action !== "run" && action !== "crawl");
-    copy.function.parameters.anyOf = (
-      copy.function.parameters.anyOf as any[]
-    ).filter(
-      (branch) =>
-        !branch.properties.action.enum.includes("run") &&
-        !branch.properties.action.enum.includes("crawl"),
-    );
-    return copy;
-  }
   async execute(
     raw: unknown,
     context?: ToolExecutionContext,
   ): Promise<ToolResult> {
-    // Keep the browser forwarding signal outside catch. File editing needs no background or Python.
+    // 页面执行需要后台上下文；工作区文件读写已统一到 file_util。
     if (
       raw &&
       typeof raw === "object" &&
@@ -329,14 +261,18 @@ export class JsRunTool extends BaseBrowserTool {
   ): Promise<ToolResult> {
     try {
       if (!raw || typeof raw !== "object" || Array.isArray(raw))
-        throw new Error("参数必须是 JSON 对象");
+        throw new Error(
+          `参数必须是 JSON 对象（收到 ${raw === null ? "null" : Array.isArray(raw) ? "array" : typeof raw}）`,
+        );
       const args = raw as Record<string, unknown>,
         action = args.action;
       if (
         typeof action !== "string" ||
         !Object.prototype.hasOwnProperty.call(keys, action)
       )
-        throw new Error("action 必须是 " + actions.join(" / "));
+        throw new Error(
+          `action 必须是 ${actions.join(" / ")}（收到 ${JSON.stringify(action ?? null)}）`,
+        );
       const unexpected = Object.keys(args).filter(
         (key) => key !== "action" && !keys[action].includes(key),
       );
@@ -351,46 +287,6 @@ export class JsRunTool extends BaseBrowserTool {
         throw new Error("TOOL_NOT_ALLOWED: 观察型助手不能执行页面脚本");
       const chatId = requireWorkspaceChatId(context?.chatId);
       context?.signal?.throwIfAborted();
-      if (action === "create" || action === "edit" || action === "delete")
-        return await executeWorkspaceFileAction(
-          action,
-          args,
-          chatId,
-          context?.signal,
-        );
-      if (action === "list") {
-        const { offset, limit } = listPageParams(args.offset, args.limit);
-        const listing = await listWorkspaceEntries(
-          chatId,
-          args.path,
-          offset,
-          limit,
-          context?.signal,
-        );
-        return this.createSuccessResponse(listing);
-      }
-      if (action === "read") {
-        if (args.path === undefined)
-          throw new Error(
-            "read 必须提供 path（一次只读一个文件；工作区任意 UTF-8 文本文件均可按页读取）",
-          );
-        const page = await readWorkspaceFilePage(
-          chatId,
-          args.path,
-          args.index,
-          context?.signal,
-        );
-        const shapeNote =
-          page.pageCount > 1
-            ? `共 ${page.pageCount} 页（${page.totalChars} 字符），${page.hasMore ? `续读传 index=${page.nextIndex}` : "已是最后一页"}`
-            : page.pageCount === 1
-              ? "全文一页返回"
-              : "文件为空";
-        return this.createSuccessResponse(
-          { ...page },
-          `已读取 ${page.path} 第 ${page.index}/${page.pageCount} 页（本页 ${page.content.length} 字符；${shapeNote}）。`,
-        );
-      }
       for (const key of ["confirm", "awaitPromise"])
         if (args[key] !== undefined && typeof args[key] !== "boolean")
           throw new Error(key + " 必须是布尔值");
@@ -440,7 +336,7 @@ export class JsRunTool extends BaseBrowserTool {
         args.expectedHash !== undefined &&
         String(args.expectedHash).toLowerCase() !== file.sha256
       )
-        throw new Error("脚本已变化，expectedHash 不匹配，请重新 read");
+        throw new Error("脚本已变化，expectedHash 不匹配，请用 file_util(action=\"read\") 重新读取后再执行");
       if (action === "crawl")
         return await this.executeCrawl(args, chatId, file, codeArgs, context);
       const outcome = await this.executeScriptCore(
@@ -472,16 +368,11 @@ export class JsRunTool extends BaseBrowserTool {
       );
     }
   }
-  private integer(value: unknown, fallback: number, minimum = 0): number {
-    if (value === undefined) return fallback;
-    if (!Number.isSafeInteger(value) || (value as number) < minimum)
-      throw new Error("offset/limit 必须是范围内的安全整数");
-    return value as number;
-  }
   /**
    * run 的结果封装：完整结果 JSON 落为工作区结果文件（results/，跨重启
    * 持久），响应正文恒为前 WORKSPACE_READ_PAGE_CHARS（2000）字符预览，
-   * 超出部分引导用 read 从 index=2 按页续读——数据不重复进对话。
+   * 超出部分引导用 file_util(action="read", index=1) 按页（3000 字符/页）续读
+   * ——预览已覆盖第 1 页大半，从第 1 页读起不会漏内容，数据不重复进对话。
    * 持久化失败（超 10MB/配额触达）视为结果丢失风险，整单报错并保留
    * 预览与统计供模型缩小批次重跑。
    */
@@ -574,7 +465,7 @@ export class JsRunTool extends BaseBrowserTool {
         ? `完整结果 ${payload.totalChars as number} 字符已保存为 ${resultFile.path}（${resultFile.bytes} 字节）。`
         : "");
     if (resultFile && truncated) {
-      message += `\n本响应仅含前 ${WORKSPACE_READ_PAGE_CHARS} 字符预览——其余用 js_run(action="read", path="${resultFile.path}", index=2) 起按页续读（每页 ${WORKSPACE_READ_PAGE_CHARS} 字符）。`;
+      message += `\n本响应仅含前 ${WORKSPACE_READ_PAGE_CHARS} 字符预览——其余用 file_util(action="read", path="${resultFile.path}", index=1) 起按页续读（每页 3000 字符）。`;
     }
     if (saveError) {
       return {
@@ -657,7 +548,7 @@ export class JsRunTool extends BaseBrowserTool {
       ...(typeof args.frameId === "number" ? { frameId: args.frameId } : {}),
       onTabTarget: context?.onTabTarget,
       signal: context?.signal,
-    });
+    }, context);
     context?.signal?.throwIfAborted();
 
     // 结果落工作区结果文件（与 run 同一通道）：一次 crawl 产出一个独立
@@ -688,7 +579,7 @@ export class JsRunTool extends BaseBrowserTool {
       (resultFile
         ? `\n结果已保存为 ${resultFile.path}（${outcome.rows.length} 行，含 _target/_url 来源列，${resultFile.bytes} 字节）。` +
           (json.length > WORKSPACE_READ_PAGE_CHARS
-            ? `\n本响应仅含前 ${WORKSPACE_READ_PAGE_CHARS} 字符预览——其余用 js_run(action="read", path="${resultFile.path}", index=2) 起按页续读。`
+            ? `\n本响应仅含前 ${WORKSPACE_READ_PAGE_CHARS} 字符预览——其余用 file_util(action="read", path="${resultFile.path}", index=1) 起按页续读（每页 3000 字符）。`
             : "")
         : "") +
       (summary.blocked > 0
@@ -833,7 +724,7 @@ export class JsRunTool extends BaseBrowserTool {
   ): Promise<PageExecOutcome> {
     const engine = new PageExecTool();
     const cancel = () => {
-      void engine.kill(args, context).catch(() => undefined);
+      void engine.kill(args, context, context).catch(() => undefined);
     };
     context?.signal?.addEventListener("abort", cancel, { once: true });
     try {

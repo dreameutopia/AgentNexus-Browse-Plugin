@@ -32,7 +32,7 @@ export const mindmapAssistantConfig: PresetAgentConfig = {
 </scenario-boundary>
 
 <tools>
-- read_website：提取当前网页的结构化 Markdown 正文（作为图表内容素材；完整正文落盘 content/，长页按 path+page 续读）。
+- read_website：提取当前网页的结构化 Markdown 正文（作为图表内容素材；完整正文落盘 content/，长页用 file_util(action="read", path=该文件, index=页码) 续读）。
 - excalidraw_tool：在 Excalidraw 白板执行绘图指令；如需要会自动准备干净环境。
 </tools>
 

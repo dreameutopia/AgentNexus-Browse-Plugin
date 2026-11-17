@@ -219,18 +219,18 @@ export const categories: ToolCategory[] = [
     tools: [
       {
         name: 'file_util',
-        description: '会话工作区文件读写：创建/追加/编辑/删除文本文件，分页读取文本与 Office 文档',
+        description: '会话工作区唯一文件入口：文本文件创建/追加/编辑/删除、分页读取文本与 Office 文档、任意类型文件副本、目录盘点、路径与内容正则搜索',
         category: 'file-util',
-        version: '1.0.0',
+        version: '2.0.0',
         parameters: {
           action: {
             type: 'string',
-            description: '操作类型：read / create / append / edit / delete',
+            description: '操作类型：read / create / append / edit / delete / copy / list / search / grep',
             placeholder: 'read'
           },
           path: {
             type: 'string',
-            description: '工作区相对路径（inputs/ 下的上传文件、content/ 下的正文产物）',
+            description: '工作区相对路径（list/search 可省略或传 "." 表示根目录；grep 用 files）',
             placeholder: '例如：inputs/简历.pdf'
           },
           index: {
@@ -242,9 +242,44 @@ export const categories: ToolCategory[] = [
             type: 'string',
             description: 'create/append：文件内容；edit：全量重写的内容',
             placeholder: ''
+          },
+          find: {
+            type: 'string',
+            description: '仅 edit：待替换片段（默认须唯一命中）',
+            placeholder: ''
+          },
+          replace: {
+            type: 'string',
+            description: '仅 edit：替换后的新内容',
+            placeholder: ''
+          },
+          target: {
+            type: 'string',
+            description: '仅 copy：副本的完整目标路径（后缀必须与源文件一致）',
+            placeholder: '例如：outputs/report-copy.md'
+          },
+          pattern: {
+            type: 'string',
+            description: 'search/grep：正则表达式（search 匹配路径，grep 匹配行内容）',
+            placeholder: ''
+          },
+          files: {
+            type: 'string',
+            description: '仅 grep：要搜索的工作区相对路径列表（1~50 个）',
+            placeholder: 'content/a.md,content/b.md'
+          },
+          offset: {
+            type: 'number',
+            description: '仅 list/search/grep：分页偏移（条目维度）',
+            placeholder: '0'
+          },
+          limit: {
+            type: 'number',
+            description: '仅 list/search/grep：每页条目数（list ≤200、search/grep ≤30）',
+            placeholder: '100'
           }
         },
-        required: ['action', 'path']
+        required: ['action']
       }
     ]
   },
@@ -431,6 +466,60 @@ export const categories: ToolCategory[] = [
           }
         },
         required: ['action']
+      },
+      {
+        name: 'browser_wait',
+        description: '按条件等待页面达到目标状态（地址/文案/控件/网络/就绪），超时返回逐条件达成情况',
+        category: 'browser',
+        version: '1.0.0',
+        parameters: {
+          conditions: {
+            type: 'array',
+            description: '等待条件列表（全部满足才算命中）',
+            items: {
+              type: 'object',
+              properties: {
+                type: {
+                  type: 'string',
+                  description:
+                    'url_contains=地址含子串；url_matches=地址匹配正则；text_present=出现文案；' +
+                    'text_absent=文案消失；element_visible=选择器可见；element_hidden=选择器不可见；' +
+                    'network_idle=网络静默；page_ready=文档就绪',
+                  enum: [
+                    'url_contains',
+                    'url_matches',
+                    'text_present',
+                    'text_absent',
+                    'element_visible',
+                    'element_hidden',
+                    'network_idle',
+                    'page_ready'
+                  ]
+                },
+                value: {
+                  type: 'string',
+                  description: '条件参数：文案 / CSS 选择器 / 地址子串 / 正则'
+                }
+              },
+              required: ['type']
+            }
+          },
+          timeoutMs: {
+            type: 'number',
+            description: '等待上限（毫秒，默认 30000，上限 100000）',
+            default: 30000
+          },
+          intervalMs: {
+            type: 'number',
+            description: '轮询间隔（毫秒，默认 300）',
+            default: 300
+          },
+          tabId: {
+            type: 'number',
+            description: '目标标签页 ID（可选；省略=当前活动页）'
+          }
+        },
+        required: ['conditions']
       },
       {
         name: 'browser_extract_data',
@@ -785,7 +874,7 @@ export const categories: ToolCategory[] = [
     tools: [
       {
         name: 'read_website',
-        description: '读取网页正文为结构化 Markdown 并落盘 content/*.md：保留标题层级/表格/列表/代码块+语言/链接/引用；覆盖全部 iframe 与可访问 shadow root；单页 3000 字符、超出自动分页（CSV：content,page,totalPages,path）；支持 url 直读与 path+page 续读',
+        description: '读取网页正文为结构化 Markdown 并落盘 content/*.md：保留标题层级/表格/列表/代码块+语言/链接/引用；覆盖全部 iframe 与可访问 shadow root；单页 3000 字符、超出自动分页（CSV：content,page,totalPages,path）；支持 url 直读，后续页用 file_util(action="read", path, index) 续读',
         category: 'base',
         version: '1.0.0',
         parameters: {
@@ -891,28 +980,8 @@ export const categories: ToolCategory[] = [
       }
     ]
   },
-  {
-    id: 'common',
-    name: '通用工具',
-    icon: '🛠️',
-    tools: [
-      {
-        name: 'generic_wait',
-        description: '可随时停止的等待；超过 600 秒自动按 600 秒执行',
-        category: 'common',
-        version: '2.0.0',
-        parameters: {
-          waitSeconds: {
-            type: 'number',
-            description: '等待的秒数',
-            default: 1,
-            minimum: 0
-          }
-        },
-        required: ['waitSeconds']
-      }
-    ]
-  },
+  // 「通用」分组已随 generic_wait 移除：条件等待由 browser_wait 承载（browser 组），
+  // 空分组只会让面板出现无内容的标题行。
   {
     id: 'vision',
     name: '视觉工具',
@@ -1158,97 +1227,6 @@ export const categories: ToolCategory[] = [
           }
         },
         required: ['action']
-      }
-    ]
-  },
-  {
-    id: 'learn',
-    name: '网站学习',
-    icon: '✨',
-    tools: [
-      {
-        name: 'submit_skill',
-        description: '提交网站学习成果（技能草稿）并结束学习阶段；参数不合法返回可读错误且不结束',
-        category: 'learn',
-        version: '1.0.0',
-        parameters: {
-          name: {
-            type: 'string',
-            description: '技能名：全小写 kebab-case 英文，如 boss-zhipin-apply',
-            placeholder: 'boss-zhipin-apply'
-          },
-          description: {
-            type: 'string',
-            description: '技能描述：做什么 + 何时使用（中文，≤1024 字符）',
-            multiline: true,
-            placeholder: '在 BOSS直聘按条件搜索相似岗位并给 BOSS 发送打招呼消息，当用户要求批量投递时使用'
-          },
-          category: {
-            type: 'string',
-            description: '技能分类（如 automation / search / general）',
-            placeholder: 'automation'
-          },
-          tags: {
-            type: 'array',
-            items: { type: 'string' },
-            description: '中文标签数组（模式标签自动补）',
-            placeholder: '["BOSS直聘", "求职投递"]'
-          },
-          body: {
-            type: 'string',
-            description: 'SKILL.md 正文（Markdown，不含 frontmatter，≤15000 字符）',
-            multiline: true
-          },
-          allowedTools: {
-            type: 'array',
-            items: { type: 'string' },
-            description: '执行本技能需要的工具 ID 数组（非空）',
-            placeholder: '["browser_navigation", "browser_interact"]'
-          },
-          mode: {
-            type: 'string',
-            enum: ['text', 'vision'],
-            description: '目标操作模式：text=给纯文本模型，vision=给视觉模型',
-            default: 'text'
-          },
-          summary: {
-            type: 'string',
-            description: '可选：一句话执行摘要',
-            placeholder: '共 6 步，关键坑点是投递前需处理打招呼弹窗'
-          }
-        },
-        required: ['name', 'description', 'category', 'body', 'allowedTools', 'mode']
-      },
-      {
-        name: 'submit_validation',
-        description: '提交技能验证结论并结束验证阶段；passed=false 时 issues 必填',
-        category: 'learn',
-        version: '1.0.0',
-        parameters: {
-          passed: {
-            type: 'boolean',
-            description: '技能是否有效：true=按技能完成目标任务，false=存在关键步骤无法完成',
-            default: true
-          },
-          issues: {
-            type: 'array',
-            items: { type: 'string' },
-            description: '不通过时的问题清单（每条：哪一步 + 期望 + 实际）',
-            placeholder: '["第3步：技能写「点击立即投递」，实际按钮文案是「立即沟通」"]'
-          },
-          score: {
-            type: 'number',
-            description: '可选：0-100 完成度评分',
-            minimum: 0,
-            maximum: 100
-          },
-          summary: {
-            type: 'string',
-            description: '可选：一句话验证结论',
-            placeholder: '定位信息全部命中，仅打招呼弹窗分支缺失'
-          }
-        },
-        required: ['passed', 'issues']
       }
     ]
   }

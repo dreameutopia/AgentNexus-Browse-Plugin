@@ -6,6 +6,7 @@
 import type { ChatMessage } from '../utils/ai/ai-chat-api';
 import type { PageQuote } from '../utils/chat/page-quote';
 import type { UploadedFileEntry } from '@/utils/upload-files/upload-file-manifest';
+import type { CapturedElement } from '@/utils/element-capture/types';
 
 /**
  * 工具调用 UI 状态
@@ -160,6 +161,11 @@ export interface ExtendedChatMessage extends ChatMessage {
    * 用户气泡据此渲染引用块（原文 + 来源页面）；缺省 = 无引用。
    */
   pageQuote?: PageQuote;
+  /**
+   * 本条用户消息携带的网页元素选择（截图 + 类型 + 唯一选择器 + 备注）。
+   * 用户气泡据此渲染元素 chip；缺省 = 无元素选择。
+   */
+  capturedElements?: CapturedElement[];
   /**
    * 本条用户消息发送时绑定的智能体（稳定 ID + 可读名）。
    * 用户气泡底部据此展示「@的是哪个智能体」：渲染时优先按 id 解析当前

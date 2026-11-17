@@ -1,3 +1,4 @@
+import { browserChrome } from '@/tools/browser/browser-scope';
 /**
  * 插件页面能力边界。
  *
@@ -48,7 +49,7 @@ export async function resolveTabOrigin(
   let tab: chrome.tabs.Tab | undefined;
   if (tabId === undefined) {
     try {
-      const tabs = await chrome.tabs.query({
+      const tabs = await browserChrome(context).tabs.query({
         active: true,
         currentWindow: true,
       });
@@ -62,7 +63,7 @@ export async function resolveTabOrigin(
     if (!Number.isSafeInteger(tabId) || tabId < 0)
       throw new Error(`INVALID_TAB_ID: ${String(tabId)}`);
     try {
-      tab = await chrome.tabs.get(tabId);
+      tab = await browserChrome(context).tabs.get(tabId);
     } catch (error) {
       throw new Error(
         `TAB_NOT_FOUND: ${tabId}（${error instanceof Error ? error.message : String(error)}）`,

@@ -9,15 +9,21 @@
  * 绝不让数据丢失风险静默发生。
  */
 
-import type { ChatMessageRecord, ChatSessionMeta, ChatSessionKind } from '../types';
+import type { ChatMessageRecord, ChatSessionMeta, ConversationTag } from '../types';
 import type { MessageFeedback, SkillPartEntry } from '../../types/chat';
 import { chatDatabase, chatPreviewOf, type SessionListOptions } from './chat-database';
 import { normalizeModelRef, type ModelRef } from '../../utils/channels';
 import { imageStore, normalizeImageRefs } from '../images/image-store';
 import { prepareProtocolHistory } from './protocol-history';
 import type { PageQuote } from '../../utils/chat/page-quote';
+import {
+  capturedElementImageRefs,
+  normalizeCapturedElements,
+} from '../../utils/chat/selected-elements';
+import type { CapturedElement } from '@/utils/element-capture/types';
 import type { UploadedFileEntry } from '@/utils/upload-files/upload-file-manifest';
 import { notifySessionsChanged, type SessionChangeReason } from '@/utils/sessions/session-bridge';
+import { normalizeConversationTags } from '@/utils/sessions/conversation-tags';
 
 /** 自动标题取用户消息前缀长度 */
 const AUTO_TITLE_MAX = 30;
@@ -65,8 +71,8 @@ export interface CreateSessionInput {
   modelRef?: ModelRef | null;
   /** 系统提示词补充段（如 Deep Search 的笔记信息），随会话持久化以便重建同源 systemPrompt */
   systemPromptSuffix?: string;
-  /** 会话类型（缺省 = 'chat'；仅接受合法值，脏值一律回落 'chat'） */
-  kind?: ChatSessionKind;
+  /** 会话标签（写入前统一归一化；缺省 = 无标签） */
+  tags?: readonly ConversationTag[];
 }
 
 /** 「模型面有效上下文」读取结果（压缩摘要 + 压缩点之后的记录 + systemPrompt 派生输入） */
@@ -147,6 +153,7 @@ class TranscriptEngine {
 
   async createSession(input: CreateSessionInput = {}): Promise<ChatSessionMeta> {
     const now = Date.now();
+    const tags = normalizeConversationTags(input.tags);
     const meta: ChatSessionMeta = {
       chatId: generateId('chat'),
       title: DEFAULT_TITLE,
@@ -158,8 +165,7 @@ class TranscriptEngine {
       agentName: normalizeOptionalText(input.agentName),
       modelRef: normalizeModelRef(input.modelRef),
       systemPromptSuffix: normalizeOptionalText(input.systemPromptSuffix),
-      // 会话类型：只接受合法枚举值，其余（脏数据 / 旧版本）一律归一为 'chat'
-      kind: input.kind === 'site-learn' ? 'site-learn' : 'chat',
+      ...(tags.length > 0 ? { tags } : {}),
     };
     const created = await chatDatabase.createSession(meta);
     this.notifySessionChange('created');
@@ -172,6 +178,23 @@ class TranscriptEngine {
     const updated = await this.patchSessionMeta(chatId, { title: trimmed });
     if (updated) this.notifySessionChange('renamed');
     return updated;
+  }
+
+  /**
+   * 更新会话标签（列表展示用，不参与模型上下文）。
+   *
+   * 空集合 = 清除全部标签：patchSessionMeta 对显式 undefined 的约定是
+   * 删除该键，因此这里传 undefined 而不是空数组，避免在会话元信息里
+   * 留下一个永远为空的字段。
+   */
+  async setSessionTags(
+    chatId: string,
+    tags: readonly ConversationTag[],
+  ): Promise<ChatSessionMeta | null> {
+    const normalized = normalizeConversationTags(tags);
+    return this.patchSessionMeta(chatId, {
+      tags: normalized.length > 0 ? normalized : undefined,
+    });
   }
 
   /**
@@ -211,22 +234,16 @@ class TranscriptEngine {
   }
 
   /**
-   * 更新会话的系统提示词补充段（学习草稿等**非 LLM 输入**的会话级数据承载）。
+   * 更新会话的系统提示词补充段（会话级派生输入）。
    *
-   * 关键约束：learning / validating 运行期间本方法**只能承载非 LLM 输入**
-   * （如技能草稿 JSON），绝不能写入会话正在读取的 systemPromptSuffix
-   * ——那会让每轮请求的 systemPrompt 漂移，破坏上下文缓存命中的前提
-   * （systemPrompt 必须逐轮逐字稳定）。学习会话不使用 systemPromptSuffix
-   * （agentSystemOverride 走 override 路径，见 use-learn-session），故在此
-   * 落草稿是安全的；且 App 层对 kind='site-learn' 的会话屏蔽了普通发送
-   * 对该字段的回写（见 sendMessage），两层保护缺一不可。
+   * 关键约束：运行期间本方法**只能承载非 LLM 输入的会话级数据**，
+   * 绝不能写入会话正在读取的 systemPromptSuffix ——那会让每轮请求的
+   * systemPrompt 漂移，破坏上下文缓存命中的前提（systemPrompt 必须逐轮逐字稳定）。
    *
-   * 体积上限 20000 字符：草稿本体（正文 ≤15000）+ JSON 转义余量，
-   * 超出即截断并告警——宁可让回放侧解析失败走「无草稿」，
+   * 体积上限 20000 字符：超出即截断并告警，宁可让读取侧解析失败走「无数据」，
    * 也不能让单条记录无界增长拖垮会话元信息。
    *
-   * 失败降级：仅告警并通知订阅方，不抛错——草稿回放是增强能力，
-   * 不该反过来打断正在收尾的会话。
+   * 失败降级：仅告警并通知订阅方，不抛错。
    */
   async setSystemPromptSuffix(chatId: string, suffix: string): Promise<void> {
     try {
@@ -394,6 +411,8 @@ class TranscriptEngine {
     options?: {
       synthetic?: boolean;
       uploadedFiles?: readonly UploadedFileEntry[];
+      /** 本条消息携带的网页元素选择（缺省 = 无元素） */
+      capturedElements?: readonly CapturedElement[];
       /** 本条消息绑定的智能体引用（缺省 = 无智能体） */
       agentId?: string;
       agentName?: string;
@@ -405,9 +424,15 @@ class TranscriptEngine {
     const now = Date.now();
     const synthetic = options?.synthetic === true;
     const uploadedFiles = options?.uploadedFiles ?? [];
+    const capturedElements = normalizeCapturedElements(options?.capturedElements);
+    const capturedImageRefs = capturedElementImageRefs(capturedElements);
     const agentId = normalizeOptionalText(options?.agentId);
     const agentName = normalizeOptionalText(options?.agentName);
     const skills = normalizeSkillSnapshot(options?.skills);
+    // imageRefs 需同时覆盖「用户上传图片」与「元素截图」——图片库的孤儿回收
+    // 以「是否有消息引用」计数，元素截图只被 capturedElements 引用会让 GC
+    // 误判为孤儿；uploadImageRefs 仍只含用户上传，避免 UI 把元素截图当上传图。
+    const mergedImageRefs = normalizeImageRefs([...imageRefs, ...capturedImageRefs]);
     const record: ChatMessageRecord = {
       id: generateId('msg'),
       chatId,
@@ -419,15 +444,17 @@ class TranscriptEngine {
       toolCalls: [],
       status: 'done',
       ...(synthetic ? { synthetic: true } : {}),
-      ...(imageRefs.length > 0 ? { imageRefs: [...imageRefs] } : {}),
+      ...(mergedImageRefs.length > 0 ? { imageRefs: mergedImageRefs } : {}),
       // 恒写入（空上传 = 空数组）：与旧记录的 undefined 区分，UI 侧据此
       // 只把用户上传展示为气泡底部图片；vision 首截图等引擎注入的引用
       // 仅进 imageRefs（落库归一化补入），不进本字段
-      uploadImageRefs: [...imageRefs],
+      uploadImageRefs: normalizeImageRefs(imageRefs),
       // 上传文件条目随用户消息落库：气泡据此渲染「文件元素」（放大/预览/下载）
       ...(uploadedFiles.length > 0 ? { uploadedFiles: uploadedFiles.map(file => ({ ...file })) } : {}),
       // 用户确认的网页引用随本条消息落库（气泡引用块的唯一来源）
       ...(pageQuote ? { pageQuote } : {}),
+      // 用户捕获的网页元素随消息落库（气泡元素 chip 与备注的唯一来源）
+      ...(capturedElements.length > 0 ? { capturedElements } : {}),
       // 智能体绑定随消息落库（气泡底部 @ 标识的唯一来源；无智能体不写键）
       ...(agentId ? { agentId } : {}),
       ...(agentName ? { agentName } : {}),
@@ -448,7 +475,7 @@ class TranscriptEngine {
       // 引用独存的首条消息（正文为空）以引用原文作标题素材——否则新会话只能
       // 停在默认标题上，历史里认不出这是哪次对话。
       // 自动续跑的隐藏轮（synthetic）不参与标题：它只是流程指令，不是用户开题。
-      const titleSource = synthetic ? '' : content.trim() || pageQuote?.text.trim() || '';
+      const titleSource = synthetic ? '' : content.trim() || pageQuote?.text.trim() || capturedElements[0]?.description.trim() || '';
       const shouldAutoTitle = session?.title === DEFAULT_TITLE && titleSource.length > 0;
       if (shouldAutoTitle) {
         await this.patchSessionMeta(chatId, { title: titleSource.slice(0, AUTO_TITLE_MAX) });
@@ -568,6 +595,33 @@ class TranscriptEngine {
         error,
       );
       return 'failed';
+    }
+  }
+
+  /**
+   * 更新已落库用户消息的「捕获元素」快照（备注编辑）。
+   *
+   * 只动 capturedElements 一个键：截图引用在 appendUserMessage 时已并入
+   * imageRefs，备注编辑不产生新的图片引用，无需重写 imageRefs。空数组视为
+   * 删除该字段（图片回收按引用计数自然生效）。
+   */
+  async updateMessageCapturedElements(
+    messageId: string,
+    elements: readonly CapturedElement[],
+  ): Promise<boolean> {
+    try {
+      const normalized = normalizeCapturedElements(elements);
+      const updated = await chatDatabase.patchMessage(messageId, {
+        capturedElements: normalized.length > 0 ? normalized : undefined,
+      });
+      return !!updated;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[TranscriptEngine] 捕获元素备注写入失败（messageId=${messageId}）: ${reason}`,
+        error,
+      );
+      return false;
     }
   }
 

@@ -1,3 +1,5 @@
+import { browserChrome } from '@/tools/browser/browser-scope';
+import { BrowserScopeError, type BrowserScopeErrorCode } from './scope-errors';
 /**
  * 浏览器工具统一「目标标签页」引擎
  *
@@ -22,6 +24,7 @@ import { withDeadline, BrowserWaitError } from '../common/frame-read';
 import { injectionErrorText } from '../common/script-injection';
 
 export type TabTargetErrorCode =
+  | BrowserScopeErrorCode
   | 'TAB_ID_INVALID'
   | 'NO_ACTIVE_TAB'
   | 'TAB_NOT_FOUND'
@@ -97,11 +100,12 @@ function checkPage(
 }
 
 /** 丢弃标签页恢复：reload 后等待重新加载完成（有界；失败不抛，交由调用方判定） */
-async function recoverDiscardedTab(tabId: number, signal?: AbortSignal): Promise<chrome.tabs.Tab | null> {
+async function recoverDiscardedTab(tabId: number, signal?: AbortSignal, context?: ToolExecutionContext): Promise<chrome.tabs.Tab | null> {
   const deadline = performance.now() + DISCARD_RECOVER_TIMEOUT_MS;
   try {
-    await withDeadline(() => chrome.tabs.reload(tabId), DISCARD_RECOVER_TIMEOUT_MS, 'Restore discarded tab', signal);
-  } catch {
+    await withDeadline(() => browserChrome(context).tabs.reload(tabId), DISCARD_RECOVER_TIMEOUT_MS, 'Restore discarded tab', signal);
+  } catch (error) {
+    if (error instanceof BrowserScopeError) throw error;
     signal?.throwIfAborted();
     return null;
   }
@@ -110,9 +114,10 @@ async function recoverDiscardedTab(tabId: number, signal?: AbortSignal): Promise
     await new Promise((resolve) => setTimeout(resolve, 150));
     signal?.throwIfAborted();
     try {
-      const tab = await withDeadline(() => chrome.tabs.get(tabId), Math.max(1, deadline - performance.now()), 'Read restored tab', signal);
+      const tab = await withDeadline(() => browserChrome(context).tabs.get(tabId), Math.max(1, deadline - performance.now()), 'Read restored tab', signal);
       if (tab && !tab.discarded && tab.status === 'complete') return tab;
-    } catch {
+    } catch (error) {
+      if (error instanceof BrowserScopeError) throw error;
       signal?.throwIfAborted();
       return null; // 标签页在恢复期间被关闭
     }
@@ -131,6 +136,7 @@ export async function resolveTabTarget(options: TabTargetOptions): Promise<TabTa
   const signal = context?.signal;
   if (signal?.aborted) return fail('ABORTED', 'ABORTED：目标解析前已取消，未切换或恢复标签页。');
   const apiFailure = (error: unknown, fallback: TabTargetErrorCode, message: string): TabTargetResult => {
+    if (error instanceof BrowserScopeError) return fail(error.code, error.message);
     const code = signal?.aborted ? 'ABORTED' : error instanceof BrowserWaitError && error.code === 'INJECTION_TIMEOUT' ? 'TARGET_TIMEOUT' : fallback;
     return fail(code, `${code}：${message}：${injectionErrorText(error)}`);
   };
@@ -145,7 +151,7 @@ export async function resolveTabTarget(options: TabTargetOptions): Promise<TabTa
   if (normalized === 'blank') {
     let active: chrome.tabs.Tab | undefined;
     try {
-      [active] = await withDeadline(() => chrome.tabs.query({ active: true, currentWindow: true }), 5000, 'Query active tab', signal);
+      [active] = await withDeadline(() => browserChrome(context).tabs.query({ active: true, currentWindow: true }), 5000, 'Query active tab', signal);
     } catch (error) {
       return apiFailure(error, 'NO_ACTIVE_TAB', '读取当前活动标签页失败，可显式传 tabId 或用 browser_tabs 确认');
     }
@@ -160,13 +166,15 @@ export async function resolveTabTarget(options: TabTargetOptions): Promise<TabTa
   const tabId = normalized;
   let tab: chrome.tabs.Tab;
   try {
-    tab = await withDeadline(() => chrome.tabs.get(tabId), 5000, 'Read target tab', signal);
+    tab = await withDeadline(() => browserChrome(context).tabs.get(tabId), 5000, 'Read target tab', signal);
   } catch (error) {
     return apiFailure(error, 'TAB_NOT_FOUND', `无法读取标签页 ${tabId}，用 browser_tabs 查看可用标签页`);
   }
   if (!tab || tab.id !== tabId) return fail('TAB_NOT_FOUND', `TAB_NOT_FOUND：未返回标签页 ${tabId} 的有效信息。`);
   if (tab.discarded) {
-    const recovered = await recoverDiscardedTab(tabId, signal);
+    let recovered: chrome.tabs.Tab | null;
+    try { recovered = await recoverDiscardedTab(tabId, signal, context); }
+    catch (error) { return apiFailure(error, 'TAB_UNAVAILABLE', `无法恢复休眠标签页 ${tabId}`); }
     if (!recovered) {
       return fail(
         'TAB_UNAVAILABLE',
@@ -180,9 +188,9 @@ export async function resolveTabTarget(options: TabTargetOptions): Promise<TabTa
 
   // 先校验后切换：不把用户眼前页面切到一个必然失败的标签页
   try {
-    await withDeadline(() => chrome.tabs.update(tabId, { active: true }), 5000, 'Activate target tab', signal);
+    await withDeadline(() => browserChrome(context).tabs.update(tabId, { active: true }), 5000, 'Activate target tab', signal);
     try {
-      await withDeadline(() => chrome.windows.update(tab.windowId, { focused: true }), 3000, 'Focus target window', signal);
+      await withDeadline(() => browserChrome(context).windows.update(tab.windowId, { focused: true }), 3000, 'Focus target window', signal);
     } catch {
       signal?.throwIfAborted();
       // 窗口最小化 / 无权限 / API 不可用：激活已生效，聚焦失败不阻断
@@ -190,7 +198,7 @@ export async function resolveTabTarget(options: TabTargetOptions): Promise<TabTa
     // 切换后重新读取（拿到激活后的最新 url/status）；标签页恰好被关闭时
     // 单独给出 TAB_NOT_FOUND，避免误报成「切换失败」让模型重试切换
     try {
-      tab = await withDeadline(() => chrome.tabs.get(tabId), 5000, 'Verify activated tab', signal);
+      tab = await withDeadline(() => browserChrome(context).tabs.get(tabId), 5000, 'Verify activated tab', signal);
       if (!tab || tab.id !== tabId) return fail('TAB_NOT_FOUND', `TAB_NOT_FOUND：标签页 ${tabId} 在切换后未返回有效信息。`);
     } catch (error) {
       return apiFailure(error, 'TAB_NOT_FOUND', `无法核验切换后的标签页 ${tabId}`);

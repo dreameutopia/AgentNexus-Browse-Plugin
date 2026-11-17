@@ -35,7 +35,7 @@
   - `name` 做 `trim()`，空串回落 `id`；
   - 合法 id 同步进入 `selectedSkillNames`（供 `buildActivationRound`）。
 - 保持 `capability-boundary` 的计数逻辑（用 `selectedSkillNames.length !== input.skillNames.length`）不变，语义仍是「有技能被跳过」。
-- `disableSkillDiscovery` 分支行为不变。
+- 显式预选技能不参与技能发现的可承载性过滤（后续审计已调整）。
 
 ### 2. conversation-engine.ts —— 隐藏轮不写技能快照
 - `appendUserMessage` 的 options 中把 `skills` 改为 `runtime.hiddenUserInput ? undefined : runtime.selectedSkills`。

@@ -136,9 +136,6 @@
               <span v-if="row.archivedAt" class="hub-badge hub-sessions-badge-neutral">
                 {{ t('hub.sessions.archivedBadge') }}
               </span>
-              <span v-if="row.kind === 'site-learn'" class="hub-badge hub-sessions-badge-neutral">
-                {{ t('hub.sessions.learnBadge') }}
-              </span>
               <span class="hub-sessions__row-time">{{ formatRelativeTime(row.updatedAt) }}</span>
             </div>
             <div class="hub-sessions__row-preview">{{ row.lastMessagePreview || '—' }}</div>

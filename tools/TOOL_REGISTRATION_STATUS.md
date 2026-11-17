@@ -32,7 +32,6 @@ registerAllTools()                      (tools/index.ts)
  ├─ registerPythonTools()               tools/python/
  ├─ registerPlanTools()                 tools/plan/
  ├─ registerDataTools()                 tools/data/
- ├─ registerLearnTools()                tools/learn/
  └─ registerFileUtilTools()             tools/file-util/
 ```
 
@@ -74,7 +73,7 @@ registerAllTools()                      (tools/index.ts)
 - 例外（保持既有调用方兼容）：`task-submit`、`task-result`、`formFiller`、`semantic_compressor`、`interact`。
 - **`getPageMarkdown` 已下线**：结构化 Markdown 提取已并入 `read_website`
   （共用引擎 `tools/browser/page-doc-engine.ts` + `tools/browser/structured-page-payload.ts`：
-  结构化正文 + url/tabId 直读 + 单页 3000 字符分页 + `content/*.md` 落盘与 `path + page` 续读），
+  结构化正文 + url/tabId 直读 + 单页 3000 字符分页 + `content/*.md` 落盘，后续页用 `file_util(action="read", path, index)` 续读），
   预设与 Agent 提示词不要再引用旧名。
 - **`browser_get_page_text` 不再是默认注入工具**：正文读取统一走 `read_website`
   （`content/<url-slug>-<4位随机字母>.md` 交付物，CSV 列 `content,page,totalPages,path`）。
@@ -118,20 +117,18 @@ registerAllTools()                      (tools/index.ts)
   与磁盘目录不必一一对应（如 `browser_interact` 属 `browser`、`python_run` 属 `code`）；
   文档表格按运行期分类记录，由测试强制对齐。
 
-## 三、分类清单（截至本次核对，共 56 个）
+## 三、分类清单（截至本次核对，共 54 个；`generic_wait` 已删除，由 `browser_wait` 取代）
 
 | 分类 | 数量 | 工具名 |
 | --- | --- | --- |
 | automation | 8 | `ai_action`、`ai_locate`、`check_restricted_url`、`extract_data`、`file_upload_getter`、`file_uploader`、`formFiller`、`xiaozhi_config` |
 | base | 2 | `task-result`、`task-submit` |
-| browser | 23 | `browser_clean_page`、`browser_console`、`browser_dom_explore`、`browser_downloads`、`browser_extract_data`、`browser_get_page_html`、`browser_get_page_info`、`browser_get_page_text`、`browser_history_bookmarks`、`browser_interact`、`browser_media_control`、`browser_navigation`、`browser_network_capture`、`browser_network_request`、`browser_observe`、`browser_page_exec`、`browser_page_http`、`browser_page_ops`、`browser_resources`、`browser_send_command_to_inject_script`、`browser_tabs`、`browser_vector_search`、`read_website` |
+| browser | 24 | `browser_clean_page`、`browser_console`、`browser_dom_explore`、`browser_downloads`、`browser_extract_data`、`browser_get_page_html`、`browser_get_page_info`、`browser_get_page_text`、`browser_history_bookmarks`、`browser_interact`、`browser_media_control`、`browser_navigation`、`browser_network_capture`、`browser_network_request`、`browser_observe`、`browser_page_exec`、`browser_page_http`、`browser_page_ops`、`browser_resources`、`browser_send_command_to_inject_script`、`browser_tabs`、`browser_vector_search`、`browser_wait`、`read_website` |
 | code | 3 | `js_run`、`mermaid_renderer`、`python_run` |
-| common | 1 | `generic_wait` |
 | data | 1 | `data_ref_tool` |
 | excalidraw | 3 | `draw_on_canvas`、`excalidraw_tool`、`setup_excalidraw_canvas` |
 | file-util | 1 | `file_util` |
 | interact | 1 | `interact` |
-| learn | 2 | `submit_skill`、`submit_validation` |
 | note | 1 | `note_tool` |
 | office | 2 | `xlsx_tool`, `document_tool` |
 | plan | 1 | `plan_tool` |
@@ -164,4 +161,4 @@ toolRegistry.getToolIds();                  // 全量已注册工具名
 4. Agent system 提示词中的工具名与注册名保持一致；
 5. 运行 `npm run test:tools`——注册契约、预设、测试面板目录、本文档四者会被同时校验。
 
-会话内脚本统一使用全局默认 `js_run`，与 `python_run` 共用文本文件引擎；read 按页读取（每页 ≤2000 字符），run/crawl 的执行结果自动落盘工作区 `results/` 结果文件（`data_ref_tool` 治理与 `xlsx_tool` dataFiles 数据源共用该通道）。`browser_page_exec` 保留原实现（含 dataRef 暂存），仅供 backend；两者都不出现在智能体创建/编辑的可选工具组。
+会话内脚本：工作区文件统一由 `file_util` 承载（create/read/edit/delete/list/search/grep/copy，文本文件按每页 3000 字符分页，Office 文件只读转 Markdown），`js_run` 只负责 run/crawl，`python_run` 只负责 run；run/crawl 的执行结果自动落盘工作区 `results/` 结果文件（`data_ref_tool` 治理与 `xlsx_tool` dataFiles 数据源共用该通道）。`browser_page_exec` 保留原实现（含 dataRef 暂存），仅供 backend；两者都不出现在智能体创建/编辑的可选工具组。

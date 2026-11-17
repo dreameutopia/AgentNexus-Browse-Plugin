@@ -82,20 +82,8 @@ export function snapshotCustomSkills(){ return {}; }
         api.onLoad({ filter: /.*/, namespace: 'agent-store' }, () => ({
           contents: `export function getAllAgents(){ return []; } export function onAgentsChange(){ return () => {}; }`,
         }));
-        // 学习交接：与本用例无关的空实现
-        api.onResolve({ filter: /@\/utils\/learn\/learn-draft-store$/ }, args => ({ path: args.path, namespace: 'learn-store' }));
-        api.onLoad({ filter: /.*/, namespace: 'learn-store' }, () => ({
-          contents: `
-export const LEARN_TRANSFER_MARKER = 'x-agentnexus-learn-transfer';
-export async function readLearnDraft(){ return { status:'not-found' }; }
-export async function claimLearnDraftEditor(){ return { ok:false, error:'stub' }; }
-export async function saveLearnDraftEditor(){ return { ok:true }; }
-export async function completeLearnDraft(){ return { ok:true }; }
-export function isLearnDraftEditorState(){ return false; }
-`,
-        }));
         api.onLoad({ filter: /\.vue$/ }, args => {
-          const real = /hub[\\/]skills[\\/]SkillManager\.vue$|hub[\\/]skills[\\/]SkillDraftConfirm\.vue$|hub[\\/]components[\\/](CategorySelect|TagInput|HubSelect|HubSwitch|HubSegmented)\.vue$/.test(args.path);
+          const real = /hub[\\/]skills[\\/]SkillManager\.vue$|hub[\\/]components[\\/](CategorySelect|TagInput|HubSelect|HubSwitch|HubSegmented)\.vue$/.test(args.path);
           if (!real) return { contents: `export default {render:()=>null};`, loader: 'js' };
           const { descriptor } = parse(readFileSync(args.path, 'utf8'), { filename: args.path });
           return { contents: compileScript(descriptor, { id: args.path, inlineTemplate: true }).content, loader: 'ts', resolveDir: path.dirname(args.path) };

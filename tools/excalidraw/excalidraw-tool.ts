@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { executeScriptBounded } from '../common/frame-read';
 /**
  * Excalidraw 绘图工具 (vFinal - Blueprint Architecture)
@@ -71,45 +73,45 @@ export class ExcalidrawTool extends BaseTool {
     }
   };
   
-  private async _getOrCreateTab(shouldReset: boolean): Promise<number> {
+  private async _getOrCreateTab(shouldReset: boolean, context?: ToolExecutionContext): Promise<number> {
     const excalidrawUrl = 'https://excalidraw.com/';
     if (shouldReset) {
       this.log("正在重置环境：关闭所有已有的Excalidraw标签页...");
-      const allTabs = await chrome.tabs.query({});
+      const allTabs = await browserChrome(context).tabs.query({});
       const excalidrawTabs = allTabs.filter(tab => tab.url?.startsWith(excalidrawUrl));
       for (const tab of excalidrawTabs) {
-        if (tab.id) await chrome.tabs.remove(tab.id);
+        if (tab.id) await browserChrome(context).tabs.remove(tab.id);
       }
     } else {
-        const existingTabs = await chrome.tabs.query({ url: `${excalidrawUrl}*` });
+        const existingTabs = await browserChrome(context).tabs.query({ url: `${excalidrawUrl}*` });
         if (existingTabs.length > 0 && existingTabs[0].id) {
             this.log(`发现已存在的Excalidraw标签页: ${existingTabs[0].id}，将在此页面操作。`);
-            await chrome.tabs.update(existingTabs[0].id, { active: true });
+            await browserChrome(context).tabs.update(existingTabs[0].id, { active: true });
             return existingTabs[0].id;
         }
     }
     this.log("正在创建新的Excalidraw标签页...");
-    const newTab = await chrome.tabs.create({ url: excalidrawUrl, active: true });
+    const newTab = await browserChrome(context).tabs.create({ url: excalidrawUrl, active: true });
     await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
-            chrome.tabs.onUpdated.removeListener(listener);
+            browserChrome(context).tabs.onUpdated.removeListener(listener);
             reject(new Error("标签页加载超时(15秒)"));
         }, 15000);
         const listener = (tabId: number, changeInfo: chrome.tabs.TabChangeInfo) => {
             if (tabId === newTab.id && changeInfo.status === 'complete') {
                 clearTimeout(timeout);
-                chrome.tabs.onUpdated.removeListener(listener);
+                browserChrome(context).tabs.onUpdated.removeListener(listener);
                 resolve();
             }
         };
-        chrome.tabs.onUpdated.addListener(listener);
+        browserChrome(context).tabs.onUpdated.addListener(listener);
     });
     this.log(`新标签页 ${newTab.id} 已加载完成。`);
     return newTab.id!;
   }
 
   // 等待页面完全加载并注入脚本 (桥接 + 主世界处理器)
-  private async waitForPageAndInjectScript(tabId: number, timeout: number = 30000): Promise<void> {
+  private async waitForPageAndInjectScript(tabId: number, timeout: number = 30000, context?: ToolExecutionContext): Promise<void> {
     const pollInterval = 500;
     const startTime = Date.now();
 
@@ -119,7 +121,7 @@ export class ExcalidrawTool extends BaseTool {
           return reject(new Error('等待页面加载超时'));
         }
         try {
-          const tab = await chrome.tabs.get(tabId);
+          const tab = await browserChrome(context).tabs.get(tabId);
           if (tab.status === 'complete' && tab.url?.includes('excalidraw.com')) {
             this.log(`页面加载完成，注入桥接脚本...`);
             // 1) 注入通用桥接脚本到隔离世界 (用于与主世界通讯)
@@ -127,7 +129,7 @@ export class ExcalidrawTool extends BaseTool {
               target: { tabId },
               files: ['inject-scripts/core/inject-bridge.js'],
               world: 'ISOLATED',
-            });
+            }, undefined, undefined, context);
 
             this.log(`桥接脚本注入成功，注入主世界控制脚本(ui/excalidraw.js)...`);
             // 2) 在主世界注入 Excalidraw 控制脚本
@@ -136,7 +138,7 @@ export class ExcalidrawTool extends BaseTool {
                 files: ['inject-scripts/ui/excalidraw.js'],
                 // 强制在主世界注入以访问页面API
                 world: 'MAIN',
-              });
+              }, undefined, undefined, context);
 
             this.log(`主世界控制脚本注入成功`);
             // 等待一小段时间，确保监听器已准备就绪
@@ -153,7 +155,7 @@ export class ExcalidrawTool extends BaseTool {
     });
   }
 
-  private async _sendMessage(tabId: number, eventName: string, payload: any): Promise<any> {
+  private async _sendMessage(tabId: number, eventName: string, payload: any, context?: ToolExecutionContext): Promise<any> {
     return new Promise((resolve, reject) => {
       const timeout = 30000;
       const timeoutId = setTimeout(() => {
@@ -162,10 +164,11 @@ export class ExcalidrawTool extends BaseTool {
       
       // 通过通用桥接发送到主世界
       const serialized = payload ? JSON.stringify(payload) : '{}';
-      chrome.tabs.sendMessage(tabId, { action: eventName, payload: serialized, targetWorld: 'MAIN' }, (response) => {
+      browserChrome(context).tabs.sendMessage(tabId, { action: eventName, payload: serialized, targetWorld: 'MAIN' }, (response) => {
         clearTimeout(timeoutId);
-        if (chrome.runtime.lastError) {
-          return reject(new Error(`消息发送失败: ${chrome.runtime.lastError.message}`));
+        const lastError = browserChrome(context).runtime.lastError;
+        if (lastError) {
+          return reject(new Error(`消息发送失败: ${lastError.message}`));
         }
         if (!response) {
           return reject(new Error('脚本未响应。可能页面不支持或需要刷新。'));
@@ -189,13 +192,13 @@ export class ExcalidrawTool extends BaseTool {
     });
   }
 
-  async execute(params: any): Promise<ToolResult> {
+  async execute(params: any, context?: ToolExecutionContext): Promise<ToolResult> {
     try {
       this.log(`Executing Excalidraw command...`, params);
       
-      const tabId = await this._getOrCreateTab(!!params.reset_environment);
+      const tabId = await this._getOrCreateTab(!!params.reset_environment, context);
       // 等待页面加载并注入桥接与主世界控制脚本
-      await this.waitForPageAndInjectScript(tabId);
+      await this.waitForPageAndInjectScript(tabId, undefined, context);
 
       const operations = [] as Array<{ eventName: string; payload?: any }>;
       if (params.cleanup || params.reset_environment) operations.push({ eventName: 'cleanup' });
@@ -207,13 +210,13 @@ export class ExcalidrawTool extends BaseTool {
       
       for(const op of operations) {
           this.log(`Sending command: ${op.eventName}...`);
-          const result = await this._sendMessage(tabId, op.eventName, op.payload);
+          const result = await this._sendMessage(tabId, op.eventName, op.payload, context);
           finalResult.operations.push({ command: op.eventName, result });
       }
 
       if (params.get_scene) {
           this.log(`Sending command: getSceneElements...`);
-          finalResult.sceneElements = await this._sendMessage(tabId, 'getSceneElements', {});
+          finalResult.sceneElements = await this._sendMessage(tabId, 'getSceneElements', {}, context);
       }
 
       return { 

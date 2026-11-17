@@ -68,7 +68,7 @@ export async function saveWorkspace(
   indexWorkspaceEntries(workspaceRoot(chatId), entries);
   return chatDatabase.updateWorkspace(chatId, current => {
     if (current?.revision !== expectedRevision) {
-      throw new WorkspaceOperationError('CONFLICT', 'Workspace changed during the operation. Read the latest files before retrying.');
+      throw new WorkspaceOperationError('CONFLICT', '工作区在操作期间被并发修改——请先用 file_util(action="read") 读取最新内容后重试');
     }
     return { snapshot: { revision: crypto.randomUUID(), entries }, result: undefined };
   }, signal);

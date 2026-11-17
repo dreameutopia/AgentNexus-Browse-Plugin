@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { readPageFrames } from '../common/frame-read';
 /**
  * 跨标签页内容检索工具（browser_vector_search）
@@ -99,7 +101,7 @@ export class VectorSearchTabsContentTool extends BaseBrowserTool {
     }
   };
 
-  async execute(args: { query?: string; maxResults?: number; includeTitles?: boolean }): Promise<ToolResult> {
+  async execute(args: { query?: string; maxResults?: number; includeTitles?: boolean }, context?: ToolExecutionContext): Promise<ToolResult> {
     this.ensureBackgroundContext();
 
     try {
@@ -116,7 +118,7 @@ export class VectorSearchTabsContentTool extends BaseBrowserTool {
       const includeTitles = args?.includeTitles !== false;
       const needle = query.toLowerCase();
 
-      const tabs = await chrome.tabs.query({});
+      const tabs = await browserChrome(context).tabs.query({});
       const candidates = tabs
         .filter(tab => typeof tab.id === 'number' && !!tab.url && !isRestrictedUrl(tab.url))
         .slice(0, MAX_TABS_SCANNED);
@@ -132,7 +134,7 @@ export class VectorSearchTabsContentTool extends BaseBrowserTool {
           const tab = candidates[cursorIndex++];
           if (Date.now() >= deadline) { skipped.push({ tabId: tab.id!, url: tab.url!, reason: 'READ_BUDGET_EXCEEDED：本轮检索预算用尽，此标签页未读取' }); continue; }
           let text: string;
-          try { text = await this.readTabText(tab.id!, Math.min(1800, deadline - Date.now())); }
+          try { text = await this.readTabText(tab.id!, Math.min(1800, deadline - Date.now()), context); }
           catch (error) { skipped.push({ tabId: tab.id!, url: tab.url!, reason: error instanceof Error ? error.message : String(error) }); continue; }
           scanned += 1;
 
@@ -193,7 +195,7 @@ export class VectorSearchTabsContentTool extends BaseBrowserTool {
    * 读取标签页的可见文本（只取可见正文，不做结构化解析）。
    * 失败保留具体原因，由调用方计入 skipped；等待受本轮剩余预算约束。
    */
-  private async readTabText(tabId: number, timeoutMs: number): Promise<string> {
+  private async readTabText(tabId: number, timeoutMs: number, context?: ToolExecutionContext): Promise<string> {
     const results = await readPageFrames({
       target: { tabId },
       func: (limit: number) => {
@@ -203,7 +205,7 @@ export class VectorSearchTabsContentTool extends BaseBrowserTool {
         return text.length > limit ? text.slice(0, limit) : text;
       },
       args: [MAX_TEXT_PER_TAB],
-    }, { operation: 'tab-text-search', timeoutMs, frameTimeoutMs: timeoutMs });
+    }, { operation: 'tab-text-search', timeoutMs, frameTimeoutMs: timeoutMs }, context);
     const value = results?.[0]?.result;
     if (typeof value !== 'string') throw new Error('INVALID_RESULT：页面未返回文本');
     return value;

@@ -13,6 +13,7 @@ const user = { id: 'user', role: 'user', content: 'original' };
 const alerts = [], sent = [];
 const ports = {
   messages: ref([user, failed()]), activeChatId: ref('chat'), isAiResponding: ref(false), sendInFlight: ref(false), isStopping: ref(false),
+  browserWindowPicker: ref(undefined),
   activeSessionIsLearn: false, showAlert: async text => alerts.push(text), t: key => key,
   executeSend: async retry => sent.push(retry),
 };

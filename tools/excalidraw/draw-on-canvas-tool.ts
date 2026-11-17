@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { BaseTool } from '../base-tool';
 import { ToolResult } from '@/common/tool-handler';
 import { ToolMetadata } from '../registry';
@@ -49,12 +51,13 @@ export class DrawOnCanvasTool extends BaseTool {
     }
   };
 
-  private async _sendViaBridge<T = any>(tabId: number, action: string, payload?: any): Promise<T> {
+  private async _sendViaBridge<T = any>(tabId: number, action: string, payload?: any, context?: ToolExecutionContext): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const serialized = payload ? JSON.stringify(payload) : '{}';
-      chrome.tabs.sendMessage(tabId, { action, payload: serialized, targetWorld: 'MAIN' }, (response) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(`向主世界脚本发送消息失败: ${chrome.runtime.lastError.message}`));
+      browserChrome(context).tabs.sendMessage(tabId, { action, payload: serialized, targetWorld: 'MAIN' }, (response) => {
+        const lastError = browserChrome(context).runtime.lastError;
+        if (lastError) {
+          reject(new Error(`向主世界脚本发送消息失败: ${lastError.message}`));
           return;
         }
         if (!response) {
@@ -70,8 +73,8 @@ export class DrawOnCanvasTool extends BaseTool {
     });
   }
 
-  private async _sendCommandsToScript(actions: DrawAction[]): Promise<any> {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  private async _sendCommandsToScript(actions: DrawAction[], context?: ToolExecutionContext): Promise<any> {
+    const tabs = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
     if (!tabs[0]?.id) {
       throw new Error('无法获取当前活动标签页');
     }
@@ -80,7 +83,7 @@ export class DrawOnCanvasTool extends BaseTool {
     // 健康检查：通过桥接调用 getSceneElements 确认主世界控制脚本已就绪
     this.log('正在检查控制脚本就绪状态...');
     try {
-      await this._sendViaBridge(tabId, 'getSceneElements', {});
+      await this._sendViaBridge(tabId, 'getSceneElements', {}, context);
     } catch (_err) {
       throw new Error('Excalidraw控制脚本未就绪或未注入。请先调用初始化工具。');
     }
@@ -101,7 +104,7 @@ export class DrawOnCanvasTool extends BaseTool {
       if (!eles || eles.length === 0) {
         throw new Error(`第 ${i + 1} 个 add 指令缺少有效的元素数据`);
       }
-      await this._sendViaBridge(tabId, 'addElement', { eles });
+      await this._sendViaBridge(tabId, 'addElement', { eles }, context);
     }
 
     return { message: `成功执行 ${actions.length} 个指令` };
@@ -127,7 +130,7 @@ export class DrawOnCanvasTool extends BaseTool {
     return { valid: true };
   }
 
-  async execute(params: { actions: DrawAction[] }): Promise<ToolResult> {
+  async execute(params: { actions: DrawAction[] }, context?: ToolExecutionContext): Promise<ToolResult> {
     try {
       this.log(`开始执行画布绘图... (${params.actions.length} 条指令)`, 'info');
 
@@ -140,7 +143,7 @@ export class DrawOnCanvasTool extends BaseTool {
         return { success: false, error: `绘图指令验证失败: ${validation.error}` };
       }
 
-      const drawResult = await this._sendCommandsToScript(params.actions);
+      const drawResult = await this._sendCommandsToScript(params.actions, context);
       
       this.log('批量绘图执行成功', drawResult);
       return {

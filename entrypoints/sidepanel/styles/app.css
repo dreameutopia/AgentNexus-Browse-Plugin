@@ -166,6 +166,50 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+/* Python 运行时安装引导标签：欢迎语下的中性玻璃胶囊，hover 轻抬升 */
+.greeting-python-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 16px;
+  padding: 7px 16px;
+  border: 1px solid var(--line-soft, #e4e2de);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #292824;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1.5;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(41, 40, 36, 0.05);
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease,
+    background 0.18s ease;
+}
+
+.greeting-python-tag:hover {
+  transform: translateY(-1px);
+  border-color: #cfccc5;
+  background: #fbfaf8;
+  box-shadow: 0 4px 12px rgba(41, 40, 36, 0.08);
+}
+
+.greeting-python-tag:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(41, 40, 36, 0.05);
+}
+
+.greeting-python-tag:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(41, 40, 36, 0.18);
+}
+
+.greeting-python-tag__emoji {
+  font-size: 14px;
+  line-height: 1;
+}
+
 @keyframes welcome-enter {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
@@ -447,79 +491,7 @@ h1 {
   opacity: 0.85;
 }
 
-/* ──── 网站学习 ──── */
 
-/* Learning follows the same warm neutral surfaces as the rest of the panel. */
-.learn-input-notice {
-  background: var(--surface-soft, #f3f1ed);
-  color: var(--ink-secondary, #787671);
-}
-
-.learn-input-notice:hover {
-  background: var(--surface-soft, #f3f1ed);
-  box-shadow: none; /* 提示态无动作可执行，不给 hover 放大反馈 */
-}
-
-/* Independent card: never inherit the disabled-input banner's flex/min-size. */
-.learn-recover-notice {
-  container-type: inline-size;
-  min-width: 0;
-  box-sizing: border-box;
-  margin-bottom: 12px;
-  padding: 12px;
-  border: 1px solid var(--line-soft, #e4e2de);
-  border-radius: 12px;
-  background: var(--surface-soft, #f3f1ed);
-  color: var(--ink-secondary, #787671);
-}
-.learn-recover-summary {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  min-width: 0;
-  font-size: 12px;
-  line-height: 1.6;
-}
-.learn-recover-summary svg { flex: 0 0 auto; margin-top: 2px; }
-.learn-recover-summary span { min-width: 0; overflow-wrap: anywhere; }
-.learn-recover-sync-error { margin: 8px 0 0; color: var(--ink-secondary, #787671); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-.learn-recover-actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 10px;
-}
-.learn-recover-btn {
-  width: 100%;
-  min-width: 0;
-  min-height: 34px;
-  box-sizing: border-box;
-  padding: 7px 10px;
-  border: 1px solid var(--line-soft, #e4e2de);
-  border-radius: 8px;
-  background: var(--surface-card, #fff);
-  color: var(--ink-primary, #292824);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.5;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-.learn-recover-btn:hover { background: var(--surface-hover, #eeece7); }
-.learn-recover-btn--primary { background: var(--ink-primary, #292824); border-color: var(--ink-primary, #292824); color: #fff; }
-.learn-recover-btn--primary:hover { background: #44413c; border-color: #44413c; }
-.learn-recover-btn:focus-visible { outline: 2px solid var(--ink-secondary, #787671); outline-offset: 2px; }
-.learn-recover-btn:disabled { opacity: .5; cursor: not-allowed; }
-.learn-recover-btn--ignore { grid-column: 1 / -1; background: transparent; color: var(--ink-secondary, #787671); }
-@container (max-width: 420px) {
-  .learn-recover-actions { grid-template-columns: minmax(0, 1fr); }
-}
-@media (max-width: 480px) {
-  .learn-recover-actions { grid-template-columns: minmax(0, 1fr); }
-}
 
 /* Learning entry uses the shared neutral toolbar treatment. */
 .learn-entry-btn {
@@ -570,6 +542,115 @@ h1 {
   display: flex;
   align-items: center;
   gap: 8px; /* 统一按钮间距 */
+}
+
+/* ── 输入区「+」入口：附件上传 + 元素捕获（替代原右侧纸夹按钮） ── */
+.composer-add-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.composer-add-btn.is-open {
+  background: var(--line-soft, #e4e2de);
+  color: var(--ink-primary, #292824);
+}
+
+.composer-add-btn.is-spinning svg {
+  animation: composer-add-spin 0.46s ease;
+}
+
+@keyframes composer-add-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.composer-add-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 238px;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--surface-hover, #eeece7);
+  background: #ffffff;
+  box-shadow: 0 12px 32px -10px rgba(17, 24, 39, 0.18), 0 2px 8px rgba(17, 24, 39, 0.06);
+  /* 高于全局 overlay（9999），保证卡片可点击 */
+  z-index: 10000;
+}
+
+.composer-add-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink-secondary, #787671);
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.composer-add-item:hover:not(:disabled) {
+  background: #f4f5f7;
+  color: var(--ink-primary, #292824);
+}
+
+.composer-add-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.composer-add-item-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: rgba(120, 118, 113, 0.1);
+  color: var(--ink-secondary, #787671);
+  flex: 0 0 auto;
+}
+
+.composer-add-item-icon.is-capture {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+
+.composer-add-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.composer-add-item-title {
+  font-size: 12.5px;
+  line-height: 1.3;
+  color: var(--ink-primary, #292824);
+}
+
+.composer-add-item-desc {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--ink-muted, #9b9790);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 捕获元素 chip 行（输入框与按钮组上方独占一行） */
+.captured-elements-bar {
+  margin: 10px 0 0;
+  min-width: 0;
 }
 
 /* 会话内模型选择器（替换原“推理”按钮）：按钮 + 向上弹出的下拉菜单。

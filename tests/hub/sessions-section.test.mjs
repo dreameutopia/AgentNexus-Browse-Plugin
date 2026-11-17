@@ -143,8 +143,7 @@ export const sessionDeletionEngine = {
     fireChange('deleted');
     return {
       transcriptDeleted: true, imagesDeleted: 0, filesDeleted: 0,
-      learnDraftsPurged: 0, activePointerCleared: false, localRunRegistryCleared: false,
-      runAborted: false, issues: [],
+      activePointerCleared: false, runAborted: false, issues: [],
     };
   },
 };
@@ -171,9 +170,6 @@ export function watchSessionsChanged(handler) {
   return () => state.changeHandlers.delete(handler);
 }
 export async function queryWorkerBusySessions() { return []; }
-export async function readSidepanelLocalRunningChats() { return []; }
-export async function setLocalRunningChat() {}
-export const SIDEPANEL_LOCAL_RUNNING_KEY = 'sidepanel.localRunningChats';
 
 export const SESSION_ARCHIVE_POLICY_STORAGE_KEY = 'agentNexusSessionArchivePolicy';
 export const SESSION_ARCHIVE_MIN_RETENTION_DAYS = 1;

@@ -4,7 +4,7 @@
  * 「会话管理」分区（entrypoints/hub/sessions）要在**另一个扩展页面**里操作
  * 侧边栏持有的会话，绕不开三类跨上下文事实：
  *   1. **谁正在执行**：普通对话的运行由后台 worker 持有（inFlightRuns），
- *      学习 / 验证类的运行则由侧边栏本地引擎持有 —— 两处都要覆盖，
+ *      侧边栏本地引擎也可能持有一部分运行 —— 两处都要覆盖，
  *      否则会出现「管理中心显示空闲、实际正在跑」的窗口；
  *   2. **侧边栏当前开着哪个会话**：会话指针在 chrome.storage.session，
  *      管理中心可直接读取，无需任何消息往返；
@@ -45,9 +45,6 @@ export type SessionChangeReason =
   | 'unarchived'
   | 'deleted'
   | 'swept';
-
-/** 侧边栏本地运行中的会话（chrome.storage.session，数组形态便于整体覆盖写） */
-export const SIDEPANEL_LOCAL_RUNNING_KEY = 'sidepanel.localRunningChats';
 
 /** chrome.runtime 不可用时的统一降级：无广播、无监听、无查询 */
 function runtimeAvailable(): boolean {
@@ -144,71 +141,19 @@ export async function readSidepanelActiveChatId(): Promise<string> {
 }
 
 /**
- * 读取侧边栏本地引擎正在运行的会话（学习 / 验证类运行）。
+ * 汇总「正在执行」的会话集合（仅后台 worker 运行）。
  *
- * 走 chrome.storage.session 而非消息：侧边栏本地运行与后台 worker 运行是
- * 两个互斥的持有者，用消息查询会撞上「多应答方抢答」的 Chrome 语义；
- * 存储读取则是单向的、只读的，不存在应答权竞争。
- */
-export async function readSidepanelLocalRunningChats(): Promise<string[]> {
-  if (!runtimeAvailable() || !chrome.storage?.session) return [];
-  try {
-    const stored = await chrome.storage.session.get(SIDEPANEL_LOCAL_RUNNING_KEY);
-    const value = stored[SIDEPANEL_LOCAL_RUNNING_KEY];
-    return Array.isArray(value) ? value.filter(id => typeof id === 'string' && id.length > 0) : [];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * 汇总「正在执行」的会话集合（后台 worker 运行 ∪ 侧边栏本地运行）。
- *
- * 这是「能否切换 / 删除该会话」的唯一判据。两个来源都取并集：只看其一
- * 都会漏掉另一侧持有的运行（表现为「以为空闲，实际正在写库」）。
+ * 这是「能否切换 / 删除该会话」的唯一判据。侧边栏本地引擎与后台 worker
+ * 的运行持有者已收敛为后台 worker 一处；若未来重新引入本地持有者，必须
+ * 同步更新本函数与删除引擎，避免出现「以为空闲，实际正在写库」。
  */
 export async function listBusySessions(chatIds: readonly string[]): Promise<Set<string>> {
   const busy = new Set<string>();
   if (chatIds.length === 0) return busy;
-  const [workerBusy, localRunning] = await Promise.all([
-    queryWorkerBusySessions(chatIds),
-    readSidepanelLocalRunningChats(),
-  ]);
+  const workerBusy = await queryWorkerBusySessions(chatIds);
   const scope = new Set(chatIds);
   for (const id of workerBusy) if (scope.has(id)) busy.add(id);
-  for (const id of localRunning) if (scope.has(id)) busy.add(id);
   return busy;
-}
-
-/**
- * 登记 / 注销「侧边栏本地引擎正在运行的会话」。
- *
- * 只有侧边栏会调用本方法：学习 / 验证类的运行由侧边栏本地引擎持有
- * （不走后台端口），后台因此看不到它们 —— 侧边栏必须自报，管理中心
- * 才能在「切换 / 删除」前拦住这些会话。
- *
- * 写入是整体覆盖：读出当前集合 → 增删一项 → 写回。比「逐项增删」更
- * 稳（并发写入不会互相抹掉对方的修改），且集合极小（同时最多一两个）。
- */
-export async function setLocalRunningChat(chatId: string, running: boolean): Promise<void> {
-  if (!chatId || !runtimeAvailable() || !chrome.storage?.session) return;
-  try {
-    const stored = await chrome.storage.session.get(SIDEPANEL_LOCAL_RUNNING_KEY);
-    const raw = stored[SIDEPANEL_LOCAL_RUNNING_KEY];
-    const current = Array.isArray(raw)
-      ? raw.filter((id): id is string => typeof id === 'string' && id.length > 0)
-      : [];
-    const next = running
-      ? current.includes(chatId)
-        ? current
-        : [...current, chatId]
-      : current.filter(id => id !== chatId);
-    // 无变化不写：避免每次运行状态查询都产生一次存储写入与变更事件
-    if (next.length === current.length && next.every((id, index) => id === current[index])) return;
-    await chrome.storage.session.set({ [SIDEPANEL_LOCAL_RUNNING_KEY]: next });
-  } catch (error) {
-    console.warn('[SessionBridge] 上报侧边栏本地运行态失败:', error);
-  }
 }
 
 /** 请求侧边栏打开会话的结果（三态，供调用方给出准确的用户提示） */
@@ -267,7 +212,7 @@ export function notifySessionDeleted(chatId: string): void {
  * 超时兜底：接收方存在但迟迟不应答（例如侧边栏正卡在同步任务里）时，
  * 挂起的通道会一直占着 —— 加有界超时，超时按「无应答」处理。
  */
-function sendExtensionMessage<T>(message: unknown, timeoutMs = 5000): Promise<T | null> {
+export function sendExtensionMessage<T>(message: unknown, timeoutMs = 5000): Promise<T | null> {
   if (!runtimeAvailable()) return Promise.resolve(null);
   return new Promise<T | null>(resolve => {
     let settled = false;

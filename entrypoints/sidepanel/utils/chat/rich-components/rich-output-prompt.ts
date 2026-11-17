@@ -66,10 +66,11 @@ const TEACHING: Record<RichComponentId, ComponentTeaching> = {
       '{"type":"chart","title":"近7日活跃","columns":["日期","新增","活跃"],"rows":[["周一",12,30],["周二",18,41]]}',
   },
   stat: {
-    scenario: '2~6 个关键指标并列',
+    scenario: '2~6 个关键指标并列（6 是硬上限）',
     usage:
       '列：指标名 / 当前值 / 可选说明 / 可选变化（"+12.3%" 或 "-8.2%" 形式写最后一列，界面按符号自动判涨跌）；' +
-      '变化没有确切数据就整列省略或该行不写，禁止估算、禁止用 0 / "-" / "—" 占位；超过 6 个指标改用 table',
+      '变化没有确切数据就整列省略或该行不写，禁止估算、禁止用 0 / "-" / "—" 占位；' +
+      '最多 6 行：手上有 7 个及以上指标时，先删到最重要的 6 个，或整份改用 table——不要超限硬写，也不要拆成多条 stat',
   },
   table: {
     scenario: '多列数据，需要排序、数值右对齐或状态标注',
@@ -253,6 +254,12 @@ export function buildRichOutputSystemPrompt(allowed?: readonly string[]): string
   // —— 使用纪律 ——
   lines.push('<discipline>');
   lines.push('- 单条回复的组件总数不超过 3 个；先用简短文字给出结论，再附组件；');
+  if (selected.some(spec => spec.id === 'stat')) {
+    lines.push('- stat 最多 6 行：第 7 个指标起整份改用 table，不要拆成多条 stat；');
+  }
+  if (selected.some(spec => spec.id === 'insight')) {
+    lines.push('- insight 最多 12 行：超出整份改用 table；');
+  }
   lines.push(
     '- 用户明确要求纯文本、Markdown 表格或指定格式时，以用户要求为准；' +
       '只有一两句话、单个数值或纯文字说明时不要用组件。',

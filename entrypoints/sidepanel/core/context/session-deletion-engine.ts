@@ -15,15 +15,11 @@
  *   3. 计划存储（plan-store）：dropPlan 落删除墓碑，防其它窗口的副本复活；
  *   4. 上传文件库（AgentNexusFileDB）：会话注册的全部文件整会话回收
  *      （文件解析出的正文即文件记录的 text 字段，随文件一并消失）；
- *   5. 学习交接件（learn-draft-store）：会话作为来源产出的技能草稿交接件
- *      **连同正文与编辑副本彻底删除**——只把状态翻成 discarded 会让
- *      无主正文永久留在 chrome.storage.local；
- *   6. 会话级运行态（chrome.storage.session）：活跃会话指针指向被删会话时
- *      清空（否则下次打开侧边栏会试图恢复一个已不存在的会话）；侧边栏本地
- *      运行登记中的本会话条目一并剔除（覆盖面板崩溃 / 收尾失败留下的陈旧项）；
- *   7. 运行中会话：先中止在跑的对话（否则运行会话删除后继续写入，
+ *   5. 会话级运行态（chrome.storage.session）：活跃会话指针指向被删会话时
+ *      清空（否则下次打开侧边栏会试图恢复一个已不存在的会话）；
+ *   6. 运行中会话：先中止在跑的对话（否则运行会话删除后继续写入，
  *      产生孤儿图片与被丢弃的快照）；
- *   8. 孤儿回收（sweepOrphanImages）：覆盖「图片已入库但消息落库失败 /
+ *   7. 孤儿回收（sweepOrphanImages）：覆盖「图片已入库但消息落库失败 /
  *      运行竞态残留」的历史遗留——带创建宽限期，绝不误删在途图片。
  *
  * **刻意不删的面**（删除会话不应波及它们）：
@@ -31,8 +27,8 @@
  *   - data-ref 暂存（utils/data-ref-store）：全局暂存板，当前无会话维度；
  *   - 技能 / 智能体 / 用量统计 / Python 包缓存：全局资源，与会话无关。
  *
- * 顺序即正确性：先中止运行 → 清本地运行登记 → 采集引用 → 删除转录 →
- * 清计划 → 清上传文件 → 清学习交接件 → 清活跃指针 → 按引用回收图片。
+ * 顺序即正确性：先中止运行 → 采集引用 → 删除转录 → 清计划 → 清上传文件 →
+ * 清活跃指针 → 按引用回收图片。
  * 每步独立容错（单步失败只告警并继续），最终以结果值汇总——删除会话这个
  * 用户意图必须尽量完成，残留在后续 sweep 中兜底。
  */
@@ -43,8 +39,6 @@ import { transcriptEngine } from './transcript-engine';
 import { chatDatabase } from './chat-database';
 import { imageStore, isImageRef } from '../images/image-store';
 import { dropPlan } from '@/utils/plan/plan-store';
-import { purgeLearnDraftsBySource } from '@/utils/learn/learn-draft-store';
-import { readSidepanelLocalRunningChats, setLocalRunningChat } from '@/utils/sessions/session-bridge';
 
 /** 删除结果汇总（供调用方展示与埋点） */
 export interface SessionDeleteResult {
@@ -54,12 +48,8 @@ export interface SessionDeleteResult {
   imagesDeleted: number;
   /** 整会话回收的工作区文件数（用户上传文件与工具产物均在工作区内） */
   filesDeleted: number;
-  /** 彻底删除的学习交接件数（含正文与编辑副本） */
-  learnDraftsPurged: number;
   /** 是否清掉了指向本会话的活跃会话指针 */
   activePointerCleared: boolean;
-  /** 是否剔除了侧边栏本地运行登记中的本会话（陈旧条目兜底） */
-  localRunRegistryCleared: boolean;
   /** 是否中止了正在运行的会话 */
   runAborted: boolean;
   /** 各步骤的非致命失败原因（只告警，不阻断） */
@@ -69,19 +59,10 @@ export interface SessionDeleteResult {
 /** 孤儿回收的创建宽限期：在途图片（刚入库、消息尚未落库）不在回收范围 */
 const SWEEP_GRACE_MS = 2 * 60 * 1000;
 
-/**
- * 本地引擎（学习 / 验证类运行的持有者）的最小接口。
- * 只声明用到的三个方法，避免把整个引擎类型拖进本模块的依赖面。
- */
-interface LocalConversationEngine {
-  isRunning(chatId: string): boolean;
-  abort(chatId: string): boolean;
-}
-
 class SessionDeletionEngine {
   /**
-   * 删除会话及其全部关联回收（转录 / 图片 / 计划 / 上传文件 / 学习交接件 /
-   * 活跃指针 / 本地运行登记 / 运行中止 / 孤儿兜底）。
+   * 删除会话及其全部关联回收（转录 / 图片 / 计划 / 上传文件 / 活跃指针 /
+   * 运行中止 / 孤儿兜底）。
    *
    * 不抛错于预期内的单步失败（记入 issues 继续），仅转录删除本身失败时上抛
    * （那是用户意图的主体，失败必须让调用方感知）。
@@ -97,20 +78,12 @@ class SessionDeletionEngine {
     // 1) 中止运行中的对话（幂等：无运行时为 no-op）
     let runAborted = false;
     try {
-      if (typeof document !== 'undefined') await backgroundConversation.abortAndWait(chatId);
-      runAborted = await this.abortLocalRunIfNeeded(chatId);
+      if (typeof document !== 'undefined') {
+        await backgroundConversation.abortAndWait(chatId);
+        runAborted = true;
+      }
     } catch (error) {
       issues.push(`中止运行失败: ${this.describe(error)}`);
-    }
-
-    // 1.5) 剔除本地运行登记中的陈旧条目（面板崩溃 / 收尾失败会留下它，
-    // 不清理会让管理中心把已删会话当成「运行中」而永久拒绝对它的后续操作）。
-    // 必须在中止之后执行：中止判定依赖这份清单来触发本地引擎加载。
-    let localRunRegistryCleared = false;
-    try {
-      localRunRegistryCleared = await this.clearLocalRunRegistry(chatId);
-    } catch (error) {
-      issues.push(`清理本地运行登记失败: ${this.describe(error)}`);
     }
 
     // 2) 删除前采集本会话引用过的图片（删除后这些引用将不复存在）
@@ -145,15 +118,6 @@ class SessionDeletionEngine {
     // 有独立的文件库需要清理，filesDeleted 汇报工作区回收的文件数
     const filesDeleted = workspaceFileCount;
 
-    // 4.6) 学习交接件清理：彻底删除来源为本会话的技能草稿交接件（含正文与
-    // 编辑副本）。只置「已丢弃」会让无主正文永久留在 chrome.storage.local。
-    let learnDraftsPurged = 0;
-    try {
-      learnDraftsPurged = await purgeLearnDraftsBySource(chatId);
-    } catch (error) {
-      issues.push(`清理学习交接件失败: ${this.describe(error)}`);
-    }
-
     // 4.7) 活跃会话指针清理：指针指向被删会话时清空，避免下次打开侧边栏
     // 去恢复一个已不存在的会话（恢复失败会停在空白页且没有可解释的提示）。
     let activePointerCleared = false;
@@ -185,66 +149,10 @@ class SessionDeletionEngine {
       transcriptDeleted: true,
       imagesDeleted,
       filesDeleted,
-      learnDraftsPurged,
       activePointerCleared,
-      localRunRegistryCleared,
       runAborted,
       issues,
     };
-  }
-
-  /**
-   * 中止**本上下文**（侧边栏）持有的运行（学习 / 验证类）。
-   *
-   * 为什么要惰性加载本地引擎：它会把整套工具层（openai-tools-converter /
-   * ai-chat-api）拉进打包图 —— 管理中心只需要删除会话，不该为此背上工具层
-   * 的体积；且管理中心的上下文里根本不存在本地运行。
-   *
-   * 触发条件用「侧边栏本地运行清单」判定（chrome.storage.session 的
-   * sidepanel.localRunningChats）：清单里没有该会话就不加载引擎。
-   */
-  private async abortLocalRunIfNeeded(chatId: string): Promise<boolean> {
-    const localRunning = await readSidepanelLocalRunningChats();
-    if (!localRunning.includes(chatId)) return false;
-    const engine = await this.resolveLocalEngine();
-    if (!engine) return false;
-    if (!engine.isRunning(chatId)) return false;
-    engine.abort(chatId);
-    // 等待运行真正退出（abort → 引擎收尾是异步的）；有界等待防悬挂
-    await this.waitForRunExit(chatId, 5000, engine);
-    return true;
-  }
-
-  /**
-   * 惰性解析本地会话引擎（仅在确有本地运行时才加载）。
-   *
-   * 动态 import 失败（模块不可用 / 打包裁剪）时返回 null 并继续 ——
-   * 中止本地运行是尽力而为的收尾动作，绝不能让它把整个删除流程带崩。
-   */
-  private async resolveLocalEngine(): Promise<LocalConversationEngine | null> {
-    try {
-      const mod = await import('../conversation/conversation-engine');
-      return mod.conversationEngine as unknown as LocalConversationEngine;
-    } catch (error) {
-      console.warn('[SessionDeletionEngine] 本地会话引擎加载失败，跳过本地运行中止:', error);
-      return null;
-    }
-  }
-
-  /**
-   * 剔除侧边栏本地运行登记中的本会话条目（陈旧条目兜底）。
-   *
-   * 正常收尾由运行结束时的 setLocalRunningChat(chatId, false) 完成；但面板
-   * 崩溃 / 收尾失败会留下一条永不清除的登记，让管理中心把已删会话当成
-   * 「运行中」而拒绝后续操作。这里在删除时强制清一次，并**回读确认**——
-   * setLocalRunningChat 内部吞错，不能仅凭调用成功就认为已清掉。
-   */
-  private async clearLocalRunRegistry(chatId: string): Promise<boolean> {
-    if (typeof chrome === 'undefined' || !chrome.storage?.session) return false;
-    const registered = await readSidepanelLocalRunningChats();
-    if (!registered.includes(chatId)) return false;
-    await setLocalRunningChat(chatId, false);
-    return !(await readSidepanelLocalRunningChats()).includes(chatId);
   }
 
   /**
@@ -302,21 +210,6 @@ class SessionDeletionEngine {
     if (orphans.length === 0) return 0;
     console.info(`[SessionDeletionEngine] 回收 ${orphans.length} 张孤儿图片`);
     return imageStore.deleteByHashes(orphans);
-  }
-
-  /** 有界等待运行退出（abort 生效通常 <100ms；超时只告警继续） */
-  private async waitForRunExit(
-    chatId: string,
-    timeoutMs: number,
-    engine: LocalConversationEngine,
-  ): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    while (engine.isRunning(chatId) && Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-    if (engine.isRunning(chatId)) {
-      console.warn(`[SessionDeletionEngine] 会话 ${chatId} 运行在 ${timeoutMs}ms 内未退出，继续删除`);
-    }
   }
 
   private describe(error: unknown): string {

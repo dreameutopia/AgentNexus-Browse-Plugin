@@ -52,6 +52,7 @@ import { appSettingsStore } from '../../utils/channels/app-settings';
 import { appendSystemContext, queryActivePageInfo, type ActivePageInfo } from '../../utils/system-context';
 import { composeUserMessageBody } from '../../utils/chat/llm-message-body';
 import { t } from '@/utils/i18n/core';
+import { watchOperationWindow, isClosedBrowserWindowError } from '@/utils/browser-window-lifecycle';
 import type { ToolExecutionContext } from '@/tools/registry';
 import type { BeginPageOperation } from './runtime-protocol';
 import { transcriptEngine } from '../context/transcript-engine';
@@ -79,7 +80,7 @@ import {
   settlePendingCompactionParts,
   createCompactionPart,
 } from '../../utils/chat/compaction-part';
-import { GENERIC_WAIT_TOOL_ID, waitExecutionTimeout } from '@/tools/common/wait-contract';
+import { BROWSER_WAIT_TOOL_ID } from '@/tools/browser/browser-wait-tool';
 import {
   PAGE_EXEC_ENGINE_TIMEOUT_MS,
   pageExecEngineTimeout,
@@ -98,7 +99,12 @@ import type {
   RunSummary,
 } from '../types';
 import type { SkillPartEntry, ToolCallUI } from '../../types/chat';
-import { createErrorResponse, type ToolResult } from '@/common/tool-handler';
+import {
+  compactFrameDiagnosticsForModel,
+  createErrorResponse,
+  primaryChannelOf,
+  type ToolResult,
+} from '@/common/tool-handler';
 
 // ==================== 依赖注入（可测试性） ====================
 
@@ -242,17 +248,19 @@ interface RunHandle {
   pluginOwners?: Set<string>;
   pluginBindings?: ConversationRuntime['pluginBindings'];
   /**
-   * 终止型工具（ToolMetadata.terminal）已成功执行：本轮工具全部执行完、
-   * 结果已回传模型后结束循环，不再发起下一次请求。
-   * 由 executeToolCalls 置位、主循环在工具阶段之后消费（见 run 主循环）。
-   */
-  stopAfterRound: boolean;
-  /**
    * 连续「整轮工具全部失败」的轮数（任一轮有成功调用即归零）。
    * 达到 runtime.limits.maxConsecutiveFailedToolRounds（应用设置可调，默认 5）
    * 触发延续确认。
    */
   consecutiveFailedRounds: number;
+  /**
+   * 当前守卫轮次计数（工具批次开始前由 run 循环写入）。
+   * 唯一用途：把「已用 X/上限」预算事实写进工具消息 payload 的 budget 字段——
+   * 守卫只在耗尽时弹确认，模型需要过程中的预算感知才能主动收敛策略。
+   * 必须走 JSON 字段而非字符串尾部追加：工具 content 是严格 JSON，
+   * 下游（vision 续拍摘要等）按 JSON.parse 消费。
+   */
+  currentIteration?: number;
   /** 最近一次计划状态提醒注入所在轮次（0 = 尚未注入）：提醒频率间隔判定输入 */
   lastReminderRound: number;
 }
@@ -333,12 +341,13 @@ export function composeLlmUserMessage(
   attachmentPrompt: string,
   images: readonly string[],
   pageQuotePrompt = '',
+  selectedElementsPrompt = '',
   highDetailLastImage = false,
   activePage: ActivePageInfo | null = null,
 ): ChatMessage {
-  // 正文拼装顺序：用户输入 → 引用信封 → 附件信封（单一事实源见
-  // utils/chat/llm-message-body.ts；无引用信封时与既有实现逐字一致）。
-  const body = composeUserMessageBody(userInput, pageQuotePrompt, attachmentPrompt);
+  // 正文拼装顺序：用户输入 → 引用信封 → 选中元素信封 → 附件信封（单一事实源见
+  // utils/chat/llm-message-body.ts；无引用 / 无元素时与既有实现逐字一致）。
+  const body = composeUserMessageBody(userInput, pageQuotePrompt, attachmentPrompt, selectedElementsPrompt);
   const llmText = appendSystemContext(body, { activePage });
   if (images.length === 0) {
     return { role: 'user', content: llmText };
@@ -431,10 +440,10 @@ export class ConversationEngine {
    * 届时工具响应已写入模型上下文、轮次 id 已销毁，用户的下一条消息才不会
    * 与上一轮的迟到结果交错。
    */
-  abort(chatId: string): boolean {
+  abort(chatId: string, reason?: unknown): boolean {
     const handle = this.runs.get(chatId);
     if (handle) {
-      handle.abortController.abort();
+      handle.abortController.abort(reason);
       // 强制中断该会话正在执行的工具（轮次级批量中断）
       void toolExecutionEngine.interrupt(chatId).catch(error => {
         console.warn('[ConversationEngine] 工具执行中断失败:', error);
@@ -443,7 +452,7 @@ export class ConversationEngine {
     }
     const pending = this.pendingAborts.get(chatId);
     if (pending) {
-      pending.abort();
+      pending.abort(reason);
       return true;
     }
     return false;
@@ -463,7 +472,7 @@ export class ConversationEngine {
     // 空输入校验：本轮必须有可发内容——用户正文、引用信封或历史上下文三者
     // 之一。引用信封计入是因为「只引用一段网页原文、不另写文字」本身是一条
     // 完整的请求（模型据此对该段原文作答）。
-    if (!runtime.userInput.trim() && !runtime.pageQuotePrompt && runtime.initialContext.length === 0) {
+    if (!runtime.userInput.trim() && !runtime.pageQuotePrompt && !runtime.selectedElementsPrompt && runtime.initialContext.length === 0) {
       throw new EmptyRunInputError();
     }
 
@@ -482,13 +491,18 @@ export class ConversationEngine {
 
     let record!: ChatMessageRecord;
     let handle: RunHandle;
+    let windowWatch: ReturnType<typeof watchOperationWindow> | undefined;
     try {
+      if (runtime.browserScope) {
+        windowWatch = watchOperationWindow(runtime.browserScope, reason => { this.abort(runtime.chatId, reason); });
+        await windowWatch.ready;
+      }
       if (runtime.retryTarget) {
         const records = await transcriptEngine.loadSessionRecords(runtime.chatId);
         const last = records.at(-1);
         if (!last || last.id !== runtime.retryTarget.messageId || last.role !== 'assistant' ||
             last.status !== 'error' || last.content !== runtime.retryTarget.content ||
-            runtime.userInput || runtime.userImages.length || runtime.attachmentPrompt || runtime.pageQuotePrompt) {
+            runtime.userInput || runtime.userImages.length || runtime.attachmentPrompt || runtime.pageQuotePrompt || runtime.selectedElementsPrompt) {
           throw new Error(API_ERROR_RETRY_EXPIRED);
         }
         record = structuredClone(last);
@@ -521,7 +535,8 @@ export class ConversationEngine {
           !!runtime.userInput.trim() &&
           runtime.userImages.length === 0 &&
           !runtime.attachmentPrompt &&
-          !runtime.pageQuotePrompt;
+          !runtime.pageQuotePrompt &&
+          !runtime.selectedElementsPrompt;
         if (!canContinue) throw new Error(API_ERROR_CONTINUE_EXPIRED);
       }
 
@@ -542,7 +557,8 @@ export class ConversationEngine {
       // 「只丢一个文件、不另写文字」也是一条完整的请求，必须照常入档与
       // 构造模型用户消息
       const runtimeUploadedFiles = runtime.uploadedFiles ?? [];
-      if (runtime.userInput.trim() || runtime.pageQuotePrompt || runtimeUploadedFiles.length > 0) {
+      const runtimeCapturedElements = runtime.capturedElements ?? [];
+      if (runtime.userInput.trim() || runtime.pageQuotePrompt || runtime.selectedElementsPrompt || runtimeUploadedFiles.length > 0) {
         // 上传图片先入库取引用（失败降级为无引用，绝不阻断发送）
         const userImageRefs =
           runtime.userImages.length > 0 ? await imageStore.putFromDataUrls(runtime.userImages) : [];
@@ -566,6 +582,8 @@ export class ConversationEngine {
           {
             synthetic: runtime.hiddenUserInput === true,
             uploadedFiles,
+            // 用户捕获的网页元素随消息落库（气泡元素 chip 与备注的唯一来源）
+            capturedElements: runtimeCapturedElements,
             // 本条用户消息绑定的智能体与预选技能快照：供气泡展示
             // 「@ 的是哪个智能体」与「这一轮用了哪些技能」（技能仅单轮有效）。
             // 隐藏续跑轮不是用户发起的一轮（且不渲染气泡），不写技能快照，
@@ -611,12 +629,13 @@ export class ConversationEngine {
         ];
         // 激活网页取运行时刻的标签页（发送 → 引擎启动间隙可能已切页）；
         // queryActivePageInfo 任何失败都返回 null，不阻断发送
-        const activePage = await queryActivePageInfo();
+        const activePage = await queryActivePageInfo(runtime);
         userHistoryMessage = composeLlmUserMessage(
           runtime.userInput + (visionImage ? `\n${visionImage.description}${initialImageDuplicated ? '\n(The viewport is pixel-identical to a screenshot already in this conversation; the image is not repeated here. The screenshotId above is the valid one for GUI actions.)' : ''}` : runtime.vision ? '\nCurrent viewport screenshot unavailable. Call screenshot to recover; do not use attachment images or old screenshot IDs for GUI coordinates.' : ''),
           runtime.attachmentPrompt,
           userMessageImages,
           runtime.pageQuotePrompt,
+          runtime.selectedElementsPrompt ?? '',
           // 末位高细节：仅当视口截图真的附在末尾时才有意义（用户上传图恒为 auto）
           !!visionImage && !initialImageDuplicated,
           activePage,
@@ -707,7 +726,6 @@ export class ConversationEngine {
         pluginOwners: new Set(runtime.pluginOwners ?? []),
         pluginBindings: runtime.pluginBindings,
         consecutiveFailedRounds: 0,
-        stopAfterRound: false,
         lastReminderRound: 0,
       };
       this.pendingAborts.delete(runtime.chatId);
@@ -725,6 +743,7 @@ export class ConversationEngine {
         ...(activationSkills.length > 0 ? { activationSkills } : {}),
       });
     } catch (setupError) {
+      windowWatch?.dispose();
       // 准备失败：清理登记后原样抛出，由调用方以可读错误呈现（此时无助手记录可承载）
       this.pendingAborts.delete(runtime.chatId);
       this.runs.delete(runtime.chatId);
@@ -770,10 +789,9 @@ export class ConversationEngine {
 
         // 守卫：轮数 / 时长（经回调交由 UI 决策）
         //
-        // 时长守卫**仅在运行时长上限被显式给出时生效**（学习/验证等长任务经
-        // limitsOverride 给出）。普通对话不设上限——旧实现的 10 分钟上限会把
-        // 长耗时任务截断成「工具未执行」，这类任务应由「单工具超时」与
-        // 「轮次上限」兜底。
+        // 时长守卫**仅在运行时长上限被显式给出时生效**。普通对话不设上限——
+        // 旧实现的 10 分钟上限会把长耗时任务截断成「工具未执行」，这类任务
+        // 应由「单工具超时」与「轮次上限」兜底。
         const durationLimitMs = runtime.limits.maxDurationMs;
         const limitKind =
           guardIterations > runtime.limits.maxIterations
@@ -784,13 +802,13 @@ export class ConversationEngine {
         if (limitKind) {
           emit({ type: 'guard', chatId: runtime.chatId, kind: limitKind });
           const proceed = options.onLimitReached
-            ? await options.onLimitReached(limitKind, {
+            ? await this.awaitRunDecision(() => options.onLimitReached!(limitKind, {
                 iterations: limitKind === 'max-iterations' ? runtime.limits.maxIterations : undefined,
                 minutes:
                   limitKind === 'max-duration' && durationLimitMs !== undefined
                     ? Math.round(durationLimitMs / 60000)
                     : undefined,
-              })
+              }), abortController.signal)
             : false;
           if (!proceed) {
             // 停止注记带可交互元数据：渲染层据此在注记下方提供「继续 / 修改设置」。
@@ -846,7 +864,7 @@ export class ConversationEngine {
         const toolDefinitions = sessionToolIds.flatMap(id => toolSchemas.has(id) ? [structuredClone(toolSchemas.get(id)!)] : []);
 
         // ── 上下文用量测量 + 运行时压缩（90%）：测量先于组装（反映真实需求量）；
-        //    用量快照以事件外发（普通对话用量环与学习/验证状态条共用同一数据源，
+        //    用量快照以事件外发（所有运行期展示共用同一数据源，
         //    展示恒等于最近一次真实请求的负载）；压缩失败进入冷却重试，绝不阻断对话 ──
         handle.lastUsage = measureContextUsage({
           toolDefinitions,
@@ -1040,6 +1058,7 @@ export class ConversationEngine {
           runtime.limits.maxDurationMs !== undefined
             ? guardStartMs + runtime.limits.maxDurationMs
             : undefined;
+        handle.currentIteration = guardIterations;
         const toolOutcome = await this.executeToolCalls(
           runtime,
           handle,
@@ -1070,17 +1089,6 @@ export class ConversationEngine {
           break;
         }
 
-        // ── 终止型工具已成功：本轮工具结果已回传模型，按正常完成收尾 ──
-        // 位置在中止检查之后、时长守卫之前：中止语义优先（用户停止 > 任务完成），
-        // 且不能落到下方 `continue`——那会回到循环顶部再发一次请求。
-        // 语义为 'done'（任务完成）而非错误：runStatus 保持默认值，stopNote
-        // 追加一条可读说明，让历史里能看到「因提交而结束」而不是戛然而止
-        if (handle.stopAfterRound) {
-          stopNote = { text: t('sidepanel.terminalTool.stopped') };
-          shouldContinue = false;
-          break;
-        }
-
         // 时长上限在串行执行期间被触及：剩余调用已以「未执行」错误收尾，
         // 跳过本轮后处理，交循环顶部的时长守卫向用户确认（确认继续则下一轮
         // 重新发起调用；放弃则以停止说明收尾）。无运行时长上限时不适用。
@@ -1101,9 +1109,9 @@ export class ConversationEngine {
           if (handle.consecutiveFailedRounds >= failureThreshold) {
             emit({ type: 'guard', chatId: runtime.chatId, kind: 'tool-failures' });
             const proceed = options.onLimitReached
-              ? await options.onLimitReached('tool-failures', {
+              ? await this.awaitRunDecision(() => options.onLimitReached!('tool-failures', {
                   consecutiveFailures: handle.consecutiveFailedRounds,
-                })
+                }), abortController.signal)
               : false;
             if (!proceed) {
               stopNote = {
@@ -1211,6 +1219,12 @@ export class ConversationEngine {
       if (runStatus === 'done' && abortController.signal.aborted) {
         runStatus = 'aborted';
       }
+      // Environmental cancellation must retain its structured error card rather
+      // than being rendered as the user's normal Stop action.
+      if (isClosedBrowserWindowError(abortController.signal.reason)) {
+        runStatus = 'error';
+        runError = toApiErrorBlock(abortController.signal.reason);
+      }
 
       // ── 4. 统一收尾（单出口）：终止说明 → 终态落库 → 终态事件 → 摘要 ──
       // 中止路径跳过守卫停止说明：aborted 事件必然伴随「已停止当前任务」系统
@@ -1233,6 +1247,7 @@ export class ConversationEngine {
       }
       return this.summary(runtime.chatId, handle, totalIterations, runStatus, runError);
     } finally {
+      windowWatch?.dispose();
       this.runs.delete(runtime.chatId);
       this.pendingAborts.delete(runtime.chatId);
     }
@@ -1315,11 +1330,11 @@ export class ConversationEngine {
    *   - 切分恰落在本轮用户消息之前（被压缩头部 = 初始上下文全体）且会话存在
    *     压缩前记录（priorMaxSeq > 0）时，压缩点可用 seq 精确表达，落库会话
    *     级摘要元信息，下次发送直接以摘要续跑；
-   *   - 其余切分（工具轮次边界、运行内合成消息、priorRecords 为空的学习/盲测段）
-   *     无法用 seq 表达分叉的模型上下文——学习会话的转录是连续的，但各段的
-   *     模型上下文互相独立（盲测隔离），单一会话级压缩点反而会错误地把学习段
-   *     摘要混入验证段。这些场景一律只写本条助手记录的 modelContext 协议
-   *     检查点，回放时以检查点为准（见 protocol-history 的 hasProtocolCheckpoint
+   *   - 其余切分（工具轮次边界、运行内合成消息、priorRecords 为空的独立段）
+   *     无法用 seq 表达分叉的模型上下文——各段的模型上下文互相独立，
+   *     单一会话级压缩点会把不同段的摘要混在一起。这些场景一律只写本条助手
+   *     记录的 modelContext 协议检查点，回放时以检查点为准（见 protocol-history 的
+   *     hasProtocolCheckpoint
    *     重放语义）。
    */
   private async tryCompactHistory(
@@ -1656,9 +1671,18 @@ export class ConversationEngine {
    */
   private resolveToolTimeout(runtime: ConversationRuntime, plan: ToolCallPlan): number {
     const base = runtime.limits.toolTimeoutMs;
-    if (plan.toolName === GENERIC_WAIT_TOOL_ID) {
+    if (plan.toolName === BROWSER_WAIT_TOOL_ID) {
+      // 条件等待有自己的 timeoutMs 参数；引擎上界至少覆盖它（+ 采集余量），
+      // 保证工具侧的精确超时诊断先于引擎兜底到达模型。
       try {
-        return waitExecutionTimeout(parseToolArguments(plan.rawArgs), base);
+        const args = parseToolArguments(plan.rawArgs) as
+          | { timeoutMs?: unknown }
+          | null;
+        const requested =
+          typeof args?.timeoutMs === 'number' && Number.isFinite(args.timeoutMs)
+            ? args.timeoutMs
+            : 0;
+        return Math.max(base, requested + 5_000);
       } catch {
         return base;
       }
@@ -1751,7 +1775,7 @@ export class ConversationEngine {
     // 手势类 action 在参数解析后、审批与执行前一律拒绝（fail-closed：action
     // 缺失或畸形同样拒绝，因为它们本就不可能是允许的观察 action）
     if (runtime.toolPolicy === 'vision-assistant' && toolName === JS_RUN_TOOL_ID && (args as { action?: unknown })?.action === 'run')
-      return createErrorResponse('TOOL_NOT_ALLOWED: 视觉助手不能执行页面脚本；js_run 仅开放会话文件操作与读取。');
+      return createErrorResponse('TOOL_NOT_ALLOWED: 视觉助手不能执行页面脚本（js_run 不在观察者工具白名单内）；工作区文件操作请用 file_util。');
     if (runtime.toolPolicy === 'vision-assistant' && toolName === 'vision_gui') {
       const action = args && typeof args === 'object' && !Array.isArray(args)
         ? (args as { action?: unknown }).action : undefined;
@@ -1831,6 +1855,7 @@ export class ConversationEngine {
         {
           chatId: runtime.chatId,
           agentId: runtime.agentId,
+          ...(runtime.browserScope ? { browserScope: runtime.browserScope } : {}),
           loadedSkillIds: [...(handle.loadedSkillIds ?? [])],
           toolPolicy: runtime.toolPolicy,
           availableSkillIds: runtime.availableSkillIds,
@@ -1926,12 +1951,6 @@ export class ConversationEngine {
           (safeParseToolArguments(plan?.rawArgs) as { action?: unknown } | null)?.action === 'load') {
         this.injectSkillTools(runtime, handle, outcome.result);
       }
-      // 终止型工具（submit_skill / submit_validation 等）成功 → 标记本轮收尾。
-      // 只在成功时标记：提交参数不合法要回传模型自纠，不能因一次失败就终止运行；
-      // 结果照常回传与落库，模型与 UI 都能看到「提交了什么」
-      if (success && toolRegistry.getTool(toolName)?.metadata.terminal === true) {
-        handle.stopAfterRound = true;
-      }
       if (success && outcome.result) {
         // vision 工具的参数判定需要**已解析**的参数对象（visionGuiAction 读 .action）；
         // 解析失败退化为 undefined（判定为非 zoom），不影响其余逻辑——
@@ -1980,6 +1999,40 @@ export class ConversationEngine {
         // 剥掉，别让模型上下文里多一个它猜不透的字段。
         const { primary: _primary, ...rest } = projected;
         Object.assign(payload, rest);
+        // 通道取舍以 primary 为准（与 projectToolPayload 同源）：
+        //   - primary='data'（默认）：content 是 data 的派生摘要（message + 字段名
+        //     清单），data 在场时信息完全重叠——只留 data，避免每次翻倍；
+        //   - primary='content'：正文（文件页文本 / 脚本 stdout / 询问答复 / 计划
+        //     清单）就在 content 里，data 只有元数据——**删 content 等于丢正文**。
+        //     两类通道都保留，信息零重叠。
+        if (
+          primaryChannelOf(outcome.result) !== 'content' &&
+          payload.data &&
+          typeof payload.data === 'object' &&
+          payload.content !== undefined
+        ) {
+          delete payload.content;
+        }
+        // frameDiagnostics 只对模型瘦身（issues + 覆盖结论）；完整诊断仍留在
+        // 原始 ToolResult 里供转录/工具面板/日志消费。返回新对象，不改原引用。
+        if (payload.data && typeof payload.data === 'object') {
+          payload.data = compactFrameDiagnosticsForModel(payload.data);
+        }
+        // 轮次预算信号：嵌进 payload **字段**（而非字符串尾部追加）——
+        // 工具消息的 content 是严格 JSON，buildVisionContinuationMessage 等
+        // 下游按 JSON.parse 消费，尾部追加文本会静默炸掉整条摘要链路。
+        // 守卫只在耗尽时弹确认，模型需要过程中的预算感知才能主动收敛策略。
+        const maxIterations = runtime.limits.maxIterations;
+        const used = handle.currentIteration;
+        if (
+          typeof used === 'number' &&
+          Number.isFinite(used) &&
+          typeof maxIterations === 'number' &&
+          Number.isFinite(maxIterations) &&
+          maxIterations > 0
+        ) {
+          payload.budget = `已用 ${used}/${maxIterations} 轮，剩余 ${Math.max(0, maxIterations - used)}`;
+        }
       }
       if (!success && !payload.error) {
         payload.error = failureReason ?? '工具未返回可读结果';
@@ -1990,9 +2043,9 @@ export class ConversationEngine {
         name: toolName,
         content: JSON.stringify(payload),
       });
-      // 等待类工具（显式等待 / 交互询问）的耗时不计入活跃工作时长预算，
+      // 等待类工具（条件等待 / 交互询问）的耗时不计入活跃工作时长预算，
       // 但计入墙钟时长与用量统计
-      if (toolName === GENERIC_WAIT_TOOL_ID || INTERACTIVE_TOOL_NAMES.has(toolName)) {
+      if (toolName === BROWSER_WAIT_TOOL_ID || INTERACTIVE_TOOL_NAMES.has(toolName)) {
         waitedMs += executionTimeMs;
       }
     }
@@ -2009,6 +2062,21 @@ export class ConversationEngine {
    * 停止反馈即刻生效。审批 Promise 的异常向上传播，由引擎的 per-call
    * catch 封装为可控失败。
    */
+  private async awaitRunDecision(work: () => Promise<boolean>, signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) return false;
+    let cancel: (() => void) | undefined;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(() => signal.aborted ? false : work()),
+        new Promise<false>(resolve => {
+          cancel = () => resolve(false);
+          signal.addEventListener('abort', cancel, { once: true });
+          if (signal.aborted) cancel();
+        }),
+      ]);
+    } finally { if (cancel) signal.removeEventListener('abort', cancel); }
+  }
+
   private async awaitToolApproval(
     approval: NonNullable<RunOptions['onToolApproval']>,
     request: ToolApprovalRequest,
@@ -2209,7 +2277,7 @@ export class ConversationEngine {
           return this.deps.executeTool(
             call.toolName,
             call.rawArgs,
-            { chatId: runtime.chatId, signal: ctx.signal },
+            { chatId: runtime.chatId, signal: ctx.signal, ...(runtime.browserScope ? { browserScope: runtime.browserScope } : {}) },
           );
         },
       });

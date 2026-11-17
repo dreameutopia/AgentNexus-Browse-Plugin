@@ -31,7 +31,7 @@
  *      3000 字符自动分页 + ref 续读含代理项跨页配对、url 前台打开模式
  *      （激活标签页、加载就绪后提取、标签页保留不关闭）、tabId 解析、
  *      参数互斥与越界防御）+ read_website（同源提取、content/*.md 落盘、
- *      path+page 续读、短内容不落盘）
+ *      content/*.md 落盘、file_util 续读、短内容不落盘）
  *  13. 数据通道治理 + xlsx 数据源统一：dedupe/extract 领域契约与工具动作契约、
  *      xlsx 混排（dataRef 表 + 手写公式表）、数据来源二选一/字段误用/空表/
  *      失效引用的精准报错、openaiSchema 数据源声明（见 ./xlsx-dataref.test.ts）
@@ -317,7 +317,7 @@ await import('../../tools/document').then(({ registerDocumentTools }) => registe
   // 单独处理，不依赖字段）；get_page_html 属自定义组合扩展组，未经确认保持缺省保守。
   // browser_navigation / browser_tabs 为合并型工具：除 action 级豁免名单外
   //（list/windows/wait）一律保守，工具 metadata 绝不可标 true。
-  for (const id of ['web_search', 'platform_search', 'generic_wait', 'browser_interact', 'browser_navigation',
+  for (const id of ['web_search', 'platform_search', 'browser_interact', 'browser_navigation',
     'browser_tabs', 'browser_page_exec', 'screenshot',
     'vision_gui', 'ocr', 'extract_data', 'ai_locate', 'browser_console', 'file_uploader', 'browser_get_page_html']) {
     check(toolRegistry.getTool(id)?.metadata.noVisionRecapture !== true, `工具 ${id} 保持保守重拍（未豁免）`);
@@ -997,8 +997,6 @@ await testElementInteraction(check, eq);
 
 const { testDomExplore } = await import('./dom-explore.test');
 await testDomExplore(check, eq);
-const { testSiteLearning } = await import('./site-learning.test');
-await testSiteLearning(check);
 const { testTextAutomation } = await import('./text-automation.test');
 await testTextAutomation(check, eq);
 
@@ -1278,12 +1276,201 @@ await testTextAutomation(check, eq);
       check(
         clickOccluded.success !== true &&
           typeof clickOccluded.error === 'string' &&
-          clickOccluded.error.includes('obscured by <div#cover>'),
+          clickOccluded.error.includes('OBSCURED') &&
+          clickOccluded.error.includes('<div#cover>'),
         '点击被遮挡元素返回含遮挡者身份的可读错误',
         clickOccluded.error,
       );
     } finally {
       envC.restore();
+    }
+
+    // —— set_files 装载协议：字节分块 → commit 组装 → input.files 回读校验 ——
+    const { setFileInputPayload } = await import('../../tools/browser/set-file-input-payload');
+    const serializedSetFiles = (0, eval)(`(${setFileInputPayload.toString()})`) as typeof setFileInputPayload;
+    check(typeof serializedSetFiles === 'function', 'set_files 荷载序列化后可求值为函数');
+    {
+      const envS = installDom(`<input type="file" id="up" data-rect="10,10,150,30">` +
+        `<button id="notFile" data-rect="10,50,80,30">不是文件框</button>`);
+      const savedDataTransfer = (globalThis as Record<string, unknown>).DataTransfer;
+      try {
+        // 先跑一次扫描以创建 __agentNexusReferences 注册表
+        serializedScan('buttons', '', '');
+        // jsdom 未实现 DataTransfer / 不保证 input.files 可写——按协议面打桩：
+        // 捕获赋值并回读，FileList 面用数组冒充（payload 只做 Array.from）
+        class FakeDataTransfer {
+          items: { add: (file: File) => void };
+          private list: File[] = [];
+          constructor() {
+            this.items = { add: (file: File) => { this.list.push(file); } };
+          }
+          get files(): File[] { return this.list; }
+        }
+        (globalThis as Record<string, unknown>).DataTransfer = FakeDataTransfer;
+        const input = envS.doc.getElementById('up') as HTMLInputElement;
+        let captured: File[] | null = null;
+        Object.defineProperty(input, 'files', {
+          configurable: true,
+          get: () => captured,
+          set: (value: File[]) => { captured = value; },
+        });
+        const id = (envS.doc as any).__agentNexusReferences.register(input);
+        const payloadBytes = new TextEncoder().encode('resume-bytes');
+        const b64 = Buffer.from(payloadBytes).toString('base64');
+
+        // 1) 完整链路：append → commit → 回读一致 + 缓冲清理
+        let r: any = serializedSetFiles('append', 'tok1', 0, b64, id, []);
+        eq(r.success, true, 'append 暂存字节成功', r);
+        r = serializedSetFiles('commit', 'tok1', 0, '', id, [
+          { name: 'resume.pdf', size: payloadBytes.length, mime: 'application/pdf' },
+        ]);
+        eq(r.success, true, 'commit 装载成功并回读一致', r);
+        eq(r.outcome, 'files_set', 'outcome 标记 files_set');
+        eq(captured?.length, 1, 'input.files 收到 1 个文件');
+        eq(captured?.[0]?.name, 'resume.pdf', '文件名透传');
+        eq(captured?.[0]?.size, payloadBytes.length, '文件字节数一致');
+        const buffers = (envS.doc.defaultView as any).__anxUploadBuffers;
+        check(!buffers || !Object.keys(buffers).length, 'commit 后页面侧缓冲已清理');
+
+        // 2) 目标与状态防御
+        r = serializedSetFiles('commit', 'missing', 0, '', 'anx:0:deadbeef:1', [{ name: 'a', size: 1, mime: '' }]);
+        check(String(r.error).includes('STALE_ELEMENT'), '失效引用报 STALE_ELEMENT', r.error);
+        const btnId = (envS.doc as any).__agentNexusReferences.register(envS.doc.getElementById('notFile'));
+        r = serializedSetFiles('commit', 'x', 0, '', btnId, [{ name: 'a', size: 1, mime: '' }]);
+        check(String(r.error).includes('INVALID_TARGET'), '非 file 目标报 INVALID_TARGET', r.error);
+        r = serializedSetFiles('commit', 'y', 0, '', id, []);
+        check(String(r.error).includes('INVALID_ARGUMENT'), '空 specs 报 INVALID_ARGUMENT', r.error);
+        r = serializedSetFiles('commit', 'z', 0, '', id, [{ name: 'big.bin', size: 4, mime: '' }]);
+        check(String(r.error).includes('TRANSFER_INTERRUPTED'), '缓冲缺失报 TRANSFER_INTERRUPTED', r.error);
+        // 多选防御：目标未开 multiple 却传多文件（校验先于缓冲读取）
+        r = serializedSetFiles('commit', 'm2', 0, b64, id, [
+          { name: 'a', size: payloadBytes.length, mime: '' },
+          { name: 'b', size: payloadBytes.length, mime: '' },
+        ]);
+        check(String(r.error).includes('INVALID_TARGET') && String(r.error).includes('多选'), 'multiple=false 拒绝多文件', r.error);
+        // cleanup 幂等
+        r = serializedSetFiles('append', 'tok2', 0, b64, id, []);
+        r = serializedSetFiles('cleanup', 'tok2', 0, '', '', []);
+        eq(r.success, true, 'cleanup 清理暂存缓冲');
+      } finally {
+        if (savedDataTransfer === undefined) delete (globalThis as Record<string, unknown>).DataTransfer;
+        else (globalThis as Record<string, unknown>).DataTransfer = savedDataTransfer;
+        envS.restore();
+      }
+    }
+
+    // —— form 视图扫描：字段盘点（含只读/隐藏 file）、分区脚手架、文档序 ——
+    const envF = installDom(
+      `<h2 id="sec1">基本信息</h2>` +
+        `<input id="name" data-rect="10,10,150,30" placeholder="姓名">` +
+        `<input id="ro" data-rect="10,50,150,30" placeholder="起始日期" readonly>` +
+        `<input id="up" type="file" style="display:none" data-rect="10,90,150,30">` +
+        `<h2 id="sec2">教育情况</h2>` +
+        `<input id="school" data-rect="10,130,150,30" name="school">`,
+    );
+    try {
+      const form = serializedScan('form', '', '').elements;
+      const domId = (elId: string): string =>
+        (((envF.doc as any).__agentNexusReferences.resolve(elId) as Element | null)?.id as string) ?? '';
+      const rows = form.map(row => ({ ...row, domId: domId(row.elementId) }));
+      check(rows.some(r => r.domId === 'name') && rows.some(r => r.domId === 'school'), 'form 采集普通字段', JSON.stringify(rows.map(r => r.domId)));
+      check(rows.some(r => r.domId === 'ro'), 'form 保留 readonly 字段（盘点不做过滤）');
+      check(rows.some(r => r.domId === 'up'), 'form 保留隐藏的 file input');
+      const sections = rows.filter(r => r.type === 'section');
+      eq(sections.length, 2, 'form 采集两条分区标题脚手架');
+      check(sections.some(r => r.domId === 'sec1') && sections.some(r => r.domId === 'sec2'), '分区脚手架绑定标题元素');
+      check(rows.every(r => typeof r.y === 'number'), 'form 每条记录携带文档坐标 y');
+      const fieldOrder = rows.filter(r => r.type !== 'section').map(r => r.domId);
+      eq(JSON.stringify(fieldOrder), JSON.stringify(['name', 'ro', 'up', 'school']), 'form 字段按文档 y 升序');
+      const hidden = rows.find(r => r.domId === 'up');
+      eq(hidden?.type, 'input_file', 'file input 类型标记为 input_file');
+    } finally {
+      envF.restore();
+    }
+
+    // —— parent* 父容器作用域：裁剪语义、xpath 越界回归、containerMiss、shadow ——
+    const envP = installDom(
+      `<div id="outer" data-rect="10,10,300,400">` +
+        `<div id="inner" data-rect="20,20,260,300">` +
+        `<input id="inInner" name="scopedField" data-rect="30,60,120,30">` +
+        `</div>` +
+        `<input id="inOuterOnly" data-rect="30,360,120,30">` +
+        `</div>` +
+        `<input id="outside" data-rect="400,60,120,30">`,
+    );
+    try {
+      const runScope = (selector = '', xp = '', mode = 'inputs', parentXPath = '') =>
+        serializedScan(mode as any, '', xp, 0, selector, parentXPath);
+      const domIdOf = (elId: string): string =>
+        (((envP.doc as any).__agentNexusReferences?.resolve(elId) as Element | null)?.id as string) ?? '';
+      const idsOf = (payload: any): string[] =>
+        (Array.isArray(payload?.elements) ? payload.elements : []).map((el: any) => domIdOf(el.elementId));
+      // jsdom 的 document.evaluate 被 installDom 换成登记式 stub——
+      // 本组用到的 XPath 必须先登记（未登记表达式一律抛错，见 installDom 注释）
+      envP.xpathStub.set('//input[@id="outside"]', [envP.doc.getElementById('outside')!]);
+      envP.xpathStub.set('//input[@id="inInner"]', [envP.doc.getElementById('inInner')!]);
+      envP.xpathStub.set('//div[@id="inner"]', [envP.doc.getElementById('inner')!]);
+
+      // 1) 结果集裁剪：容器内保留，容器外与其它分支排除
+      let ids = idsOf(runScope('#inner'));
+      check(
+        ids.includes('inInner') && !ids.includes('inOuterOnly') && !ids.includes('outside'),
+        'parentSelector 裁剪结果集（容器外元素不返回）',
+        JSON.stringify(ids),
+      );
+
+      // 2) xpath 越界回归：parent* + xpath 组合下，xpath 也不能把容器外元素带进来
+      ids = idsOf(runScope('#inner', '//input[@id="outside"]'));
+      check(!ids.includes('outside'), 'parentSelector + xpath 组合不再漏出容器外元素', JSON.stringify(ids));
+      const innerHit = runScope('#inner', '//input[@id="inInner"]');
+      ids = idsOf(innerHit);
+      check(ids.includes('inInner'), '容器内 xpath 命中仍进结果', JSON.stringify(ids));
+      const hitRow = (innerHit.elements as any[]).find(el => domIdOf(el.elementId) === 'inInner');
+      eq(hitRow?.matchedXpath, true, '容器内 xpath 命中标记保留');
+
+      // 3) 容器自身不进结果（即使它本身是可采集节点）
+      ids = idsOf(runScope('#inner', '//div[@id="inner"]'));
+      check(!ids.includes('inner'), '容器自身不进结果集', JSON.stringify(ids));
+
+      // 4) 零命中 → containerMiss（帧级信号，非错误）；非法 CSS → 显式错误
+      const miss = runScope('#__anx_no_such_container__');
+      eq(miss.containerMiss, true, '零命中返回 containerMiss 标记');
+      eq((miss.elements ?? []).length, 0, 'containerMiss 不带元素');
+      check(!miss.error, 'containerMiss 不是 error（由宿主决定升级时机）');
+      const badCss = runScope('div[');
+      check(
+        typeof badCss.error === 'string' && badCss.error.includes('CSS'),
+        '非法 CSS 选择器报可读错误',
+        badCss.error,
+      );
+
+      // 5) parentXPath 作用域 + 非法 XPath
+      const byXPath = runScope('', '', 'inputs', '//div[@id="inner"]');
+      ids = idsOf(byXPath);
+      check(ids.includes('inInner') && !ids.includes('outside'), 'parentXPath 同样裁剪结果集', JSON.stringify(ids));
+      const badXp = runScope('', '//[');
+      check(
+        typeof badXp.error === 'string' && badXp.error.includes('XPath'),
+        '非法父 XPath 报可读错误',
+        badXp.error,
+      );
+
+      // 6) 嵌套容器去重：命中 outer+inner 只按最外层遍历一次
+      ids = idsOf(runScope('#outer, #inner'));
+      eq(ids.filter(id => id === 'inInner').length, 1, '嵌套容器不重复采集');
+      check(!ids.includes('outside'), '嵌套裁剪不外溢');
+
+      // 7) 容器 shadow 树内的元素算在作用域内（contains 不跨 shadow，需 host 提升）
+      const shHost = envP.doc.createElement('div');
+      shHost.id = 'shHost';
+      shHost.setAttribute('data-rect', '500,60,120,60');
+      envP.doc.body.appendChild(shHost);
+      const shadowRoot = shHost.attachShadow({ mode: 'open' });
+      shadowRoot.innerHTML = '<input id="shIn" data-rect="510,70,100,30">';
+      ids = idsOf(runScope('#shHost'));
+      check(ids.includes('shIn'), '容器 shadow 内元素算在作用域内', JSON.stringify(ids));
+    } finally {
+      envP.restore();
     }
   } finally {
     restoreGlobals(); // 双保险：无论断言是否抛错，页面全局对象必须清理干净
@@ -2054,34 +2241,35 @@ await testTextAutomation(check, eq);
     const stored = await readWorkspaceTextFile(chatId, firstRow.path);
     eq(stored.content, doc, '落盘文件保存完整正文（未被分页截断）');
 
-    // path + page 续读：只读工作区文件，不访问页面
+    // 续读统一走 file_util：不再访问页面，也不再有 path+page 参数通道
+    const { FileUtilTool } = await import('../../tools/file-util/file-util-tool');
+    const fileTool = new FileUtilTool();
     scriptingStub.executeScript = (async () => {
       throw new Error('续读模式不应注入页面');
     }) as typeof scriptingStub.executeScript;
-    const second = await new ReadWebsiteTool().execute({ path: firstRow.path, page: 2 }, { chatId });
-    check(second.success === true, 'path 续读成功', second.error);
-    check(dataOf(second).frameDiagnostics?.status === dataOf(first).frameDiagnostics?.status,
-      '新工具实例从诊断旁文件恢复原始采集完整性');
-    const secondRow = csvRow(dataOf(second));
-    eq(secondRow.page, '2', '续读返回指定页');
-    eq(secondRow.path, firstRow.path, '续读回显同一文件路径');
-    eq(firstRow.content + secondRow.content, doc, '两页拼接无损还原全文');
+    const second = await fileTool.execute({ action: 'read', path: firstRow.path, index: 2 }, { chatId });
+    check(second.success === true, 'file_util 续读成功', second.error);
+    // file_util 的正文只经 result.content[].text 返回（data 只承载元信息）：
+    // 文本结构为「头部 + 可选注记 + \n\n + 页体 + 尾部提示」，这里取页体比较
+    const secondText = (second.content ?? [])
+      .map((block) => (block as { text?: unknown }).text)
+      .filter((text): text is string => typeof text === 'string')
+      .join('');
+    const secondPage = secondText
+      .slice(secondText.indexOf('\n\n') + 2)
+      .replace(/\n\n\[(?:未完|已到最后一页)[^\]]*\]$/, '');
+    eq(secondPage, doc.slice(3000), '第 2 页为剩余正文');
+    eq(firstRow.content + secondPage, doc, '两页拼接无损还原全文');
 
-    const overPage = await tool.execute({ path: firstRow.path, page: 9 }, { chatId });
+    const overPage = await fileTool.execute({ action: 'read', path: firstRow.path, index: 9 }, { chatId });
     check(overPage.success === false && /超出范围/.test(overPage.error ?? ''), '续读页码越界报错', overPage.error);
 
-    const { editWorkspaceFile } = await import('../../utils/python-workspace/workspace-files');
     const diagnosticPath = dataOf(first).frameDiagnosticsPath as string;
     check(typeof diagnosticPath === 'string', '归档保留诊断旁文件路径');
     const diagnosticFile = await readWorkspaceTextFile(chatId, diagnosticPath);
     const diagnostic = JSON.parse(diagnosticFile.content);
-    await editWorkspaceFile(chatId, diagnosticPath, { content: JSON.stringify({ ...diagnostic, frameDiagnostics: { status: 'complete' } }) });
-    const badDiagnostic = await new ReadWebsiteTool().execute({ path: firstRow.path }, { chatId });
-    check(badDiagnostic.success && !dataOf(badDiagnostic).frameDiagnostics && /格式无效/.test(dataOf(badDiagnostic).diagnosticNote ?? ''), '正文 hash 匹配也不能接受损坏的诊断结构');
-    await editWorkspaceFile(chatId, diagnosticPath, { content: diagnosticFile.content });
-    await editWorkspaceFile(chatId, firstRow.path, { content: stored.content + '\n后续手动编辑' });
-    const changedArchive = await new ReadWebsiteTool().execute({ path: firstRow.path }, { chatId });
-    check(changedArchive.success && !dataOf(changedArchive).frameDiagnostics && /正文文件已变化/.test(dataOf(changedArchive).diagnosticNote ?? ''), '正文编辑后不误用原始覆盖诊断');
+    eq(diagnostic.version, 1, '诊断旁文件版本可读');
+    eq(diagnostic.contentSha256.length, 64, '诊断旁文件绑定正文指纹');
 
     // 短内容不落盘：直接内联返回
     resetTabStub();
@@ -2136,8 +2324,7 @@ await testTextAutomation(check, eq);
 
     // 参数防御：错误必须在触碰页面前给出可自纠原因
     for (const [badArgs, pattern] of [
-      [{ path: 'outputs/x.md' }, /content\//],
-      [{ url: 'https://a.example/', path: 'content/x.md' }, /互斥/],
+      [{ path: 'outputs/x.md' }, /续读模式已下线|未知参数/],
       [{ bogus: 1 }, /未知参数/],
       [[], /参数必须是对象/],
       [{ page: 0 }, /≥1/],
@@ -2349,6 +2536,27 @@ await testTextAutomation(check, eq);
   for (const key of ['pageSize', 'hitsOnly', 'includeDetails']) {
     check(key in observeProps, `browser_observe 声明 ${key} 参数`);
   }
+  check(
+    ((observeProps.view as { enum?: string[] }).enum ?? []).includes('form'),
+    'browser_observe 声明 form 视图',
+  );
+
+  // browser_interact 扩展面：set_files 与「无引用 keys」的 schema 契约
+  const { browserInteractTool } = await import('../../tools/browser/interact');
+  const interactParams = browserInteractTool.openaiSchema.function.parameters as any;
+  const interactProps = interactParams.properties as Record<string, unknown>;
+  check(
+    ((interactProps.action as { enum?: string[] }).enum ?? []).includes('set_files'),
+    'browser_interact action 枚举包含 set_files',
+  );
+  check('paths' in interactProps, 'browser_interact 声明 set_files 的 paths 参数');
+  const branches = (interactParams.anyOf ?? []) as Array<{ properties?: Record<string, { enum?: string[] }>; required?: string[] }>;
+  const keysBranch = branches.find(b => b.properties?.action?.enum?.[0] === 'keys');
+  check(!!keysBranch && !keysBranch.required?.includes('elementId'), 'keys 允许省略 elementId（焦点/文档级派发）');
+  const filesBranch = branches.find(b => b.properties?.action?.enum?.[0] === 'set_files');
+  check(!!filesBranch && filesBranch.required?.includes('paths'), 'set_files 必填 paths');
+  const fillBranch = branches.find(b => b.properties?.action?.enum?.[0] === 'fill');
+  check(!!fillBranch && fillBranch.required?.includes('elementId'), 'fill 仍必填 elementId（无引用仅限 keys/scroll）');
 }
 
 // ==================== 汇总 ====================
@@ -2382,6 +2590,9 @@ await import('./tool-execution-engine.test');
 await import('./tool-execution-contract.test');
 await import('./limits-contract.test');
 await import('./protocol-continuity.test');
+await import('./window-binding.test');
+await import('./window-closure-engine.test');
+await import('./model-payload.test');
 
 
 console.log(`\n[tools] 通过 ${passed} 项，失败 ${failures.length} 项`);

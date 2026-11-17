@@ -216,15 +216,15 @@ const MessageItem = (await compileComponent(
   unmount();
 }
 
-// ── B. 学习模式收尾（无正文）：折叠条独立成立，终态注记保持可见 ──
+// ── B. 无正文收尾：折叠条独立成立，终态注记保持可见 ──
 {
   const { container, errors, unmount } = await mount(MessageItem, {
     message: {
       id: 'm-learn',
       role: 'assistant',
       content: '',
-      parts: [toolPart('t1'), toolPart('submit_skill'), noticePart()],
-      toolCalls: [toolPart('t1').toolCall, toolPart('submit_skill').toolCall],
+      parts: [toolPart('t1'), toolPart('note_tool'), noticePart()],
+      toolCalls: [toolPart('t1').toolCall, toolPart('note_tool').toolCall],
     },
     isLive: false,
   });

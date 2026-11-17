@@ -1552,18 +1552,6 @@ body {
   background: rgba(41, 40, 36, 0.08);
 }
 
-/* 网站学习成果待导入提示（编辑中收到交付信号时挂起，编辑结束自动接手） */
-.hub-draft-pending {
-  margin: 0 0 10px;
-  padding: 8px 12px;
-  border-radius: 10px;
-  background: rgba(245, 158, 11, 0.12);
-  border: 1px solid rgba(245, 158, 11, 0.4);
-  font-size: 12px;
-  line-height: 1.6;
-  color: #92400e;
-}
-
 /* ──── 工具组（玻璃小卡，选中态中性墨色染层） ──── */
 
 .hub-groups {
@@ -3149,49 +3137,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-
-/* ==================== 学习成果接收条（外壳常驻） ==================== */
-
-.hub-handoff {
-  flex: 0 0 auto;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px 20px;
-  align-items: center;
-  justify-content: space-between;
-  margin: 14px 20px 0;
-  padding: 14px 16px;
-  border: 1px solid rgba(245, 158, 11, 0.38);
-  border-radius: 14px;
-  background: rgba(255, 251, 235, 0.55);
-  backdrop-filter: blur(14px) saturate(150%);
-  -webkit-backdrop-filter: blur(14px) saturate(150%);
-  box-shadow: var(--glass-inset), 0 6px 20px rgba(41 40 36 / 6%);
-  color: var(--ink-primary, #292824);
-}
-
-.hub-handoff p {
-  margin: 5px 0 0;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--ink-secondary, #787671);
-}
-
-.hub-handoff .hub-handoff__warning {
-  color: var(--warning-color, #f59e0b);
-}
-
-.hub-handoff .hub-handoff__error {
-  color: var(--error-color, #ef4444);
-}
-
-.hub-handoff__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  min-width: 0;
 }
 
 /* ──── 动画 ──── */

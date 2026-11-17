@@ -141,11 +141,19 @@ export function elementExplorePayload(
   const SHADOW_ROOT_LIMIT = 2_000;
 
   // —— 注册表：优先复用 observe 建立的共享注册表；不存在时创建契约兼容的最小
-  // 注册表（selector/xpath 冷启动场景，允许不先 observe）。
-  // 注册表格式与 element-scan-payload 完全一致（anx:tabId:nonce:seq），所以
-  // 两者产出的引用可互相解析；observe 再次扫描时会整体替换注册表，属既有语义。
+  // 注册表由宿主在注入本荷载前经 elementScanPayload('registry') 引导就位
+  //（完整契约：describe/controlOf/rebind，与 browser_observe 同权）。
+  // explore 产出的 ElementId 因此可以直接交给 set_checked 等状态操作。
   const refDocument = document as { __agentNexusReferences?: any };
-  const registry = refDocument.__agentNexusReferences ?? createRegistry();
+  const registry = refDocument.__agentNexusReferences;
+  if (!registry) {
+    return {
+      fingerprint: '',
+      error:
+        'REGISTRY_UNAVAILABLE：引用注册表未就位（内部引导失败，可能该 frame 注入受限）。' +
+        '请先 browser_observe 一次建立引用，或改用其它 frame。',
+    };
+  }
   const fingerprint: string = registry.fingerprint();
 
   // —— 种子解析：elementId 走注册表；selector/xpath 支持跨开放 shadow root ——
@@ -196,72 +204,6 @@ export function elementExplorePayload(
   // 种子引用登记：selector/xpath 解析出的元素也必须有 ElementId，
   // 否则模型拿到「匹配成功」却无法继续 children/interact。
   const seedElementId: string = registry.register(seed);
-
-  // ─────────── 注入内注册表（与 element-scan-payload 契约一致） ───────────
-  function createRegistry() {
-    const nonce = Math.random().toString(16).slice(2, 10);
-    let counter = 0;
-    let revision = 0;
-    const entries = new Map<
-      string,
-      { node: WeakRef<Element>; expires: number; url: string }
-    >();
-    const nodes = new Map<Element, string>();
-    const resolve = (id: unknown): Element | null => {
-      if (typeof id !== 'string') return null;
-      const entry = entries.get(id);
-      if (!entry) return null;
-      if (entry.expires <= Date.now() || entry.url !== document.URL) {
-        entries.delete(id);
-        return null;
-      }
-      const node = entry.node.deref();
-      if (!node || !node.isConnected) {
-        entries.delete(id);
-        return null;
-      }
-      return node;
-    };
-    const api = {
-      register(element: Element): string {
-        const previous = nodes.get(element);
-        if (previous && resolve(previous) === element) {
-          entries.get(previous)!.expires = Date.now() + 120_000;
-          return previous;
-        }
-        if (counter % 256 === 0)
-          for (const [id, entry] of entries)
-            if (entry.expires <= Date.now() || !entry.node.deref()?.isConnected)
-              entries.delete(id);
-        const id = `anx:${tabId}:${nonce}:${++counter}`;
-        entries.set(id, {
-          node: new WeakRef(element),
-          expires: Date.now() + 120_000,
-          url: document.URL,
-        });
-        nodes.set(element, id);
-        while (entries.size > 20_000) {
-          const oldest = entries.keys().next().value;
-          if (oldest === undefined) break;
-          entries.delete(oldest);
-        }
-        return id;
-      },
-      resolve,
-      invalidate() {
-        revision++;
-      },
-      fingerprint() {
-        return `${nonce}|${revision}|${document.URL}`;
-      },
-    };
-    refDocument.__agentNexusReferences = api;
-    window.addEventListener('pagehide', () => {
-      entries.clear();
-      revision++;
-    });
-    return api;
-  }
 
   // ─────────── 深度查询（开放 Shadow DOM 感知，有界） ───────────
   /** 收集文档 + 开放 shadow root 森林（BFS，上限 SHADOW_ROOT_LIMIT） */
@@ -928,41 +870,16 @@ export function exploreSeedLookupPayload(
 
   const refDocument = document as { __agentNexusReferences?: any };
 
-  /** 最小注册表（与 element-scan-payload 的 id 格式一致） */
-  const registry = (() => {
-    if (refDocument.__agentNexusReferences) return refDocument.__agentNexusReferences;
-    const nonce = Math.random().toString(16).slice(2, 10);
-    let counter = 0;
-    const entries = new Map<string, { node: WeakRef<Element>; expires: number; url: string }>();
-    const resolve = (id: unknown): Element | null => {
-      if (typeof id !== 'string') return null;
-      const entry = entries.get(id);
-      if (!entry) return null;
-      if (entry.expires <= Date.now() || entry.url !== document.URL) return null;
-      const node = entry.node.deref();
-      return node && node.isConnected ? node : null;
+  // 注册表由宿主经 elementScanPayload('registry') 引导就位（完整契约）。
+  // 冷启动的 selector/xpath 种子注册进同一注册表，产出的引用与 observe 同权。
+  const registry = refDocument.__agentNexusReferences;
+  if (!registry) {
+    return {
+      error:
+        'REGISTRY_UNAVAILABLE：引用注册表未就位（内部引导失败，可能该 frame 注入受限）。' +
+        '请先 browser_observe 一次建立引用，或改用其它 frame。',
     };
-    const api = {
-      register(element: Element): string {
-        for (const [id, entry] of entries) {
-          if (entry.node.deref() === element) {
-            entry.expires = Date.now() + 120_000;
-            return id;
-          }
-        }
-        const id = `anx:${tabId}:${nonce}:${++counter}`;
-        entries.set(id, { node: new WeakRef(element), expires: Date.now() + 120_000, url: document.URL });
-        return id;
-      },
-      resolve,
-      invalidate() {},
-      fingerprint() {
-        return `${nonce}|0|${document.URL}`;
-      },
-    };
-    refDocument.__agentNexusReferences = api;
-    return api;
-  })();
+  }
 
   const collectRoots = (): Array<Document | ShadowRoot> => {
     const roots: Array<Document | ShadowRoot> = [document];

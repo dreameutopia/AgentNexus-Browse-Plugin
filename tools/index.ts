@@ -21,7 +21,6 @@ import { registerJavaScriptTools } from './javascript';
 import { registerPythonTools } from './python';
 import { registerPlanTools } from './plan';
 import { registerDataTools } from './data';
-import { registerLearnTools } from './learn';
 import { registerFileUtilTools } from './file-util';
 
 /**
@@ -54,7 +53,6 @@ export function registerAllTools() {
   registerPythonTools(); // 注册 Python 沙箱工具（python_run，环境就绪后才实际可用）
   registerPlanTools(); // 注册会话任务计划工具（plan_tool：长难任务的步骤与状态跟踪）
   registerDataTools(); // 注册数据引用通道工具（data_ref_tool：批量抓取批次的盘点/合并/清理）
-  registerLearnTools(); // 注册网站学习提交工具（submit_skill / submit_validation：终止型结束信号）
   registerFileUtilTools(); // 注册工作区文件工具（file_util：上传文件按需读取 + 文本文件读写）
   // 注意：文档工具（document_tool）**不在此注册**——它只在 sidepanel 注册
   // （见 sidepanel/utils/tools/document-tools-registration.ts，由
@@ -92,7 +90,6 @@ export * from './interact'; // 导出用户交互工具（interact）
 export * from './python'; // 导出 Python 沙箱工具（python_run）
 export * from './plan'; // 导出会话任务计划工具（plan_tool）
 export * from './data'; // 导出数据引用通道工具（data_ref_tool）
-export * from './learn'; // 导出网站学习工具（submit_skill / submit_validation）
 export * from './file-util'; // 导出工作区文件工具（file_util）
 export * from './base-tool';
 

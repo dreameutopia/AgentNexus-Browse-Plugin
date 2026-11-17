@@ -10,18 +10,18 @@ export interface TextEdit {
 }
 function fail(message: string): never { throw new WorkspaceOperationError('INVALID_EDIT', message); }
 export function parseTextEdits(raw: unknown): TextEdit[] {
-    if (!Array.isArray(raw) || raw.length < 1 || raw.length > 100) fail('edits 必须包含 1..100 项');
+    if (!Array.isArray(raw) || raw.length < 1 || raw.length > 100) fail('edits 必须是 1..100 项的数组（单次替换请直接用 find+replace 两字段）');
     return raw.map((value, index) => {
         if (!value || typeof value !== 'object' || Array.isArray(value) ||
-            Object.keys(value).some(key => !['find', 'replace', 'replaceAll', 'matchMode'].includes(key))) fail(`edits[${index}] 形态无效或含未知字段`);
+            Object.keys(value).some(key => !['find', 'replace', 'replaceAll', 'matchMode'].includes(key))) fail(`edits[${index}] 形态无效或含未知字段（每项仅接受 find/replace/replaceAll/matchMode）`);
         const edit = value as TextEdit;
         for (const field of ['find', 'replace'] as const) {
             const text = edit[field];
             if (typeof text !== 'string' || text.length > WORKSPACE_FILE_CONTENT_MAX_CHARS || text.includes('\0') || /[\uD800-\uDFFF]/u.test(text)) fail(`edits[${index}].${field} 必须是有界、无 NUL 的有效 Unicode 字符串`);
         }
         if (!edit.find || (edit.matchMode === 'indentation' && !edit.find.trim())) fail('find 必须包含可定位的原文');
-        if (edit.replaceAll !== undefined && typeof edit.replaceAll !== 'boolean') fail('replaceAll 必须是布尔值');
-        if (edit.matchMode !== undefined && edit.matchMode !== 'exact' && edit.matchMode !== 'indentation') fail('matchMode 必须是 exact 或 indentation');
+        if (edit.replaceAll !== undefined && typeof edit.replaceAll !== 'boolean') fail('replaceAll 必须是布尔值（true/false）');
+        if (edit.matchMode !== undefined && edit.matchMode !== 'exact' && edit.matchMode !== 'indentation') fail(`matchMode 必须是 exact 或 indentation（收到 ${JSON.stringify(edit.matchMode)}）`);
         return { find: edit.find, replace: edit.replace, replaceAll: edit.replaceAll, matchMode: edit.matchMode };
     });
 }
@@ -56,9 +56,9 @@ export function applyTextEdit(previous: string, edit: TextEdit): {
             let count = 1;
             if (replaceAll) for (let at = previous.indexOf(find, first + find.length); at >= 0; at = previous.indexOf(find, at + find.length)) {
                 count++;
-                if (previous.length + count * (replace.length - find.length) > WORKSPACE_EDIT_MAX_FILE_BYTES) fail('编辑结果超过就地编辑上限');
+                if (previous.length + count * (replace.length - find.length) > WORKSPACE_EDIT_MAX_FILE_BYTES) fail('编辑结果超过就地编辑上限（' + WORKSPACE_EDIT_MAX_FILE_BYTES + ' 字节）——请缩小替换范围或拆分文件');
             }
-            if (previous.length + count * (replace.length - find.length) > WORKSPACE_EDIT_MAX_FILE_BYTES) fail('编辑结果超过就地编辑上限');
+            if (previous.length + count * (replace.length - find.length) > WORKSPACE_EDIT_MAX_FILE_BYTES) fail('编辑结果超过就地编辑上限（' + WORKSPACE_EDIT_MAX_FILE_BYTES + ' 字节）——请缩小替换范围或拆分文件');
             return { text: replaceAll ? previous.replaceAll(find, () => replace) : previous.slice(0, first) + replace + previous.slice(first + find.length), replaced: replaceAll ? count : 1 };
         }
     }
@@ -95,7 +95,7 @@ export function applyTextEdit(previous: string, edit: TextEdit): {
             const replacement = replace === '' ? '' : normalizedReplacement.map(value => value ? indent + value : '').join(eol);
             const end = trailingNewline ? starts[last + 1] : starts[last] + lines[last].length;
             projectedLength += replacement.length - (end - start);
-            if (projectedLength > WORKSPACE_EDIT_MAX_FILE_BYTES) fail('编辑结果超过就地编辑上限');
+            if (projectedLength > WORKSPACE_EDIT_MAX_FILE_BYTES) fail('编辑结果超过就地编辑上限（' + WORKSPACE_EDIT_MAX_FILE_BYTES + ' 字节）——请缩小替换范围或拆分文件');
             if (matches.length >= 100000)
                 fail('缩进匹配次数过多，请使用脚本处理');
             matches.push({ start, end, replacement });
@@ -105,13 +105,13 @@ export function applyTextEdit(previous: string, edit: TextEdit): {
     if (!matches.length) {
         if (matchMode === 'exact' && find.includes('\n') && !find.includes('\r\n') && previous.includes('\r\n'))
             fail('find 未命中：文件使用 CRLF，而 find 使用 LF。使用精确原文或显式 matchMode="indentation" 匹配完整行块');
-        fail('find 未命中：find 必须与文件内容逐字符精确匹配；请先 read 核对原文、缩进、空白与换行；不自动进行模糊替换');
+        fail('find 未命中：find 必须与文件内容逐字符精确匹配；请先用 file_util(action="read") 核对原文、缩进、空白与换行；不自动进行模糊替换');
     }
     if (!replaceAll && matches.length !== 1)
         fail('find 命中多次，须补充上下文使其唯一；或使用 replaceAll=true');
     const projectedLength = matches.reduce((size, match) => size + match.replacement.length - (match.end - match.start), previous.length);
     if (projectedLength > WORKSPACE_EDIT_MAX_FILE_BYTES)
-        fail('编辑结果超过就地编辑上限');
+        fail('编辑结果超过就地编辑上限（' + WORKSPACE_EDIT_MAX_FILE_BYTES + ' 字节）——请缩小替换范围或拆分文件');
     const selected = replaceAll ? matches : matches.slice(0, 1);
     let cursor = 0, text = '';
     for (const match of selected) {

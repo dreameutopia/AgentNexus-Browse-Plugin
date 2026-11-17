@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { executeScriptBounded } from '../common/frame-read';
 /**
  * 表单填充工具
@@ -56,7 +58,7 @@ export class FormFillerTool extends BaseTool {
     }
   };
 
-  async execute(args: FormFillerParams): Promise<ToolResult> {
+  async execute(args: FormFillerParams, context?: ToolExecutionContext): Promise<ToolResult> {
     console.log('📝 [表单填充工具] 开始执行');
     console.log('📥 [表单填充工具] 已接收填充请求');
     
@@ -79,7 +81,7 @@ export class FormFillerTool extends BaseTool {
       console.log('📋 [表单填充工具] 解析字段数:', Object.keys(parsedFormData).length);
       
       // 获取当前活动标签页
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tabs = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
       if (!tabs[0]) {
         console.error('❌ [表单填充工具] 未找到活动标签页');
         return this.createErrorResponse('未找到活动标签页');
@@ -94,7 +96,7 @@ export class FormFillerTool extends BaseTool {
         target: { tabId },
         func: this.fillFormScript,
         args: [parsedFormData, autoSubmit]
-      });
+      }, undefined, undefined, context);
       
       if (!results || results.length === 0) {
         console.error('❌ [表单填充工具] 脚本执行失败');

@@ -120,8 +120,8 @@
         />
       </div>
 
-      <!-- 技能激活片段（预选技能自动加载）：内联可折叠「已加载技能」容器，
-           与「查看屏幕」同一设计语言；参与连续过程小折叠 -->
+      <!-- 技能激活片段（预选技能自动加载）：直接展示加载记录，
+           无独立展开/收起交互；参与连续过程分组 -->
       <MessageSkillPart
         v-else-if="entry.item.part.type === 'skill' && entry.item.part.skills?.length"
         :skills="entry.item.part.skills"
@@ -159,8 +159,8 @@
  *     系统信息与正文在视觉上分层，不再混用同一气泡样式。
  *   - image 片段由 MessageImagePart 渲染为「查看屏幕」容器（默认收起，
  *     展开见原图，点击进共享看图层），折叠状态是组件本地态，无需回传。
- *   - skill 片段由 MessageSkillPart 渲染为「已加载技能」容器（默认收起，
- *     展开看技能清单），同样属于连续过程，可被小折叠收拢。
+ *   - skill 片段由 MessageSkillPart 直接展示「已加载技能」记录，
+ *     同样属于连续过程，可随过程分组一并收拢。
  */
 import { computed, inject, ref, type Ref } from 'vue';
 import { t } from '@/utils/i18n';

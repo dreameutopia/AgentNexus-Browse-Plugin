@@ -51,7 +51,6 @@ const ports = {
   isAiResponding: ref(false),
   sendInFlight: ref(false),
   isStopping: ref(false),
-  activeSessionIsLearn: false,
   showAlert: async text => alerts.push(text),
   t: key => key,
   executeSend: async (retry, guardContinue) => sent.push({ retry, guardContinue }),
@@ -132,7 +131,7 @@ delete ports.messages.value[1].parts[1].noticeAction;
 await handleGuardContinue(...target);
 assert.equal(alerts.at(-1), 'sidepanel.chat.guardContinueExpired');
 
-// 9. 在途运行 / 学习态 / 无真实用户轮 → 各自友好拒绝
+// 9. 在途运行 / 无真实用户轮 → 各自友好拒绝
 ports.messages.value = [user, stopped()];
 ports.isAiResponding.value = true;
 await handleGuardContinue(...target);
@@ -143,11 +142,6 @@ ports.conversationEngine.isRunning = () => true;
 await handleGuardContinue(...target);
 assert.equal(alerts.at(-1), 'sidepanel.chat.guardContinueBusy');
 ports.conversationEngine.isRunning = () => false;
-
-ports.activeSessionIsLearn = true;
-await handleGuardContinue(...target);
-assert.equal(alerts.at(-1), 'sidepanel.chat.guardContinueLearnBlocked');
-ports.activeSessionIsLearn = false;
 
 ports.messages.value = [{ ...user, isIgnore: true }, stopped()];
 await handleGuardContinue(...target);

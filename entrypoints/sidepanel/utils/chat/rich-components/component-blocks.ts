@@ -25,7 +25,7 @@ import { TREND_ARROW_SVG } from '../stat-card';
 import { t } from '@/utils/i18n/core';
 import type { NormalizedEnvelope, RichCell } from './envelope';
 
-/** stat 组件行数上限（与 legacy stat-card zod 契约一致；超限降级源码） */
+/** stat 组件行数上限（与 legacy stat-card zod 契约一致；超限改判为 table 渲染） */
 const STAT_MAX_ROWS = 6;
 /** insight 组件行数上限（超过 = 建模错误，应改用 table；超限降级源码） */
 const INSIGHT_MAX_ROWS = 12;
@@ -174,10 +174,11 @@ function trendOf(value: RichCell): { direction: 'up' | 'down'; text: string } | 
  * 信封 stat → 统计卡组。产出与 stat-card.ts 完全一致的 DOM
  * （.stat-card-block / .stat-cards / .stat-card…），零新增样式。
  * 变化与说明子元素按数据有无渲染：取不到就不输出（指标 / 当前值仍必填）。
- * 超过 6 行判建模错误（>6 个指标应改用 table），降级源码。
+ * 超过 6 行判建模超限（提示词教「第 7 个起改用 table」）：不降源码，
+ * 改判为同一份数据的表格——数据不丢，模型偶发超限不再出丑。
  */
 function buildStatBlock(env: NormalizedEnvelope): string | null {
-  if (env.rows.length > STAT_MAX_ROWS) return null;
+  if (env.rows.length > STAT_MAX_ROWS) return buildTableBlock(env);
 
   const roles = resolveStatColumns(env.columns);
   const cards: string[] = [];

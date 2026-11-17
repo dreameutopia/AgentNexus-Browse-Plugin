@@ -129,6 +129,7 @@ let injectAttempts = 0;
   },
 };
 (globalThis as any).chrome.windows = {
+  onRemoved: new EventHook(),
   onFocusChanged: glowFocused,
   WINDOW_ID_NONE: -1,
 };
@@ -601,6 +602,81 @@ assert.deepEqual([...glowPorts], [[8, 'doc-8']]);
 local.stop();
 await tick();
 assert.equal(glowPorts.size, 0, 'Local learning or validation must release the same renderer');
+
+// A bound run's glow follows its own window, including after user focus changes.
+const nativeGlowQuery = (globalThis as any).chrome.tabs.query;
+const nativeGlowGet = (globalThis as any).chrome.tabs.get;
+let boundWindowClosed = false;
+(globalThis as any).chrome.tabs.query = async (query: chrome.tabs.QueryInfo) => {
+  if (query.windowId === 1) return boundWindowClosed ? [] : [{ id: 13, windowId: 1, active: true }];
+  return nativeGlowQuery(query);
+};
+(globalThis as any).chrome.tabs.get = async (tabId: number) => ({ id: tabId, windowId: tabId === 9 ? 2 : 1 });
+(globalThis as any).chrome.windows.get = async (id: number) => {
+  if (id === 1 && boundWindowClosed) throw new Error('No such window');
+  return { id, type: 'normal' };
+};
+const boundView = new ConversationRuntimeClient();
+browserSession['beta.browserWindowBinding.glow-bound'] = { mode: 'bound-window', windowId: 1 };
+const boundTask = boundView.run({ chatId: 'glow-bound', browserScope: { mode: 'bound-window', windowId: 1 } } as any);
+for (let n = 0; n < 6; n++) await tick();
+assert.deepEqual([...glowPorts], [[13, 'doc-13']]);
+glowFocused.fire(2);
+glowActivated.fire({ tabId: 9, windowId: 2 });
+await tick();
+assert.deepEqual([...glowPorts], [[13, 'doc-13']], 'User focus and tabs in another window must not redirect a bound glow');
+boundWindowClosed = true;
+glowRemoved.fire(13);
+for (let n = 0; n < 4; n++) await tick();
+assert.equal(glowPorts.size, 0, 'Closing the bound target must not highlight another window');
+runs.get('glow-bound').resolve(summary);
+runs.delete('glow-bound');
+await boundTask;
+boundView.detach();
+boundWindowClosed = false;
+browserSession['beta.browserWindowBinding.local-bound'] = { mode: 'bound-window', windowId: 1 };
+const boundLocal = boundView.beginLocalPageGlow('local-bound')!;
+for (let n = 0; n < 5; n++) await tick();
+assert.deepEqual([...glowPorts], [[13, 'doc-13']]);
+glowFocused.fire(2);
+glowActivated.fire({ tabId: 9, windowId: 2 });
+await tick();
+assert.deepEqual([...glowPorts], [[13, 'doc-13']], 'Local learning must use its session’s bound glow too');
+boundLocal.stop();
+await tick();
+(globalThis as any).chrome.tabs.query = nativeGlowQuery;
+(globalThis as any).chrome.tabs.get = nativeGlowGet;
+// A closed target during the worker's initial model compaction is persisted as
+// a renderable error without ever starting the conversation engine.
+(globalThis as any).compactionRatio = 0.9;
+(globalThis as any).chrome.storage.session.get = async (key: string | null) => key === null ? { ...browserSession } : { [key]: browserSession[key] };
+(globalThis as any).chrome.storage.session.remove = async (key: string) => { delete browserSession[key]; };
+let enteredClosedCompaction!: () => void;
+const closedCompactionEntered = new Promise<void>(resolve => { enteredClosedCompaction = resolve; });
+(globalThis as any).compactInput = ({ signal }: any) => new Promise((_resolve, reject) => {
+  enteredClosedCompaction();
+  signal.addEventListener('abort', () => reject(new Error('transport cancelled')), { once: true });
+});
+browserSession['beta.browserWindowBinding.closed-preparation'] = { mode: 'bound-window', windowId: 1 };
+const closePreparingView = new ConversationRuntimeClient();
+const preparingEvents: any[] = [];
+const closedPreparationTask = closePreparingView.run({ ...compactRuntime, chatId: 'closed-preparation',
+  browserScope: { mode: 'bound-window', windowId: 1 } } as any, { observer: event => preparingEvents.push(event) });
+await closedCompactionEntered;
+boundWindowClosed = true;
+(globalThis as any).chrome.windows.onRemoved.fire(1);
+const closedPreparationSummary = await closedPreparationTask;
+assert.equal(closedPreparationSummary.status, 'error');
+assert.equal(runs.has('closed-preparation'), false);
+assert.match(closedPreparationSummary.error ?? '', /<api-error\b[^>]*kind="error"/);
+assert.match(closedPreparationSummary.error ?? '', /BOUND_WINDOW_CLOSED/);
+assert.equal(preparingEvents.filter(event => event.type === 'assistant-error').length, 1);
+assert.equal(preparingEvents.some(event => event.type === 'aborted'), false);
+assert.equal((globalThis as any).preparationErrors.at(-1).status, 'error');
+for (let n = 0; n < 5; n++) await tick();
+assert.equal(browserSession['beta.browserWindowBinding.closed-preparation'], undefined);
+closePreparingView.detach();
+(globalThis as any).compactionRatio = 0;
 console.log(
   "[conversation-runtime] Close/reopen, hidden streaming, hydration races, approval restoration, stop and page-glow lifecycle passed.",
 );

@@ -132,7 +132,7 @@
             :aria-label="t('hub.python.agentInjectToggleLabel', { name: displayNameOf(agent) })"
             @update:model-value="toggleAgentInjection(agent.id, $event)"
           >
-            {{ t('hub.python.agentInjectToggle') }}
+            {{ linkedAgentIdSet.has(agent.id) ? t('hub.python.agentInjectToggleOn') : t('hub.python.agentInjectToggleOff') }}
           </HubSwitch>
         </div>
       </div>
@@ -490,6 +490,25 @@
       @confirm="confirmRemoveEnv"
       @cancel="removeEnvDialog.visible = false"
     />
+
+    <!-- ══════════ 安装完成：批量注入询问（确认=全部开启；稍后=入口指引） ══════════ -->
+    <HubDialog
+      :visible="injectOfferDialog.visible"
+      :title="t('hub.python.agentInjectOfferTitle')"
+      :message="t('hub.python.agentInjectOfferDesc')"
+      :confirm-text="t('hub.python.agentInjectOfferConfirm')"
+      :cancel-text="t('hub.python.agentInjectOfferLater')"
+      @confirm="confirmInjectAll"
+      @cancel="deferInjectAll"
+    />
+    <HubDialog
+      :visible="injectLaterDialog.visible"
+      :title="t('hub.python.agentInjectLaterTitle')"
+      :message="t('hub.python.agentInjectLaterMessage')"
+      :confirm-text="t('hub.python.agentInjectLaterAck')"
+      @confirm="injectLaterDialog.visible = false"
+      @cancel="injectLaterDialog.visible = false"
+    />
   </div>
 </template>
 
@@ -620,6 +639,27 @@ async function toggleAgentInjection(agentId: string, linked: boolean): Promise<v
     injectionBusy.value = '';
     linkedAgentIds.value = pythonToolLinkedAgentIds();
   }
+}
+
+// ──── 安装完成后：批量注入引导（询问 → 确认全部开启 / 稍后入口指引） ────
+
+/** HubDialog 受控状态：安装完成先询问批量注入，「稍后再说」再弹入口指引 */
+const injectOfferDialog = reactive({ visible: false });
+const injectLaterDialog = reactive({ visible: false });
+
+/** 确认（推荐）：把 python_run 批量开启给当前全部可注入预置智能体 */
+async function confirmInjectAll(): Promise<void> {
+  injectOfferDialog.visible = false;
+  for (const agent of injectablePresets.value) {
+    await setAgentPythonToolLinked(agent.id, true);
+  }
+  linkedAgentIds.value = pythonToolLinkedAgentIds();
+}
+
+/** 稍后再说：关闭询问，弹出入口指引（随时可回到本分区单独添加） */
+function deferInjectAll(): void {
+  injectOfferDialog.visible = false;
+  injectLaterDialog.visible = true;
 }
 
 const cacheInfo = reactive({ count: 0, bytes: 0 });
@@ -1023,6 +1063,8 @@ async function startSetup(): Promise<void> {
 
   let environmentId: string | undefined;
   let stopWatching: (() => void) | undefined;
+  /** 安装成功（状态落 ready）：完成后弹批量注入询问 */
+  let setupSucceeded = false;
   try {
     environmentId = (await beginPyodideSetup()).environmentId;
     stopWatching = watchPyodideEnv(state => {
@@ -1053,6 +1095,7 @@ async function startSetup(): Promise<void> {
       lastError: '',
     });
     if (updated) void loadCatalog();
+    setupSucceeded = !!updated;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const cancelled = controller.signal.aborted || message.includes('取消') || message.includes('abort');
@@ -1072,6 +1115,7 @@ async function startSetup(): Promise<void> {
     verifying.value = false;
     cancelController.value = null;
     await hydrate();
+    if (setupSucceeded) injectOfferDialog.visible = true;
   }
 }
 

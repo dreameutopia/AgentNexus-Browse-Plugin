@@ -125,14 +125,16 @@ await chatDatabase.createSession({
 } as never);
 
 const { DocumentTool } = await import('../../tools/document');
+const { FileUtilTool } = await import('../../tools/file-util/file-util-tool');
 const tool = new DocumentTool();
+const files = new FileUtilTool();
 // 注入 mermaid 渲染器：JSDOM 无法真实渲染 mermaid（缺 SVG 几何实现），
 // 这里用固定 SVG 验证「mermaid 围栏 → 矢量图 → DOCX 内嵌」的完整链路。
 tool.mermaidRenderer = async () =>
   '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="150" viewBox="0 0 300 150"><rect x="10" y="10" width="280" height="130" fill="#f0f0f0" stroke="#999"/><text x="150" y="80" text-anchor="middle" font-size="14">图表</text></svg>';
 const context = { chatId };
 
-const created = await tool.execute(
+const created = await files.execute(
   {
     action: 'create',
     path: 'docs/dom-verify.md',
@@ -186,7 +188,7 @@ if (blob) {
   includes(xml, 'svgBlip', 'DOCX 含 mermaid 矢量图');
 }
 
-await tool.execute({ action: 'delete', path: 'docs/dom-verify.md' }, context);
+await files.execute({ action: 'delete', path: 'docs/dom-verify.md' }, context);
 
 console.log(`[document-dom] 通过 ${passed} 项，失败 ${failed} 项`);
 if (failed) {

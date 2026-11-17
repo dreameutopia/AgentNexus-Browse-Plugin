@@ -3,7 +3,7 @@
  *
  * 按场景定义各 Agent 可使用的工具 ID 列表。
  * 每个预设可单独引用，也可通过 scenario 名称获取组合结果。
- * 约定：此处只保留真实调用方引用的场景（预置智能体 + 默认对话 + 网站学习），
+ * 约定：此处只保留真实调用方引用的场景（预置智能体 + 默认对话），
  * 新增场景时同步维护调用方，避免出现无人引用的死预设。
  * 管理中心（hub）智能体编辑页的工具组是独立的 UI 分组（见 AgentManager 的
  * toolGroups），不再登记为场景——此处的场景只服务运行时装配。
@@ -26,11 +26,6 @@ export type ToolScenario =
   | 'deepSearch'
   | 'automation'
   | 'dataHarvest'
-  | 'siteLearnText'
-  | 'siteLearnVision'
-  | 'siteLearnVisionForText'
-  | 'siteValidateText'
-  | 'siteValidateVision'
   | 'all';
 
 // ──── 原子工具集合 ────
@@ -41,9 +36,10 @@ export type ToolScenario =
  * 模型必须能直接读取（runtime-builder 与 CORE_INTERACT_TOOL_IDS 一并置入
  * 工具集，用户在编辑页不可裁剪）。编辑页各工具组不再包含它。
  *
- * 统一规范：正文读取 = read_website（落盘 content/*.md + path+page 分页，
- * 产物可下载/可被其它工具按路径消费）。历史文本通道保留注册但
- * 不再注入，全仓不允许再引用它作为默认通道。
+ * 统一规范：正文读取 = read_website（落盘 content/*.md + 单页 3000 字符，
+ * 后续页用 file_util(action="read", path, index) 续读；产物可下载/可被其它
+ * 工具按路径消费）。历史文本通道保留注册但不再注入，全仓不允许再引用它
+ * 作为默认通道。
  */
 export const CORE_PAGE_TOOL_IDS = ['read_website'] as const;
 
@@ -109,8 +105,8 @@ const BASIC_BROWSER_TOOLS = [
  * **两个 action agent（文本通用助手 / 视觉通用助手）不携带此工具**：它们的
  * 职责是操作页面，网络观察对「点哪里、填什么」是噪声；且该工具占用
  * exclusiveText 互斥队列（与视觉 GUI 共用调试会话），会拖慢每一步交互。
- * 因此它只出现在数据采集 / 网站学习 / 技能验证这些「以观察数据为目的」的
- * 场景里，以及 hub 自定义智能体的资源工具组中。
+ * 因此它只出现在数据采集这些「以观察数据为目的」的场景里，
+ * 以及 hub 自定义智能体的资源工具组中。
  */
 const NETWORK_CAPTURE_TOOL = 'browser_network_capture';
 
@@ -126,14 +122,13 @@ const AUTOMATION_TOOLS = [
   // ——刻意不带 platform_search：通用助手的检索面是「通用网页」，
   //   站点内检索是特定场景（Deep Search / 数据采集）的专用能力
   'web_search',
-  'generic_wait',
+  'browser_wait',
   // 懒加载/无限滚动页面：getter 采样前先滚动触发渲染，再重新采集
 ] as const;
 
 /**
  * 视觉通用助手基座：自动截图 + 统一 GUI 手势 + DOM 感知。
- * 仅供 visionAgent 场景使用；网站学习/验证有自己独立的清单（见下方
- * 网站学习区块），两者的配置各自演进、互不影响。
+ * 仅供 visionAgent 场景使用。
  */
 const VISION_AGENT_TOOLS = [
   VISION_GUI_TOOL_ID,
@@ -142,102 +137,6 @@ const VISION_AGENT_TOOLS = [
   ...AUTOMATION_TOOLS,
   'screenshot',
 ] as const;
-
-// ──── 网站学习（Site Learn）场景 ────
-// 学习段与验证段是同一会话的两轮运行，工具组按「目标操作模式 × 学习策略」
-// 选择，并且**互斥**地只带各自的终止型提交工具——两套同时注入会让模型
-// 有机会在错误的阶段调用错误的提交工具。
-//
-// ── 独立配置约定 ──
-// 本区块是学习域**自有**的工具清单：刻意不展开 AUTOMATION_TOOLS /
-// VISION_AGENT_TOOLS。文本通用助手与视觉通用助手两个智能体的配置变更
-// 不得影响网站学习/验证，反之亦然（learn-prompts 同理不 import 两个智能体
-// 的 SOP；两边靠注释交叉锚定，见 learn-prompts.ts 文末维护约定）。
-//
-// ── 组合口径 ──
-//   target=text  × strategy=text → siteLearnText         纯文本，无截图
-//   target=text  × strategy=vision → siteLearnVisionForText 文本全套 + 截图（仅辅助理解），**无 vision_gui**
-//   target=vision（策略恒 vision）→ siteLearnVision      文本全套 + vision_gui + 截图（标签页/窗口枚举随 browser_tabs 基座在场）
-// 验证段只看 targetMode（技能交给谁用就用谁的执行面盲测）。
-//
-// 共同部分（核心层已无条件注入，此处不重复登记）：
-//   read_website / plan_tool / interact / note_tool
-//   （学习段逐步留痕、验证段记录卡点的 note_tool 用法由 learn-prompts 的
-//     <recording> 规范约束，工具本身随核心层恒定可用）。
-// 都带 browser_network_capture：观察页面背后数据（learn-prompts 的
-// dom-locating 块与之交叉锚定）。
-
-/**
- * 学习/验证共用的 DOM 文本操作基座（学习域自有清单，不引用 AUTOMATION_TOOLS）。
- * read_website 由核心层注入，不在此列。
- * browser_tabs 同时承载原「窗口树枚举」（action="windows"），视觉/文本目标
- * 统一随基座在场——窗口信息是纯枚举只读，不再是视觉目标专属。
- */
-const SITE_LEARN_DOM_TOOLS = [
-  'browser_observe',
-  'browser_interact',
-  'browser_dom_explore',
-  'browser_tabs',
-  'browser_navigation',
-  'browser_get_page_info',
-  // 通用网页搜索（engine 枚举：bing / baidu，自带导航）
-  'web_search',
-  'generic_wait',
-  // 懒加载/无限滚动页面：getter 采样前先滚动触发渲染，再重新采集
-] as const;
-
-/** 网站学习·文本目标 × 文本策略：纯文本探索，无截图循环 */
-const SITE_LEARN_TEXT_TOOLS = [
-  ...SITE_LEARN_DOM_TOOLS,
-  NETWORK_CAPTURE_TOOL,
-  'submit_skill',
-] as const;
-
-/**
- * 网站学习·文本目标 × 视觉策略（siteLearnVisionForText）：
- * 文本全套 + screenshot——自动截图仅用于帮助理解屏幕元素。
- * **不携带 vision_gui**：文本目标的学习、操作与取证一律走 DOM 文本通道，
- * 视觉手势工具不得出现在该组合的工具面
- * （与 learn-prompts 的 <vision-gui-tool> 禁用分区交叉锚定）。
- */
-const SITE_LEARN_VISION_FOR_TEXT_TOOLS = [
-  ...SITE_LEARN_TEXT_TOOLS,
-  'screenshot',
-] as const;
-
-/** 网站学习·视觉目标：文本全套 + 统一 GUI 手势 + 截图，按需打标 */
-const SITE_LEARN_VISION_TOOLS = [
-  ...SITE_LEARN_TEXT_TOOLS,
-  VISION_GUI_TOOL_ID,
-  'screenshot',
-] as const;
-
-/** 按目标与学习策略共同选择学习段场景（学习看 strategy × targetMode） */
-export function getSiteLearnScenario(config: { targetMode: 'text' | 'vision'; strategy: 'text' | 'vision' }): ToolScenario {
-  if (config.targetMode === 'vision') return 'siteLearnVision';
-  return config.strategy === 'vision' ? 'siteLearnVisionForText' : 'siteLearnText';
-}
-
-/** 验证段·目标模式文本：纯文本工具盲测技能（无截图、无 GUI），提交验收结论 */
-const SITE_VALIDATE_TEXT_TOOLS = [
-  ...SITE_LEARN_DOM_TOOLS,
-  NETWORK_CAPTURE_TOOL,
-  'submit_validation',
-] as const;
-
-/** 验证段·目标模式视觉：文本全套 + 统一 GUI，与产出该技能的执行面同构 */
-const SITE_VALIDATE_VISION_TOOLS = [
-  ...SITE_LEARN_DOM_TOOLS,
-  NETWORK_CAPTURE_TOOL,
-  VISION_GUI_TOOL_ID,
-  'screenshot',
-  'submit_validation',
-] as const;
-
-/** 按目标操作模式选择验证段场景（验证只看 targetMode，与学习策略无关） */
-export function getSiteValidateScenario(targetMode: 'text' | 'vision'): ToolScenario {
-  return targetMode === 'vision' ? 'siteValidateVision' : 'siteValidateText';
-}
 
 /**
  * 数据批量采集（文本通用助手全套 + 数据治理通道）：
@@ -266,21 +165,10 @@ export const SCENARIO_PRESETS: Record<Exclude<ToolScenario, 'all'>, string[]> = 
 
   /** 视觉助手：观察、阅读滚动、原图放大及等待重拍；运行时另施加能力上限
    *  （vision_gui 经 VISION_ASSISTANT_GUI_ACTIONS 收敛为只读 read/read_scroll/zoom） */
-  visionAssist: ['screenshot', VISION_GUI_TOOL_ID, 'generic_wait'],
+  visionAssist: ['screenshot', VISION_GUI_TOOL_ID, 'browser_wait'],
 
   /** 视觉通用助手：完整截图相对坐标操作；按需打标用于检查 */
   visionAgent: [...VISION_AGENT_TOOLS],
-
-  /** 网站学习·文本目标×文本策略（学习段，结束信号 submit_skill；无截图） */
-  siteLearnText: [...SITE_LEARN_TEXT_TOOLS],
-  /** 网站学习·视觉目标（学习段；文本全套 + vision_gui 手势，按需打标） */
-  siteLearnVision: [...SITE_LEARN_VISION_TOOLS],
-  /** 网站学习·文本目标×视觉策略（学习段；文本全套 + 截图辅助理解，**无 vision_gui**） */
-  siteLearnVisionForText: [...SITE_LEARN_VISION_FOR_TEXT_TOOLS],
-  /** 网站学习·验证段，目标模式文本（结束信号 submit_validation；无截图、无 GUI） */
-  siteValidateText: [...SITE_VALIDATE_TEXT_TOOLS],
-  /** 网站学习·验证段，目标模式视觉（结束信号 submit_validation；文本全套 + vision_gui） */
-  siteValidateVision: [...SITE_VALIDATE_VISION_TOOLS],
 
   /** 思维导图：Excalidraw 绘图 */
   excalidraw: ['excalidraw_tool'],

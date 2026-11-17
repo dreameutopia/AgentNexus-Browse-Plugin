@@ -1,4 +1,6 @@
-import { readPageFrames, PageReadError, addFrameIssue, type FrameReadReport, type FrameResults } from '../common/frame-read';
+import type { ToolExecutionContext } from '@/tools/registry';
+import { readPageFrames, executeScriptBounded, PageReadError, addFrameIssue, type FrameReadReport, type FrameResults } from '../common/frame-read';
+import { elementScanPayload } from '../automation/shared/element-scan-payload';
 /**
  * DOM 关系探索工具（browser_dom_explore）
  *
@@ -168,19 +170,24 @@ export class DomExploreTool extends BaseBrowserTool {
     function: {
       name: TOOL_NAMES.BROWSER.DOM_EXPLORE,
       description:
-        '探索目标元素的 DOM 关系，理解重复列表结构并定位批量抓取入口。\n' +
-        '种子三选一（优先级从高到低）：① elementId + frameId —— browser_observe 或本工具返回的 DOM 引用，最精准；' +
-        '② selector —— CSS 选择器，推荐给「已知类名/结构」的场景，自动搜索开放 Shadow DOM，未给 frameId 时跨全部 frame 查找；' +
-        '③ xpath —— 仅当 CSS 无法表达时使用（XPath 1.0，必须选中元素节点）。' +
-        'selector/xpath 匹配到多个元素时：未给 frameId 且未给 matchIndex 会返回跨 frame 候选列表（含每个候选的 ElementId，可直接选用）；给 matchIndex 则取第 N 个继续探索；显式给了 frameId 时不跨 frame 枚举，默认取该 frame 内第 1 个并在 note 中回显实际匹配数。' +
-        '没有任何引用时无需先 observe——selector/xpath 会按需建立引用注册表。\n' +
-        'action 四选一：parent=祖先链逐层摘要（附同构兄弟数，用于识别「重复卡片容器」在哪一层）；' +
-        'children=子元素列表（depth 展开 1..3 层，用于确认卡片内字段布局）；siblings=同父兄弟全列；' +
-        'similar=相似元素发现（自动识别重复容器组并逐容器等位匹配，附可直接用于 js_run 抓取脚本的生成选择器与实测匹配数）。' +
-        '结果中的 nextActions 是可直接复制的下一步调用（tool + args），不必再从文本提示里拼参数。' +
-        'children/siblings/similar 分页：首次 page=1 生成 snapshotId，续读只传 snapshotId + page（可省略种子参数）；改变条件或页面变化后重新采集。' +
-        'tabId 可选：省略=当前活动页；显式传入会先切换到该标签页再执行。' +
-        '典型链路：similar 拿到重复容器与选择器 → children 确认字段 → js_run 用选择器批量抓取（结果自动落 results/）→ xlsx_tool(dataFiles) 导出。',
+        '<dom-explore>\n' +
+        '  <capability>以引用或选择器为种子探索 DOM 关系，理解重复列表结构并定位批量抓取入口。附生成的选择器与可复制的下一步。</capability>\n' +
+        '  <seeds>三选一（优先级从高到低）。\n' +
+        '    <seed kind="elementId">browser_observe 或本工具返回的 DOM 引用 + frameId，最精准。</seed>\n' +
+        '    <seed kind="selector">CSS 选择器，推荐给「已知类名/结构」的场景；自动搜索开放 Shadow DOM，未给 frameId 时跨全部 frame 查找。</seed>\n' +
+        '    <seed kind="xpath">仅当 CSS 无法表达时使用（XPath 1.0，必须选中元素节点）。</seed>\n' +
+        '  </seeds>\n' +
+        '  <actions>\n' +
+        '    <action name="parent">祖先链逐层摘要，附同构兄弟数——用于识别「重复卡片容器」在哪一层。</action>\n' +
+        '    <action name="children">子元素列表（depth 展开 1..3 层）——用于确认卡片内字段布局。</action>\n' +
+        '    <action name="siblings">同父兄弟全列。</action>\n' +
+        '    <action name="similar">相似元素发现：自动识别重复容器组并逐容器等位匹配，附可直接用于 js_run 抓取脚本的生成选择器与实测匹配数。</action>\n' +
+        '  </actions>\n' +
+        '  <matching>selector/xpath 匹配到多个元素时：未给 frameId 且未给 matchIndex 会返回跨 frame 候选列表（含每个候选的 ElementId，可直接选用）；给 matchIndex 则取第 N 个继续探索；显式给了 frameId 时不跨 frame 枚举，默认取该 frame 内第 1 个并在 note 中回显实际匹配数。</matching>\n' +
+        '  <result>nextActions 是可直接复制的下一步调用（tool + args），不必再从文本提示里拼参数。children/siblings/similar 分页：首次 page=1 生成 snapshotId，续读只传 snapshotId + page（可省略种子参数）；改变条件或页面变化后重新采集。</result>\n' +
+        '  <usage>没有任何引用时无需先 observe——selector/xpath 会按需建立引用注册表。tabId 可选：省略=当前活动页；显式传入会先切换到该标签页再执行。</usage>\n' +
+        '  <chain>典型链路：similar 拿到重复容器与选择器 → children 确认字段 → js_run 用选择器批量抓取（结果自动落 results/）→ xlsx_tool(dataFiles) 导出。selector 种子也可直接定位元素并把返回的 ElementId 交给 browser_interact 操作。</chain>\n' +
+        '</dom-explore>',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -258,12 +265,12 @@ export class DomExploreTool extends BaseBrowserTool {
 
   private snapshots = new Map<string, ExploreSnapshot>();
 
-  async execute(args: DomExploreParams = {}): Promise<ToolResult> {
+  async execute(args: DomExploreParams = {}, context?: ToolExecutionContext): Promise<ToolResult> {
     this.ensureBackgroundContext();
-    return exclusiveText(() => this.run(args || {}));
+    return exclusiveText(() => this.run(args || {}, context));
   }
 
-  private async run(input: DomExploreParams): Promise<ToolResult> {
+  private async run(input: DomExploreParams, context?: ToolExecutionContext): Promise<ToolResult> {
     try {
       // ── 参数严格校验（未知参数拒绝并回显键名，防拼写误用静默失效） ──
       const allowed = [
@@ -401,6 +408,7 @@ export class DomExploreTool extends BaseBrowserTool {
       const target = await resolveTabTarget({
         tabId: input.tabId,
         tool: 'browser_dom_explore',
+        context,
       });
       if (!target.ok) return this.createErrorResponse(target.error);
       const { tabId, url } = target;
@@ -486,7 +494,7 @@ export class DomExploreTool extends BaseBrowserTool {
         matchIndex = snapshot.matchIndex;
         candidatesNote = snapshot.selectionNote;
       } else if (seedKind && seedKind !== 'element' && frameId === undefined) {
-        const looked = await this.lookupSeedAcrossFrames(tabId, seedKind, seedValue);
+        const looked = await this.lookupSeedAcrossFrames(tabId, seedKind, seedValue, context);
         if (!looked.ok) return { ...this.createErrorResponse(looked.error), data: { frameDiagnostics: looked.frameDiagnostics } };
         frameDiagnostics = looked.frameDiagnostics;
         lookupMatchCount = looked.total;
@@ -575,7 +583,7 @@ export class DomExploreTool extends BaseBrowserTool {
           visibleOnly: false,
           resolvedElementId: resolvedSeedElementId,
           documentId: frameDiagnostics?.documents?.find(f => f.frameId === frameId)?.documentId,
-        });
+        }, context);
         if (!injected.ok) return this.createErrorResponse(injected.error);
         const result = injected.result!;
         // 交付前二次核验（当页全部引用仍有效）
@@ -583,7 +591,7 @@ export class DomExploreTool extends BaseBrowserTool {
           tabId,
           frameId,
           result.levels!.map((l) => l.elementId),
-          result.fingerprint!
+          result.fingerprint!, context
         );
         if (!verified.ok) return this.createErrorResponse(verified.error!);
         const lines = [
@@ -679,7 +687,7 @@ export class DomExploreTool extends BaseBrowserTool {
           visibleOnly,
           resolvedElementId: resolvedSeedElementId,
           documentId: frameDiagnostics?.documents?.find(f => f.frameId === frameId)?.documentId,
-        });
+        }, context);
         if (!injected.ok) return this.createErrorResponse(injected.error);
         const result = injected.result!;
         snapshot = {
@@ -761,7 +769,7 @@ export class DomExploreTool extends BaseBrowserTool {
         tabId,
         snapshot.frameId,
         elements.map((el) => el.elementId),
-        snapshot.fingerprint
+        snapshot.fingerprint, context
       );
       if (!verified.ok) {
         this.snapshots.delete(snapshotId!);
@@ -911,6 +919,34 @@ export class DomExploreTool extends BaseBrowserTool {
   }
 
   /**
+   * 引用注册表引导（内部，尽力而为）。
+   *
+   * browser_dom_explore 允许冷启动（不先 observe、直接用 selector/xpath 种子），
+   * 此时页面上还没有**完整契约**的元素引用注册表。explore 产出的 ElementId
+   * 必须与 observe 产出的引用同权（能交给 set_checked 等状态操作），所以
+   * 这里先注入 elementScanPayload 的 'registry' 模式把完整注册表就位——
+   * 已存在时开销近零（一次检查即返回），缺失时才真正建立。
+   *
+   * 失败不阻断：目标 frame 注入受限时，主荷载会给出自己的诊断。
+   */
+  private async ensureReferenceRegistry(
+    tabId: number,
+    target: { tabId: number; frameIds?: number[]; documentIds?: string[]; allFrames?: boolean },
+    context?: ToolExecutionContext,
+  ): Promise<void> {
+    try {
+      await executeScriptBounded({
+        target,
+        world: 'ISOLATED',
+        func: elementScanPayload,
+        args: ['registry', '', '', tabId],
+      }, 3000, undefined, context);
+    } catch {
+      /* 引导失败由主荷载的注入诊断兜底 */
+    }
+  }
+
+  /**
    * 跨 frame 的种子查找：每个可注入 frame 注入一次查找荷载，聚合匹配。
    *
    * 候选编号是**全局顺序**（frameId 升序 → frame 内 DOM 顺序），并附带
@@ -920,7 +956,7 @@ export class DomExploreTool extends BaseBrowserTool {
   private async lookupSeedAcrossFrames(
     tabId: number,
     kind: 'selector' | 'xpath',
-    value: string
+    value: string, context?: ToolExecutionContext
   ): Promise<
     | {
         ok: true;
@@ -936,12 +972,13 @@ export class DomExploreTool extends BaseBrowserTool {
   > {
     let results: FrameResults<ReturnType<typeof exploreSeedLookupPayload>>;
     try {
+      await this.ensureReferenceRegistry(tabId, { tabId, allFrames: true }, context);
       results = await readPageFrames({
         target: { tabId, allFrames: true },
         world: 'ISOLATED',
         func: exploreSeedLookupPayload,
         args: [kind, value, SEED_LOOKUP_LIMIT, tabId],
-      }, { operation: 'dom-explore-seed-lookup' });
+      }, { operation: 'dom-explore-seed-lookup' }, context);
     } catch (error) {
       return {
         ok: false,
@@ -1073,13 +1110,20 @@ export class DomExploreTool extends BaseBrowserTool {
       visibleOnly: boolean;
       resolvedElementId?: string;
       documentId?: string;
-    }
+    }, context?: ToolExecutionContext
   ): Promise<
     | { ok: false; error: string }
     | { ok: true; result: ExplorePayloadResult & { fingerprint: string } }
   > {
     let results: chrome.scripting.InjectionResult<unknown>[];
     try {
+      await this.ensureReferenceRegistry(
+        tabId,
+        params.documentId
+          ? { tabId, documentIds: [params.documentId] }
+          : { tabId, frameIds: [frameId] },
+        context,
+      );
       results = await readPageFrames({
         target: { tabId, ...(params.documentId ? { documentIds: [params.documentId] } : { frameIds: [frameId] }) },
         world: 'ISOLATED',
@@ -1094,7 +1138,7 @@ export class DomExploreTool extends BaseBrowserTool {
           params.visibleOnly,
           tabId,
         ],
-      });
+      }, undefined, context);
     } catch (error) {
       return {
         ok: false,
@@ -1133,7 +1177,7 @@ export class DomExploreTool extends BaseBrowserTool {
     tabId: number,
     frameId: number,
     elementIds: string[],
-    expectedFingerprint: string
+    expectedFingerprint: string, context?: ToolExecutionContext
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     try {
       const checked = await readPageFrames({
@@ -1141,7 +1185,7 @@ export class DomExploreTool extends BaseBrowserTool {
         world: 'ISOLATED',
         func: validateExploreReferences,
         args: [elementIds],
-      });
+      }, undefined, context);
       if (
         checked.length !== 1 ||
         !checked[0].result?.valid ||

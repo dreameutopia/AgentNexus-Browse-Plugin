@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 /** Read-only frame collection. Never replay actions or arbitrary page scripts here.
  * Discovery uses both APIs: webNavigation can omit initial about:blank documents.
  * Payloads run separately so a stalled renderer cannot withhold other results.
@@ -156,14 +158,14 @@ export async function withDeadline<T>(
 export function executeScriptBounded<T = unknown>(
   request: Request<T>,
   timeoutMs = 8000,
-  signal?: AbortSignal,
+  signal?: AbortSignal, context?: ToolExecutionContext
 ): Promise<chrome.scripting.InjectionResult<Awaited<T>>[]> {
   validateRequest(request);
   positiveNumber(timeoutMs, 'timeoutMs');
   const args = normalizeInjectionArgs(request.args ?? []);
   return withDeadline(
     () =>
-      chrome.scripting.executeScript({
+      browserChrome(context).scripting.executeScript({
         ...request,
         ...(request.args !== undefined ? { args } : {}),
         injectImmediately: request.injectImmediately ?? true,
@@ -246,7 +248,7 @@ export async function readPageFrames<T>(
      * Already-dispatched reads may finish; concurrency bounds the overshoot. */
     maxResultChars?: number;
     measureResult?: (value: Awaited<T>) => number;
-  } = {},
+  } = {}, context?: ToolExecutionContext
 ): Promise<FrameResults<Awaited<T>>> {
   const started = performance.now();
   const deadline = started + (options.timeoutMs ?? 12000);
@@ -302,7 +304,7 @@ export async function readPageFrames<T>(
       ),
       withDeadline(
         () =>
-          chrome.scripting.executeScript({
+          browserChrome(context).scripting.executeScript({
             target: { tabId, allFrames: true },
             world: "ISOLATED",
             injectImmediately: true,
@@ -418,7 +420,7 @@ export async function readPageFrames<T>(
                 injectImmediately: true,
               },
               Math.max(1, Math.min(options.frameTimeoutMs ?? 3500, deadline - performance.now())),
-              options.signal,
+              options.signal, context
             );
             if (!Array.isArray(rows)) throw new Error('INVALID_RESULT: injection did not return a frame array');
             const matching = rows.filter((r) => r && (frame.frameId !== undefined ? r.frameId === frame.frameId : r.documentId === frame.documentId));

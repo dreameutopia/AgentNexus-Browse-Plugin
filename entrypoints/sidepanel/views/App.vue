@@ -33,6 +33,16 @@
           </div>
           <h1 id="greeting-title" class="greeting-title">{{ greetingText }}</h1>
           <p class="greeting-subtitle">{{ t('sidepanel.app.greetingSubtitle') }}</p>
+          <!-- Python 运行时安装引导：点击直达管理中心「Python 环境」分区 -->
+          <button
+            v-if="showPythonInstallTag"
+            type="button"
+            class="greeting-python-tag"
+            @click="openPythonEnvironmentPage"
+          >
+            <span class="greeting-python-tag__emoji" aria-hidden="true">🐍</span>
+            <span>{{ t('sidepanel.app.greetingPythonTag') }}</span>
+          </button>
         </section>
       </div>
     </div>
@@ -53,20 +63,21 @@
       @create-skill="createSkillFromPractice"
       @guard-continue="handleGuardContinue"
       @guard-open-settings="handleGuardOpenSettings"
+      @open-captured-element="openMessageCapturedElement"
+      @validate-captured-element="validateCapturedElement"
     />
 
     <!-- 底部输入区域 -->
     <div class="bottom-section">
       <div class="bottom-toolbar">
-        <!-- 网站学习入口（工具栏最左侧，恒定贴左；图标 + 「学习」文字同体为一个按钮）。
-             学习流程进行中禁用——状态条上已有终止入口，避免两个入口并存引发歧义 -->
+        <!-- 网站任务学习入口（独立页面）：点击即打开学习页；运行中是否允许
+             启动由学习页在确认时统一预检，这里不再禁用入口 -->
         <button
           class="learn-entry-btn"
           type="button"
-          :disabled="learn.isLearnActive.value"
-          :title="t('sidepanel.learn.entryTip')"
-          :aria-label="t('sidepanel.learn.entryTip')"
-          @click="learn.openModal()"
+          :title="t('learnPage.entryTip')"
+          :aria-label="t('learnPage.entryTip')"
+          @click="openLearnPage"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <path
@@ -74,7 +85,7 @@
               fill="currentColor"
             />
           </svg>
-          <span class="learn-entry-btn__label">{{ t('sidepanel.learn.entryLabel') }}</span>
+          <span class="learn-entry-btn__label">{{ t('learnPage.entryLabel') }}</span>
         </button>
 
         <!-- 左侧模式切换按钮 -->
@@ -360,24 +371,24 @@
           </TransitionGroup>
         </div>
         
+        <!-- 用户捕获的网页元素（输入框与按钮组上方独占一行；最多 100 个，
+             单行横向滚动；点击 chip 打开详情弹窗编辑备注） -->
+        <div v-if="pendingCapturedElements.length" class="captured-elements-bar">
+          <CapturedElementList
+            :elements="pendingCapturedElements"
+            removable
+            validate-placement="above"
+            @open="openPendingCapturedElement"
+            @remove="elementCapture.remove"
+            @validate="validateCapturedElement"
+          />
+        </div>
+
         <!-- 会话计划面板（plan_tool 产物实时刷新；输入容器上方常驻，
              折叠/展开由用户控制，切换历史会话自动回显对应计划） -->
         <PlanBoard v-if="activeChatId" :chat-id="activeChatId" />
 
-        <!-- 学习运行中：输入区整体替换为状态条（普通输入在此期间一律不可用） -->
-        <LearnStatusBar
-          v-if="learn.isLearnRunning.value"
-          :phase="learn.phase.value === 'validating' ? 'validating' : 'learning'"
-          :elapsed-ms="learn.elapsedMs.value"
-          :tool-calls="learn.toolCalls.value"
-          :force-submitting="learn.isForceSubmitting.value"
-          :context-usage="learn.contextUsage.value"
-          :compacting="isCompacting"
-          @stop="learn.requestAbort()"
-        />
-
         <div
-          v-else
           class="input-container"
           :class="{ 'drag-over': isFileDragging }"
           @dragenter.prevent="onFileDragEnter"
@@ -392,13 +403,9 @@
             </svg>
             <span>{{ t('sidepanel.attachments.dropHint') }}</span>
           </div>
-          <!-- 输入框：已配置且非学习态。
-               注意：下面三条提示各自独立判定（互不构成 v-if/v-else 链）——
-               「未配置」提示必须带上 !isChatInputEnabled，若写成 v-else
-               会被绑到上一条 v-if 链上（学习提示），条件里就没有
-               isChatInputEnabled 了，结果是「已配置也照样显示未配置」。 -->
+          <!-- 输入框：仅在已配置时渲染；未配置提示独立判定 -->
           <textarea
-            v-if="isChatInputEnabled && !learn.isLearnActive.value"
+            v-if="isChatInputEnabled"
             v-model="userInput"
             :placeholder="t('sidepanel.app.inputPlaceholder')"
             class="message-input"
@@ -408,44 +415,11 @@
             ref="messageTextarea"
           ></textarea>
 
-          <!-- 学习配置/确认阶段：输入区让位（面板与弹窗承载全部交互） -->
-          <div v-if="learn.isLearnActive.value" class="input-disabled-notice learn-input-notice">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right: 8px;" aria-hidden="true">
-              <path d="M12 1.5L14.35 9.65L22.5 12L14.35 14.35L12 22.5L9.65 14.35L1.5 12L9.65 9.65L12 1.5Z" fill="currentColor"/>
-            </svg>
-            <span>{{ t('sidepanel.learn.statusHint') }}</span>
-          </div>
-
-          <!-- 站点学习会话：成果兜底（草稿随消息回放）。
-               降级说明之外的第二重保障——暂存失败或未在管理中心确认时，
-               打开该会话即可把草稿重新送去创建，成果不再随暂存时效消失。
-               与输入框并存：草稿待处理不该剥夺用户继续对话的能力。 -->
-          <div
-            v-if="!learn.isLearnActive.value && learnRecoveryState.visible.value"
-            class="learn-recover-notice"
-          >
-            <div class="learn-recover-summary">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
-                <path d="M14 3v6h6M8 13h8M8 17h5"/>
-              </svg>
-              <span>{{ t('sidepanel.learn.recoverHint') }}</span>
-            </div>
-            <p v-if="learnRecoveryState.syncError.value" class="learn-recover-sync-error" role="status">{{ t('sidepanel.learn.recoverySyncFailed') }}</p>
-            <div class="learn-recover-actions">
-              <button type="button" class="learn-recover-btn learn-recover-btn--primary" :disabled="retryingLearnDraft || learnRecoveryState.busy.value" @click="retryCreateSkillFromLearn">
-                {{ t('sidepanel.learn.recoverAction') }}
-              </button>
-              <button type="button" class="learn-recover-btn" @click="downloadLearnRecovery">{{ t('sidepanel.learn.downloadRecovery') }}</button>
-              <button type="button" class="learn-recover-btn learn-recover-btn--ignore" :disabled="retryingLearnDraft || learnRecoveryState.busy.value" @click="learnRecoveryState.requestDismiss">{{ t('sidepanel.learn.ignoreAction') }}</button>
-            </div>
-          </div>
-
           <!-- 未配置提示（可点击打开配置弹窗）。
                条件独立判定，与「已配置」的输入框严格互斥。
                附具体原因：用户不必自己猜是缺密钥、地址写错还是模型被禁。 -->
           <div
-            v-if="!isChatInputEnabled && !learn.isLearnActive.value"
+            v-if="!isChatInputEnabled"
             class="input-disabled-notice"
             @click="showSettingsModal = true"
             style="cursor: pointer;"
@@ -460,10 +434,61 @@
             </span>
           </div>
 
-          <!-- 学习态下隐藏整个工具栏：发送/模型选择/附件在学习流程期间一律不可达，
-               入口按钮也随之让位（配置面板与状态条承载全部交互） -->
-          <div class="bottom-bar" v-if="!learn.isLearnActive.value">
+          <div class="bottom-bar">
             <div class="left-actions">
+              <!-- 加号：附件上传 + 元素捕获的统一入口（替代原右侧纸夹按钮）。
+                   点击时图标旋转一圈并展开卡片；上传行为与原按钮完全一致，
+                   按住 Shift 仍走「仅工作区」通道。 -->
+              <div class="composer-add-wrap">
+                <button
+                  type="button"
+                  class="input-action-btn composer-add-btn"
+                  :class="{ 'is-open': showComposerAddMenu, 'is-spinning': composerAddSpinning }"
+                  :title="t('sidepanel.elementCapture.addMenu')"
+                  :aria-label="t('sidepanel.elementCapture.addMenu')"
+                  :aria-expanded="showComposerAddMenu"
+                  @click.stop="toggleComposerAddMenu"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <path d="M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z" fill="currentColor"/>
+                  </svg>
+                </button>
+                <Transition name="dropdown">
+                  <div v-if="showComposerAddMenu" class="composer-add-menu" @click.stop>
+                    <button
+                      type="button"
+                      class="composer-add-item"
+                      :disabled="!isChatInputEnabled"
+                      @click="handleComposerUpload"
+                    >
+                      <span class="composer-add-item-icon" aria-hidden="true">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                          <path d="M16.5,6V17.5A4,4 0 0,1 12.5,21.5A4,4 0 0,1 8.5,17.5V5A2.5,2.5 0 0,1 11,2.5A2.5,2.5 0 0,1 13.5,5V15.5A1,1 0 0,1 12.5,16.5A1,1 0 0,1 11.5,15.5V6H10V15.5A2.5,2.5 0 0,0 12.5,18A2.5,2.5 0 0,0 15,15.5V5A4,4 0 0,0 11,1A4,4 0 0,0 7,5V17.5A5.5,5.5 0 0,0 12.5,23A5.5,5.5 0 0,0 18,17.5V6H16.5Z" fill="currentColor"/>
+                        </svg>
+                      </span>
+                      <span class="composer-add-item-text">
+                        <span class="composer-add-item-title">{{ t('sidepanel.elementCapture.uploadAction') }}</span>
+                        <span class="composer-add-item-desc">{{ t('sidepanel.elementCapture.uploadActionHint') }}</span>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      class="composer-add-item"
+                      @click="handleComposerCaptureElement"
+                    >
+                      <span class="composer-add-item-icon is-capture" aria-hidden="true">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                          <path d="M12,2A10,10 0 1,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 1,1 4,12A8,8 0 0,1 12,4M12,8A4,4 0 1,0 16,12A4,4 0 0,0 12,8M12,10A2,2 0 1,1 10,12A2,2 0 0,1 12,10M11,1H13V4H11V1M11,20H13V23H11V20M1,11H4V13H1V11M20,11H23V13H20V11Z" fill="currentColor"/>
+                        </svg>
+                      </span>
+                      <span class="composer-add-item-text">
+                        <span class="composer-add-item-title">{{ t('sidepanel.elementCapture.captureAction') }}</span>
+                        <span class="composer-add-item-desc">{{ t('sidepanel.elementCapture.captureActionHint') }}</span>
+                      </span>
+                    </button>
+                  </div>
+                </Transition>
+              </div>
               <!-- 会话内模型选择器（替换原推理切换按钮）：从已配置的模型列表中切换当前生效模型 -->
               <div class="model-select-wrap">
                 <button
@@ -511,22 +536,18 @@
                   </div>
                 </Transition>
               </div>
+              <BrowserWindowPicker ref="browserWindowPicker" :chat-id="activeChatId" :busy="isAiResponding || sendInFlight || isStopping" />
             </div>
 
             <div class="right-actions">
-              <!-- 上下文用量圆环（附件按钮左侧；悬浮展示全量成分明细） -->
+              <!-- 上下文用量圆环（悬浮展示全量成分明细） -->
               <ContextUsageRing :usage="contextUsage" :compacting="isCompacting" />
-              <button class="input-action-btn" :disabled="!isChatInputEnabled" v-tip="t('sidepanel.app.attachmentWorkspaceHint')" @click="handleFileUpload">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M16.5,6V17.5A4,4 0 0,1 12.5,21.5A4,4 0 0,1 8.5,17.5V5A2.5,2.5 0 0,1 11,2.5A2.5,2.5 0 0,1 13.5,5V15.5A1,1 0 0,1 12.5,16.5A1,1 0 0,1 11.5,15.5V6H10V15.5A2.5,2.5 0 0,0 12.5,18A2.5,2.5 0 0,0 15,15.5V5A4,4 0 0,0 11,1A4,4 0 0,0 7,5V17.5A5.5,5.5 0 0,0 12.5,23A5.5,5.5 0 0,0 18,17.5V6H16.5Z" fill="currentColor"/>
-                </svg>
-              </button>
               <button class="input-action-btn" v-tip="t('sidepanel.app.voice')" @click="handleVoiceRecord">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M12,2A3,3 0 0,1 15,5V11A3,3 0 0,1 12,14A3,3 0 0,1 9,11V5A3,3 0 0,1 12,2M19,11C19,14.53 16.39,17.44 13,17.93V21H11V17.93C7.61,17.44 5,14.53 5,11H7A5,5 0 0,0 12,16A5,5 0 0,0 17,11H19Z" fill="currentColor"/>
                 </svg>
               </button>
-              <button class="send-button" v-tip="isAiResponding ? t('sidepanel.chat.stopResponding') : t('sidepanel.chat.sendMessage')" @click="isAiResponding ? confirmStopResponse() : sendMessage()" :disabled="!isAiResponding && !userInput.trim() && !pendingAttachments.length && !confirmedQuote" :class="{ 'stop-button': isAiResponding }">
+              <button class="send-button" v-tip="isAiResponding ? t('sidepanel.chat.stopResponding') : t('sidepanel.chat.sendMessage')" @click="isAiResponding ? confirmStopResponse() : sendMessage()" :disabled="!isAiResponding && !userInput.trim() && !pendingAttachments.length && !pendingCapturedElements.length && !confirmedQuote" :class="{ 'stop-button': isAiResponding }">
                 <svg v-if="!isAiResponding" class="send-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M2,21L23,12L2,3V10L17,12L2,14V21Z" fill="currentColor"/>
                 </svg>
@@ -712,6 +733,22 @@
     <!-- AI理解中提示框 -->
     <AiProcessingOverlay :visible="showAiProcessing" />
 
+    <!-- 元素捕获中：侧边栏遮罩（不遮挡网页，用户在网页内 Ctrl+左键确认） -->
+    <ElementCaptureOverlay
+      :active="isElementCapturing"
+      :count="pendingCapturedElements.length"
+      :max="elementCapture.maxElements"
+      @cancel="elementCapture.stop()"
+    />
+
+    <!-- 捕获元素详情（截图 + 选择器 + 备注编辑；输入区与历史消息共用） -->
+    <CapturedElementDialog
+      :element="elementDialogElement"
+      :busy="capturedElementDialogBusy"
+      @close="closeCapturedElementDialog"
+      @save="handleCapturedElementSave"
+    />
+
     <!-- 历史会话抽屉 -->
     <ChatHistoryDrawer
       :visible="showHistoryDrawer"
@@ -746,22 +783,6 @@
     <!-- 应用级弹窗（附件守卫等异步提示；Promise 化，单例排队） -->
     <AppDialog />
 
-    <!-- 网站学习：配置面板 + 六态确认弹窗（状态由 use-learn-session 单点驱动；
-         面板重置由 formEpoch 决定，确认弹窗的应答回流 answerDialog） -->
-    <SiteLearnModal
-      :visible="learn.phase.value === 'configuring'"
-      :model-candidates="learn.modelCandidates.value"
-      :errors="learn.errors.value"
-      :reset-epoch="learn.formEpoch.value"
-      @close="learn.closeModal()"
-      @submit="learn.submitConfig($event)"
-      @open-settings="showSettingsModal = true"
-    />
-    <!-- 收尾阶段：草稿暂存失败降级说明（非阻断；与弹窗同为模态，层级置于确认弹窗之下） -->
-    <LearnDegradedNotice :visible="learn.degradedNotice.value" @close="learn.dismissDegradedNotice()" />
-    <LearnDialog :view="learn.dialog.value" @answer="learn.answerDialog" />
-    <LearnRecoveryDismissDialog :visible="learnRecoveryState.confirming.value" :busy="learnRecoveryState.busy.value" :error="learnRecoveryState.dismissError.value" @cancel="learnRecoveryState.cancelDismiss" @confirm="learnRecoveryState.confirmDismiss" />
-
     <!-- 全局 Toast 宿主（固定右上角，层级高于全部模态；反馈落库失败等轻量提示） -->
     <MessageContainer />
 
@@ -769,7 +790,7 @@
     <InteractDialog />
 
     <!-- 全局点击监听器（胶囊条管理弹层固定展示时同样纳入遮罩，点任意处关闭） -->
-    <div v-if="showModeSelector || showModelSelectorMenu || selectionStripPinned" class="overlay" @click="closeAllPanels"></div>
+    <div v-if="showModeSelector || showModelSelectorMenu || showComposerAddMenu || selectionStripPinned" class="overlay" @click="closeAllPanels"></div>
   </div>
 </template>
 
@@ -783,8 +804,10 @@ import { useAgentDisplay } from '@/common/use-agent-display';
 import ToolComponent from './Tool.vue';
 // 组件按功能域从 barrel 引入（chat / modals / voice / feedback）
 import { ChatMessageList, ChatHistoryDrawer, ContextUsageRing, GuardConfirmBar, PlanBoard, PageQuoteBar } from '../components/chat';
-import { SiteLearnModal, LearnDialog, LearnStatusBar, LearnDegradedNotice, LearnRecoveryDismissDialog } from '../components/learn';
-import { useLearnSession } from '../composables/use-learn-session';
+import CapturedElementList from '../components/chat/CapturedElementList.vue';
+import CapturedElementDialog from '../components/chat/CapturedElementDialog.vue';
+import ElementCaptureOverlay from '../components/chat/ElementCaptureOverlay.vue';
+import BrowserWindowPicker from '../components/chat/BrowserWindowPicker.vue';
 import { backgroundConversation as conversationEngine } from '../core/conversation/runtime-client';
 import { readActiveChat, rememberActiveChat } from '../core/conversation/active-session';
 // 用户气泡底部图片区展示口径（只含用户上传；vision 截图走助手内联「查看屏幕」）
@@ -840,11 +863,17 @@ import {
 // Deep Search 站点注册表：站点开关列表与动态工具注入的单一事实来源
 // （站点启用态与 UI 开关在 use-deep-search-sites 单例，见「已登录网站」注释）
 import { resolveDeepSearchToolIds } from '../config/deep-search-sites';
-// 网站学习成果兜底：草稿（SkillDraft）暂存 + 深链 hash（与 use-learn-session 同源）
-import { saveLearnDraft } from '@/utils/learn/learn-draft-store';
-import { useLearnRecovery } from '../composables/use-learn-recovery';
-import { asSkillDraft } from '@/utils/learn/learn-validate';
-import { learnDraftHash, type SkillDraft } from '@/utils/learn/learn-types';
+// 网站任务学习：独立页面只负责收集配置；真正的会话由侧边栏创建并运行
+import {
+  LEARN_BRIDGE_MSG,
+  LEARN_LAUNCH_TAGS,
+  normalizeLearnLaunchPayload,
+  rememberLearnOrigin,
+  type LearnBridgeResponse,
+  type LearnLaunchPayload,
+} from '@/utils/sessions/learn-launch-bridge';
+import { WEBSITE_TASK_LEARN_SKILL_ID } from '@/utils/skills/skill-identity';
+import type { ConversationTag } from '@/utils/sessions/conversation-tags';
 // 注册表权威源对账入口（@ / 面板开启时主动与 chrome.storage 同步，兜底跨上下文 onChanged 事件漏投）
 import { restoreCustomAgentsFromStorage } from '@/utils/agents/agent-store';
 // 已停用的智能体不可被 @ 选中（过滤规则与存储层同源）
@@ -857,11 +886,17 @@ import { setActivePlanChat, dropPlan, restorePlansFromStorage } from '@/utils/pl
 import { convertAudioToText } from '../utils/ai/voice-to-text';
 // 附件栏：文件分类/解析在纯逻辑层，守卫流程与状态在 composable
 import { importWorkspaceFiles } from '@/utils/python-workspace/store';
+// 附件解释框的单文件体积上限（与上传守卫链同一常量）
+import { WORKSPACE_MAX_FILE_BYTES } from '@/utils/python-workspace/paths';
 import {
   createAttachmentManager,
   formatBytes,
+  MAX_ATTACHMENT_COUNT,
   type ChatAttachment,
 } from '../composables/use-attachments';
+// 元素捕获：网页选取元素（侧边栏状态 + 待发送 chip + 详情备注）
+import { useElementCapture } from '../composables/use-element-capture';
+import type { CapturedElement } from '@/utils/element-capture/types';
 // 会话跨上下文桥：管理中心「会话管理」分区请求本面板切换 / 复位会话
 import { SESSION_BRIDGE_MSG } from '@/utils/sessions/session-bridge';
 // 上传文件清单（模型侧 <upload_file> 表格：路径 + 大小；正文由 file_util 按需读取）
@@ -869,6 +904,8 @@ import {
   buildUploadFileManifest,
   type UploadedFileEntry,
 } from '@/utils/upload-files/upload-file-manifest';
+// 附件解释框的图片后缀摘要（与上传图片链路口径同源）
+import { IMAGE_FILE_EXTENSIONS } from '@/utils/upload-files/file-kinds';
 import { showAlert, showConfirm, showAction, openDialogWithHandle, settleDialogById, type AppDialogResult } from '../composables/use-app-dialog';
 // 视觉能力守卫：模型 / 智能体 / 图片附件 三方一致性的判定单一事实源
 import {
@@ -949,6 +986,7 @@ const agentSelectorQuery = ref('');
 const skillSelectorQuery = ref('');
 // 当前活跃会话（引擎层 chatId；空 = 尚未创建，下次发送时新建）
 const activeChatId = ref('');
+const browserWindowPicker = ref<InstanceType<typeof BrowserWindowPicker>>();
 /**
  * 当前会话的 systemPrompt 补充段（随会话持久化，见 ChatSessionMeta.systemPromptSuffix）。
  * 会话切换时回显、发送时写库；上下文预算估算用它重建与真实请求同源的 systemPrompt。
@@ -1362,8 +1400,8 @@ const handleConversationEvent = (event: ConversationEvent): void => {
       break;
     }
     case 'assistant-start': {
-      // 学习/验证直接驱动引擎，不经过 sendMessage。响应态以统一事件为准，
-      // 由运行终态回调结束，避免流式内容被提前当作已完成消息折叠并显示反馈按钮。
+      // 响应态统一由引擎事件驱动，由运行终态回调结束，避免流式内容被提前
+      // 当作已完成消息折叠并显示反馈按钮。
       isAiResponding.value = true;
       pendingUiRefresh.delete(event.messageId);
       messages.value = messages.value.filter(message => message.id !== event.messageId);
@@ -1719,9 +1757,7 @@ const handleConversationEvent = (event: ConversationEvent): void => {
     }
     case 'context-usage': {
       // 引擎每轮真实测量的全量上下文用量（含运行中工具结果与压缩后复测）：
-      // 普通对话与学习/验证共用同一事件源，环上数字恒等于「最近一次请求的
-      // 真实负载」。学习运行期间底部工具栏隐藏，同一数据经 learn.contextUsage
-      // 在学习状态条呈现——两处展示口径不可能漂移。
+      // 环上数字恒等于「最近一次请求的真实负载」。
       contextUsage.value = event.usage;
       break;
     }
@@ -1823,6 +1859,10 @@ const recordToUiMessage = (
     ...(visibleImageRefs.length > 0 ? { imageRefs: visibleImageRefs } : {}),
     // 网页引用随记录还原（气泡引用块的唯一来源；旧记录无此字段 → 不渲染）
     ...(record.pageQuote ? { pageQuote: record.pageQuote } : {}),
+    // 捕获元素随记录还原（气泡元素 chip 与备注的唯一来源）
+    ...(record.capturedElements?.length
+      ? { capturedElements: record.capturedElements.map(element => ({ ...element })) }
+      : {}),
     // 上传文件条目随记录还原（气泡「文件元素」的唯一来源）
     ...(record.uploadedFiles?.length
       ? { uploadedFiles: record.uploadedFiles.map(file => ({ ...file })) }
@@ -1868,19 +1908,12 @@ const waitForStopSettled = async (): Promise<void> => {
   }
 };
 
-// ──── 网站学习（配置 → 学习 → 验证 → 交付管理中心） ────
+// ──── 网站任务学习（独立配置页 → 侧边栏普通会话） ────
+
 /**
- * 打开管理中心并定位到技能分区（草稿深链）。
- * 草稿走 chrome.storage 一次性传递（正文可达 15000 字符，进不了 URL），
- * hash 只负责「切到技能分区并触发预填」这一个信号，见 learn-draft-store。
- *
+ * 打开管理中心并定位到指定分区。
  * 标签页策略沿用 note-nav 的口径：已有 hub 标签则聚焦并更新其 hash
- * （页面监听 hashchange 响应），没有才新建——避免每次交付都堆一个标签。
- * 所有异常就地消化并返回结果：交付是导航性质的操作，失败只需降级提示，
- * 不应产生未处理的 Promise 拒绝，也不该让已写入的草稿随异常丢失语义。
- *
- * 调用方约定：返回 false 时必须给出提示（「没打开」与「打开成功但无草稿」
- * 必须可区分，收尾降级说明与成果兜底重试都靠这个结果分岔）。
+ * （页面监听 hashchange 响应），没有才新建——避免每次导航都堆一个标签。
  */
 const openHubWithHash = async (hash: string): Promise<boolean> => {
   try {
@@ -1888,12 +1921,16 @@ const openHubWithHash = async (hash: string): Promise<boolean> => {
     const tabs = await chrome.tabs.query({});
     const existingTab = tabs.find(tab => {
       if (!tab.url) return false;
-      try { const url = new URL(tab.url), base = new URL(pageUrl); return url.protocol === base.protocol && url.host === base.host && url.pathname === base.pathname; }
-      catch { return false; }
+      try {
+        const url = new URL(tab.url);
+        const base = new URL(pageUrl);
+        return url.protocol === base.protocol && url.host === base.host && url.pathname === base.pathname;
+      } catch {
+        return false;
+      }
     });
 
     if (existingTab?.id !== undefined) {
-      // 仅更新 hash 传递提示，保留查询参数与已挂载页面，不能刷新清空编辑。
       const target = new URL(existingTab.url!);
       target.hash = hash;
       await chrome.tabs.update(existingTab.id, { url: target.href, active: true });
@@ -1902,49 +1939,183 @@ const openHubWithHash = async (hash: string): Promise<boolean> => {
     const created = await chrome.tabs.create({ url: `${pageUrl}${hash}`, active: true });
     return created?.id !== undefined;
   } catch (error) {
-    console.warn('[LearnSession] 打开管理中心失败:', error);
+    console.warn('[Hub] 打开管理中心失败:', error);
     return false;
   }
 };
 
-const learn = useLearnSession({
-  beginPageGlow: () => conversationEngine.beginLocalPageGlow(),
-  observer: handleConversationEvent,
-  notify: pushSystemNotice,
-  showChat: () => {
+/**
+ * 欢迎语下的 Python 安装引导标签。
+ * 设计口径是「未安装时」才提示；当前恒显（true）以便先看渲染效果，
+ * 接入环境状态后改回 `env.status !== 'ready'`（watchPyodideEnv 订阅）即可。
+ */
+const showPythonInstallTag = true;
+
+/** 点击标签：打开管理中心并定位到「Python 环境」分区 */
+const openPythonEnvironmentPage = async (): Promise<void> => {
+  const opened = await openHubWithHash('#python');
+  if (!opened) toast.error(t('sidepanel.app.openHubFailed'));
+};
+
+/** 侧边栏所在窗口；只允许目标窗口的侧边栏应答学习启动请求 */
+let sidepanelWindowId = 0;
+/** 学习启动互斥：覆盖 goHome 到 sendMessage 生效之间的异步窗口，防重复点击并发启动 */
+let learnLaunchInFlight = false;
+
+/** 打开学习页：先记录目标标签页，再打开/聚焦 learn.html */
+const openLearnPage = async (): Promise<void> => {
+  try {
+    await rememberLearnOrigin();
+    const pageUrl = chrome.runtime.getURL('learn.html');
+    const tabs = await chrome.tabs.query({});
+    const existing = tabs.find(tab => {
+      if (!tab.url) return false;
+      try {
+        const url = new URL(tab.url);
+        const base = new URL(pageUrl);
+        return url.protocol === base.protocol && url.host === base.host && url.pathname === base.pathname;
+      } catch {
+        return false;
+      }
+    });
+    if (existing?.id !== undefined) {
+      await chrome.tabs.update(existing.id, { active: true });
+      if (existing.windowId !== undefined) {
+        await chrome.windows.update(existing.windowId, { focused: true });
+      }
+      return;
+    }
+    await chrome.tabs.create({ url: pageUrl, active: true });
+  } catch (error) {
+    console.warn('[LearnPage] 打开学习页失败:', error);
+    pushSystemNotice(t('learnPage.openFailed'));
+  }
+};
+
+/** 当前活跃会话是否正在运行：三类运行源 + 后台运行态任一命中即视为忙 */
+const isActiveSessionRunning = (): boolean =>
+  isAiResponding.value
+  || sendInFlight.value
+  || isStopping.value
+  || (Boolean(activeChatId.value) && conversationEngine.isRunning(activeChatId.value));
+
+/** XML 文本转义：学习目标/注意事项是用户输入，不能破坏请求结构 */
+const escapeLearnText = (value: string): string =>
+  value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+const escapeLearnAttr = (value: string): string =>
+  escapeLearnText(value).replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+
+/** 把学习页配置封装成一条用户消息；技能与智能体由侧边栏程序化选中 */
+const composeLearnRequest = (payload: LearnLaunchPayload): string => {
+  const lines = [
+    '<website-task-learn-request>',
+    `  <goal>${escapeLearnText(payload.goal)}</goal>`,
+  ];
+  if (payload.notes) {
+    lines.push(`  <user-notes>${escapeLearnText(payload.notes)}</user-notes>`);
+  }
+  if (payload.originUrl || payload.originTitle) {
+    lines.push(
+      `  <target-page url="${escapeLearnAttr(payload.originUrl ?? '')}" title="${escapeLearnAttr(payload.originTitle ?? '')}" />`,
+    );
+  }
+  lines.push('</website-task-learn-request>', '', '请使用已选中的 website-task-learn 技能完成本次网站任务学习。');
+  return lines.join('\n');
+};
+
+/** 启动学习会话：校验 → 新建普通会话 → 程序化选中智能体与技能 → 发送 */
+const handleLearnStart = async (rawPayload: unknown): Promise<LearnBridgeResponse> => {
+  if (learnLaunchInFlight || isActiveSessionRunning()) return { ok: false, code: 'busy' };
+  learnLaunchInFlight = true;
+  try {
+    const payload = normalizeLearnLaunchPayload(rawPayload);
+    if (!payload) return { ok: false, code: 'invalid-request' };
+
+    const agent = agentEngine.get(payload.agentName);
+    if (!agent || agent.enabled === false) return { ok: false, code: 'agent-unavailable' };
+
+    const skill = skillEngine.get(WEBSITE_TASK_LEARN_SKILL_ID);
+    if (!skill || skill.enabled === false) return { ok: false, code: 'skill-unavailable' };
+
+    if (!modelRegistry.configured) return { ok: false, code: 'model-unavailable' };
+
+    // 附件解析在途：goHome 会让解析批次失效，但解析循环收尾前 isAdding 仍为真，
+    // 发送守卫会把本轮直接吞掉。先清空草稿并等待其收敛，仍不收敛则明确拒绝，
+    // 绝不返回「已启动」却什么都没发生。
+    if (attachmentManager.isAdding.value) {
+      attachmentManager.clearAttachments();
+      for (let attempt = 0; attempt < 20 && attachmentManager.isAdding.value; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      if (attachmentManager.isAdding.value) return { ok: false, code: 'busy' };
+    }
+
+    // goHome 之前的最终闸门：等待附件收敛期间用户可能已在侧边栏发起发送
+    if (isActiveSessionRunning()) return { ok: false, code: 'busy' };
+
+    // 先回到空白新会话：学习请求永远不落进用户当前正在看的旧会话
+    const homeReady = await goHome();
+    if (!homeReady) return { ok: false, code: 'busy' };
+
+    // 输入区残留（页面引用）不属于学习载荷：清掉，避免旧 <page_quote> 混入学习会话
+    pendingQuote.value = null;
+    confirmedQuote.value = null;
+
+    selectedAgent.value = agent.name;
+    selectedSkills.value = [WEBSITE_TASK_LEARN_SKILL_ID];
+    userInput.value = composeLearnRequest(payload);
     showChatMode.value = true;
-  },
-  setActiveChat: chatId => {
-    // 学习使用新建的独立会话：切换 ID 的同时清空旧会话的展示与运行缓存，
-    // 否则新会话的 user-message 会直接追加在上一会话的消息列表后面。
-    pendingUiRefresh.clear();
-    pendingImageRefs.clear();
-    messages.value = [];
-    activeSystemPromptSuffix.value = '';
-    learnRecoverableDraft.value = null;
-    // 会话级 UI 状态复位（运行源 / 直播登记 / 压缩种子与感知 / 用量）
-    resetSessionScopedUiState({ clearContextUsage: true });
-    isAiResponding.value = false;
-    activeChatId.value = chatId;
-    // 学习会话刚创建：其补充段此后只承载草稿回放数据（非 LLM 输入），
-    // 装配侧必须按「学习会话」口径处理（不写普通 systemPromptSuffix、
-    // 装配时置空补充段），否则草稿会被误当提示词拼进 systemPrompt
-    activeSessionIsLearn = true;
-  },
-  setResponding: (chatId, responding) => {
-    if (activeChatId.value !== chatId) return;
-    isAiResponding.value = responding;
-    // 学习路径不经 sendMessage 的统一收尾：阶段运行结束即兜底回落压缩
-    // 感知（正常由 done/failed 事件先行复位，此处只兜事件丢失的异常时序）
-    if (!responding) isCompacting.value = false;
-  },
-  requestToolApproval,
-  dismissQuestions: chatId => {
-    if (activeChatId.value === chatId) dismissConversationQuestions();
-  },
-  openHub: openHubWithHash,
-  t,
-});
+    // 标签作为本次发送的显式参数传入，在 createSession 时原子写入；
+    // 不再经过模块级可变状态，提前返回也不会顺延到下一次普通发送
+    void executeSend(undefined, undefined, undefined, LEARN_LAUNCH_TAGS);
+    return { ok: true };
+  } finally {
+    learnLaunchInFlight = false;
+  }
+};
+
+/** 读取学习消息的目标窗口：PREFLIGHT 在顶层，START 在 payload 内 */
+const readLearnMessageWindowId = (raw: { windowId?: unknown; payload?: unknown }): number => {
+  const isWindowId = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+  if (isWindowId(raw.windowId)) return raw.windowId;
+  const payload = raw.payload;
+  if (payload && typeof payload === 'object') {
+    const id = (payload as { windowId?: unknown }).windowId;
+    if (isWindowId(id)) return id;
+  }
+  return 0;
+};
+
+/** 学习页消息入口：非本协议 / 非目标窗口一律不应答，避免抢占响应通道 */
+const handleLearnBridgeMessage = (
+  message: unknown,
+  _sender: chrome.runtime.MessageSender,
+  sendResponse: (response: LearnBridgeResponse) => void,
+): boolean | undefined => {
+  if (!message || typeof message !== 'object') return undefined;
+  const raw = message as { type?: unknown; windowId?: unknown; payload?: unknown };
+  if (raw.type !== LEARN_BRIDGE_MSG.PREFLIGHT && raw.type !== LEARN_BRIDGE_MSG.START) {
+    return undefined;
+  }
+  // START 的 windowId 在 payload 内；漏读会让所有窗口的侧边栏抢答，启动落到错误窗口
+  const targetWindowId = readLearnMessageWindowId(raw);
+  if (sidepanelWindowId && targetWindowId && targetWindowId !== sidepanelWindowId) {
+    return undefined;
+  }
+  if (raw.type === LEARN_BRIDGE_MSG.PREFLIGHT) {
+    sendResponse(isActiveSessionRunning() ? { ok: false, code: 'busy' } : { ok: true });
+    return true;
+  }
+  void handleLearnStart(raw.payload)
+    .then(response => sendResponse(response))
+    .catch(error => {
+      console.warn('[LearnPage] 启动学习会话失败:', error);
+      sendResponse({ ok: false, code: 'send-failed' });
+    });
+  return true;
+};
 let messageId = 0;
 // 已保存工作流（onMounted 从 chrome.storage 恢复，供后续工作流功能使用）
 const workflows = ref<any[]>([]);
@@ -2140,15 +2311,234 @@ const attachmentManager = createAttachmentManager({
   currentModelLabel: () => activeOption.value?.label ?? '',
 });
 const pendingAttachments = attachmentManager.attachments;
-const deferredSendDrafts = new Map<string, { text: string; attachments: ChatAttachment[] }>();
+// ==================== 元素捕获（加号卡片入口 + 待发送元素 + 详情弹窗） ====================
+const elementCapture = useElementCapture();
+const pendingCapturedElements = elementCapture.elements;
+const isElementCapturing = elementCapture.isCapturing;
 
-function restoreSendDraft(chatId: string, text: string, attachments: ChatAttachment[]): void {
+const showComposerAddMenu = ref(false);
+const composerAddSpinning = ref(false);
+let composerAddSpinTimer: number | null = null;
+
+/** 捕获元素详情弹窗上下文：pending = 输入区待发送；message = 已落库用户消息 */
+const capturedElementDialog = ref<{
+  element: CapturedElement;
+  scope: 'pending' | 'message';
+  messageId?: string;
+} | null>(null);
+const capturedElementDialogBusy = ref(false);
+const elementDialogElement = computed(() => capturedElementDialog.value?.element ?? null);
+
+function triggerComposerAddSpin(): void {
+  composerAddSpinning.value = true;
+  if (composerAddSpinTimer !== null) window.clearTimeout(composerAddSpinTimer);
+  composerAddSpinTimer = window.setTimeout(() => {
+    composerAddSpinTimer = null;
+    composerAddSpinning.value = false;
+  }, 460);
+}
+
+function toggleComposerAddMenu(): void {
+  showComposerAddMenu.value = !showComposerAddMenu.value;
+  triggerComposerAddSpin();
+}
+
+function closeComposerAddMenu(): void {
+  showComposerAddMenu.value = false;
+}
+
+/** 附件上传：行为与原右侧纸夹按钮完全一致（Shift = 仅入工作区，不进模型） */
+function handleComposerUpload(event: MouseEvent): void {
+  closeComposerAddMenu();
+  handleFileUpload(event);
+}
+
+async function handleComposerCaptureElement(): Promise<void> {
+  closeComposerAddMenu();
+  await elementCapture.start();
+}
+
+function openPendingCapturedElement(element: CapturedElement): void {
+  capturedElementDialog.value = { element, scope: 'pending' };
+}
+
+function openMessageCapturedElement(payload: { messageId: string; element: CapturedElement }): void {
+  capturedElementDialog.value = {
+    element: payload.element,
+    scope: 'message',
+    messageId: payload.messageId,
+  };
+}
+
+/** URL 归一化（去掉 hash；非法 URL 返回空串，不参与匹配） */
+function comparableUrl(url: string | undefined): string {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    parsed.hash = '';
+    return parsed.href;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 校验捕获元素：在「操作窗口」的当前网页内重新定位，并让页面框选闪烁 3 秒。
+ *
+ * 目标页面口径（与工具的操作窗口设定一致）：
+ *   - 已绑定操作窗口 → 只在该窗口内查找标签页，绝不回退到其它窗口；
+ *   - 未绑定 → 跟随侧边栏所在窗口的当前标签页；
+ *   - 同一窗口内优先选与元素来源 URL 相同的标签页，其次活动标签页，
+ *     避免多标签场景下校验到错误页面。
+ * 结果统一用侧边栏右上角提示气泡反馈（5 秒）。
+ */
+async function validateCapturedElement(element: CapturedElement): Promise<void> {
+  const notifyFailure = (message: string): void => {
+    toast.error(message, 5000);
+  };
+
+  try {
+    let scope: import('@/tools/browser/browser-scope').BrowserScope | undefined;
+    try {
+      scope = await browserWindowPicker.value?.captureBinding();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      notifyFailure(t('sidepanel.elementCapture.validateBindingError', { reason }));
+      return;
+    }
+
+    let tabs: chrome.tabs.Tab[];
+    try {
+      tabs = await chrome.tabs.query(
+        scope ? { windowId: scope.windowId } : { currentWindow: true },
+      );
+    } catch {
+      notifyFailure(t('sidepanel.elementCapture.validateFailed'));
+      return;
+    }
+
+    const candidates = tabs.filter(
+      tab => Number.isSafeInteger(tab.id) && tab.id! >= 0 && /^(https?|file):/i.test(tab.url ?? ''),
+    );
+    if (!candidates.length) {
+      notifyFailure(t('sidepanel.elementCapture.validateNoTab'));
+      return;
+    }
+
+    const expected = comparableUrl(element.pageUrl);
+    const target =
+      (expected ? candidates.find(tab => comparableUrl(tab.url) === expected) : undefined)
+      ?? candidates.find(tab => tab.active)
+      ?? candidates[0];
+
+    const result = await elementCapture.verify(element, target.id!);
+    if (result.ok) {
+      toast.success(t('sidepanel.elementCapture.validateSuccess'), 5000);
+      return;
+    }
+
+    if (result.reason === 'inject-failed') {
+      notifyFailure(t('sidepanel.elementCapture.validateInjectFailed'));
+      return;
+    }
+    if (result.reason === 'no-response') {
+      notifyFailure(t('sidepanel.elementCapture.validateNoResponse'));
+      return;
+    }
+    notifyFailure(t('sidepanel.elementCapture.validateFailed'));
+  } catch {
+    notifyFailure(t('sidepanel.elementCapture.validateFailed'));
+  }
+}
+
+function closeCapturedElementDialog(): void {
+  if (capturedElementDialogBusy.value) return;
+  capturedElementDialog.value = null;
+}
+
+/** 备注保存：待发送态改本地列表；已落库消息改内存 + 回写转录（失败保留 UI 并提示） */
+async function handleCapturedElementSave(payload: { id: string; note: string }): Promise<void> {
+  const context = capturedElementDialog.value;
+  if (!context || capturedElementDialogBusy.value) return;
+  const note = payload.note.trim();
+
+  if (context.scope === 'pending') {
+    elementCapture.updateNote(payload.id, note);
+    capturedElementDialog.value = null;
+    return;
+  }
+
+  const messageId = context.messageId;
+  if (!messageId) {
+    capturedElementDialog.value = null;
+    return;
+  }
+
+  const target = messages.value.find(message => message.id === messageId);
+  if (!target) {
+    capturedElementDialog.value = null;
+    return;
+  }
+
+  const nextElements = (target.capturedElements ?? []).map(element =>
+    element.id === payload.id ? { ...element, note: note || undefined } : element,
+  );
+
+  capturedElementDialogBusy.value = true;
+  const previous = target.capturedElements;
+  target.capturedElements = nextElements;
+  try {
+    const saved = await transcriptEngine.updateMessageCapturedElements(messageId, nextElements);
+    if (!saved) {
+      target.capturedElements = previous;
+      pushSystemNotice(t('sidepanel.elementCapture.saveFailed'));
+      return;
+    }
+    capturedElementDialog.value = null;
+  } catch (error) {
+    target.capturedElements = previous;
+    console.warn('[ElementCapture] 备注落库失败:', error);
+    pushSystemNotice(t('sidepanel.elementCapture.saveFailed'));
+  } finally {
+    capturedElementDialogBusy.value = false;
+  }
+}
+
+const deferredSendDrafts = new Map<
+  string,
+  { text: string; attachments: ChatAttachment[]; capturedElements: CapturedElement[] }
+>();
+
+/** 附件按钮解释框：数量/体积上限取守卫链同一常量；类型摘要按类别列代表后缀 */
+const attachmentWorkspaceTip = computed(() =>
+  t('sidepanel.app.attachmentWorkspaceHint', {
+    count: MAX_ATTACHMENT_COUNT,
+    size: formatBytes(WORKSPACE_MAX_FILE_BYTES),
+    types: t('sidepanel.app.attachmentTypes', {
+      images: [...IMAGE_FILE_EXTENSIONS].map(ext => `.${ext}`).join('/'),
+      // 文本/代码后缀全表约 200 项（file-kinds.TEXT_FILE_EXTENSIONS），解释框只列代表项
+      text: ['.txt', '.md', '.json', '.csv', '.py', '.ts'].join('/'),
+      // 口径与 office-markdown 的 isOfficeExtension 一致
+      office: ['.docx', '.xlsx', '.pptx'].join('/'),
+    }),
+  }),
+);
+
+function restoreSendDraft(
+  chatId: string,
+  text: string,
+  attachments: ChatAttachment[],
+  capturedElements: readonly CapturedElement[] = [],
+): void {
   if (activeChatId.value !== chatId) {
-    deferredSendDrafts.set(chatId, { text, attachments });
+    deferredSendDrafts.set(chatId, { text, attachments, capturedElements: [...capturedElements] });
     return;
   }
   if (!userInput.value.trim()) userInput.value = text;
   if (pendingAttachments.value.length === 0) pendingAttachments.value = attachments;
+  if (pendingCapturedElements.value.length === 0 && capturedElements.length > 0) {
+    elementCapture.restore(capturedElements);
+  }
 }
 
 // ── 输入区拖拽上传（dragenter/dragleave 计数器：子元素间移动不闪烁） ──
@@ -2175,8 +2565,6 @@ const onFileDragLeave = (event: DragEvent): void => {
 const onFileDrop = (event: DragEvent): void => {
   event.preventDefault();
   fileDragDepth.value = 0;
-  // 与附件按钮同口径：学习配置/运行期间输入区不可附加文件（学习面板承载全部交互）
-  if (learn.isLearnActive.value || learn.isLearnRunning.value) return;
   if (attachmentManager.isAdding.value) return; // 解析/压缩进行中：丢弃本次放置（与选择器入口同口径）
   const files = Array.from(event.dataTransfer?.files ?? []);
   if (files.length > 0) {
@@ -3163,9 +3551,6 @@ watch(showSkillSelector, open => {
 // 返回主页（新建会话）
 // 运行中拒绝：直接终止会话会丢失进行中的任务与半成品输出——改为弹窗告知，
 // 用户可等待任务自然结束，或先用停止按钮手动终止后再新建。
-// 学习中同样拒绝：学习会话由编排层独占（草稿、验收报告、会话绑定都在其中），
-// 切走会让成果停在半路且界面与后台状态分裂——沿用同一形态的告知弹窗，
-// 让用户等待学习完成，或先中断学习后再试。
 // force=true 用于内部强制切换（会话被删除等本就需要重建界面的路径），
 // 不弹提示也不受守卫拦截。
 // 返回是否真正完成切换（false = 被运行中守卫拦截，界面保持原状）
@@ -3174,23 +3559,6 @@ const goHome = async (options?: { force?: boolean }): Promise<boolean> => {
     await showAlert(
       t('sidepanel.app.newChatBlockedMessage'),
       t('sidepanel.app.newChatBlockedTitle'),
-      'warn',
-    );
-    return false;
-  }
-
-  // 学习运行中（含配置、确认、学习、验证、落盘）：拒绝切换会话。
-  // isLearnActive 覆盖除 idle / done 外的全部阶段；done 是交付后的静止态，
-  // 此时新建会话是合法的。
-  if (!options?.force && learn.isLearnActive.value) {
-    const validating = learn.phase.value === 'validating';
-    await showAlert(
-      t(
-        validating
-          ? 'sidepanel.learn.newChatBlockedValidatingMessage'
-          : 'sidepanel.learn.newChatBlockedMessage',
-      ),
-      t('sidepanel.learn.newChatBlockedTitle'),
       'warn',
     );
     return false;
@@ -3207,9 +3575,6 @@ const goHome = async (options?: { force?: boolean }): Promise<boolean> => {
   showSkillSelector.value = false;
   // 清除会话级 systemPrompt 补充段：新会话从「无补充段」重新开始
   activeSystemPromptSuffix.value = '';
-  // 清除从历史会话读回的技能草稿：它只属于那个会话，新会话不该带着旧成果
-  learnRecoverableDraft.value = null;
-  activeSessionIsLearn = false;
   // 结束当前会话：下次发送将创建新会话（历史会话仍保留在转录库，可从历史抽屉打开）
   activeChatId.value = '';
   // 缓存随之清空，避免已结束会话的记录常驻内存（会话删除场景由 handleSessionDeleted 传入 chatId 精准清理）
@@ -3218,76 +3583,6 @@ const goHome = async (options?: { force?: boolean }): Promise<boolean> => {
   resetSessionScopedUiState({ clearContextUsage: true });
   return true;
 };
-
-// ──── 学习成果兜底（草稿随消息回放） ────
-
-/**
- * 当前会话里可取回的技能草稿（站点学习会话专属）。
- *
- * 来源：learning 段 submit_skill 的提交体随消息持久化在 systemPromptSuffix
- * （见 transcriptEngine.setSystemPromptSuffix 的约束说明），loadHistorySession
- * 读回后存在这里。它只服务「手动创建技能」兜底：正常路径的草稿已随
- * 暂存（chrome.storage）交给管理中心，读回只是冗余副本，绝不自动重复创建。
- *
- * 必须是 ref：它直接驱动模板里的 v-if，用普通变量会导致提示条的显示与
- * 隐藏要等到别处的重渲染才生效（打开会话时兜底条可能迟迟不出现）。
- */
-const learnRecoverableDraft = ref<SkillDraft | null>(null);
-/** 当前会话是否为站点学习会话（kind 由转录引擎落库；决定补充段的语义与保护策略） */
-let activeSessionIsLearn = false;
-
-/** 解析会话补充段里的技能草稿；形态不符（旧会话 / 损坏数据）一律按无草稿处理 */
-function parseLearnDraft(raw: string | undefined | null): SkillDraft | null {
-  if (!raw || !raw.trim().startsWith('{')) return null;
-  try {
-    const parsed = JSON.parse(raw) as SkillDraft;
-    // 与 submit_skill 共用完整校验，损坏的恢复数据不能进入交接队列。
-    return asSkillDraft(parsed);
-  } catch {
-    return null;
-  }
-}
-
-const retryingLearnDraft = ref(false);
-const learnRecoverySource = computed(() => {
-  const chatId = activeChatId.value;
-  if (!chatId) return null;
-  const draft = learn.recovery.value?.chatId === chatId ? learn.recovery.value.draft : learnRecoverableDraft.value;
-  return draft ? { chatId, draft } : null;
-});
-const learnRecoveryState = useLearnRecovery(learnRecoverySource);
-function currentLearnRecovery(): SkillDraft | null {
-  return learnRecoveryState.visible.value ? learnRecoverySource.value?.draft ?? null : null;
-}
-
-function downloadLearnRecovery(): void {
-  const draft = currentLearnRecovery();
-  if (!draft) return;
-  const text = `---\nname: ${JSON.stringify(draft.name)}\ndescription: ${JSON.stringify(draft.description)}\ncategory: ${JSON.stringify(draft.category)}\ntags: ${JSON.stringify(draft.tags)}\nallowed-tools: ${draft.allowedTools.join(' ')}\n${draft.summary ? `x-learning-summary: ${JSON.stringify(draft.summary)}\n` : ''}---\n\n${draft.body}`;
-  const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
-  const link = document.createElement('a'); link.href = url; link.download = `${draft.name || 'learning-recovery'}.md`; link.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-/** Retry the same durable receipt; no empty-editor fallback when handoff fails. */
-async function retryCreateSkillFromLearn(): Promise<void> {
-  if (retryingLearnDraft.value) return;
-  const source = learnRecoverySource.value;
-  if (!source) return;
-  retryingLearnDraft.value = true;
-  try {
-    if (!await learnRecoveryState.canCreate(source)) {
-      if (learnRecoveryState.syncError.value) toast.error(t('sidepanel.learn.recoverySyncFailed'));
-      return;
-    }
-    const saved = await saveLearnDraft(source.draft, source.chatId);
-    if (!saved.ok) { toast.error(t('sidepanel.learn.draftSaveDegraded')); return; }
-    if (!await learnRecoveryState.canCreate(source)) return;
-    const opened = await openHubWithHash(learnDraftHash(saved.id));
-    if (!opened) toast.error(t('sidepanel.learn.openHubFailed'));
-    else toast.info(t('sidepanel.learn.handoffDone'));
-  } finally { retryingLearnDraft.value = false; }
-}
 
 // ==================== 历史会话抽屉 ====================
 
@@ -3314,18 +3609,7 @@ const loadHistorySessionData = async (chatId: string) => {
     const effective = await transcriptEngine.getEffectiveContext(chatId);
 
     activeChatId.value = chatId;
-    // 站点学习会话：把会话里持久化的技能草稿（submit_skill 的提交体）读回来。
-    // 转录仅提供恢复副本；是否待创建由共享交接回执决定。
-    // 已保存或明确忽略的成果不会因为重开历史会话再次显示恢复入口。
-    activeSessionIsLearn = meta.kind === 'site-learn';
-    learnRecoverableDraft.value = activeSessionIsLearn
-      ? parseLearnDraft(effective.systemPromptSuffix)
-      : null;
-    // 补充段按会话类型分岔：
-    //   - 普通会话：落库值就是 LLM 补充段，回填给装配与预算重算；
-    //   - 学习会话：库里是草稿回放数据（非 LLM 输入），装配一律用空，
-    //     否则草稿 JSON 会被拼进 systemPrompt 污染请求
-    activeSystemPromptSuffix.value = activeSessionIsLearn ? '' : effective.systemPromptSuffix;
+    activeSystemPromptSuffix.value = effective.systemPromptSuffix;
     // 会话级 UI 状态复位（含压缩感知——压缩事件按 chatId 投递，切到别的会话
     // 后旧会话的 done/failed 会被会话守卫丢弃，不显式复位则新会话的圆环
     // 会永远呼吸在「正在压缩对话记忆…」）
@@ -3343,10 +3627,14 @@ const loadHistorySessionData = async (chatId: string) => {
     showHistoryDrawer.value = false;
     // 切换到的会话与输入区附件草稿无关：清空避免「附件跟着切换」的错位
     attachmentManager.clearAttachments();
+    // 元素选择与捕获态同理：切换会话即结束捕获并清空待发送元素
+    elementCapture.stop({ silent: true });
+    elementCapture.clear();
+    capturedElementDialog.value = null;
     const deferredDraft = deferredSendDrafts.get(chatId);
     if (deferredDraft) {
       deferredSendDrafts.delete(chatId);
-      restoreSendDraft(chatId, deferredDraft.text, deferredDraft.attachments);
+      restoreSendDraft(chatId, deferredDraft.text, deferredDraft.attachments, deferredDraft.capturedElements);
     }
 
     // ── 回显该会话最近使用的设置（已不存在/已停用的自动忽略，绝不阻断会话加载）──
@@ -3514,8 +3802,8 @@ const startNewChatFromDrawer = async () => {
  * 历史抽屉点击会话：与「新会话」沿用同一套守卫。
  *
  * 当前会话仍在运行（含正在停止）时拒绝切换到其他会话——直接切走会中止运行，
- * 丢失进行中的任务与半成品输出；学习运行中同理拒绝（学习会话由编排层独占，
- * 切走会让成果停在半路）。拦截时保持抽屉与界面原状，用户可等待任务结束或先暂停。
+ * 丢失进行中的任务与半成品输出。拦截时保持抽屉与界面原状，用户可等待任务
+ * 结束或先暂停。
  * 点击当前会话本身不构成切换，沿用原有重载路径，不弹提示。
  */
 const selectHistorySession = async (chatId: string): Promise<boolean> => {
@@ -3524,19 +3812,6 @@ const selectHistorySession = async (chatId: string): Promise<boolean> => {
       await showAlert(
         t('sidepanel.app.newChatBlockedMessage'),
         t('sidepanel.app.newChatBlockedTitle'),
-        'warn',
-      );
-      return false;
-    }
-    if (learn.isLearnActive.value) {
-      const validating = learn.phase.value === 'validating';
-      await showAlert(
-        t(
-          validating
-            ? 'sidepanel.learn.newChatBlockedValidatingMessage'
-            : 'sidepanel.learn.newChatBlockedMessage',
-        ),
-        t('sidepanel.learn.newChatBlockedTitle'),
         'warn',
       );
       return false;
@@ -3569,11 +3844,8 @@ const handleSessionDeleted = (chatId: string) => {
   // 级联清理该会话的计划（会话级隔离：会话不在则计划不留）
   dropPlan(chatId);
   if (chatId === activeChatId.value) {
-    // 删掉的正是当前活跃会话。删在学习会话上意味着它的载体已不存在，
-    // 让学习继续跑只会产出孤儿记录（且草稿会带着一份已删会话的上下文落库）：
-    // 先中止学习并清理草稿，再强制回到主页重建界面（force 绕过新建会话守卫，
-    // 这里的切换是删除动作的必然收尾，不是用户主动发起的新建会话）。
-    if (learn.isLearnRunning.value) void learn.cleanupSession();
+    // 删掉的正是当前活跃会话：强制回到主页重建界面（force 绕过新建会话守卫，
+    // 这里的切换是删除动作的必然收尾，不是用户主动发起的新建会话）
     void goHome({ force: true });
     showHistoryDrawer.value = false;
   }
@@ -3597,14 +3869,16 @@ const closeAllPanels = () => {
   showModeSelector.value = false;
   showModelSelectorMenu.value = false;
   selectionStripPinned.value = false;
+  showComposerAddMenu.value = false;
 };
 
 // 处理容器点击事件
 const handleContainerClick = () => {
-  // 关闭搜索模式切换菜单与模型选择菜单
+  // 关闭搜索模式切换菜单、模型选择菜单与加号卡片
   showModeSelector.value = false;
   showModelSelectorMenu.value = false;
   selectionStripPinned.value = false;
+  showComposerAddMenu.value = false;
 };
 
 // 处理文件上传
@@ -3951,6 +4225,8 @@ const sendMessageInner = async (
   retry?: ApiErrorRetryRequest,
   guardContinue?: GuardContinueRequest,
   capture?: { text: string; chatId: string },
+  browserScopeSnapshot?: Promise<import('@/tools/browser/browser-scope').BrowserScope | undefined>,
+  launchTags?: readonly ConversationTag[],
 ) => {
     // 恢复类入口（API 错误重试 / 守卫停止继续）共用同一套「不触碰草稿」语义：
     // 用户当前输入、附件与引用一律不读取、不清空、不恢复。
@@ -4000,9 +4276,15 @@ const sendMessageInner = async (
       return;
     }
 
-    // 空输入拦截：用户正文、附件、已确认引用、历史消息四者皆无 → 无可发内容。
-    // 已确认引用计入：「只引用一段网页原文、不另写文字」本身是一条完整请求。
-    if (!submittedText.trim() && pendingAttachments.value.length === 0 && !confirmedQuote.value && messages.value.length === 0) {
+    // 空输入拦截：用户正文、附件、已确认引用、已捕获元素、历史消息皆无 → 无可发内容。
+    // 已确认引用 / 已捕获元素计入：只引用一段原文或只选几个网页元素本身也是完整请求。
+    if (
+      !submittedText.trim() &&
+      pendingAttachments.value.length === 0 &&
+      pendingCapturedElements.value.length === 0 &&
+      !confirmedQuote.value &&
+      messages.value.length === 0
+    ) {
       console.warn(`[SendMessage] 输入为空且无历史消息, 跳过`);
       return;
     }
@@ -4142,37 +4424,44 @@ const sendMessageInner = async (
     let effective: EffectiveContext;
     if (capture && capture.chatId !== activeChatId.value) return;
     const preparingChatId = activeChatId.value;
+    let browserScopeForRun: import('@/tools/browser/browser-scope').BrowserScope | undefined;
     const preparingDraft = {
       text: isResume ? '' : submittedText,
       attachments: isResume || capture ? [] : [...pendingAttachments.value],
+      capturedElements: isResume || capture ? [] : [...pendingCapturedElements.value],
     };
     let runChatId = preparingChatId;
     try {
+      browserScopeForRun = await (browserScopeSnapshot ?? browserWindowPicker.value?.captureBinding());
+      const commitBrowserDraft = !preparingChatId ? browserWindowPicker.value?.prepareDraftBinding({ scope: browserScopeForRun }) : undefined;
       if (!preparingChatId) {
+        // 标签只随「本次显式传入的发送」原子写入 createSession：恢复类发送
+        // （重试/继续/技能沉淀捕获）天然不传，不存在跨发送泄漏的模块状态
+        const sessionTags = isResume || capture ? undefined : launchTags;
         const session = await transcriptEngine.createSession({
           // agentId 是稳定引用（改名不变），恢复会话时优先按它解析；agentName 作为可读别名
           agentId: agentConfig?.id ?? '',
           agentName: selectedAgent.value,
           modelRef: activeModelRef.value,
           systemPromptSuffix,
+          ...(sessionTags && sessionTags.length > 0 ? { tags: [...sessionTags] } : {}),
         });
         runChatId = session.chatId;
+        await commitBrowserDraft?.(runChatId);
         if (activeChatId.value !== preparingChatId) {
-          if (!isResume && !capture) restoreSendDraft(runChatId, preparingDraft.text, preparingDraft.attachments);
+          if (!isResume && !capture) restoreSendDraft(runChatId, preparingDraft.text, preparingDraft.attachments, preparingDraft.capturedElements);
           pushSystemNotice(t('sidepanel.chat.sessionSwitchedDraftSaved'));
           return;
         }
         activeChatId.value = runChatId;
       } else {
-        // 学习会话的补充段承载草稿回放数据（非 LLM 输入，见 setSystemPromptSuffix），
-        // 绝不能被普通发送生成的 systemPromptSuffix 覆盖——那会抹掉成果兜底；
-        // 其余字段（智能体 / 模型）照常回显，与普通会话无异；
-        // 技能不在此列——它只对单轮生效，不作为会话级设置持久化
+        // 智能体 / 模型 / 系统提示词补充段随会话持久化，供历史回显与预算重算；
+        // 技能只对单轮生效，不作为会话级设置持久化
         await transcriptEngine.updateSessionUsage(runChatId, {
           agentId: agentConfig?.id ?? '',
           agentName: selectedAgent.value,
           modelRef: activeModelRef.value,
-          ...(activeSessionIsLearn ? {} : { systemPromptSuffix }),
+          systemPromptSuffix,
         });
       }
       // 有效上下文 = 压缩摘要 + 压缩点之后的记录（用户面转录仍为全量）+ systemPrompt 补充段
@@ -4184,13 +4473,7 @@ const sendMessageInner = async (
       }
       // 回填 UI 侧补充段：以库里实际落盘的为准（元信息写入静默失败时退回本轮生成值），
       // 保证后续选择变化触发的预算重算与本次请求用的是同一份 systemPrompt。
-      // 学习会话除外：库里的补充段是草稿回放数据（非 LLM 输入），带进装配
-      // 会污染 systemPrompt；它的兜底读取只发生在 loadHistorySession，装配一律用空
-      if (activeSessionIsLearn) {
-        activeSystemPromptSuffix.value = '';
-      } else {
-        activeSystemPromptSuffix.value = effective.systemPromptSuffix || systemPromptSuffix;
-      }
+      activeSystemPromptSuffix.value = effective.systemPromptSuffix || systemPromptSuffix;
       storeEffectiveContext(runChatId, effective);
       if (retry) {
         const lastRecord = effective.records.at(-1);
@@ -4221,7 +4504,7 @@ const sendMessageInner = async (
       }
     } catch (sessionError) {
       console.error('[SendMessage] 会话存取失败:', sessionError);
-      if (runChatId && activeChatId.value !== runChatId) {
+      if (runChatId && activeChatId.value !== preparingChatId && activeChatId.value !== runChatId) {
         if (!isResume && !capture) restoreSendDraft(runChatId, preparingDraft.text, preparingDraft.attachments);
         pushSystemNotice(t('sidepanel.chat.sessionSwitchedDraftSaved'));
         return;
@@ -4249,6 +4532,9 @@ const sendMessageInner = async (
         ? ''
         : submittedText;
     const currentAttachments: ChatAttachment[] = isResume || capture ? [] : [...pendingAttachments.value];
+    // 捕获元素快照（与附件同口径：先快照、随后清空；失败按原样恢复）
+    const currentCapturedElements: CapturedElement[] =
+      isResume || capture ? [] : [...pendingCapturedElements.value];
     const selectedModel = activeModelRef.value;
     const selectedAgentName = selectedAgent.value || null;
     const selectedSkillNames = [...selectedSkills.value];
@@ -4260,6 +4546,8 @@ const sendMessageInner = async (
     if (!isResume && !capture) {
       userInput.value = '';
       attachmentManager.clearAttachments();
+      elementCapture.stop({ silent: true });
+      elementCapture.clear();
       confirmedQuote.value = null;
     }
 
@@ -4314,11 +4602,13 @@ const sendMessageInner = async (
       const uploadManifest = buildUploadFileManifest(uploadedFiles);
       return runtimeBuilder.build({
         chatId: runChatId,
+        browserScope: browserScopeForRun,
         userInput: currentInput,
         userImages: currentUserImages,
         attachmentPrompt: uploadManifest,
         uploadedFiles,
         pageQuote: currentQuote,
+        capturedElements: currentCapturedElements,
         agentName: selectedAgentName,
         skillNames: selectedSkillNames,
         modelRef: selectedModel,
@@ -4333,7 +4623,7 @@ const sendMessageInner = async (
     try {
       runtime = await registerFilesAndBuildRuntime();
     } catch (error) {
-      if (!isResume && !capture) restoreSendDraft(runChatId, currentInput, currentAttachments);
+      if (!isResume && !capture) restoreSendDraft(runChatId, currentInput, currentAttachments, currentCapturedElements);
       restoreQuote();
       if (activeChatId.value !== runChatId) {
         console.warn('[SendMessage] 上一个会话装配失败:', error);
@@ -4343,7 +4633,7 @@ const sendMessageInner = async (
       throw error;
     }
     if (activeChatId.value !== runChatId) {
-      if (!isResume && !capture) restoreSendDraft(runChatId, currentInput, currentAttachments);
+      if (!isResume && !capture) restoreSendDraft(runChatId, currentInput, currentAttachments, currentCapturedElements);
       restoreQuote();
       pushSystemNotice(t('sidepanel.chat.sessionSwitchedDraftSaved'));
       return;
@@ -4395,7 +4685,7 @@ const sendMessageInner = async (
     // 上下文 <system_context> + 图片体积，与引擎构造的 LLM 消息逐字同源，
     // 图片按固定 token 计量）；激活网页取发送时刻标签页，与引擎侧各自取值
     //（时间戳本就逐调用取当前时刻，允许亚秒级差异）
-    const activePage = await queryActivePageInfo();
+    const activePage = await queryActivePageInfo(runtime);
     const measureCurrent = () =>
       measureContextUsage({
         systemPrompt: runtime.systemPrompt,
@@ -4403,8 +4693,8 @@ const sendMessageInner = async (
         messages: [
           // 与引擎组装顺序逐字同源：初始上下文 → 本轮用户消息 → 合成激活轮
           ...runtime.initialContext,
-          ...(runtime.userInput || runtime.attachmentPrompt || runtime.pageQuotePrompt || runtime.userImages.length > 0
-            ? [composeLlmUserMessage(runtime.userInput, runtime.attachmentPrompt, runtime.userImages, runtime.pageQuotePrompt, false, activePage)]
+          ...(runtime.userInput || runtime.attachmentPrompt || runtime.pageQuotePrompt || runtime.selectedElementsPrompt || runtime.userImages.length > 0
+            ? [composeLlmUserMessage(runtime.userInput, runtime.attachmentPrompt, runtime.userImages, runtime.pageQuotePrompt, runtime.selectedElementsPrompt ?? '', false, activePage)]
             : []),
           ...runtime.activationContext,
         ],
@@ -4422,6 +4712,7 @@ const sendMessageInner = async (
         runtime.attachmentPrompt,
         runtime.userImages,
         runtime.pageQuotePrompt,
+        runtime.selectedElementsPrompt ?? '',
         false,
         activePage,
       );
@@ -4433,7 +4724,7 @@ const sendMessageInner = async (
         console.warn(
           `[SendMessage] 本轮消息体积 ${messageTokens} token 超过可用预算 ${availableBudget} token（阈值−systemPrompt），阻断发送`,
         );
-        if (!isResume && !capture) restoreSendDraft(runChatId, currentInput, currentAttachments);
+        if (!isResume && !capture) restoreSendDraft(runChatId, currentInput, currentAttachments, currentCapturedElements);
         restoreQuote();
         await showAlert(
           t('sidepanel.attachments.messageExceedsContext', {
@@ -4459,7 +4750,7 @@ const sendMessageInner = async (
     /** 预运行阶段（用户消息尚未入档）被停止的善后：恢复输入附件并给出可读提示 */
     const settlePreRunStop = (): void => {
       // 输入框为空才回填原输入：用户在间隙里已敲了新内容时，以他们正在编辑的内容为准
-      if (!isResume && !capture) restoreSendDraft(runChatId, currentInput, currentAttachments);
+      if (!isResume && !capture) restoreSendDraft(runChatId, currentInput, currentAttachments, currentCapturedElements);
       restoreQuote();
       // 会话已切换时通知不落入新会话视图（被停止的是旧会话的发送流程，
       // 与引擎事件流的 chatId 守卫同语义）
@@ -4568,7 +4859,12 @@ const sendMessageInner = async (
  * 在途锁保证同一时刻最多一次发送流程；后续轮次由引擎自身的 ChatBusyError 兜底。
  */
 const sendInFlight = ref(false);
-const executeSend = async (retry?: ApiErrorRetryRequest, guardContinue?: GuardContinueRequest, capture?: { text: string; chatId: string }) => {
+const executeSend = async (
+  retry?: ApiErrorRetryRequest,
+  guardContinue?: GuardContinueRequest,
+  capture?: { text: string; chatId: string },
+  launchTags?: readonly ConversationTag[],
+) => {
   if (sendInFlight.value) {
     console.warn('[SendMessage] 已有发送流程在途，忽略本次触发');
     return;
@@ -4576,11 +4872,17 @@ const executeSend = async (retry?: ApiErrorRetryRequest, guardContinue?: GuardCo
   sendInFlight.value = true;
   let endPreparingGlow: (() => void) | undefined;
   try {
+    const browserScopeSnapshot = browserWindowPicker.value?.captureBinding() ?? Promise.resolve(undefined);
+    // Validation can finish after an early send guard returns; observe the rejection
+    // here as well as in the actual send path without changing its failure result.
+    void browserScopeSnapshot.catch(() => undefined);
     await sendMessageInner(
-      () => { endPreparingGlow = conversationEngine.beginPreparingGlow(); },
+      () => { endPreparingGlow = conversationEngine.beginPreparingGlow(activeChatId.value, browserScopeSnapshot); },
       retry,
       guardContinue,
       capture,
+      browserScopeSnapshot,
+      launchTags,
     );
   } catch (error) {
     // 兜底呈现：主流程内的分段异常（会话存取 / 压缩 / 引擎驱动）各有针对性
@@ -4690,10 +4992,6 @@ const retryFromErrorCard = async (target: ApiErrorRetryTarget): Promise<void> =>
     await showAlert(t('sidepanel.chat.apiErrorRetryBusy'));
     return;
   }
-  if (activeSessionIsLearn) {
-    await showAlert(t('sidepanel.chat.apiErrorRetryLearnBlocked'));
-    return;
-  }
   if (!activeChatId.value || !messages.value.some(message => message.role === 'user')) {
     await showAlert(t('sidepanel.chat.apiErrorRetryNoContext'));
     return;
@@ -4738,10 +5036,6 @@ const handleGuardContinue = async (messageId: string, partIndex: number): Promis
     (!!activeChatId.value && conversationEngine.isRunning(activeChatId.value))
   ) {
     await showAlert(t('sidepanel.chat.guardContinueBusy'));
-    return;
-  }
-  if (activeSessionIsLearn) {
-    await showAlert(t('sidepanel.chat.guardContinueLearnBlocked'));
     return;
   }
   if (!activeChatId.value || !messages.value.some(message => message.role === 'user' && !message.isIgnore)) {
@@ -4940,7 +5234,11 @@ const handleRegistryChange = () => {
   // selectableSkills 在此处读到的必然是新注册表下的结果
   if (selectedSkills.value.length > 0) {
     const linkedIds = new Set(selectableSkills.value.map(skill => skill.id));
-    const stillLinked = selectedSkills.value.filter(id => linkedIds.has(id));
+    // 网站任务学习技能由学习页程序化选中，不进入智能体关联集（也不出现在 / 列表）；
+    // 对账时显式豁免，否则注册表一刷新就会被当成「不再关联」清掉
+    const stillLinked = selectedSkills.value.filter(
+      id => linkedIds.has(id) || id === WEBSITE_TASK_LEARN_SKILL_ID,
+    );
     if (stillLinked.length !== selectedSkills.value.length) {
       console.warn(
         `[RegistrySync] ${selectedSkills.value.length - stillLinked.length} 个已选技能不再关联当前智能体，自动取消选中`,
@@ -4961,13 +5259,9 @@ const unsubscribeModelRegistry = modelRegistry.subscribe(() => {
   void modelRegistry.healActiveRef().catch(error => {
     console.warn('[App] 默认模型自愈失败:', error);
   });
-  // 学习配置面板开着时同步刷新候选：用户可能刚在设置里补了视觉模型，
-  // 不刷新会让「无可用模型 → 去设置」的引导形成死循环
-  if (learn.phase.value === 'configuring' || learn.phase.value === 'confirming') {
-    learn.refreshModels();
-  }
 });
 onUnmounted(() => {
+  chrome.runtime.onMessage.removeListener(handleLearnBridgeMessage);
   setApiErrorRetryHandler(null);
   conversationEngine.detach();
   window.removeEventListener('beforeunload', detachConversationView);
@@ -4990,6 +5284,16 @@ onUnmounted(() => {
 const detachConversationView = () => conversationEngine.detach();
 onMounted(async () => {
   window.addEventListener('beforeunload', detachConversationView);
+  // 学习页 ↔ 侧边栏：先确定本侧边栏所属窗口，再注册监听，
+  // 保证多窗口场景下只有目标窗口的侧边栏应答启动请求
+  try {
+    const currentWindow = await chrome.windows.getCurrent();
+    sidepanelWindowId = typeof currentWindow?.id === 'number' ? currentWindow.id : 0;
+  } catch (error) {
+    console.warn('[LearnPage] 读取侧边栏窗口失败，降级为单窗口应答:', error);
+    sidepanelWindowId = 0;
+  }
+  chrome.runtime.onMessage.addListener(handleLearnBridgeMessage);
   // 时段问候定时校准
   greetingTimer = setInterval(() => {
     greetingPeriod.value = getGreetingPeriod();

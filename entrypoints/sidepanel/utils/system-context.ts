@@ -126,9 +126,14 @@ export function formatSystemTimestamp(now: Date = new Date()): string {
  * 窗口选择：优先「最近聚焦的普通窗口」的激活标签（sidepanel/弹窗不构成
  * 普通窗口，取到的即用户正在浏览的页面），再逐级放宽兜底。
  */
-export async function queryActivePageInfo(): Promise<ActivePageInfo | null> {
+export async function queryActivePageInfo(context?: import('@/tools/registry').ToolExecutionContext): Promise<ActivePageInfo | null> {
   try {
     if (typeof chrome === 'undefined' || !chrome.tabs || !chrome.tabs.query) return null;
+    if (context?.browserScope) {
+      const { browserChrome } = await import('@/tools/browser/browser-scope');
+      const [tab] = await browserChrome(context).tabs.query({ active: true });
+      return tab && (tab.url || tab.title) ? { url: tab.url ?? '', title: tab.title?.trim() ?? '' } : null;
+    }
     const pick = (tabs: readonly chrome.tabs.Tab[] | undefined): chrome.tabs.Tab | null =>
       tabs?.find(tab => tab && typeof tab === 'object') ?? null;
     // 优先：最近聚焦的普通窗口（用户正在浏览的标签页）

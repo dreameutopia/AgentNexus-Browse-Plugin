@@ -1,3 +1,4 @@
+import type { ToolExecutionContext } from '@/tools/registry';
 import { executeScriptBounded } from '../common/frame-read';
 /**
  * 页面脚本执行内核（共享实现）
@@ -302,7 +303,7 @@ export interface PageScriptRequest {
  *   - CDP 失败 → 明确报错，**不**在另一个通道重放（代码可能已部分执行）。
  */
 export async function runPageScript(
-  req: PageScriptRequest,
+  req: PageScriptRequest, context?: ToolExecutionContext
 ): Promise<PageScriptOutcome> {
   const {
     tabId,
@@ -332,7 +333,7 @@ export async function runPageScript(
       timeoutMs,
       attempts,
       onEngineChange,
-    });
+    }, context);
   }
 
   // —— 策略：scripting（或 auto 的注入阶段）——
@@ -348,7 +349,7 @@ export async function runPageScript(
     captureLimit,
     attempts,
     onEngineChange,
-  });
+  }, context);
 
   if (scriptingResult.ok) {
     return scriptingResult;
@@ -371,7 +372,7 @@ export async function runPageScript(
         captureLimit,
         attempts,
         onEngineChange,
-      });
+      }, context);
     if (strategy === 'auto') {
       const cdpResult = await runCdp({
         tabId,
@@ -381,7 +382,7 @@ export async function runPageScript(
         timeoutMs,
         attempts,
         onEngineChange,
-      });
+      }, context);
       if (cdpResult.ok) {
         return cdpResult;
       }
@@ -397,7 +398,7 @@ export async function runPageScript(
       captureLimit,
       attempts,
       onEngineChange,
-    });
+    }, context);
     return fallback;
   }
 
@@ -419,7 +420,7 @@ async function runScripting(params: {
   captureLimit: number;
   attempts: EngineAttempt[];
   onEngineChange?: (engine: 'scripting' | 'cdp' | null) => void;
-}): Promise<ScriptingOutcome> {
+}, context?: ToolExecutionContext): Promise<ScriptingOutcome> {
   const {
     tabId,
     frameId,
@@ -438,7 +439,7 @@ async function runScripting(params: {
       func: pageConsoleEvaluate,
       args: [expression, timeoutMs, awaitPromise, true, captureLimit],
       world,
-    }, timeoutMs + 1000);
+    }, timeoutMs + 1000, undefined, context);
 
     const payload = results?.[0]?.result as InPageEvalResult | undefined;
     if (payload && payload.success) {
@@ -488,7 +489,7 @@ async function runCdp(params: {
   timeoutMs: number;
   attempts: EngineAttempt[];
   onEngineChange?: (engine: 'scripting' | 'cdp' | null) => void;
-}): Promise<PageScriptOutcome> {
+}, context?: ToolExecutionContext): Promise<PageScriptOutcome> {
   const {
     tabId,
     frameId,
@@ -508,7 +509,7 @@ async function runCdp(params: {
   // CDP 会话由 cdp-session 统一复用（延迟脱离）——按需延迟引入，避免
   // 单页执行路径平白背上一个调试器依赖。
   const { cdpSession } = await import('./cdp-session');
-  if (!cdpSession.isSupported()) {
+  if (!cdpSession.isSupported(context)) {
     const note = 'chrome.debugger 不可用（当前环境不支持）';
     attempts.push({ engine: 'cdp', world: 'MAIN', ok: false, note });
     return { ok: false, error: note };
@@ -518,7 +519,7 @@ async function runCdp(params: {
   const result = await cdpSession.evaluate(tabId, expression, {
     awaitPromise,
     timeoutMs,
-  });
+  }, context);
 
   if (result.ok) {
     attempts.push({ engine: 'cdp', world: 'MAIN', ok: true });

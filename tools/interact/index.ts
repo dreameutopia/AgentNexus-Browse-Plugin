@@ -16,7 +16,7 @@ export function registerInteractTools(): void {
   toolRegistry.register(interactTool);
 }
 
-export { interactTool, InteractTool } from './interact-tool';
+export { interactTool, InteractTool, MULTI_ANSWER_SEPARATOR } from './interact-tool';
 export {
   registerInteractHandler,
   getInteractHandler,

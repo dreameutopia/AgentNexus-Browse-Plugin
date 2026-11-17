@@ -1,5 +1,5 @@
 /**
- * 会话工作区统一文件引擎（python_run 与 js_run 共用）
+ * 会话工作区统一文件引擎（file_util 的唯一后端，脚本执行复用同一快照/锁）
  *
  * 设计约束：
  * - 根目录恒为当前对话工作区：所有 path 经 parseWorkspaceFilePath 校验
@@ -31,6 +31,8 @@ import {
   type WorkspaceEntry,
 } from "./paths";
 import { saveWorkspace, withWorkspaceLock } from "./store";
+import { WORKSPACE_DIRECTORY_KINDS } from "./workspace-directories";
+import { fileExtension } from "@/utils/upload-files/file-kinds";
 
 type EntryMap = Map<string, WorkspaceEntry>;
 
@@ -38,8 +40,18 @@ function fail(code: string, message: string): never {
   throw new WorkspaceOperationError(code, message);
 }
 
-/** 保留目录名：只能以目录形态存在，禁止作为文件目标。 */
-const RESERVED_DIRECTORIES = new Set(["inputs", "outputs", "results", "content"]);
+/**
+ * 保留目录名：只能以目录形态存在，禁止作为文件目标（工具层早检查复用同一集合，避免漂移）。
+ *
+ * 集合由 workspace-directories.ts 的目录职责派生——「工作区有哪些一级目录」
+ * 是单一事实源，保留集合只是其中「不可作为文件目标」的那部分视图。
+ */
+export const WORKSPACE_RESERVED_DIRECTORIES: ReadonlySet<string> = new Set(
+  Object.entries(WORKSPACE_DIRECTORY_KINDS)
+    .filter(([, kind]) => kind !== 'script' && kind !== 'skill')
+    .map(([name]) => name),
+);
+const RESERVED_DIRECTORIES = WORKSPACE_RESERVED_DIRECTORIES;
 
 /**
  * 工具产出的正文/交付文件目录（read_website 的 md、后续可扩展其它正文产物）。
@@ -66,21 +78,25 @@ export function isWorkspaceResultPath(path: string): boolean {
 /** 校验工具层传入的工作区相对路径（create/edit/delete/run 的 path 统一入口）。 */
 export function parseWorkspaceFilePath(raw: unknown): string {
   if (typeof raw !== "string" || !raw) {
-    fail("INVALID_PATH", "path 必须是非空字符串（相对会话工作区根目录的路径）");
+    fail(
+      "INVALID_PATH",
+      "path 必须是非空字符串（相对会话工作区根目录的路径，如 scripts/collect.js）",
+    );
   }
   if (raw !== raw.trim()) {
     fail(
       "INVALID_PATH",
-      `path 不得包含首尾空白（收到 ${JSON.stringify(raw.slice(0, 120))}）`,
+      `path 不得包含首尾空白（收到 ${JSON.stringify(raw.slice(0, 120))}）——请去掉首尾空格后重试`,
     );
   }
   if (raw.length > 1024) {
-    fail("INVALID_PATH", "path 超过 1024 字符上限");
+    fail("INVALID_PATH", "path 超过 1024 字符上限——请改用更短的路径");
   }
   if (!isWorkspaceRelativePath(raw)) {
     fail(
       "INVALID_PATH",
-      `path 必须相对工作区根目录：禁止绝对路径、盘符、反斜杠与 ..（收到 ${JSON.stringify(raw.slice(0, 120))}）`,
+      `path 必须相对工作区根目录：禁止绝对路径、盘符、反斜杠与 ..（收到 ${JSON.stringify(raw.slice(0, 120))}）` +
+        `——请改为不带盘符与反斜杠的相对路径，如 scripts/collect.js`,
     );
   }
   return raw;
@@ -89,10 +105,16 @@ export function parseWorkspaceFilePath(raw: unknown): string {
 /** 字符级校验（无 NUL、无孤立代理对）——模型直供内容与就地编辑结果共用。 */
 function validateTextCharacters(raw: string, label: string): void {
   if (raw.includes("\0")) {
-    fail("INVALID_CONTENT", `${label} 不得包含 NUL 字符`);
+    fail(
+      "INVALID_CONTENT",
+      `${label} 不得包含 NUL 字符——请移除该字符后重试`,
+    );
   }
   if (/[\uD800-\uDFFF]/u.test(raw)) {
-    fail("INVALID_CONTENT", `${label} 不得包含孤立代理对字符`);
+    fail(
+      "INVALID_CONTENT",
+      `${label} 不得包含孤立代理对字符——请重新提供完整文本（常见于复制时编码截断）`,
+    );
   }
 }
 
@@ -102,12 +124,12 @@ export function validateWorkspaceFileContent(
   label: string,
 ): string {
   if (typeof raw !== "string") {
-    fail("INVALID_CONTENT", `${label} 必须是字符串`);
+    fail("INVALID_CONTENT", `${label} 必须是字符串（收到 ${typeof raw}）`);
   }
   if (raw.length > WORKSPACE_FILE_CONTENT_MAX_CHARS) {
     fail(
       "FILE_TOO_LARGE",
-      `${label} 长度 ${raw.length} 字符，超过上限 ${WORKSPACE_FILE_CONTENT_MAX_CHARS} 字符`,
+      `${label} 长度 ${raw.length} 字符，超过上限 ${WORKSPACE_FILE_CONTENT_MAX_CHARS} 字符——请拆分内容或精简后重试`,
     );
   }
   validateTextCharacters(raw, label);
@@ -144,19 +166,50 @@ async function mutateWorkspace<T>(
       signal,
     );
   } catch (error) {
-    if (signal?.aborted) throw signal.reason;
-    if (error instanceof WorkspaceMissingChatError)
-      throw new WorkspaceOperationError(
-        "CONTEXT",
-        "会话不存在或已删除，无法访问其工作区",
-        error,
-      );
-    if (error instanceof WorkspaceOperationError) throw error;
+    rethrowWorkspaceAccessError(error, signal);
+  }
+}
+
+/**
+ * 工作区读写的统一错误出口：取消优先如实抛出；会话缺失 → CONTEXT；
+ * 业务错误原样透传；其余一律收敛为 STORAGE_ERROR（保留原始原因）。
+ * 读类操作与写事务共用，保证两条通道的错误码与文案一致。
+ */
+function rethrowWorkspaceAccessError(
+  error: unknown,
+  signal?: AbortSignal,
+): never {
+  if (signal?.aborted) {
+    throw signal.reason ?? new WorkspaceOperationError("ABORTED", "操作已取消");
+  }
+  if (error instanceof WorkspaceMissingChatError) {
     throw new WorkspaceOperationError(
-      "STORAGE_ERROR",
-      errorDetails(error),
+      "CONTEXT",
+      "会话不存在或已删除，无法访问其工作区",
       error,
     );
+  }
+  if (error instanceof WorkspaceOperationError) throw error;
+  throw new WorkspaceOperationError("STORAGE_ERROR", errorDetails(error), error);
+}
+
+/**
+ * 只读打开工作区快照（read/list/search/grep/形态探测的统一入口）。
+ *
+ * 与 mutateWorkspace 共用同一套错误映射，避免每个读类调用点各写一份
+ * try/catch 后出现「有的映射 CONTEXT、有的抛原始 WorkspaceMissingChatError」
+ * 的不一致——后者在工具边界会被误判为未知异常。
+ */
+export async function readWorkspaceSnapshot(
+  chatId: string,
+  signal?: AbortSignal,
+): Promise<WorkspaceEntry[]> {
+  try {
+    signal?.throwIfAborted();
+    const snapshot = await chatDatabase.readWorkspace(chatId, signal);
+    return snapshot?.entries ?? [];
+  } catch (error) {
+    rethrowWorkspaceAccessError(error, signal);
   }
 }
 
@@ -173,7 +226,7 @@ function ensureParentDirectories(entries: EntryMap, path: string): void {
       if (existing.blob || existing.link) {
         fail(
           "INVALID_PATH",
-          `父路径 ${JSON.stringify(parentPath)} 已被文件占用，无法创建 ${JSON.stringify(path)}`,
+          `父路径 ${JSON.stringify(parentPath)} 已被文件占用，无法创建 ${JSON.stringify(path)}——请换一个不冲突的路径`,
         );
       }
       continue;
@@ -212,7 +265,7 @@ export async function createWorkspaceFile(
     if (entries.has(path)) {
       fail(
         "FILE_EXISTS",
-        `文件已存在：${path}（修改请用 action="edit"，不要删除重建）`,
+        `文件已存在：${path}（修改请用 file_util(action="edit")，不要删除重建）`,
       );
     }
     ensureParentDirectories(entries, path);
@@ -278,8 +331,116 @@ export async function writeToolWorkspaceFile(
   });
 }
 
-export interface WorkspaceEditInput {
-  content?: unknown;
+/** 工作区路径的存在形态（用于区分「目录不可删」与「二进制不可删」）。 */
+export type WorkspacePathKind = 'file' | 'directory' | 'link' | 'missing';
+
+/**
+ * 只读探测某个路径在工作区中的形态。
+ *
+ * 删除动作需要先区分目录/文件/缺失，才能给出正确的下一步；若直接按后缀
+ * 判定文本类型，`delete path="scripts"` 会被误报成「后缀不在文本范围」，
+ * 掩盖真正的失败原因。
+ */
+export async function workspacePathKind(
+  chatId: string,
+  rawPath: unknown,
+  signal?: AbortSignal,
+): Promise<WorkspacePathKind> {
+  const path = parseWorkspaceFilePath(rawPath);
+  const entries = await readWorkspaceSnapshot(chatId, signal);
+  const entry = entries.find((item) => item.path === path);
+  if (!entry) return 'missing';
+  if (entry.link) return 'link';
+  return entry.blob ? 'file' : 'directory';
+}
+
+export interface WorkspaceCopyStat extends WorkspaceFileStat {
+  /** 副本来源路径 */
+  source: string;
+}
+
+/**
+ * action="copy"：复制工作区内的任意类型文件（文本/图片/Office/PDF 等），
+ * 逐字节保留原内容。
+ *
+ * 与文本写操作的边界：
+ *   - **不受文件类型限制**（副本是字节级复制，不做解码/转码，不会损坏二进制）；
+ *   - 目标必须是工作区相对路径，且**父目录必须已存在**——复制是「另存一份」，
+ *     不静默创建目录，避免路径拼错却写出一棵新目录树；
+ *   - 后缀必须与源文件一致（大小写不敏感：`.PY` 与 `.py` 视为同一后缀），
+ *     防止 `a.json` 被复制成 `a.csv` 这类「内容与扩展名不符」的产物；
+ *   - `results/` 仍是结果通道的保留目录，副本不能写入（可溯性约束与 create/edit 一致）。
+ */
+export async function copyWorkspaceFile(
+  chatId: string,
+  rawSource: unknown,
+  rawTarget: unknown,
+  signal?: AbortSignal,
+): Promise<WorkspaceCopyStat> {
+  const source = parseWorkspaceFilePath(rawSource);
+  const target = parseWorkspaceFilePath(rawTarget);
+  if (source === target) {
+    fail("INVALID_PATH", "target 不能与 path 相同——副本必须使用新的路径");
+  }
+  if (RESERVED_DIRECTORIES.has(target)) {
+    fail(
+      "INVALID_PATH",
+      `${target}/ 是保留目录，不能作为文件副本目标（请写到其下，如 ${target}/copy.txt）`,
+    );
+  }
+  if (isWorkspaceResultPath(target)) {
+    fail(
+      "INVALID_PATH",
+      `${WORKSPACE_RESULTS_DIR}/ 只能由结果通道写入，副本请写到 ${WORKSPACE_CONTENT_DIR}/、outputs/、scripts/ 等目录`,
+    );
+  }
+  const sourceSuffix = fileExtension(source);
+  const targetSuffix = fileExtension(target);
+  if (sourceSuffix !== targetSuffix) {
+    fail(
+      "INVALID_PATH",
+      `副本后缀必须与源文件完全一致：源 ${JSON.stringify(source)} 的后缀为 ${sourceSuffix ? `".${sourceSuffix}"` : "（无）"}，` +
+        `目标 ${JSON.stringify(target)} 的后缀为 ${targetSuffix ? `".${targetSuffix}"` : "（无）"}。请保留相同后缀（大小写不敏感）`,
+    );
+  }
+  const parent = target.includes("/")
+    ? target.slice(0, target.lastIndexOf("/"))
+    : "";
+  return mutateWorkspace(chatId, signal, (entries) => {
+    const entry = entries.get(source);
+    if (!entry?.blob || entry.link) {
+      fail(
+        "FILE_NOT_FOUND",
+        `源文件不存在或不是普通文件：${source}——用 file_util(action="list") 盘点核对来源路径拼写`,
+      );
+    }
+    if (entries.has(target)) {
+      fail("FILE_EXISTS", `副本目标已存在：${target}（请换一个名称，避免覆盖既有文件）`);
+    }
+    if (parent) {
+      const parentEntry = entries.get(parent);
+      if (!parentEntry) {
+        fail(
+          "INVALID_PATH",
+          `副本目标的父目录不存在：${parent}——先用 file_util(action="list") 确认目录，或把 target 指向已存在目录`,
+        );
+      }
+      if (parentEntry.blob || parentEntry.link) {
+        fail(
+          "INVALID_PATH",
+          `副本目标的父路径 ${parent} 已被文件占用——请换一个目标路径`,
+        );
+      }
+    }
+    const blob = new Blob([entry.blob], {
+      type: entry.blob.type || "application/octet-stream",
+    });
+    entries.set(target, { path: target, blob, mode: 0o644, mtime: Date.now() });
+    return { path: target, bytes: blob.size, source };
+  });
+}
+
+export interface WorkspaceEditInput {  content?: unknown;
   find?: unknown;
   replace?: unknown;
   replaceAll?: unknown;
@@ -302,7 +463,7 @@ function decodeUtf8Text(bytes: Uint8Array, path: string): string {
   } catch {
     fail(
       "INVALID_CONTENT",
-      `${JSON.stringify(path)} 不是有效的 UTF-8 文本，无法就地编辑（会损坏原内容）。请用 action="run" 脚本按其真实编码处理`,
+      `${JSON.stringify(path)} 不是有效的 UTF-8 文本，无法就地编辑（会损坏原内容）。请先用 file_util(action="copy") 备份，再用 python_run 按其真实编码读取并另存为 UTF-8 文本后再编辑`,
     );
   }
 }
@@ -339,7 +500,7 @@ export async function editWorkspaceFile(
   )
     fail(
       "INVALID_ARGUMENTS",
-      "expectedHash 必须是 read 返回的 SHA-256（64 位十六进制）",
+      'expectedHash 必须是 file_util(action="read") 返回的 SHA-256（64 位十六进制）',
     );
   const rewritten = hasContent
     ? validateWorkspaceFileContent(input.content, "content")
@@ -370,17 +531,27 @@ export async function editWorkspaceFile(
     if (!entry)
       fail(
         "FILE_NOT_FOUND",
-        "文件不存在：" + path + '（新建请用 action="create"）',
+        `文件不存在：${path}（新建请用 file_util(action="create")）`,
       );
-    if (entry.link) fail("INVALID_PATH", "不支持编辑符号链接：" + path);
+    if (entry.link)
+      fail(
+        "INVALID_PATH",
+        `不支持编辑符号链接：${path}——请指向普通文本文件`,
+      );
     if (!entry.blob)
-      fail("INVALID_PATH", JSON.stringify(path) + " 是目录，不是文件");
+      fail(
+        "INVALID_PATH",
+        `${JSON.stringify(path)} 是目录，不是文件——请指向目录下的具体文件（file_util(action="list", path=${JSON.stringify(path)}) 可盘点子项）`,
+      );
     let buffer: ArrayBuffer | undefined;
     if (
       rewritten === undefined &&
       entry.blob.size > WORKSPACE_EDIT_MAX_FILE_BYTES
     )
-      fail("FILE_TOO_LARGE", "文件超过就地编辑上限，请用脚本处理大文件");
+      fail(
+        "FILE_TOO_LARGE",
+        `文件超过就地编辑上限（${WORKSPACE_EDIT_MAX_FILE_BYTES} 字节）——请用脚本处理大文件`,
+      );
     if (input.expectedHash !== undefined) {
       buffer = await entry.blob.arrayBuffer();
       signal?.throwIfAborted();
@@ -393,7 +564,7 @@ export async function editWorkspaceFile(
       )
         fail(
           "EDIT_CONFLICT",
-          "文件已变化，expectedHash 不匹配；请重新 read 后编辑",
+          '文件已变化，expectedHash 不匹配；请用 file_util(action="read") 重新读取后再编辑',
         );
     }
     let next = rewritten;
@@ -409,7 +580,10 @@ export async function editWorkspaceFile(
         next = result.text;
         replaced += result.replaced;
         if (new Blob([next]).size > WORKSPACE_EDIT_MAX_FILE_BYTES)
-          fail("FILE_TOO_LARGE", "编辑结果超过就地编辑上限");
+          fail(
+            "FILE_TOO_LARGE",
+            `编辑结果超过就地编辑上限（${WORKSPACE_EDIT_MAX_FILE_BYTES} 字节）——请缩小替换范围或拆分文件`,
+          );
       }
       validateTextCharacters(next, "edit 结果");
     }
@@ -455,15 +629,22 @@ export async function appendWorkspaceFile(
     if (!entry)
       fail(
         "FILE_NOT_FOUND",
-        "文件不存在：" + path + '（追加的前提是文件已存在；新建请用 action="create"）',
+        `文件不存在：${path}（追加的前提是文件已存在；新建请用 file_util(action="create")）`,
       );
-    if (entry.link) fail("INVALID_PATH", "不支持追加符号链接：" + path);
+    if (entry.link)
+      fail(
+        "INVALID_PATH",
+        `不支持追加符号链接：${path}——请指向普通文本文件`,
+      );
     if (!entry.blob)
-      fail("INVALID_PATH", JSON.stringify(path) + " 是目录，不是文件");
+      fail(
+        "INVALID_PATH",
+        `${JSON.stringify(path)} 是目录，不是文件——请指向目录下的具体文件（file_util(action="list", path=${JSON.stringify(path)}) 可盘点子项）`,
+      );
     if (entry.blob.size > WORKSPACE_EDIT_MAX_FILE_BYTES) {
       fail(
         "FILE_TOO_LARGE",
-        "文件超过就地编辑上限，请用脚本处理大文件",
+        `文件超过就地编辑上限（${WORKSPACE_EDIT_MAX_FILE_BYTES} 字节）——请用脚本处理大文件`,
       );
     }
     const buffer = await entry.blob.arrayBuffer();
@@ -473,7 +654,7 @@ export async function appendWorkspaceFile(
     if (new Blob([next]).size > WORKSPACE_EDIT_MAX_FILE_BYTES) {
       fail(
         "FILE_TOO_LARGE",
-        "追加结果超过就地编辑上限（8MB）",
+        `追加结果超过就地编辑上限（${WORKSPACE_EDIT_MAX_FILE_BYTES} 字节）——请减少单次追加量或拆分文件`,
       );
     }
     const blob = new Blob([next], {
@@ -499,7 +680,7 @@ async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
 
 /**
  * 共享的文本快照加载：定位条目（拒绝目录/链接/超限）→ 字节快照 → 严格
- * UTF-8 解码 + SHA-256 指纹。readWorkspaceTextFile 与 readWorkspaceFilePage
+ * UTF-8 解码 + SHA-256 指纹。file_util 的分页读取与脚本执行前的源码读取
  * 共用，保证「同一路径在整读与分页两条通道上得到同一指纹与解码口径」。
  */
 async function loadTextSnapshot(
@@ -508,10 +689,29 @@ async function loadTextSnapshot(
   maxBytes: number,
   signal?: AbortSignal,
 ): Promise<{ text: string; sha256: string; bytes: number }> {
-  const snapshot = await chatDatabase.readWorkspace(chatId, signal);
-  const entry = snapshot?.entries.find((item) => item.path === path);
-  if (!entry?.blob || entry.link)
-    fail("FILE_NOT_FOUND", "文件不存在或不是普通文件：" + path);
+  const entries = await readWorkspaceSnapshot(chatId, signal);
+  const entry = entries.find((item) => item.path === path);
+  // 三态分诊（缺失 / 符号链接 / 目录）而不是笼统的「不存在或不是普通文件」：
+  // 混为一谈会让模型对着目录反复重试 read/run。下一步必须可执行——
+  // 「先 list 核对拼写、缺失则 create」覆盖 file_util 读取与 js_run/python_run
+  // 脚本执行两条中继通道（错误会以 [JS_*]/[PY_*] 前缀透出，故点名 file_util）。
+  if (!entry)
+    fail(
+      "FILE_NOT_FOUND",
+      `文件不存在：${path}——read/run 都不会自动创建文件。` +
+        `下一步：file_util(action="list") 盘点核对路径拼写；确实缺失时先 file_util(action="create") 创建后重试` +
+        `（run/crawl 只执行已保存的脚本）`,
+    );
+  if (entry.link)
+    fail(
+      "INVALID_PATH",
+      `${JSON.stringify(path)} 是符号链接，不是普通文件——请指向普通文件`,
+    );
+  if (!entry.blob)
+    fail(
+      "INVALID_PATH",
+      `${JSON.stringify(path)} 是目录，不是文件——请指向目录下的具体文件（file_util(action="list", path=${JSON.stringify(path)}) 可盘点子项）`,
+    );
   if (entry.blob.size > maxBytes) {
     fail(
       "FILE_TOO_LARGE",
@@ -549,31 +749,23 @@ export async function readWorkspaceTextFile(
 
 // ────────────────────────── 文本分页读取引擎 ──────────────────────────
 
-/** 文本 read 分页：单页字符数（UTF-16 单位，与执行结果预览阈值刻意同值）。 */
+/** 脚本执行结果的响应预览字符数（run/crawl 只回传前 2000 字符，完整结果在结果文件里）。 */
 export const WORKSPACE_READ_PAGE_CHARS = 2_000;
+
+/**
+ * 面向模型的按需阅读分页（file_util 与内容正则搜索共用）。
+ *
+ * 与 WORKSPACE_READ_PAGE_CHARS 的差异是产品口径：脚本结果预览用 2000，
+ * 文件按需阅读用 3000。两条通道必须引用同一个常量，否则内容搜索回报的
+ * 页码会与 file_util 实际分页错位——模型据此续读时直接读到错误区间。
+ */
+export const WORKSPACE_TOOL_READ_PAGE_CHARS = 3_000;
 /**
  * 文本 read 的文件字节上限：分页定界需要整文件一次性解码（页码 → 字符区间
  * 的确定性映射），拒绝超限文件防止解码内存尖峰；更大的文件交给脚本按需处理。
  * 执行结果文件上限 10MB（见 data-files.ts），此上限保证其永远可分页读取。
  */
 export const WORKSPACE_READ_MAX_FILE_BYTES = 16 * 1024 * 1024;
-
-/** 单页读取结果：页内容 + 分页账目（页码/总页数）+ 文件指纹（sha256 供 edit 冲突检测）。 */
-export interface WorkspaceFilePage {
-  path: string;
-  /** 当前页内容（≤ WORKSPACE_READ_PAGE_CHARS 字符；页边界永不拆开代理对） */
-  content: string;
-  /** 当前页码（1 起） */
-  index: number;
-  /** 总页数（空文件为 0） */
-  pageCount: number;
-  totalChars: number;
-  bytes: number;
-  sha256: string;
-  hasMore: boolean;
-  /** 下一页页码（仅在 hasMore 时携带，模型可直接回填） */
-  nextIndex?: number;
-}
 
 const isHighSurrogate = (code: number): boolean =>
   code >= 0xd800 && code <= 0xdbff;
@@ -589,23 +781,17 @@ const isLowSurrogate = (code: number): boolean =>
  * 单次线性扫描 O(页数)（每页 O(1) 边界检查），同时求出目标页区间与总页数；
  * index 超界由调用方在拿到 pageCount 后拒绝。
  *
- * 导出为**分页定界的唯一实现**：file_util 的读取通道（3000 字符/页）与本
- * 模块的默认通道（2000 字符/页）必须共用同一套边界算法——各写一份必然
- * 漂移，而漂移的代价是页边界拆开代理对（严格网关对孤立代理项零容忍）。
+ * 导出为**分页定界的唯一实现**：file_util 的读取通道（默认 3000 字符/页）
+ * 必须通过它定界；各写一份必然漂移，而漂移的代价是页边界拆开代理对
+ * （严格网关对孤立代理项零容忍）。
  */
-export function locateTextPage(
+function* iteratePageRanges(
   text: string,
-  index: number,
-  pageChars: number = WORKSPACE_READ_PAGE_CHARS,
-): { start: number; end: number; pageCount: number } {
+  pageChars: number,
+): Generator<{ start: number; end: number }> {
   const total = text.length;
   let start = 0;
-  let end = 0;
-  let page = 1;
-  let hitStart = -1;
-  let hitEnd = -1;
-  while (end < total) {
-    start = end;
+  while (start < total) {
     let stop = Math.min(start + pageChars, total);
     if (
       stop < total &&
@@ -614,18 +800,51 @@ export function locateTextPage(
     )
       stop--;
     if (stop === start) stop = Math.min(start + 2, total); // 防御：单字符页拆对时向前并拢完整代理对
-    end = stop;
-    if (page === index) {
-      hitStart = start;
-      hitEnd = end;
-    }
+    yield { start, end: stop };
+    start = stop;
+  }
+}
+
+export function locateTextPage(
+  text: string,
+  index: number,
+  pageChars: number = WORKSPACE_TOOL_READ_PAGE_CHARS,
+): { start: number; end: number; pageCount: number } {
+  let pageCount = 0;
+  let hit: { start: number; end: number } | undefined;
+  for (const range of iteratePageRanges(text, pageChars)) {
+    pageCount++;
+    if (pageCount === index) hit = range;
+  }
+  const total = text.length;
+  return {
+    start: hit?.start ?? total,
+    end: hit?.end ?? total,
+    pageCount,
+  };
+}
+
+/**
+ * 字符偏移 → 页码（1 起，口径与 locateTextPage 完全一致）。
+ *
+ * 供内容正则搜索回报「命中行落在 file_util 第几页」：必须复用同一套页边界
+ * 算法，否则代理对附近的页码会与 read 实际返回的页错开一位。
+ * 空文件返回 1（read 对空文件的第 1 页合法返回空内容）；越界偏移收敛到末页。
+ */
+export function pageIndexForOffset(
+  text: string,
+  offset: number,
+  pageChars: number = WORKSPACE_TOOL_READ_PAGE_CHARS,
+): number {
+  const total = text.length;
+  if (total === 0) return 1;
+  const target = Math.min(Math.max(0, Math.trunc(offset)), total - 1);
+  let page = 1;
+  for (const range of iteratePageRanges(text, pageChars)) {
+    if (target >= range.start && target < range.end) return page;
     page++;
   }
-  return {
-    start: hitStart >= 0 ? hitStart : total,
-    end: hitStart >= 0 ? hitEnd : total,
-    pageCount: total === 0 ? 0 : page - 1,
-  };
+  return Math.max(1, page - 1);
 }
 
 /**
@@ -647,10 +866,25 @@ export async function readWorkspaceFileBytes(
   maxBytes: number = WORKSPACE_READ_MAX_FILE_BYTES,
 ): Promise<{ path: string; bytes: Uint8Array; size: number }> {
   const path = parseWorkspaceFilePath(rawPath);
-  const snapshot = await chatDatabase.readWorkspace(chatId, signal);
-  const entry = snapshot?.entries.find((item) => item.path === path);
-  if (!entry?.blob || entry.link)
-    fail("FILE_NOT_FOUND", "文件不存在或不是普通文件：" + path);
+  const entries = await readWorkspaceSnapshot(chatId, signal);
+  const entry = entries.find((item) => item.path === path);
+  // 与 loadTextSnapshot 同一套三态分诊与可执行下一步（两条读取通道必须同口径）
+  if (!entry)
+    fail(
+      "FILE_NOT_FOUND",
+      `文件不存在：${path}——read 不会自动创建文件。` +
+        `下一步：file_util(action="list") 盘点核对路径拼写；确实缺失时先 file_util(action="create") 创建后重试`,
+    );
+  if (entry.link)
+    fail(
+      "INVALID_PATH",
+      `${JSON.stringify(path)} 是符号链接，不是普通文件——请指向普通文件`,
+    );
+  if (!entry.blob)
+    fail(
+      "INVALID_PATH",
+      `${JSON.stringify(path)} 是目录，不是文件——请指向目录下的具体文件（file_util(action="list", path=${JSON.stringify(path)}) 可盘点子项）`,
+    );
   if (entry.blob.size > maxBytes) {
     fail(
       "FILE_TOO_LARGE",
@@ -664,70 +898,6 @@ export async function readWorkspaceFileBytes(
     path,
     bytes: new Uint8Array(buffer),
     size: entry.blob.size,
-  };
-}
-
-/**
- * action="read" 的分页实现：读取工作区任意 UTF-8 文本文件的第 index 页
- * （每页 ≤2000 字符）。先解码后定界：页码映射是全文的确定性函数，
- * sha256 与 totalChars 每页都携带（edit 的 expectedHash 契约以最近一次
- * read 为准）。index 越界显式报错并回显总页数，绝不静默收敛到其它页。
- */
-export async function readWorkspaceFilePage(
-  chatId: string,
-  rawPath: unknown,
-  rawIndex: unknown,
-  signal?: AbortSignal,
-): Promise<WorkspaceFilePage> {
-  const path = parseWorkspaceFilePath(rawPath);
-  const index = rawIndex === undefined ? 1 : rawIndex;
-  if (typeof index !== "number" || !Number.isSafeInteger(index) || index < 1) {
-    fail(
-      "INVALID_INDEX",
-      `index 必须是 ≥1 的安全整数（页码，默认 1），实际收到 ${String(index)}`,
-    );
-  }
-  const { text, sha256, bytes } = await loadTextSnapshot(
-    chatId,
-    path,
-    WORKSPACE_READ_MAX_FILE_BYTES,
-    signal,
-  );
-  if (text.length === 0) {
-    // 空文件：第 1 页合法返回空内容（模型常在 create 后立即 read 核对）；
-    // 更大的页码仍显式报错
-    if (index !== 1) {
-      fail("INDEX_OUT_OF_RANGE", `index=${index} 超出范围：文件为空`);
-    }
-    return {
-      path,
-      content: "",
-      index: 1,
-      pageCount: 0,
-      totalChars: 0,
-      bytes,
-      sha256,
-      hasMore: false,
-    };
-  }
-  const { start, end, pageCount } = locateTextPage(text, index);
-  if (index > pageCount) {
-    fail(
-      "INDEX_OUT_OF_RANGE",
-      `index=${index} 超出范围：文件共 ${text.length} 字符、${pageCount} 页（1..${pageCount}）`,
-    );
-  }
-  const hasMore = end < text.length;
-  return {
-    path,
-    content: text.slice(start, end),
-    index,
-    pageCount,
-    totalChars: text.length,
-    bytes,
-    sha256,
-    hasMore,
-    ...(hasMore ? { nextIndex: index + 1 } : {}),
   };
 }
 
@@ -783,12 +953,15 @@ export async function deleteWorkspaceFile(
   return mutateWorkspace(chatId, signal, (entries) => {
     const entry = entries.get(path);
     if (!entry) {
-      fail("FILE_NOT_FOUND", `文件不存在：${path}`);
+      fail(
+        "FILE_NOT_FOUND",
+        `文件不存在：${path}——先用 file_util(action="list") 盘点核对路径；若文件确实已不存在，本操作可视为完成`,
+      );
     }
     if (!entry.blob && !entry.link) {
       fail(
         "DELETE_DIRECTORY",
-        `${JSON.stringify(path)} 是目录，本工具只删除文件`,
+        `${JSON.stringify(path)} 是目录，本工具只删除文件——请指向目录下的具体文件（file_util(action="list", path=${JSON.stringify(path)}) 可盘点子项）`,
       );
     }
     entries.delete(path);
@@ -813,13 +986,13 @@ export async function assertWorkspaceScriptExists(
     if (!entry) {
       fail(
         "FILE_NOT_FOUND",
-        `脚本不存在：${path}（运行只接受已落库的文件——先用 action="create" 创建，或由技能 copy / 上次运行写入）`,
+        `脚本不存在：${path}（run 只接受已落库的 .py 文件——先用 file_util(action="create") 创建，或由技能 copy / 上次运行写入）`,
       );
     }
     if (!entry.blob && !entry.link) {
       fail(
         "FILE_NOT_FOUND",
-        `${JSON.stringify(path)} 是目录，不是可运行的 .py 文件`,
+        `${JSON.stringify(path)} 是目录，不是可运行的 .py 文件——请指向具体的 .py 文件（如 scripts/report.py）`,
       );
     }
   } catch (error) {

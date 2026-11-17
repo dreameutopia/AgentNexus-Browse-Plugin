@@ -5,7 +5,7 @@
  * run/crawl 执行结果、browser_extract_data 的 DOM 抓取结果、data_ref_tool
  * 的治理产物（merge/dedupe/project）。文件随会话工作区持久保存（跨浏览器
  * 重启，无暂存区 12 小时 TTL），xlsx_tool(dataFiles) 与 data_ref_tool(files)
- * 按路径直接消费，js_run(action="read") 按页核对——大批量数据全程不进模型
+ * 按路径直接消费，file_util(action="read") 按页核对——大批量数据全程不进模型
  * 上下文。
  *
  * 格式约定（统一真相源：tabular.ts）：
@@ -133,7 +133,7 @@ export async function saveWorkspaceResultText(
   if (typeof text !== "string" || text === "") {
     throw new WorkspaceOperationError(
       "INVALID_CONTENT",
-      "结果为空：没有可保存的数据",
+      "结果为空：没有可保存的数据（脚本应 return 非空结果后重试）",
     );
   }
   const normalizedLabel =
@@ -247,7 +247,7 @@ export async function readWorkspaceDataFile(
       if (error.code === "FILE_NOT_FOUND") {
         throw new WorkspaceOperationError(
           "FILE_NOT_FOUND",
-          `数据文件不存在或不是普通文件：${path}（用 js_run(action="list") 盘点现有文件）`,
+          `数据文件不存在或不是普通文件：${path}（用 file_util(action="list") 盘点现有文件）`,
           error,
         );
       }

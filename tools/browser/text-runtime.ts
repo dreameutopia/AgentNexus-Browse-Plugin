@@ -1,3 +1,6 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
+import { enableScopedPageFocus } from './browser-scope';
 import { exclusiveGui } from '../vision/gui-driver';
 import { cdpSession } from './cdp-session';
 import { isRestrictedUrl } from '@/common/constants';
@@ -9,10 +12,14 @@ export function readableTextError(error: unknown): string {
 }
 
 /** Text tools never capture images or accept guessed coordinates. */
-export async function textTab() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+export async function textTab(context?: ToolExecutionContext) {
+  const [tab] = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
   if (typeof tab?.id !== 'number' || isRestrictedUrl(tab.url))
     throw new Error('TARGET_UNAVAILABLE：请选择可访问的网页');
+  if (context?.browserScope) {
+    await cdpSession.attach(tab.id, context);
+    await enableScopedPageFocus(tab.id, context);
+  }
   return tab as chrome.tabs.Tab & { id: number; url: string };
 }
 export async function boundedText<T>(
@@ -40,16 +47,16 @@ export async function textCommand<T = any>(
   tabId: number,
   method: string,
   params: object = {},
-  timeoutMs = 8000,
+  timeoutMs = 8000, context?: ToolExecutionContext
 ): Promise<T> {
   const deadline = performance.now() + timeoutMs;
   if (method.startsWith('Input.')) {
     if (!cdpSession.hasSession(tabId))
       throw new Error('STALE_SESSION：重新观察并确认焦点后操作');
-  } else await boundedText(cdpSession.attach(tabId), '附加调试会话', timeoutMs);
+  } else await boundedText(cdpSession.attach(tabId, context), '附加调试会话', timeoutMs);
   if (performance.now() >= deadline) throw new Error(`TIMEOUT：${method} 调用预算已用尽`);
   return boundedText(
-    chrome.debugger.sendCommand({ tabId }, method, params),
+    browserChrome(context).debugger.sendCommand({ tabId }, method, params),
     method,
     Math.max(1, deadline - performance.now()),
   ) as Promise<T>;

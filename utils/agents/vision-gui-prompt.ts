@@ -9,8 +9,7 @@
  *
  * 注入：不经预设正文携带，由 prompt-hooks（runtime-builder 的钩子环节）
  * 在检测到会话工具面包含 vision_gui 时自动注入——钩子以「分区自治」
- * （agentSystem 自带完整 <vision-gui-tool> 分区）防重，学习域自有分区
- * 照常跳过。
+ * （agentSystem 自带完整 <vision-gui-tool> 分区）防重。
  *
  * 变体：VISION_GUI_PROMPT（完整操作面，视觉通用助手与自定义智能体）；
  * VISION_GUI_OBSERVE_PROMPT（观察面，视觉助手）。观察变体的开放 action
@@ -70,7 +69,7 @@ ${SHARED_CREDENTIAL_RULES}
 - 点击/双击/右键 → click（要展开菜单、显示提示先 hover）；填文本 → input；移动元素/画布 → drag；快捷键 → keyboard（每次一个组合）。
 - 滚动分两种，按需求选：模拟真实滚轮手势（hover 路由到指针下组件、按视口百分比 percent 或 CSS 像素、可带修饰键、会触发滚动监听）→ scroll；阅读式小步滚动（定向到 point 所指容器或同源 iframe、按目标容器百分比 containerPercent、报告真实 before/after 位移与边界、不发任何滚轮/点击事件、到边界绝不改滚父容器）→ read_scroll。两者百分比基准不同：scroll 的 percent 按完整视口，read_scroll 的 containerPercent 按目标容器，不要混用。
 - 需要把视觉目标对应到 DOM（取 XPath/属性、消歧）→ mark 请求下一张打标图，再 inspect 读取；纯文本目标的取证流程可跳过 mark/inspect。
-- 页面加载/用户操作后要新画面 → 等约 3 秒自动回传，或主动 screenshot；较长异步等待用 generic_wait。
+- 页面加载/用户操作后要新画面 → 等约 3 秒自动回传，或主动 screenshot；较长异步等待用 browser_wait（按条件等待）。
 </scene-map>
 </operation-sop>
 

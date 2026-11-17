@@ -6,7 +6,7 @@
         <span class="hub-list-count">{{ t('hub.skillCount', { count: skills.length }) }}</span>
         <div class="hub-list-actions">
           <button type="button" class="hub-btn" @click="triggerImport">{{ t('hub.importSkill') }}</button>
-          <button type="button" class="hub-btn hub-btn-primary" :disabled="acceptingDraft" @click="startCreate">
+          <button type="button" class="hub-btn hub-btn-primary" @click="startCreate">
             {{ t('hub.newSkill') }}
           </button>
         </div>
@@ -109,15 +109,6 @@
           <button type="submit" class="hub-btn hub-btn-primary" :disabled="!canSave || saving">{{ t('common.save') }}</button>
         </div>
       </div>
-
-      <!-- 网站学习成果确认卡（预填后内联展示；确认→直接保存，微调→关卡留在表单） -->
-      <SkillDraftConfirm
-        v-if="draftCard"
-        :draft="draftCard.draft"
-        :final-name="draftCard.finalName"
-        @confirm="confirmDraftCreate"
-        @edit="draftCard = null"
-      />
 
       <!-- 左右布局：简单模式左列元信息 / 右列提示词；高级模式左列 SKILL.md 原文 / 右列实时校验与资源文件 -->
       <div
@@ -551,11 +542,6 @@ import {
   type SkillRecord,
   type SkillWriteResult,
 } from '@/utils/skills/skill-store';
-import {
-  readLearnDraft, claimLearnDraftEditor, saveLearnDraftEditor, completeLearnDraft, isLearnDraftEditorState, LEARN_TRANSFER_MARKER,
-} from '@/utils/learn/learn-draft-store';
-import type { SkillDraft, LearnDraftEditorState } from '@/utils/learn/learn-types';
-import SkillDraftConfirm from './SkillDraftConfirm.vue';
 import {
   parseFrontmatter,
   validateSkillMd,
@@ -1703,120 +1689,16 @@ const advancedBlockHint = computed<string | null>(() => {
   return advancedFilesIssue.value;
 });
 
-// ──── 网站学习成果（持久交接与编辑恢复） ────
+// ──── 编辑器状态 ────
 
-/** 学习成果确认卡（预填后展示；null = 无待确认成果） */
-const draftCard = ref<{ draft: SkillDraft; finalName: string } | null>(null);
 const emit = defineEmits<{ editorState: [editing: boolean] }>();
 watch(editing, value => emit('editorState', value), { immediate: true, flush: 'sync' });
-const activeTransferId = ref<string | null>(null);
-const acceptingDraft = ref(false);
 const saving = ref(false);
-let releaseEditor: (() => void) | null = null;
-let editorWrites: Promise<void> = Promise.resolve();
-let editorWriteError = '';
-let restoringDraft = false;
-let destroyed = false;
 
-function editorSnapshot(): LearnDraftEditorState {
+/** 保存竞态判定用的表单快照（保存途中出现新编辑时保留编辑态）。 */
+function editorSnapshot(): Record<string, unknown> {
   return JSON.parse(JSON.stringify({ form, editorMode: editorMode.value, preservedFrontmatterLines,
     resourceFiles: resourceFiles.value, resourceFolders: resourceFolders.value, selectedFile: selectedFile.value }));
-}
-function queueEditorCopy(): void {
-  const id = activeTransferId.value;
-  if (!id || restoringDraft) return;
-  const snapshot = editorSnapshot();
-  editorWrites = editorWrites.then(async () => {
-    const result = await saveLearnDraftEditor(id, snapshot);
-    editorWriteError = result.ok ? '' : result.error;
-    if (!result.ok) errorMessage.value = t('hub.learnEditorCopyFailed', { detail: result.error });
-  }).catch(error => { editorWriteError = String(error); errorMessage.value = t('hub.learnEditorCopyFailed', { detail: String(error) }); });
-}
-watch(() => activeTransferId.value ? JSON.stringify(editorSnapshot()) : '', queueEditorCopy, { flush: 'sync' });
-onUnmounted(() => { destroyed = true; void editorWrites.finally(() => releaseEditor?.()); });
-
-/** Only the shell's explicit user acknowledgement can open this form. */
-async function acceptLearnDraft(id: string): Promise<{ ok: boolean; error?: string; outcome?: 'saved' | 'ignored' }> {
-  if (acceptingDraft.value || saving.value) return { ok: false, error: t('hub.learnHandoffBusy') };
-  if (activeTransferId.value === id) return { ok: true };
-  if (editing.value) return { ok: false, error: t('hub.learnHandoffSaveFirst') };
-  acceptingDraft.value = true;
-  let claim: Awaited<ReturnType<typeof claimLearnDraftEditor>> | null = null;
-  try {
-    claim = await claimLearnDraftEditor();
-    if (!claim.ok) return claim;
-    const result = await readLearnDraft(id);
-    if (destroyed) return { ok: false, error: t('hub.learnHandoffReadFailed') };
-    if (result.status !== 'ok') return { ok: false, error: t('hub.learnHandoffReadFailed') };
-    if (result.transfer.status === 'saved') return { ok: false, outcome: 'saved', error: t('hub.learnHandoffAlreadyHandled') };
-    if (result.transfer.status === 'discarded' || result.transfer.recoveryDismissed) return { ok: false, outcome: 'ignored', error: t('hub.learnHandoffIgnored') };
-    if (editing.value) return { ok: false, error: t('hub.learnHandoffSaveFirst') };
-    const state = result.transfer.editorState;
-    if (state !== undefined && !isLearnDraftEditorState(state)) return { ok: false, error: t('hub.learnHandoffReadFailed') };
-    const saved = getAllSkills().find(skill => skill.source === 'custom' && parseFrontmatter(skill.files['SKILL.md'] ?? '').data[LEARN_TRANSFER_MARKER] === id);
-    if (saved && !state) {
-      const acknowledged = await completeLearnDraft(id, saved.id);
-      return acknowledged.ok ? { ok: false, outcome: 'saved', error: t('hub.learnHandoffAlreadyHandled') } : acknowledged;
-    }
-    restoringDraft = true;
-    startCreateWithDraft(result.transfer.draft);
-    if (state) {
-      Object.assign(form, state.form); editorMode.value = state.editorMode;
-      preservedFrontmatterLines = [...state.preservedFrontmatterLines];
-      resourceFiles.value = { ...state.resourceFiles };
-      resourceFolders.value = normalizeFolderList(state.resourceFolders);
-      // 选中态防御：快照指向的文件可能已被并发删除——失效即回退入口文件
-      selectedFile.value =
-        state.selectedFile === 'SKILL.md' || state.selectedFile in resourceFiles.value
-          ? state.selectedFile
-          : 'SKILL.md';
-      cancelTreeInput();
-    }
-    if (saved) { editingSource.value = saved; editingExisting.value = true; }
-    preservedFrontmatterLines = preservedFrontmatterLines.filter(line => !line.startsWith(LEARN_TRANSFER_MARKER + ':'));
-    preservedFrontmatterLines.push(LEARN_TRANSFER_MARKER + ': ' + id);
-    activeTransferId.value = id;
-    releaseEditor = claim.release; claim = null;
-    editorWriteError = '';
-    restoringDraft = false;
-    queueEditorCopy();
-    return { ok: true };
-  } catch (error) { return { ok: false, error: String(error) }; }
-  finally { restoringDraft = false; if (claim?.ok) claim.release(); acceptingDraft.value = false; }
-}
-
-/**
- * 预填表单并弹出确认卡。
- * 保留生成的原名；技能身份由 id 区分，同名不会覆盖既有技能。
- */
-function startCreateWithDraft(draft: SkillDraft): void {
-  startCreate(); // 进入创建态、清空表单（resetForm 同步复位确认卡）
-  const finalName = draft.name;
-  form.name = finalName;
-  form.description = draft.description;
-  form.body = draft.body;
-  form.tags = [...draft.tags];
-  // 分类回填（与 startEdit 同规则：内置直选，自定义进「自定义创建」态）
-  if (!draft.category || isBuiltinCategory(draft.category)) {
-    form.category = draft.category;
-    form.customCategory = '';
-  } else {
-    form.category = CATEGORY_CUSTOM_VALUE;
-    form.customCategory = draft.category;
-  }
-  // allowed-tools 经保留行进 frontmatter：简单模式的表单不承载该字段，
-  // 但它是技能在「/」引用清单可见性的唯一依据，丢失 = 建完也引用不到
-  preservedFrontmatterLines = draft.allowedTools.length > 0
-    ? [`allowed-tools: ${draft.allowedTools.join(' ')}`]
-    : [];
-  preservedFrontmatterLines.push(`x-learning-mode: ${draft.mode}`);
-  if (draft.summary) preservedFrontmatterLines.push(`x-learning-summary: ${JSON.stringify(draft.summary)}`);
-  draftCard.value = { draft, finalName };
-}
-
-/** 确认卡「确认创建」：走既有保存链路（表单已预填完整；字段被改非法时逐条报错、卡片保留可重试） */
-function confirmDraftCreate(): void {
-  save();
 }
 
 const normalizedFormName = computed(() => normalizeSkillName(form.name));
@@ -1892,7 +1774,6 @@ function resetForm(): void {
   form.raw = '';
   preservedFrontmatterLines = [];
   errorMessage.value = '';
-  draftCard.value = null;
   resourceFiles.value = {};
   resourceFolders.value = [];
   selectedFile.value = 'SKILL.md';
@@ -1975,14 +1856,9 @@ function startEdit(skill: SkillRecord): void {
 
 async function cancelEdit(): Promise<void> {
   if (saving.value) return;
-  await editorWrites;
-  if (editorWriteError) { errorMessage.value = t('hub.learnEditorCopyFailed', { detail: editorWriteError }); return; }
   finishEditing();
 }
 function finishEditing(): void {
-  activeTransferId.value = null;
-  releaseEditor?.(); releaseEditor = null;
-  editorWriteError = '';
   editing.value = false; editingSource.value = null; resetForm();
 }
 
@@ -2096,15 +1972,6 @@ async function saveImpl(): Promise<void> {
   const submittedSnapshot = JSON.stringify(editorSnapshot());
   // 两种模式最终都收敛为「完整 SKILL.md 原文 + 显式 name/description」
   let skillMd = editorMode.value === 'simple' ? composeSkillMd() : form.raw;
-  if (activeTransferId.value) {
-    const id = activeTransferId.value;
-    if (parseFrontmatter(skillMd).data[LEARN_TRANSFER_MARKER] !== id) {
-      const lines = skillMd.replace(/\r\n/g, '\n').split('\n');
-      const end = lines.findIndex((line, index) => index > 0 && (line.trim() === '---' || line.trim() === '...'));
-      if (lines[0]?.trim() !== '---' || end < 1) throw new Error(t('hub.errorSkillInvalid'));
-      skillMd = ['---', ...lines.slice(1, end).filter(line => !line.startsWith(LEARN_TRANSFER_MARKER + ':')), `${LEARN_TRANSFER_MARKER}: ${id}`, ...lines.slice(end)].join('\n');
-    }
-  }
   const parsed = parseFrontmatter(skillMd);
   const name = normalizeSkillName(
     parsed.data['name'] || editingSource.value?.name || form.name,
@@ -2136,8 +2003,7 @@ async function saveImpl(): Promise<void> {
       : {};
 
   const result = await setCustomSkill({
-    id: editingSource.value?.id ?? (activeTransferId.value ? getAllSkills().find(skill =>
-      skill.source === 'custom' && parseFrontmatter(skill.files['SKILL.md'] ?? '').data[LEARN_TRANSFER_MARKER] === activeTransferId.value)?.id : undefined),
+    id: editingSource.value?.id,
     name,
     files,
     expectedUpdatedAt: editingSource.value?.updatedAt,
@@ -2167,18 +2033,6 @@ async function saveImpl(): Promise<void> {
     return;
   }
 
-  // 成功创建（且本次来自学习成果确认卡）→ 关掉确认卡：
-  // 成果已落库，卡片再挂着会让「确认一次后仍显示待确认」误导用户重复点击
-  //（表单校验失败 / 存储层拒绝时保留卡片，故只在成功路径清理）
-  if (activeTransferId.value) {
-    await editorWrites;
-    const acknowledged = await completeLearnDraft(activeTransferId.value, result.skill.id);
-    if (!acknowledged.ok) { errorMessage.value = t('hub.learnHandoffAckFailed'); return; }
-  }
-  draftCard.value = null;
   finishEditing();
 }
-
-/** 供外壳在用户主动确认后调用；深链与挂载不能直接触发预填。 */
-defineExpose({ acceptLearnDraft });
 </script>

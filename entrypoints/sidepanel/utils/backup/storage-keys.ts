@@ -8,7 +8,6 @@
  *
  * 不纳入备份的键（有意为之，防止歧义）：
  * - browserUuid            设备标识，跨机复制会造成身份重复
- * - agentNexusSkillDraft   一次性学习草稿（TTL），随用随删
  * - agentNexusDataRefs     会话级暂存（2h TTL），浏览器退出即失效
  * - __websiteValidated*    网站校验缓存，可再生
  * - pyodide_env_state      Python 运行时状态（依赖可重新下载的 IndexedDB 缓存）
@@ -17,10 +16,6 @@
  */
 
 import type { StorageCategoryId } from './types';
-// 学习草稿键由学习域自有（utils/learn/learn-types 是该键的唯一事实源）：
-// 备份侧只消费、不再重复定义——两处各写一份字面量时，改名必然漏一处，
-// 漏的那处会表现为「统计缺数」且无任何报错。
-import { LEARN_DRAFT_STORAGE_KEY } from '@/utils/learn/learn-types';
 
 import { SKILLS_STORAGE_KEY, SKILL_TOGGLES_STORAGE_KEY } from '@/utils/skills/skill-storage';
 export { SKILLS_STORAGE_KEY, SKILL_TOGGLES_STORAGE_KEY, SKILLS_REVISION_KEY } from '@/utils/skills/skill-storage';
@@ -115,7 +110,6 @@ export const CHROME_KEY_CATEGORY: Readonly<Record<string, StorageCategoryId>> = 
   [BROWSER_UUID_STORAGE_KEY]: 'other',
   [DATA_REFS_STORAGE_KEY]: 'other',
   [SESSION_ARCHIVE_POLICY_STORAGE_KEY]: 'other',
-  [LEARN_DRAFT_STORAGE_KEY]: 'other',
   ...Object.fromEntries(WEBSITE_VALIDATED_KEYS.map(key => [key, 'other'] as const)),
 };
 

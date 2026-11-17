@@ -692,6 +692,7 @@ async function dispatch(
           ),
           approved: z.boolean().optional(),
           chatId: z.string().max(128).optional(),
+          browserScope: z.object({ mode: z.literal('bound-window'), windowId: z.number().int().nonnegative() }).strict().optional(),
         })
         .strict()
         .parse(p);
@@ -699,6 +700,7 @@ async function dispatch(
         pluginBindings: input.bindings,
         pluginApproved: input.approved,
         chatId: input.chatId,
+        ...(input.browserScope ? { browserScope: input.browserScope } : {}),
       });
     }
     case 'secret': {

@@ -313,7 +313,7 @@ export class BrowserMediaControlTool extends BaseBrowserTool {
           args: [args.action, selector, time, rate, volume],
         },
         8_000,
-        context?.signal,
+        context?.signal, context
       );
       const result = injected[0]?.result;
       if (

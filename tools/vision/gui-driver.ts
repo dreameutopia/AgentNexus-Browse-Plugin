@@ -1,3 +1,6 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
+import { enableScopedPageFocus } from '../browser/browser-scope';
 import { cdpSession } from '../browser/cdp-session';
 import { finiteRange, motionPath, relativePoint, toViewport, pngDimensions, verifyScreenshotGeometry, sameViewport, type RelativePoint, type Viewport } from './coordinates';
 import { annotationPayload, focusedEditablePayload } from './dom-inspection';
@@ -76,16 +79,16 @@ async function gesturePause(min: number, max: number, signal?: AbortSignal): Pro
   });
   checkCancellation(signal);
 }
-async function activeTab() {
-  if (typeof document !== 'undefined' || typeof chrome === 'undefined' || !chrome.tabs || !chrome.scripting) throw new GuiError('UNSUPPORTED_CONTEXT', 'Visual tools require background context with tabs/scripting');
-  const [tab] = await bounded(chrome.tabs.query({ active: true, currentWindow: true }), 5000, 'Query active tab');
+async function activeTab(context?: ToolExecutionContext) {
+  if (typeof document !== 'undefined' || typeof chrome === 'undefined' || !browserChrome(context).tabs || !browserChrome(context).scripting) throw new GuiError('UNSUPPORTED_CONTEXT', 'Visual tools require background context with tabs/scripting');
+  const [tab] = await bounded(browserChrome(context).tabs.query({ active: true, currentWindow: true }), 5000, 'Query active tab');
   if (!Number.isInteger(tab?.id) || !tab.url || !/^(https?:|file:)/.test(tab.url)) throw new GuiError('TARGET_UNAVAILABLE', 'Select a supported http/https/file tab');
   return tab as chrome.tabs.Tab & { id: number; url: string };
 }
-async function command<T = any>(tabId: number, method: string, params: object = {}): Promise<T> {
+async function command<T = any>(tabId: number, method: string, params: object = {}, context?: ToolExecutionContext): Promise<T> {
   try {
-    if (!cdpSession.touch(tabId)) throw new GuiError('STALE_SCREENSHOT', 'Debugger detached; capture again before issuing visual commands');
-    return await bounded(chrome.debugger.sendCommand({ tabId }, method, params), 8000, method) as T;
+    if (!cdpSession.touch(tabId, context)) throw new GuiError('STALE_SCREENSHOT', 'Debugger detached; capture again before issuing visual commands');
+    return await bounded(browserChrome(context).debugger.sendCommand({ tabId }, method, params), 8000, method) as T;
   } catch (error) {
     if (error instanceof GuiError) {
       if (error.code === 'TIMEOUT') { quarantinedTabs.add(tabId); snapshots.delete(tabId); }
@@ -94,8 +97,8 @@ async function command<T = any>(tabId: number, method: string, params: object = 
     throw new GuiError('TRANSPORT_ERROR', `${method}: ${error instanceof Error ? error.message : String(error)}`, { method, tabId, outcomeUncertain: method.startsWith('Input.') });
   }
 }
-async function viewport(tabId: number): Promise<Viewport> {
-  const result = await command(tabId, 'Page.getLayoutMetrics');
+async function viewport(tabId: number, context?: ToolExecutionContext): Promise<Viewport> {
+  const result = await command(tabId, 'Page.getLayoutMetrics', undefined, context);
   const v = result.cssVisualViewport;
   if (!v || !Number.isFinite(v.clientWidth) || !Number.isFinite(v.clientHeight) || !Number.isFinite(v.scale)) throw new GuiError('GEOMETRY_CHANGED', 'CSS viewport metrics unavailable');
   // Pinch zoom offsets require a separate device adapter. Fail rather than click a wrong target.
@@ -103,7 +106,7 @@ async function viewport(tabId: number): Promise<Viewport> {
   const frames = await injectScript(
     { tabId, frameIds: [0], func: () => ({ width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio,
       pageX: window.scrollX, pageY: window.scrollY }) },
-    { operation: 'Read full viewport', timeoutMs: 5000 });
+    { operation: 'Read full viewport', timeoutMs: 5000 }, context);
   const full = frames[0]?.result;
   if (!full) throw new GuiError('GEOMETRY_CHANGED', 'Full viewport measurement unavailable');
   for (const key of ['width', 'height', 'devicePixelRatio', 'pageX', 'pageY'] as const)
@@ -114,18 +117,18 @@ async function viewport(tabId: number): Promise<Viewport> {
     throw new GuiError('GEOMETRY_CHANGED', 'Page scrolled while measuring the viewport');
   return { ...full, scale: v.scale, contentWidth: v.clientWidth, contentHeight: v.clientHeight, zoom: v.zoom ?? 1 };
 }
-async function ensureEditable(tabId: number, token: string, remember = false) {
+async function ensureEditable(tabId: number, token: string, remember = false, context?: ToolExecutionContext) {
   const frames = await injectScript(
     { tabId, allFrames: true, func: focusedEditablePayload, args: [token, remember] },
-    { operation: 'Check input focus', timeoutMs: 5000 });
+    { operation: 'Check input focus', timeoutMs: 5000 }, context);
   if (!frames.some(f => f.result === true)) throw new GuiError('FOCUS_CHANGED', 'No editable focused target; input stopped');
 }
-async function checkedSnapshot(id: unknown): Promise<Snapshot> {
+async function checkedSnapshot(id: unknown, context?: ToolExecutionContext): Promise<Snapshot> {
   if (typeof id !== 'string' || !id || id.length > 128) throw new GuiError('INVALID_ARGUMENT', 'screenshotId is required; use the latest screenshot');
-  const tab = await activeTab(), s = snapshots.get(tab.id);
+  const tab = await activeTab(context), s = snapshots.get(tab.id);
   if (!s || s.id !== id || s.url !== tab.url || Date.now() - s.time > SCREENSHOT_TTL_MS) throw new GuiError('STALE_SCREENSHOT', 'Screenshot expired or tab changed; capture again', { tabId: tab.id, screenshotId: id });
   if (s.mode === 'observe') {
-    const current = await observationViewport(tab.id);
+    const current = await observationViewport(tab.id, context);
     if (current.documentId !== s.documentId) throw new GuiError('STALE_SCREENSHOT', 'Observed document reloaded; capture again');
     if (!sameViewport(current.viewport, s.viewport)) throw new GuiError('GEOMETRY_CHANGED', 'Observation viewport/scroll changed; capture again');
     return s;
@@ -133,9 +136,9 @@ async function checkedSnapshot(id: unknown): Promise<Snapshot> {
   // Do not reattach a debugger to validate an old screenshot: the infobar itself
   // can resize the page. A lost session always requires fresh evidence.
   if (!cdpSession.hasSession(tab.id)) throw new GuiError('STALE_SCREENSHOT', 'Debugger detached; capture a fresh action screenshot');
-  const v = await viewport(tab.id);
+  const v = await viewport(tab.id, context);
   if (cdpSession.getEpoch(tab.id) !== s.debuggerEpoch) throw new GuiError('STALE_SCREENSHOT', 'Debugger session changed; capture again');
-  const tree = await command(tab.id, 'Page.getFrameTree');
+  const tree = await command(tab.id, 'Page.getFrameTree', undefined, context);
   if (tree?.frameTree?.frame?.loaderId !== s.documentId) throw new GuiError('STALE_SCREENSHOT', 'Document reloaded; capture again');
   if (!sameViewport(v, s.viewport)) throw new GuiError('GEOMETRY_CHANGED', 'Viewport/scroll changed; capture again', { captured: s.viewport, current: v });
   return s;
@@ -146,14 +149,14 @@ function checkCancellation(signal?: AbortSignal): void {
 /** A screenshot is read-only, so one bounded retry of capture geometry is safe.
  * Gestures are never retried. No fixed infobar offset or viewport emulation.
  */
-export async function captureGuiScreenshot(signal?: AbortSignal, mode: CaptureMode = 'action') {
+export async function captureGuiScreenshot(signal?: AbortSignal, mode: CaptureMode = 'action', context?: ToolExecutionContext) {
   if (mode !== 'action' && mode !== 'observe') throw new GuiError('INVALID_ARGUMENT', 'Invalid capture mode');
   const started = Date.now();
-  const target = await activeTab();
+  const target = await activeTab(context);
   for (let attempt = 0; attempt < 2; attempt++) {
     checkCancellation(signal);
     try {
-      const result = mode === 'observe' ? await captureObservationScreenshot(signal, target) : await captureActionScreenshot(signal, target);
+      const result = mode === 'observe' ? await captureObservationScreenshot(signal, target, context) : await captureActionScreenshot(signal, target, context);
       console.debug('[VisionCapture]', { mode, durationMs: Date.now() - started, attempts: attempt + 1, tabId: result.tabId });
       return { ...result, timings: { totalMs: Date.now() - started, attempts: attempt + 1 }, captureMode: mode };
     } catch (error) {
@@ -166,24 +169,24 @@ export async function captureGuiScreenshot(signal?: AbortSignal, mode: CaptureMo
 }
 
 let nextVisibleCaptureAt = 0;
-async function captureObservationScreenshot(signal: AbortSignal | undefined, expected: { id: number; url: string }) {
+async function captureObservationScreenshot(signal: AbortSignal | undefined, expected: { id: number; url: string }, context?: ToolExecutionContext) {
   return exclusiveGui(async () => {
     checkCancellation(signal);
-    const tab = await activeTab();
+    const tab = await activeTab(context);
     if (tab.id !== expected.id || tab.url !== expected.url) throw new GuiError('STALE_SCREENSHOT', 'Active tab changed before capture');
-    if (typeof chrome.tabs.captureVisibleTab !== 'function') throw new GuiError('UNSUPPORTED_CONTEXT', 'Visible-tab capture is unavailable');
+    if (typeof browserChrome(context).tabs.captureVisibleTab !== 'function') throw new GuiError('UNSUPPORTED_CONTEXT', 'Visible-tab capture is unavailable');
     snapshots.delete(tab.id);
     // Chromium allows at most 2 captureVisibleTab calls/s, across all windows.
     const wait = nextVisibleCaptureAt - Date.now();
     if (wait > 0) await pause(wait);
     checkCancellation(signal);
-    const before = await observationViewport(tab.id);
-    const active = await activeTab();
+    const before = await observationViewport(tab.id, context);
+    const active = await activeTab(context);
     if (active.id !== tab.id || active.url !== tab.url) throw new GuiError('STALE_SCREENSHOT', 'Active tab changed before capture');
     nextVisibleCaptureAt = Date.now() + 550;
-    const dataUrl = await bounded(chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' }), 6000, 'Capture visible tab');
+    const dataUrl = await bounded(browserChrome(context).tabs.captureVisibleTab(tab.windowId, { format: 'png' }), 6000, 'Capture visible tab');
     checkCancellation(signal);
-    const after = await observationViewport(tab.id), current = await activeTab();
+    const after = await observationViewport(tab.id, context), current = await activeTab(context);
     if (current.id !== tab.id || current.url !== tab.url || before.documentId !== after.documentId)
       throw new GuiError('STALE_SCREENSHOT', 'Observed document changed during capture');
     if (!sameViewport(before.viewport, after.viewport)) throw new GuiError('GEOMETRY_CHANGED', 'Page moved during capture; retry', { before: before.viewport, after: after.viewport });
@@ -203,7 +206,7 @@ async function captureObservationScreenshot(signal: AbortSignal | undefined, exp
   });
 }
 
-async function captureActionScreenshot(signal: AbortSignal | undefined, expected: { id: number; url: string }) {
+async function captureActionScreenshot(signal: AbortSignal | undefined, expected: { id: number; url: string }, context?: ToolExecutionContext) {
   return exclusiveGui(async () => {
     checkCancellation(signal);
     const captureDeadline = Date.now() + 15000;
@@ -211,32 +214,33 @@ async function captureActionScreenshot(signal: AbortSignal | undefined, expected
       checkCancellation(signal);
       if (Date.now() > captureDeadline) throw new GuiError('TIMEOUT', 'Screenshot transaction exceeded 15 seconds', { phase: 'capture' });
     };
-    const tab = await activeTab();
+    const tab = await activeTab(context);
     if (tab.id !== expected.id || tab.url !== expected.url) throw new GuiError('STALE_SCREENSHOT', 'Active tab changed before capture');
     snapshots.delete(tab.id);
     if (quarantinedTabs.has(tab.id)) {
-      await bounded(cdpSession.detach(tab.id), 5000, 'Reset uncertain debugger session');
+      await bounded(cdpSession.detach(tab.id, context), 5000, 'Reset uncertain debugger session');
       quarantinedTabs.delete(tab.id);
     }
     const wasAttached = cdpSession.hasSession(tab.id);
-    await bounded(cdpSession.attach(tab.id), 5000, 'Attach visual debugger');
+    await bounded(cdpSession.attach(tab.id, context), 5000, 'Attach visual debugger');
+    await enableScopedPageFocus(tab.id, context);
     // Protect the capture transaction as well as the following model think time.
-    cdpSession.retainUntil(tab.id, Date.now() + SCREENSHOT_TTL_MS + 30000);
+    cdpSession.retainUntil(tab.id, Date.now() + SCREENSHOT_TTL_MS + 30000, context);
     if (!wasAttached) await pause(200);
     checkCapture();
-    let before = await viewport(tab.id);
+    let before = await viewport(tab.id, context);
     if (!wasAttached) {
       let stable = false, consecutive = 0;
       for (let sample = 0; sample < 8; sample++) {
         await pause(75); checkCapture();
-        const next = await viewport(tab.id);
+        const next = await viewport(tab.id, context);
         consecutive = sameViewport(before, next) ? consecutive + 1 : 0;
         if (consecutive >= 2) { stable = true; before = next; break; }
         before = next;
       }
       if (!stable) throw new GuiError('GEOMETRY_CHANGED', 'Debugger viewport did not settle; retry after the page stops resizing');
     }
-    const documentId = (await command(tab.id, 'Page.getFrameTree'))?.frameTree?.frame?.loaderId;
+    const documentId = (await command(tab.id, 'Page.getFrameTree', undefined, context))?.frameTree?.frame?.loaderId;
     if (typeof documentId !== 'string' || !documentId) throw new GuiError('TARGET_UNAVAILABLE', 'Main frame document ID unavailable');
     const id = crypto.randomUUID();
     const marks: Snapshot['marks'] = [];
@@ -249,7 +253,7 @@ async function captureActionScreenshot(signal: AbortSignal | undefined, expected
       if (requested) {
         const frames = await injectScript(
           { tabId: tab.id, allFrames: true, func: annotationPayload, args: ['collect', id] },
-          { operation: 'Collect annotations', timeoutMs: 5000 });
+          { operation: 'Collect annotations', timeoutMs: 5000 }, context);
         for (const frame of frames) {
           checkCapture();
           const count = frame.result;
@@ -260,22 +264,22 @@ async function captureActionScreenshot(signal: AbortSignal | undefined, expected
           });
           await injectScript(
             { tabId: tab.id, frameIds: [frame.frameId], func: annotationPayload, args: ['draw', id, ids] },
-            { operation: 'Draw annotations', timeoutMs: 5000 });
+            { operation: 'Draw annotations', timeoutMs: 5000 }, context);
         }
         await pause(80);
       }
       checkCapture();
-      const image = await command(tab.id, 'Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: false, optimizeForSpeed: true });
-      const after = await viewport(tab.id), current = await activeTab();
+      const image = await command(tab.id, 'Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: false, optimizeForSpeed: true }, context);
+      const after = await viewport(tab.id, context), current = await activeTab(context);
       if (current.id !== tab.id || current.url !== tab.url ||
-        (await command(tab.id, 'Page.getFrameTree'))?.frameTree?.frame?.loaderId !== documentId) throw new GuiError('STALE_SCREENSHOT', 'Page changed during capture; capture the new document');
+        (await command(tab.id, 'Page.getFrameTree', undefined, context))?.frameTree?.frame?.loaderId !== documentId) throw new GuiError('STALE_SCREENSHOT', 'Page changed during capture; capture the new document');
       if (!sameViewport(before, after)) throw new GuiError('GEOMETRY_CHANGED', 'Page moved during capture; retry', { before, after });
       const imageSize = pngDimensions(image?.data);
       verifyScreenshotGeometry(imageSize, after);
       checkCapture();
       const snapshot: Snapshot = { id, tabId: tab.id, url: tab.url, documentId, debuggerEpoch: cdpSession.getEpoch(tab.id), viewport: after, time: Date.now(), marks };
       snapshots.set(tab.id, snapshot);
-      cdpSession.retainUntil(tab.id, snapshot.time + SCREENSHOT_TTL_MS + 30000);
+      cdpSession.retainUntil(tab.id, snapshot.time + SCREENSHOT_TTL_MS + 30000, context);
       latestReadImage = image.data.length <= 16 * 1024 * 1024 ? { id, data: image.data } : undefined;
       if (snapshots.size > 32) snapshots.delete(snapshots.keys().next().value!);
       if (requested) pendingMarks.delete(tab.id);
@@ -286,7 +290,7 @@ async function captureActionScreenshot(signal: AbortSignal | undefined, expected
       if (requested) {
         try { await injectScript(
           { tabId: tab.id, allFrames: true, func: annotationPayload, args: ['clear', id] },
-          { operation: 'Remove annotations', timeoutMs: 5000 }); }
+          { operation: 'Remove annotations', timeoutMs: 5000 }, context); }
         catch (error) {
           snapshots.delete(tab.id); pendingMarks.delete(tab.id);
           throw new GuiError('CLEANUP_FAILED', 'Annotation removal failed; screenshot was not published as usable', { cause: error instanceof Error ? error.message : String(error), tabId: tab.id });
@@ -300,17 +304,17 @@ async function captureActionScreenshot(signal: AbortSignal | undefined, expected
  * A scroll consumes its source even on partial failure. Reads preserve it.
  */
 export async function withReadSnapshot<T>(id: unknown, consume: boolean, signal: AbortSignal | undefined,
-  work: (snapshot: Readonly<Snapshot>, originalImage: string | undefined, guard: () => Promise<void>) => Promise<T>): Promise<T> {
+  work: (snapshot: Readonly<Snapshot>, originalImage: string | undefined, guard: () => Promise<void>) => Promise<T>, context?: ToolExecutionContext): Promise<T> {
   return exclusiveGui(async () => {
     checkCancellation(signal);
-    const s = await checkedSnapshot(id);
+    const s = await checkedSnapshot(id, context);
     checkCancellation(signal);
     if (consume) snapshots.delete(s.tabId);
     const guard = async () => {
       checkCancellation(signal);
-      const tab = await activeTab();
+      const tab = await activeTab(context);
       if (s.mode === 'observe') {
-        const current = await observationViewport(s.tabId);
+        const current = await observationViewport(s.tabId, context);
         if (tab.id !== s.tabId || tab.url !== s.url || current.documentId !== s.documentId)
           throw new GuiError('STALE_SCREENSHOT', 'Observed target changed; capture again');
         if (!sameViewport(consume ? { ...s.viewport, pageX: current.viewport.pageX, pageY: current.viewport.pageY } : s.viewport, current.viewport))
@@ -318,9 +322,9 @@ export async function withReadSnapshot<T>(id: unknown, consume: boolean, signal:
         return;
       }
       if (tab.id !== s.tabId || tab.url !== s.url || cdpSession.getEpoch(s.tabId) !== s.debuggerEpoch ||
-        (await command(s.tabId, 'Page.getFrameTree'))?.frameTree?.frame?.loaderId !== s.documentId)
+        (await command(s.tabId, 'Page.getFrameTree', undefined, context))?.frameTree?.frame?.loaderId !== s.documentId)
         throw new GuiError('STALE_SCREENSHOT', 'Target changed during observation; capture again');
-      const current = await viewport(s.tabId);
+      const current = await viewport(s.tabId, context);
       if (!sameViewport(consume ? { ...s.viewport, pageX: current.pageX, pageY: current.pageY } : s.viewport, current))
         throw new GuiError('GEOMETRY_CHANGED', 'Viewport changed during observation; capture again');
     };
@@ -384,20 +388,20 @@ export function validateGuiArgs(action: GuiAction, p: GuiParameters) {
   if (action === 'inspect' && (!Number.isSafeInteger(p.id) || p.id! < 1)) throw new Error('id must be a positive integer');
   if (action === 'keyboard') resolveKeys(p.keys);
 }
-async function releaseKeys(tabId: number, held: KeyDefinition[]) {
+async function releaseKeys(tabId: number, held: KeyDefinition[], context?: ToolExecutionContext) {
   let modifiers = held.reduce((mask,k) => mask | k.modifier,0);
   const failed: string[] = [];
   for (const k of [...held].reverse()) {
     // Keep a modifier active until both physical sides have been released.
     const remaining = held.slice(0,held.indexOf(k));
     modifiers = remaining.reduce((mask,key)=>mask | key.modifier,0);
-    try { await bounded(chrome.debugger.sendCommand({tabId},'Input.dispatchKeyEvent',{type:'keyUp',key:k.key,code:k.code,windowsVirtualKeyCode:k.windowsVirtualKeyCode,modifiers,
+    try { await bounded(browserChrome(context).debugger.sendCommand({tabId},'Input.dispatchKeyEvent',{type:'keyUp',key:k.key,code:k.code,windowsVirtualKeyCode:k.windowsVirtualKeyCode,modifiers,
       ...(k.location !== undefined ? {location:k.location} : {}), ...(k.isKeypad ? {isKeypad:true} : {})}),3000,'Release key'); }
     catch { failed.push(k.code); }
   }
   if (failed.length) { quarantinedTabs.add(tabId); throw new GuiError('CLEANUP_FAILED','Could not confirm keyboard release',{tabId,keys:failed,outcomeUncertain:true}); }
 }
-async function keyboard(tabId: number, keys: string[], guard: () => Promise<void>) {
+async function keyboard(tabId: number, keys: string[], guard: () => Promise<void>, context?: ToolExecutionContext) {
   const parsed = resolveKeys(keys), held: typeof parsed = [];
   let modifiers = 0;
   return withGuiCleanup(async () => {
@@ -409,22 +413,23 @@ async function keyboard(tabId: number, keys: string[], guard: () => Promise<void
       held.push({...k,key:eventKey});
       await command(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', key:eventKey, code: k.code, windowsVirtualKeyCode: k.windowsVirtualKeyCode, modifiers,
         ...(k.location !== undefined ? {location:k.location} : {}), ...(k.isKeypad ? {isKeypad:true} : {}),
-        ...(text !== undefined ? { text, unmodifiedText: k.key === 'Enter' ? '\r' : k.key } : {}) });
+        ...(text !== undefined ? { text, unmodifiedText: k.key === 'Enter' ? '\r' : k.key } : {}) }, context);
     }
     await pause(40, 90);
   }, async () => {
-    await releaseKeys(tabId,held);
+    await releaseKeys(tabId,held, context);
   });
 }
-export async function executeGui(action: GuiAction, p: GuiParameters, signal?: AbortSignal) {
+export async function executeGui(action: GuiAction, p: GuiParameters, signal?: AbortSignal, context?: ToolExecutionContext) {
   try { validateGuiArgs(action, p); }
   catch (error) { if (error instanceof GuiError) throw error; throw new GuiError('INVALID_ARGUMENT', error instanceof Error ? error.message : String(error), { action }); }
   // A caller must not mutate queued coordinates/text after validation.
   p = structuredClone(p);
   return exclusiveGui(async () => {
     checkCancellation(signal);
-    const s = await checkedSnapshot(p.screenshotId), tabId = s.tabId;
+    const s = await checkedSnapshot(p.screenshotId, context), tabId = s.tabId;
     if (s.mode === 'observe') throw new GuiError('INVALID_SCREENSHOT', 'Observation-only screenshot cannot authorize GUI input or marking; capture an action screenshot');
+    await enableScopedPageFocus(tabId, context);
     checkCancellation(signal);
     if(p.viewId) {
       if(p.point) p.point=mapViewPoint(s.id,p.viewId,p.point);
@@ -439,7 +444,7 @@ export async function executeGui(action: GuiAction, p: GuiParameters, signal?: A
       checkCancellation(signal);
       const rows = await injectScript(
         { tabId, frameIds: [0], world: 'ISOLATED', func: checkPagePayload, args: [toViewport(anchorPoint, s.viewport), {}] },
-        { operation: 'Recheck guarded visual target', timeoutMs: 2000 });
+        { operation: 'Recheck guarded visual target', timeoutMs: 2000 }, context);
       const observed=rows[0]?.result?.target;
       if(!observed || observed.signature!==anchor.signature) throw new GuiError('TARGET_CHANGED','Guarded target moved, changed, disappeared or is covered; no new press was sent',
         {screenshotId:s.id,guardId:p.guardId,currentTarget:observed?{tag:observed.tag,name:observed.name,rect:observed.rect}:null});
@@ -454,7 +459,7 @@ export async function executeGui(action: GuiAction, p: GuiParameters, signal?: A
       if (!mark) throw new GuiError('ANNOTATION_ERROR', 'ID is absent from this screenshot; request vision_gui(action="mark") first', { id: p.id });
       const result = await injectScript(
         { tabId, frameIds: [mark.frameId], func: annotationPayload, args: ['inspect', s.id, [], mark.index] },
-        { operation: 'Inspect marked element', timeoutMs: 5000 });
+        { operation: 'Inspect marked element', timeoutMs: 5000 }, context);
       if (!result[0]?.result) throw new GuiError('ANNOTATION_ERROR', 'Frame or element disappeared');
       const info = result[0].result;
       const rect = info.rect;
@@ -476,23 +481,23 @@ export async function executeGui(action: GuiAction, p: GuiParameters, signal?: A
       if (Date.now() > deadline) throw new GuiError('TIMEOUT', 'Gesture time budget exceeded; action may be partial, inspect screenshot', { action, outcomeUncertain: true });
       if (!force && Date.now() - lastCheck < 200) return;
       lastCheck = Date.now();
-      const tab = await activeTab();
+      const tab = await activeTab(context);
       if (!cdpSession.hasSession(tabId) || cdpSession.getEpoch(tabId) !== s.debuggerEpoch)
         throw new GuiError('STALE_SCREENSHOT', 'Debugger session detached or changed during gesture');
-      if (tab.id !== tabId || tab.url !== s.url || (await command(tabId, 'Page.getFrameTree'))?.frameTree?.frame?.loaderId !== s.documentId)
+      if (tab.id !== tabId || tab.url !== s.url || (await command(tabId, 'Page.getFrameTree', undefined, context))?.frameTree?.frame?.loaderId !== s.documentId)
         throw new GuiError('STALE_SCREENSHOT', 'Target changed during gesture; stopped', { action, outcomeUncertain: true });
       // Resize/zoom must stop ongoing gestures too; intentional wheel/drag scrolling may change pageX/Y.
-      const current = await viewport(tabId);
+      const current = await viewport(tabId, context);
       if (!sameViewport({ ...current, pageX: s.viewport.pageX, pageY: s.viewport.pageY }, s.viewport))
         throw new GuiError('GEOMETRY_CHANGED', 'Viewport resized or zoom changed during gesture', { captured: s.viewport, current });
-      if (inputStarted) await ensureEditable(tabId, s.id);
+      if (inputStarted) await ensureEditable(tabId, s.id, undefined, context);
     };
     let heldButton: 'left' | 'right' | 'middle' | undefined;
     const heldModifiers: KeyDefinition[] = [];
     let pointerModifiers = 0;
     const buttonMask = (button: NonNullable<GuiParameters['button']>) => ({left:1,right:2,middle:4})[button];
     let location: RelativePoint = p.point ? toViewport(p.point, s.viewport) : { x: s.viewport.width / 2, y: s.viewport.height / 2 };
-    const mouse = (type: string, point: RelativePoint, extra: object = {}) => command(tabId, 'Input.dispatchMouseEvent', { type, ...point, modifiers:pointerModifiers, ...extra });
+    const mouse = (type: string, point: RelativePoint, extra: object = {}) => command(tabId, 'Input.dispatchMouseEvent', { type, ...point, modifiers:pointerModifiers, ...extra }, context);
     const move = async (from: RelativePoint, to: RelativePoint, duration: number, buttons = 0) => {
       const steps = Math.max(1,Math.ceil(duration / 20));
       // Smoothstep changes speed along the straight segment; no random lateral drift.
@@ -523,7 +528,7 @@ export async function executeGui(action: GuiAction, p: GuiParameters, signal?: A
         await ensureTarget(true);
         await checkTarget();
         const key = resolveKeys([name])[0]; heldModifiers.push(key); pointerModifiers |= MODIFIER_BITS[name];
-        await command(tabId,'Input.dispatchKeyEvent',{type:'keyDown',key:key.key,code:key.code,windowsVirtualKeyCode:key.windowsVirtualKeyCode,modifiers:pointerModifiers});
+        await command(tabId,'Input.dispatchKeyEvent',{type:'keyDown',key:key.key,code:key.code,windowsVirtualKeyCode:key.windowsVirtualKeyCode,modifiers:pointerModifiers}, context);
       }
       if (action === 'click') await click(p.button ?? 'left', p.count ?? 1);
       if (action === 'hover') { await mouse('mouseMoved', location); await pause(p.durationMs ?? 500); }
@@ -569,24 +574,24 @@ export async function executeGui(action: GuiAction, p: GuiParameters, signal?: A
       }
       if (action === 'input') {
         if (p.clickFirst !== false) await click('left', 1);
-        await ensureEditable(tabId, s.id, true);
+        await ensureEditable(tabId, s.id, true, context);
         inputStarted = true;
         if (p.clear) {
           const platform = await bounded(chrome.runtime.getPlatformInfo(), 5000, 'Read keyboard platform');
-          await ensureTarget(true); await keyboard(tabId, [platform.os === 'mac' ? 'Meta' : 'Control', 'a'], () => ensureTarget(true));
-          await ensureTarget(true); await keyboard(tabId, ['Backspace'], () => ensureTarget(true));
+          await ensureTarget(true); await keyboard(tabId, [platform.os === 'mac' ? 'Meta' : 'Control', 'a'], () => ensureTarget(true), context);
+          await ensureTarget(true); await keyboard(tabId, ['Backspace'], () => ensureTarget(true), context);
         }
         const segments = typeof Intl.Segmenter === 'function' ? Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(p.text!), s => s.segment) : Array.from(p.text!);
         const delay = Math.min(65, 10000 / Math.max(1, segments.length));
         for (const text of segments) {
-          await ensureTarget(); await ensureEditable(tabId, s.id);
-          if (p.inputMode === 'keys') await keyboard(tabId,[text],async () => { await ensureTarget(); await ensureEditable(tabId,s.id); });
-          else await command(tabId, 'Input.insertText', { text });
+          await ensureTarget(); await ensureEditable(tabId, s.id, undefined, context);
+          if (p.inputMode === 'keys') await keyboard(tabId,[text],async () => { await ensureTarget(); await ensureEditable(tabId,s.id, undefined, context); }, context);
+          else await command(tabId, 'Input.insertText', { text }, context);
           progress.insertedUtf16Units += text.length;
           await pause(delay * 0.6, delay * 1.4);
         }
       }
-      if (action === 'keyboard') await keyboard(tabId, p.keys!, () => ensureTarget(true));
+      if (action === 'keyboard') await keyboard(tabId, p.keys!, () => ensureTarget(true), context);
       checkCancellation(signal);
       return { text: `${action} dispatched; verify the resulting screenshot.`, tabId,
         screenshotId: s.id, progress, coordinateDiagnostics: { viewport: s.viewport, lastCssPoint: location } };
@@ -599,13 +604,13 @@ export async function executeGui(action: GuiAction, p: GuiParameters, signal?: A
       if (heldButton) {
         try {
           // Cleanup never reattaches a debugger the user detached, and does not replay a press.
-          await bounded(chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+          await bounded(browserChrome(context).debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
             type: 'mouseReleased', ...location, button: heldButton, modifiers:pointerModifiers, buttons: 0, clickCount: 1 }), 3000, 'Release held mouse button');
         } catch (error) {
           quarantinedTabs.add(tabId);
           throw new GuiError('CLEANUP_FAILED', 'Could not confirm mouse release', { action, tabId, screenshotId: s.id, outcomeUncertain: true, progress, cause: error instanceof Error ? error.message : String(error) });
         }
       }
-    }, async () => { await releaseKeys(tabId,heldModifiers); }));
+    }, async () => { await releaseKeys(tabId,heldModifiers, context); }));
   });
 }

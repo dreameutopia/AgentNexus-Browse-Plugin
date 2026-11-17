@@ -29,6 +29,11 @@ export interface InteractRequest {
   context?: string;
   /** 候选选项（可能为空 = 开放式提问） */
   options: InteractOption[];
+  /**
+   * 多选模式：true 时选项以复选呈现，用户勾选多项后一次性提交
+   * （工具层已保证仅在候选数 ≥ 2 时为 true，UI 无需再判数量）
+   */
+  multiSelect?: boolean;
   /** 敏感操作标记（账号密码 / 支付 / 隐私等，UI 以警示样式呈现） */
   sensitive: boolean;
 }
@@ -40,9 +45,14 @@ export type InteractUnansweredStatus = 'declined' | 'timeout' | 'dismissed';
 export interface InteractResolution {
   /** true = 用户给出了明确答复；false = 未获答复（见 status） */
   answered: boolean;
-  /** 答复文本（answered=true 时必有） */
+  /** 答复文本（answered=true 时必有；多选时由工具层按 answers 拼接，UI 不必给） */
   answer?: string;
-  /** 答复来源：option = 点击选项；custom = 自定义输入 */
+  /**
+   * 多选答复：用户勾选的选项 label（按选项列表顺序）。
+   * answered=true 且非空时，答复原文由工具层拼接——格式化只在工具层发生一次。
+   */
+  answers?: string[];
+  /** 答复来源：option = 点击选项（含多选勾选）；custom = 自定义输入 */
   source?: 'option' | 'custom';
   /** 未答复原因（answered=false 时必有） */
   status?: InteractUnansweredStatus;

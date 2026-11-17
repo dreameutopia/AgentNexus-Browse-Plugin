@@ -60,7 +60,7 @@ tags: excel 表格 导出
 - 对象数组数据用 `fields` 选列/定序（字段名拼写错误会被校验拒绝并提示实际字段）；二维数组数据可用 `headers` 定表头或 `firstRowAsHeader: true`。字段值若是嵌套对象/数组，会以 JSON 文本写入单元格——需要拆列请先用 `data_ref_tool(action="project", flatten=true)` 展平。
 - `name/title/merges/columns/cells/freeze/autoFilter/zebra` 等样式选项与 `create` 完全一致；`cells` 可在数据区之外追加注释/落款。
 - `create_from_data` 至少要有一个 `dataFiles` 或 `dataRef` 数据表（否则改用 `create`）；`fields` 只对数据表有效。
-- 报错常见原因：数据文件不存在（用 js_run(action="list", path="results") 盘点）或不是数组（信封结构先 project）；dataRef 批次已过期；同一张表给了两种数据来源；行数超单表 5000 上限（分 sheet/分文件）。
+- 报错常见原因：数据文件不存在（用 file_util(action="list", path="results") 盘点）或不是数组（信封结构先 project）；dataRef 批次已过期；同一张表给了两种数据来源；行数超单表 5000 上限（分 sheet/分文件）。
 
 ## create 的数据结构速查
 

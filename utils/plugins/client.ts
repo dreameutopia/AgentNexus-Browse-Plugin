@@ -64,6 +64,7 @@ export function startPluginClient(): Promise<void> {
         bindings: context?.pluginBindings,
         approved: context?.pluginApproved,
         chatId: context?.chatId,
+        ...(context?.browserScope ? { browserScope: context.browserScope } : {}),
       }),
     );
     if (!listening) {

@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { executeScriptBounded } from '../common/frame-read';
 /**
  * 数据提取工具
@@ -76,7 +78,7 @@ export class ExtractDataTool extends BaseTool {
     }
   };
 
-  async execute(args: ExtractParams): Promise<ToolResult> {
+  async execute(args: ExtractParams, context?: ToolExecutionContext): Promise<ToolResult> {
     console.log('📊 [数据提取工具] 开始执行');
     console.log('📥 [数据提取工具] 接收参数:', args);
     
@@ -93,7 +95,7 @@ export class ExtractDataTool extends BaseTool {
       // 如果提供了选择器，先尝试DOM提取
       if (selector) {
         console.log('🔍 [数据提取工具] 检测到选择器，优先尝试DOM提取...');
-        const domResult = await this.extractFromDOM(selector, dataType, multiple);
+        const domResult = await this.extractFromDOM(selector, dataType, multiple, context);
         if (domResult.success) {
           console.log('✅ [数据提取工具] DOM提取成功');
           console.log('📤 [数据提取工具] DOM提取结果:', domResult.data.data);
@@ -120,7 +122,7 @@ export class ExtractDataTool extends BaseTool {
       
       // 获取页面截图进行AI分析
       console.log('📸 [数据提取工具] 正在获取页面截图...');
-      const screenshotResult = await this.captureScreenshot();
+      const screenshotResult = await this.captureScreenshot(context);
       if (!screenshotResult.success) {
         console.error('❌ [数据提取工具] 获取页面截图失败:', screenshotResult.error);
         return this.createErrorResponse('获取页面截图失败', screenshotResult.error);
@@ -171,10 +173,10 @@ export class ExtractDataTool extends BaseTool {
   /**
    * 获取页面截图
    */
-  private async captureScreenshot(): Promise<ToolResult> {
+  private async captureScreenshot(context?: ToolExecutionContext): Promise<ToolResult> {
     try {
       console.log('🔍 [数据提取工具-截图] 查询活动标签页...');
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tabs = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
       if (!tabs[0]) {
         console.error('❌ [数据提取工具-截图] 未找到活动标签页');
         throw new Error('未找到活动标签页');
@@ -182,7 +184,7 @@ export class ExtractDataTool extends BaseTool {
       console.log('✅ [数据提取工具-截图] 找到活动标签页:', tabs[0].url);
       
       console.log('📸 [数据提取工具-截图] 正在捕获可见区域...');
-      const dataUrl = await chrome.tabs.captureVisibleTab(tabs[0].windowId, {
+      const dataUrl = await browserChrome(context).tabs.captureVisibleTab(tabs[0].windowId, {
         format: 'png',
         quality: 90
       });
@@ -198,14 +200,14 @@ export class ExtractDataTool extends BaseTool {
   /**
    * 从DOM直接提取数据
    */
-  private async extractFromDOM(selector: string, dataType: string, multiple: boolean): Promise<ToolResult> {
+  private async extractFromDOM(selector: string, dataType: string, multiple: boolean, context?: ToolExecutionContext): Promise<ToolResult> {
     try {
       console.log('🔍 [数据提取工具-DOM] 开始DOM提取');
       console.log('📍 [数据提取工具-DOM] 选择器:', selector);
       console.log('🎯 [数据提取工具-DOM] 数据类型:', dataType);
       console.log('📊 [数据提取工具-DOM] 多项提取:', multiple);
       
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tabs = await browserChrome(context).tabs.query({ active: true, currentWindow: true });
       if (!tabs[0]) {
         console.error('❌ [数据提取工具-DOM] 未找到活动标签页');
         throw new Error('未找到活动标签页');
@@ -281,7 +283,7 @@ export class ExtractDataTool extends BaseTool {
           }
         },
         args: [selector, dataType, multiple]
-      });
+      }, undefined, undefined, context);
       
       console.log('📋 [数据提取工具-DOM] 脚本执行结果:', result);
       

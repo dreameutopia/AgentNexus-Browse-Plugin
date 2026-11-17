@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 /**
  * 视觉域的注入封装：把 common/script-injection 的通用能力接到 GuiError 体系上。
  *
@@ -69,9 +71,9 @@ export interface InjectionOptions {
  */
 export async function injectScript(
   request: InjectionRequest,
-  options: InjectionOptions,
+  options: InjectionOptions, context?: ToolExecutionContext
 ): Promise<chrome.scripting.InjectionResult[]> {
-  const context = {
+  const diagnostics = {
     operation: options.operation,
     tabId: request.tabId,
     ...(request.frameIds ? { frameIds: request.frameIds } : {}),
@@ -103,16 +105,16 @@ export async function injectScript(
       injectImmediately: true,
     };
     frames = await bounded(
-      chrome.scripting.executeScript(injection),
+      browserChrome(context).scripting.executeScript(injection),
       options.timeoutMs,
       options.operation,
     );
   } catch (error) {
     if (error instanceof GuiError) throw error;
-    throw injectionGuiError(classifyInjectionError(error, context), context);
+    throw injectionGuiError(classifyInjectionError(error, diagnostics), diagnostics);
   }
   if (!frames.length)
-    throw injectionGuiError(noResultFailure(context), context);
+    throw injectionGuiError(noResultFailure(diagnostics), diagnostics);
   // 某些注入函数会在页面内抛错；结果帧的 error 字段在部分类型定义中缺失，防御性读取。
   const failing = frames.find(
     (frame) => (frame as { error?: unknown }).error !== undefined,
@@ -120,8 +122,8 @@ export async function injectScript(
   const failure = failing?.error;
   if (failure !== undefined)
     throw injectionGuiError(
-      classifyInjectedFunctionError(failure, context),
-      context,
+      classifyInjectedFunctionError(failure, diagnostics),
+      diagnostics,
     );
   return frames;
 }
@@ -132,9 +134,9 @@ export async function injectScript(
  */
 export async function injectOnce<T>(
   request: InjectionRequest,
-  options: InjectionOptions,
+  options: InjectionOptions, context?: ToolExecutionContext
 ): Promise<T> {
-  const frames = await injectScript(request, options);
+  const frames = await injectScript(request, options, context);
   const result = frames[0]?.result;
   if (result === undefined || result === null)
     throw injectionGuiError(
@@ -143,3 +145,4 @@ export async function injectOnce<T>(
     );
   return result as T;
 }
+

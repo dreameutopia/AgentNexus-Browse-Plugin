@@ -348,6 +348,14 @@ assert.ok(pythonText.includes('常用包'), '渲染常用包快捷安装');
 assert.ok(pythonText.includes('测试运行'), '渲染测试运行台');
 assert.ok(q('.hub-python__code'), '渲染代码编辑区');
 
+// ── 注入卡片：标题改为「Python运行时能力支持管理」，开关文案随状态显示开启/关闭 ──
+const injectCard = qa('.hub-python__card').find(card => card.textContent.includes('Python运行时能力支持管理'));
+assert.ok(injectCard, '注入卡片标题改为「Python运行时能力支持管理」');
+const offLabels = [...injectCard.querySelectorAll('.hub-switch__label')].map(el => el.textContent.trim());
+assert.ok(offLabels.length >= 1, '渲染注入开关（含可见文案）');
+assert.ok(offLabels.every(label => label === '关闭'), '未注入时开关文案为「关闭」');
+assert.ok(!injectCard.textContent.includes('注入 python_run'), '开关旁不再出现「注入 python_run」');
+
 // ── 一键预下载：按钮渲染 + 目录未就绪时禁用 ──
 const preloadBtns = qa('.hub-python__preload .hub-btn');
 assert.equal(preloadBtns.length, 2, '渲染两个独立预下载按钮（常用包 / 全目录）');
@@ -461,6 +469,52 @@ assert.ok(pythonAfterRemove.includes('未安装'), '删除后状态回落「未�
 assert.ok(!pythonAfterRemove.includes('已就绪'), '删除后不再展示就绪态');
 api.__pushEnv({ status: 'ready' });
 await flush();
+
+// ── 安装完成 → 批量注入询问弹窗（确认（推荐）/ 稍后再说 → 入口指引） ──
+api.__pushEnv({ status: 'idle', pythonVersion: '', verifiedAt: 0, packages: [] });
+await flush();
+const downloadBtn = qa('.hub-python__card .hub-btn').find(btn => btn.textContent.includes('下载并核验'));
+assert.ok(downloadBtn, '未安装态展示下载按钮');
+downloadBtn.click();
+await flush();
+await flush();
+const offerDialog = q('.hub-dialog');
+assert.ok(offerDialog, '安装完成后弹出批量注入询问弹窗');
+const offerText = offerDialog.textContent ?? '';
+assert.ok(offerText.includes('是否需要将'), '弹窗询问是否添加给目前的所有智能体');
+assert.ok(offerText.includes('确认（推荐）'), '确认按钮标注为「推荐」');
+assert.ok(offerText.includes('稍后再说'), '提供「稍后再说」按钮');
+
+// 稍后再说 → 入口指引弹窗（单按钮，点名后续添加入口）
+q('.hub-dialog__btn--secondary').click();
+await flush();
+const laterDialog = q('.hub-dialog');
+assert.ok(laterDialog, '稍后再说后弹出入口指引弹窗');
+assert.ok((laterDialog.textContent ?? '').includes('Python运行时能力支持管理'), '指引点名「Python运行时能力支持管理」入口');
+assert.equal(laterDialog.querySelectorAll('.hub-dialog__btn').length, 1, '指引弹窗只有一个按钮');
+laterDialog.querySelector('.hub-dialog__btn--primary').click();
+await flush();
+assert.equal(q('.hub-dialog'), null, '关闭指引弹窗');
+
+// 再次安装 → 确认（推荐）：批量开启全部注入，开关文案翻转为「开启」
+api.__pushEnv({ status: 'idle', pythonVersion: '', verifiedAt: 0, packages: [] });
+await flush();
+const downloadAgain = qa('.hub-python__card .hub-btn').find(btn => btn.textContent.includes('下载并核验'));
+assert.ok(downloadAgain, '回到未安装态后可再次下载');
+downloadAgain.click();
+await flush();
+await flush();
+const offerAgain = q('.hub-dialog');
+assert.ok(offerAgain, '再次安装完成仍弹询问');
+offerAgain.querySelector('.hub-dialog__btn--primary').click();
+await flush();
+assert.equal(q('.hub-dialog'), null, '确认后询问弹窗关闭');
+const injectCardAfter = qa('.hub-python__card').find(card => card.textContent.includes('Python运行时能力支持管理'));
+assert.ok(injectCardAfter, '确认后注入卡片仍可见（环境已就绪）');
+const onLabels = [...injectCardAfter.querySelectorAll('.hub-switch__label')].map(el => el.textContent.trim());
+assert.ok(onLabels.length >= 1, '确认后仍渲染注入开关');
+assert.ok(onLabels.every(label => label === '开启'), '确认（推荐）后全部开关文案变为「开启」');
+assert.ok(injectCardAfter.textContent.includes(`已注入 ${onLabels.length} 个`), '注入计数徽标同步刷新');
 
 // 静态契约：桩掩盖了真实删除实现，这里锁住真实编排的覆盖面——
 // UI 走单一入口、运行时层清 micropip 清单 + 丢单例、离屏宿主回收 Worker

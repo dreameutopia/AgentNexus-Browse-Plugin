@@ -37,7 +37,7 @@ await build({
                 : args.path.endsWith("compactor")
                   ? 'export const contextCompactor = {compact: input=>globalThis.compactInput(input), buildSummaryMessage: content=>({role:"system",content})};'
                   : args.path.endsWith("transcript-engine")
-                    ? "export const transcriptEngine = {setCompaction: async()=>true};"
+                  ? "export const transcriptEngine = {setCompaction: async()=>true, createAssistantRecord: async chatId=>({id:chatId+'-preparation-error',chatId,role:'assistant',content:'',parts:[]}), flush:async record=>{(globalThis.preparationErrors??=[]).push(structuredClone(record));}};"
                     : args.path.endsWith("context-meter")
                       ? "export const COMPACTION_PRE_RUN_RATIO=0.85; export const measureContextUsage=()=>({ratio:globalThis.compactionRatio??0});"
                       : "export const registerInteractHandler=fn=>{globalThis.workerInteract=fn;}; export const getInteractHandler=()=>globalThis.viewInteract;",

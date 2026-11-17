@@ -71,11 +71,11 @@ function resultText(result: { content?: unknown }): string {
   eq(invalidAction.success, false, '非法 action 返回失败结果');
   includes(resultText(invalidAction), 'action', '非法 action 的原因指明 action 字段');
 
-  const missingPath = await tool.execute({ action: 'create', content: '# x' });
-  eq(missingPath.success, false, 'create 缺 path 返回失败');
+  const missingPath = await tool.execute({ action: 'convert' });
+  eq(missingPath.success, false, 'convert 缺 path 返回失败');
   includes(resultText(missingPath), 'path', '缺 path 的原因指明 path');
 
-  const wrongExt = await tool.execute({ action: 'create', path: 'docs/a.txt', content: 'x' });
+  const wrongExt = await tool.execute({ action: 'convert', path: 'docs/a.txt' });
   eq(wrongExt.success, false, '非 .md 路径被拒绝');
   includes(resultText(wrongExt), '.md', '非 .md 的原因指明后缀要求');
 
@@ -86,17 +86,19 @@ function resultText(result: { content?: unknown }): string {
   const badParams = await tool.execute('not-an-object' as never);
   eq(badParams.success, false, '非对象参数返回失败');
 
-  const editBoth = await tool.execute({ action: 'edit', path: 'docs/a.md', content: 'x', find: 'y' });
-  eq(editBoth.success, false, 'edit 的 content 与 find 互斥被拒');
-  includes(resultText(editBoth), '互斥', '互斥冲突的原因说明');
+  const removedEdit = await tool.execute({ action: 'edit', path: 'docs/a.md', content: 'x' });
+  eq(removedEdit.success, false, 'edit 已下线');
+  includes(resultText(removedEdit), '转换', '下线回执给出原因');
+  includes(resultText(removedEdit), 'file_util', '下线回执引导到 file_util');
 
-  const editNeither = await tool.execute({ action: 'edit', path: 'docs/a.md' });
-  eq(editNeither.success, false, 'edit 缺 content 与 find 被拒');
+  const removedCreate = await tool.execute({ action: 'create', path: 'docs/a.md', content: '# a' });
+  eq(removedCreate.success, false, 'create 已下线');
+  includes(resultText(removedCreate), 'file_util', 'create 下线回执引导到 file_util');
 
   // Schema 必填项与 action 对齐
   const anyOf = tool.openaiSchema.function.parameters.anyOf as { required: string[] }[];
-  eq(anyOf.length, 4, 'schema 覆盖四个 action');
-  const convertRequired = anyOf.find((branch) => branch.required.includes('action') && branch.required.length === 3);
+  eq(anyOf.length, 1, 'schema 只覆盖 convert');
+  const convertRequired = anyOf.find((branch) => branch.required.includes('path') && branch.required.length === 2);
   check(!!convertRequired, 'convert 的 schema 分支要求 path');
 }
 
@@ -473,13 +475,14 @@ function resultText(result: { content?: unknown }): string {
   includes(resultText(unknown), 'style', '未知参数名出现在回执里');
   includes(resultText(unknown), '不接受参数', '回执说明是参数不被接受');
 
-  const unknownForCreate = await tool.execute({
+  const unknownForRemoved = await tool.execute({
     action: 'create',
     path: 'docs/a.md',
     content: '# a',
     format: 'pdf',
   });
-  eq(unknownForCreate.success, false, 'create 的未知参数被拒');
+  eq(unknownForRemoved.success, false, '已下线 action 的调用被拒');
+  includes(resultText(unknownForRemoved), 'file_util', '回执引导到 file_util');
 }
 
 // ==================== 汇总 ====================

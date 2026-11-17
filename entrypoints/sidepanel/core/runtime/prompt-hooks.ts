@@ -6,9 +6,9 @@
  * SystemPromptHook，runtime-builder 的装配循环无需改动。
  *
  * 契约：
- *   - 分区自治（防重）：agentSystem（智能体指令 / 学习域 override）**自带完整
+ *   - 分区自治（防重）：agentSystem（智能体指令 / 动态装配 override）**自带完整
  *     分区**（开闭标签成对出现）时钩子必须返回 null——「自带分区即自治」是
- *     既有协议（learn-prompts 的 <vision-gui-tool> 分区依赖此语义保持学习域
+ *     既有协议（<vision-gui-tool> 分区依赖此语义保持工具能力边界
  *     隔离）。只提及标签名不算自治：一次无心的正文提及不应静默关掉注入，
  *     否则智能体会在没有规程的情况下运行（最隐蔽的一类失效）。
  *   - placement 决定插入锚点：before-agent-instructions 保持「视觉规程先于
@@ -22,6 +22,11 @@ import {
   VISION_GUI_OBSERVE_PROMPT,
 } from '@/utils/agents/vision-gui-prompt';
 import { VISION_GUI_TOOL_ID } from '@/tools/vision/gui-contract';
+import {
+  PYTHON_RUN_TOOL_ID,
+  PYTHON_SYSTEM_PROMPT_SECTION,
+} from '@/tools/python/python-prompt';
+import { toolRegistry } from '@/tools/registry';
 
 export interface PromptHookContext {
   /** 装配完成的智能体指令正文（含 override，用于分区自治检测） */
@@ -66,8 +71,31 @@ const visionGuiHook: SystemPromptHook = {
   },
 };
 
+/**
+ * Python 脚本规程钩子：工具面包含 python_run 即注入 <python-scripting> 分区。
+ *
+ * 为什么走钩子而不是无条件 push：规程必须与工具面**严格一致**——没有
+ * python_run 的会话注入了规程，模型会照规程去调用一个拿不到的工具；反过来，
+ * 只把规程塞进工具描述也不够（描述会被读到但不生效，实测日志已验证）。
+ * 钩子自带三道一致性保障：
+ *   1. 工具面口径与最终交付一致（同一份 allowsSessionTool 过滤后的清单）；
+ *   2. 分区自治防重（智能体指令自带 <python-scripting> 时不再重复注入）；
+ *   3. 注册表仍校验工具真实存在（防构建偏斜下「按规程调用不存在的工具」）。
+ */
+const pythonScriptingHook: SystemPromptHook = {
+  id: 'python-scripting',
+  placement: 'before-agent-instructions',
+  sectionTag: 'python-scripting',
+  select(context) {
+    if (!context.toolIds.includes(PYTHON_RUN_TOOL_ID)) return null;
+    if (!toolRegistry.get(PYTHON_RUN_TOOL_ID)) return null;
+    if (hasSelfContainedSection(context.agentSystem, this.sectionTag)) return null;
+    return PYTHON_SYSTEM_PROMPT_SECTION;
+  },
+};
+
 /** 钩子注册表：新增条件注入按此模式追加即可（保持分区自治语义）。 */
-export const SYSTEM_PROMPT_HOOKS: readonly SystemPromptHook[] = [visionGuiHook];
+export const SYSTEM_PROMPT_HOOKS: readonly SystemPromptHook[] = [visionGuiHook, pythonScriptingHook];
 
 export interface PromptInjection {
   hookId: string;

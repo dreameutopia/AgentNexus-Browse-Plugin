@@ -92,9 +92,11 @@ export default defineConfig({
           '/entrypoints/workflow/*', // 允许访问 workflow 页面资源
           '/entrypoints/notes/*', // 允许访问 notes 页面资源
           '/entrypoints/hub/*', // 允许访问 hub 管理中心页面资源
+          '/entrypoints/learn/*', // 允许访问 learn 学习模式页面资源
           'workflow.html', // 允许访问 workflow 页面
           'notes.html', // 允许访问内置笔记页面
           'hub.html', // 允许访问管理中心页面
+          'learn.html', // 允许访问学习模式页面
         ],
         matches: ['<all_urls>'],
       },

@@ -4,7 +4,10 @@
 export const BUILTIN_SKILL_IDS = Object.freeze({
     'web-research-report': '2', 'xlsx-creator': '3',
     'skill-create': '4', 'skill-edit': '5',
+    'website-task-learn': '6',
 } as const);
+/** 网站任务学习技能的稳定 ID（仅由学习页程序化选中，不进入全局默认注入） */
+export const WEBSITE_TASK_LEARN_SKILL_ID = BUILTIN_SKILL_IDS['website-task-learn'];
 export const BUILTIN_SKILL_MAX_ID = 1000;
 export const isSkillId = (id: unknown): id is string => typeof id === 'string' && /^[1-9][0-9]*$/.test(id) && Number.isSafeInteger(Number(id));
 export const isBuiltinSkillId = (id: string): boolean => isSkillId(id) && Number(id) <= BUILTIN_SKILL_MAX_ID;

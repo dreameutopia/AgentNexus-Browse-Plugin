@@ -1,3 +1,5 @@
+import type { ToolExecutionContext } from '@/tools/registry';
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { readPageFrames, PageReadError, withDeadline, addFrameIssue, type FrameReadReport } from '../common/frame-read';
 import { BaseTool } from '../base-tool';
 import { ToolResult } from '@/common/tool-handler';
@@ -882,7 +884,7 @@ export class FileUploadGetterTool extends BaseTool {
   /**
    * 检查缓存是否有效
    */
-  private async isCacheValid(tabId: number, url: string): Promise<boolean> {
+  private async isCacheValid(tabId: number, url: string, context?: ToolExecutionContext): Promise<boolean> {
     if (!this.cache || this.cache.tabId !== tabId || this.cache.url !== url) return false;
     
     try {
@@ -893,7 +895,7 @@ export class FileUploadGetterTool extends BaseTool {
       const expected = this.cache.frameDiagnostics?.documents;
       if (!expected?.length || this.cache.frameDiagnostics?.status !== 'complete' || expected.some(f => !f.documentId)) return false;
       const current = await readPageFrames({ target: { tabId, allFrames: true }, func: () => document.URL },
-        { operation: 'upload-cache-validation', timeoutMs: 2500, frameTimeoutMs: 1000, discoveryTimeoutMs: 500 });
+        { operation: 'upload-cache-validation', timeoutMs: 2500, frameTimeoutMs: 1000, discoveryTimeoutMs: 500 }, context);
       return current.frameDiagnostics.status === 'complete' && current.length === expected.length &&
         expected.every(f => current.some(row => row.frameId === f.frameId && row.documentId === f.documentId));
     } catch {
@@ -901,7 +903,7 @@ export class FileUploadGetterTool extends BaseTool {
     }
   }
 
-  async execute(args: { page?: number } = {}): Promise<ToolResult> {
+  async execute(args: { page?: number } = {}, context?: ToolExecutionContext): Promise<ToolResult> {
     const startTime = Date.now();
     try {
       const page = args.page ?? 1;
@@ -910,7 +912,7 @@ export class FileUploadGetterTool extends BaseTool {
 
       this.log(`开始获取文件上传控件 (v1.0)...`);
       
-      const tabs = await withDeadline(() => chrome.tabs.query({ active: true, currentWindow: true }), 5000, 'Find upload-control target');
+      const tabs = await withDeadline(() => browserChrome(context).tabs.query({ active: true, currentWindow: true }), 5000, 'Find upload-control target');
       if (!tabs[0] || typeof tabs[0].id !== 'number') {
         return this.createErrorResponse('No active tab with ID found');
       }
@@ -921,7 +923,7 @@ export class FileUploadGetterTool extends BaseTool {
       let frameDiagnostics: FrameReadReport | undefined;
       
       // 尝试使用缓存
-      const cacheValid = page > 1 && await this.isCacheValid(tabId, url);
+      const cacheValid = page > 1 && await this.isCacheValid(tabId, url, context);
       if (cacheValid && this.cache) {
         this.log('使用缓存数据...');
         allElements = this.cache.elements;
@@ -933,7 +935,7 @@ export class FileUploadGetterTool extends BaseTool {
         const injectionResults = await readPageFrames({
           target: { tabId, allFrames: true },
           func: getFileUploadElementsPayload,
-        });
+        }, undefined, context);
         frameDiagnostics = injectionResults.frameDiagnostics;
 
         const rawElements: any[] = [];

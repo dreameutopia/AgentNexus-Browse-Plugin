@@ -1,3 +1,4 @@
+import { browserChrome } from '@/tools/browser/browser-scope';
 import { executeScriptBounded } from '../common/frame-read';
 /**
  * 搜索工具共享基类（web_search / platform_search）
@@ -29,7 +30,7 @@ import { executeScriptBounded } from '../common/frame-read';
  *
  * 中止语义：用户中断 / 会话停止时**尽快收敛**——导航等待、额外等待、内容脚本
  * 响应等待都监听 ToolExecutionContext.signal，中止即返回可读的失败结果
- * （沿用 generic_wait 的约定：返回失败结果而非抛错），不把 30s 的轮询拖满。
+ * （沿用 browser_wait 的约定：返回失败结果而非抛错），不把 30s 的轮询拖满。
  */
 
 import { BaseTool } from '../base-tool';
@@ -323,7 +324,7 @@ export abstract class BaseSearchTool extends BaseTool {
     }
 
     // ── 解析（失败只提示，不拖垮整体结果） ──
-    const parse = await this.parseResults(target, navigation, signal);
+    const parse = await this.parseResults(target, navigation, signal, context);
     if (parse.aborted) {
       return this.abortedResult(paramName, targetId, query, target, navigation, '解析结果页期间被中断');
     }
@@ -397,7 +398,7 @@ export abstract class BaseSearchTool extends BaseTool {
       let tabId: number;
       if (newTab) {
         const created = await this.withAbort(
-          chrome.tabs.create({ url: searchUrl, active: true }),
+          browserChrome(context).tabs.create({ url: searchUrl, active: true }),
           signal,
           '创建搜索标签页期间被中断',
         );
@@ -408,13 +409,13 @@ export abstract class BaseSearchTool extends BaseTool {
         // 「当前窗口」概念，currentWindow 在该上下文会查空；lastFocusedWindow
         // 在 sidepanel 与 background 双上下文都指向用户正在看的窗口
         const [active] = await this.withAbort(
-          chrome.tabs.query({ active: true, lastFocusedWindow: true }),
+          browserChrome(context).tabs.query({ active: true, lastFocusedWindow: true }),
           signal,
           '查找当前标签页期间被中断',
         );
         if (!active?.id) throw new Error('未找到可导航的当前标签页（没有活动窗口？）');
         await this.withAbort(
-          chrome.tabs.update(active.id, { url: searchUrl }),
+          browserChrome(context).tabs.update(active.id, { url: searchUrl }),
           signal,
           '跳转当前标签页期间被中断',
         );
@@ -424,11 +425,11 @@ export abstract class BaseSearchTool extends BaseTool {
       // 标签页已确定：回报给宿主（页面高亮/引用锚点据此指向真实标签页）
       context?.onTabTarget?.(tabId);
 
-      const status = await this.waitForLoad(tabId, signal);
+      const status = await this.waitForLoad(tabId, signal, context);
       if (status.aborted) {
         return { success: false, status: 'error', url: searchUrl, tabId, note: '加载等待期间被中断', ...base };
       }
-      const currentUrl = await this.readTabUrl(tabId);
+      const currentUrl = await this.readTabUrl(tabId, context);
       return {
         success: true,
         status: status.timedOut ? 'timeout' : 'complete',
@@ -451,7 +452,7 @@ export abstract class BaseSearchTool extends BaseTool {
    */
   private async waitForLoad(
     tabId: number,
-    signal?: AbortSignal,
+    signal?: AbortSignal, context?: ToolExecutionContext
   ): Promise<{ timedOut: boolean; aborted: boolean }> {
     // 以轮询次数而非墙钟为上限：对系统时钟跳变免疫，且行为可被测试精确驱动
     const maxPolls = Math.ceil(LOAD_TIMEOUT_MS / LOAD_POLL_INTERVAL_MS);
@@ -460,7 +461,7 @@ export abstract class BaseSearchTool extends BaseTool {
       // Promise 风格：标签页不存在时 reject，消息即失败原因
       let tab: chrome.tabs.Tab;
       try {
-        tab = await chrome.tabs.get(tabId);
+        tab = await browserChrome(context).tabs.get(tabId);
       } catch {
         throw new Error(`标签页 ${tabId} 已不存在或不可读（可能被关闭）`);
       }
@@ -473,9 +474,9 @@ export abstract class BaseSearchTool extends BaseTool {
   }
 
   /** 读取标签页当前 URL（重定向后的最终地址；读不到回退 null） */
-  private async readTabUrl(tabId: number): Promise<string | null> {
+  private async readTabUrl(tabId: number, context?: ToolExecutionContext): Promise<string | null> {
     try {
-      const tab = await chrome.tabs.get(tabId);
+      const tab = await browserChrome(context).tabs.get(tabId);
       return tab?.url || tab?.pendingUrl || null;
     } catch {
       return null;
@@ -491,7 +492,7 @@ export abstract class BaseSearchTool extends BaseTool {
   private async parseResults(
     target: SearchTargetConfig,
     navigation: NavigationOutcome,
-    signal?: AbortSignal,
+    signal?: AbortSignal, context?: ToolExecutionContext
   ): Promise<{ outcome: ParseOutcome; aborted: boolean }> {
     const tabId = navigation.tabId;
     if (tabId === null) {
@@ -501,7 +502,7 @@ export abstract class BaseSearchTool extends BaseTool {
       };
     }
     try {
-      const items = await this.runExtractor(target, tabId, signal);
+      const items = await this.runExtractor(target, tabId, signal, context);
       if (signal?.aborted) {
         return { outcome: { success: false, count: 0, items: [], hint: '解析期间被中断' }, aborted: true };
       }
@@ -561,7 +562,7 @@ export abstract class BaseSearchTool extends BaseTool {
   private async runExtractor(
     target: SearchTargetConfig,
     tabId: number,
-    signal?: AbortSignal,
+    signal?: AbortSignal, context?: ToolExecutionContext
   ): Promise<unknown> {
     const { extractor } = target;
     if (extractor.kind === 'inline') {
@@ -569,7 +570,7 @@ export abstract class BaseSearchTool extends BaseTool {
         throw new Error(`目标 ${target.id} 的 inline 解析函数缺失（配置缺陷）`);
       }
       const injection = await this.withAbort(
-        executeScriptBounded({ target: { tabId }, func: extractor.func }),
+        executeScriptBounded({ target: { tabId }, func: extractor.func }, undefined, undefined, context),
         signal,
         '注入解析函数期间被中断',
       );
@@ -582,12 +583,12 @@ export abstract class BaseSearchTool extends BaseTool {
     if (typeof file !== 'string' || typeof action !== 'string') {
       throw new Error(`目标 ${target.id} 的 script 解析配置缺失（file/action）`);
     }
-    await this.injectScriptFile(tabId, file, signal);
+    await this.injectScriptFile(tabId, file, signal, context);
     if (extractor.initDelayMs && extractor.initDelayMs > 0) {
       const settled = await this.sleep(extractor.initDelayMs, signal);
       if (!settled) throw new AbortedError('等待内容脚本初始化期间被中断');
     }
-    const response = await this.sendScraperMessage(tabId, action, signal);
+    const response = await this.sendScraperMessage(tabId, action, signal, context);
     if (response.status === 'error') {
       throw new Error(`内容脚本解析失败：${response.message ?? '未知错误'}`);
     }
@@ -602,11 +603,11 @@ export abstract class BaseSearchTool extends BaseTool {
   private async injectScriptFile(
     tabId: number,
     file: string,
-    signal?: AbortSignal,
+    signal?: AbortSignal, context?: ToolExecutionContext
   ): Promise<void> {
     try {
       await this.withAbort(
-        executeScriptBounded({ target: { tabId }, files: [file] }),
+        executeScriptBounded({ target: { tabId }, files: [file] }, undefined, undefined, context),
         signal,
         '注入内容脚本期间被中断',
       );
@@ -628,7 +629,7 @@ export abstract class BaseSearchTool extends BaseTool {
   private async sendScraperMessage(
     tabId: number,
     action: string,
-    signal?: AbortSignal,
+    signal?: AbortSignal, context?: ToolExecutionContext
   ): Promise<{ status: string; data?: unknown[]; message?: string }> {
     const outcome = await new Promise<
       { ok: true; value: unknown } | { ok: false; aborted: boolean; reason: string }
@@ -669,7 +670,7 @@ export abstract class BaseSearchTool extends BaseTool {
         SCRIPT_MESSAGE_TIMEOUT_MS,
       );
       // 两个分支都挂上：消息通道失败不会变成未处理的拒绝
-      chrome.tabs.sendMessage(tabId, { action }).then(
+      browserChrome(context).tabs.sendMessage(tabId, { action }).then(
         value => settle({ ok: true, value }),
         error =>
           settle({

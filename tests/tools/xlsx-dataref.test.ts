@@ -14,7 +14,7 @@
  *        无重复不建新文件的 no-change 语义；
  *      - project 的 ref/file 二选一与信封投影；
  *      - info 的 ref/file 二选一（信封数据引导指向 project）；
- *      - 治理产物落 results/ 且可被 js_run read 按页读取、可继续串联治理；
+ *      - 治理产物落 results/ 且可被 file_util read 按页读取、可继续串联治理；
  *   3. xlsx_tool 数据源统一：
  *      - create_from_data 混排（dataFiles 数据表 + 手写公式汇总表）一次生成；
  *      - dataFiles 多文件按序拼接成一张表；create 支持 dataFiles/dataRef 表；
@@ -37,7 +37,7 @@ import {
 } from "../../utils/data-ref-rows";
 import { dataRefTool } from "../../tools/data/data-ref-tool";
 import { xlsxTool as rawXlsxTool } from "../../tools/office/xlsx-tool";
-import { jsRunTool } from "../../tools/javascript/js-run-tool";
+import { FileUtilTool } from "../../tools/file-util/file-util-tool";
 
 const chatId = "xlsx-dataref-contract";
 await chatDatabase.createSession({
@@ -73,8 +73,9 @@ const dataOf = (r: {
 }): Record<string, unknown> => r.data ?? {};
 
 /** 在工作区落一个 JSON 数据文件（模拟 js_run 结果 / 治理产物） */
+const files = new FileUtilTool();
 async function writeDataFile(path: string, value: unknown): Promise<string> {
-  const created = await jsRunTool.execute(
+  const created = await files.execute(
     { action: "create", path, content: JSON.stringify(value) },
     context,
   );
@@ -274,14 +275,18 @@ await dataRefStore.remove("all");
     "合并结果 2 行",
   );
 
-  // 产物可被 js_run read 按页读取（与 run 结果文件同一通道）
-  const read = await jsRunTool.execute(
+  // 产物可被 file_util read 按页读取（与 run 结果文件同一通道）
+  const read = await new FileUtilTool().execute(
     { action: "read", path: file.path },
     context,
   );
   assert.equal(read.success, true, "治理产物可分页读取", read.error);
+  const rawRead = String((read.content as { text?: string }[] | undefined)?.map(part => part.text ?? '').join('') ?? '');
+  const separator = rawRead.indexOf('\n\n');
+  const footer = rawRead.indexOf('\n\n[', separator + 2);
+  const body = rawRead.slice(separator + 2, footer < 0 ? undefined : footer);
   assert.deepEqual(
-    JSON.parse((read.data as { content: string }).content),
+    JSON.parse(body),
     [{ id: 1 }, { id: 2 }],
     "内容逐字保留",
   );
@@ -497,7 +502,7 @@ await dataRefStore.remove("all");
 {
   const f = await writeDataFile("scripts/unique.json", [{ id: 1 }, { id: 2 }]);
   const before = (
-    (await jsRunTool.execute({ action: "list", path: "results" }, context))
+    (await files.execute({ action: "list", path: "results" }, context))
       .data as { total: number }
   ).total;
   const result = await dataTool.execute({
@@ -513,7 +518,7 @@ await dataRefStore.remove("all");
     textOf(result),
   );
   const after = (
-    (await jsRunTool.execute({ action: "list", path: "results" }, context))
+    (await files.execute({ action: "list", path: "results" }, context))
       .data as { total: number }
   ).total;
   assert.equal(after, before, "no-change 不产生新结果文件");
@@ -1133,5 +1138,5 @@ for (const path of [
   "scripts/empty-file.json",
   "scripts/mixed-rows.json",
 ]) {
-  await jsRunTool.execute({ action: "delete", path }, context);
+  await files.execute({ action: "delete", path }, context);
 }

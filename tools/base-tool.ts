@@ -103,7 +103,7 @@ export abstract class BaseNavigationTool extends BaseTool {
     newTab?: boolean;
     waitForLoad?: boolean;
     timeout?: number;
-  }): Promise<ToolResult> {
+  }, context?: ToolExecutionContext): Promise<ToolResult> {
     try {
       this.log(`Navigating to: ${url}`);
       // 通过注册表获取统一导航工具，避免循环依赖
@@ -117,7 +117,7 @@ export abstract class BaseNavigationTool extends BaseTool {
         newTab: options?.newTab ?? true,
         waitForLoad: options?.waitForLoad ?? true,
         timeout: options?.timeout || 50000
-      });
+      }, context);
     } catch (error) {
       // 上下文错误上抛：交由 tool-executor 将本工具整体转发到 background 执行
       if (isBackgroundContextError(error)) throw error;

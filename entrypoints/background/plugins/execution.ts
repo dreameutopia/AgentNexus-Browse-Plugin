@@ -2,6 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { canonicalize } from 'json-canonicalize';
 import { toolRegistry, type ToolExecutionContext } from '@/tools/registry';
+import { executeWithBrowserScope } from '@/tools/browser/browser-scope';
 import { createErrorResponse, type ToolResult } from '@/common/tool-handler';
 import {
   invariant,
@@ -119,7 +120,7 @@ export class PluginExecutionGateway {
           );
           const host = toolRegistry.get(target);
           invariant(host && !host.metadata.plugin, 'HOST_TOOL_NOT_FOUND');
-          return host.execute(cleanArgs, pluginContext);
+          return executeWithBrowserScope(pluginContext, scopedContext => host.execute(cleanArgs, scopedContext));
         }
         if (tool.executor.type === 'host-workflow') {
           validateWorkflow(installed.manifest, tool);
@@ -138,10 +139,10 @@ export class PluginExecutionGateway {
               );
               const host = toolRegistry.get(target);
               invariant(host && !host.metadata.plugin, 'HOST_TOOL_NOT_FOUND');
-              return host.execute(stepArgs, {
+              return executeWithBrowserScope({
                 ...pluginContext,
                 signal: stepSignal,
-              });
+              }, scopedContext => host.execute(stepArgs, scopedContext));
             },
           );
         }
