@@ -40,6 +40,12 @@ import {
   MAX_FIELDS,
   type DataShape,
 } from "@/utils/data-ref-rows";
+import {
+  describeCompleteness,
+  detectEnvelopeBaseline,
+  resolveDataSourceRows,
+  verifyCompleteness,
+} from "@/utils/relation-table";
 import { buildWorkbook, XlsxBuildError, XLSX_LIMITS } from "./xlsx-builder";
 import { parseMarkdownTables } from "./xlsx-markdown";
 
@@ -237,7 +243,7 @@ const SHEET_SCHEMA = {
     dataFiles: {
       type: "array",
       description:
-        "工作区数据文件路径列表（与 rows/dataRef 互斥）：js_run run/crawl 的执行结果文件、browser_extract_data 的 saved.path、data_ref_tool 治理产物，可混列多个——按列表顺序把各行数据拼接成一张表（对象数组按字段并集成列，二维数组按行拼接）。支持 .json（JSON 数组）与 .csv（首行为表头，RFC 4180），单文件 ≤10MB；批量数据零转录，禁止手写 rows 复现",
+        "工作区数据文件路径列表（与 rows/dataRef 互斥）：js_run run/crawl 的执行结果文件、browser_extract_data 的 saved.path、data_ref_tool 治理产物，可混列多个——按列表顺序把各行数据拼接成一张表（对象数组按字段并集成列，二维数组按行拼接）。支持 .json 与 .csv（首行为表头，RFC 4180），单文件 ≤10MB；批量数据零转录，禁止手写 rows 复现。.json 顶层是数组即直接作为表；顶层是信封对象时按载荷路径契约定位其内部行表——命中 rows/items/data/records/list/results/content 任一成员名即采用该数组；未命中则按元素形态与层级唯一判定，判定不了就报错并列出候选（此时用 data_ref_tool(action=\"project\", path=…) 显式指定）。导出时会对账实抓行数与文件自报的总量，无基准时如实标注「完整性未验证」。",
       items: { type: "string" },
     },
     dataRef: {
@@ -526,19 +532,24 @@ async function resolveDataRefSheet(
       `${path}.dataRef: 批次 "${refId}" 数据已损坏，无法解析`,
     );
   }
-  if (!Array.isArray(value)) {
-    throw new XlsxBuildError(
-      `${path}.dataRef: 批次 "${refId}" 不是表格形态数据（kind=${entry.kind}）——信封/复合结构请先用 data_ref_tool(action="project") 投影`,
-    );
+  // 与 dataFiles 同一套关系表解析口径：数组即表；信封结构自动定位内部行表
+  const resolved = resolveDataSourceRows(value, `批次 "${refId}"`);
+  if (!resolved.ok) {
+    throw new XlsxBuildError(`${path}.dataRef: ${resolved.reason}`);
   }
-  const shape = analyzeValue(value);
-  return materializeDataSheet(spec, path, {
-    kind: shape.kind,
-    rows: value,
-    fields: entry.fields,
-    fieldsTruncated: (entry.fields?.length ?? 0) >= MAX_FIELDS,
+  const { rows: batchRows, kind: batchKind, note } = resolved.source;
+  // 信封解析后的字段集与原批次元数据不同：按解析出的表重算（直表时沿用原字段）
+  const resolvedFields =
+    note.length > 0 ? collectRecordFields(batchRows as Record<string, unknown>[])[0] : entry.fields;
+  const materialized = materializeDataSheet(spec, path, {
+    kind: batchKind,
+    rows: batchRows,
+    fields: resolvedFields,
+    fieldsTruncated: (resolvedFields?.length ?? 0) >= MAX_FIELDS,
     sourceLabel: `"${refId.trim()}"`,
   });
+  if (note) materialized.warnings.push(`数据来源解析：批次 "${refId}"：${note}`);
+  return materialized;
 }
 
 /**
@@ -575,6 +586,10 @@ async function resolveDataFilesSheet(
   const trimmed = rawFiles.map((f) => (f as string).trim());
   /** 逐文件形态记账：records/matrix 混拼时精确点名冲突文件，而不是笼统报「非表格形态」 */
   const kindByFile: { path: string; kind: DataShape }[] = [];
+  /** 逐文件的解析说明（信封定位路径 + 对账元数据）——汇入 warnings，让模型看到「用了哪个表的哪个路径」 */
+  const resolutionNotes: string[] = [];
+  /** 逐文件的对账结论（实抓行数 vs 该文件自报的总量）——逐文件比，不做跨文件加总 */
+  const completenessNotes: string[] = [];
   for (let i = 0; i < trimmed.length; i++) {
     let loaded;
     try {
@@ -584,22 +599,29 @@ async function resolveDataFilesSheet(
         `${path}.dataFiles[${i}]: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    if (!Array.isArray(loaded.value)) {
-      throw new XlsxBuildError(
-        `${path}.dataFiles[${i}]: 文件 ${loaded.path} 不是数组数据——信封/复合结构请先用 data_ref_tool(action="project", file="${loaded.path}", ...) 投影`,
-      );
+    // 统一的关系表解析：数组即表；信封结构按 data_ref-rows 口径定位其内部
+    // 的行表（唯一候选自动采用，多候选报错并给出逐候选的确切 project 调用）。
+    const resolved = resolveDataSourceRows(loaded.value, loaded.path);
+    if (!resolved.ok) {
+      throw new XlsxBuildError(`${path}.dataFiles[${i}]: ${resolved.reason}`);
     }
-    const fileShape = analyzeValue(loaded.value);
-    if (fileShape.kind === "value") {
-      // 单文件内部即混形态（对象行与非对象行混杂）：定位到文件本身
-      throw new XlsxBuildError(
-        `${path}.dataFiles[${i}]: 文件 ${loaded.path} 的行不是统一的表格形态（对象行与其它类型行混杂）——请用 data_ref_tool(action="project", file="${loaded.path}") 整形`,
+    const { rows: fileRows, kind: fileKind, note, rowCount, envelopeMeta } =
+      resolved.source;
+    if (note) resolutionNotes.push(`${loaded.path}：${note}`);
+    // 逐文件对账：该文件自报的总量 vs 该文件实抓的行数。
+    // **不跨文件加总**——各文件的关系不确定（可能是同一站点的不同页，
+    // 也可能是不同批次），加总会把「多文件」误判成「少抓」。
+    const baseline = detectEnvelopeBaseline(envelopeMeta);
+    const verdict = verifyCompleteness(rowCount, baseline);
+    if (verdict !== 'matched') {
+      completenessNotes.push(
+        `${loaded.path}：${describeCompleteness(rowCount, baseline, verdict)}`,
       );
     }
     // 空数组文件（如某轮 crawl 零行）不参与形态记账：零行数据不构成混拼冲突
-    if (loaded.value.length > 0)
-      kindByFile.push({ path: loaded.path, kind: fileShape.kind });
-    for (const row of loaded.value) rows.push(row);
+    if (fileRows.length > 0)
+      kindByFile.push({ path: loaded.path, kind: fileKind });
+    for (const row of fileRows) rows.push(row);
   }
   const mixedKinds = new Set(kindByFile.map((item) => item.kind));
   if (mixedKinds.size > 1) {
@@ -621,7 +643,7 @@ async function resolveDataFilesSheet(
       rows as Record<string, unknown>[],
     );
   }
-  return materializeDataSheet(spec, path, {
+  const materialized = materializeDataSheet(spec, path, {
     kind: shape.kind,
     rows,
     fields,
@@ -629,6 +651,28 @@ async function resolveDataFilesSheet(
     sourceLabel:
       trimmed.length === 1 ? `"${trimmed[0]}"` : `${trimmed.length} 个数据文件`,
   });
+  // 解析说明汇入该表的 warnings：模型据此知道「导出的表来自哪个文件的哪个
+  // 路径」，以及信封里有哪些对账元数据（否则对账依据被埋在文件里看不见）。
+  if (resolutionNotes.length > 0) {
+    materialized.warnings.push(
+      `数据来源解析：${resolutionNotes.join("；")}`,
+    );
+  }
+  // 完整性核对：逐文件给出结论。**结论始终存在**——「没核对」与「核对过
+  // 且一致」必须可区分，否则一次漏抓会以「导出成功」告终。
+  //
+  // 逐文件比而非跨文件加总：各文件的关系不确定（可能是同一站点的不同页，
+  // 也可能是不同批次），加总会把「多文件」误判成「少抓」。
+  if (completenessNotes.length > 0) {
+    materialized.warnings.push(
+      `完整性核对：${completenessNotes.join("；")}`,
+    );
+  } else if (trimmed.length > 0) {
+    materialized.warnings.push(
+      `完整性核对：${trimmed.length} 个数据文件的实抓行数均与各自自报的总量一致。`,
+    );
+  }
+  return materialized;
 }
 
 /**
@@ -751,7 +795,8 @@ export class XlsxTool extends BaseTool {
         "action=create_from_markdown 把 Markdown 表格文本（支持多表，标题作表名）转为 xlsx；" +
         "action=create_from_data 批量数据导出入口：sheets[].dataFiles 引用工作区数据文件（js_run run/crawl 的结果文件、browser_extract_data 的 saved.path 与 data_ref_tool 治理产物，.json/.csv 均可，可列多个按序拼接）直接成表（数据零转录，适合电商 SKU、评论、榜单等大批量场景），或 sheets[].dataRef 引用暂存批次，可与手写 rows 表混排——同一次调用产出「批量数据表 + 公式汇总表」。" +
         "每张表的数据来源三选一（dataFiles / dataRef / rows），不同表可混用。" +
-        "默认自动美化：表头蓝底白字加粗、全表细边框、自动列宽、冻结表头。产物保存到当前会话 outputs/，按全局工作区规范交付返回的 marker。",
+        "默认自动美化：表头蓝底白字加粗、全表细边框、自动列宽、冻结表头。产物保存到当前会话 outputs/，按全局工作区规范交付返回的 marker。" +
+        "本工具的完整使用规程（导出列与表头的选择口径、容量换算与拆分策略、混排工作簿的组织方式、交付前的核对项）由 xlsx-creator 技能承载：涉及这些决策时，按 <available-skills> 加载该技能再动手。",
       parameters: {
         type: "object",
         properties: {

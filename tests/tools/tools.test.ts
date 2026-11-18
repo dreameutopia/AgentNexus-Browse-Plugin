@@ -1918,6 +1918,97 @@ await testTextAutomation(check, eq);
     }
   }
 
+  // —— 12b2. parent* 范围提取：含容器自身文本 / containerMiss / 精确错误 / 嵌套与 shadow ——
+  {
+    const { JSDOM } = await import('jsdom');
+    const dom = new JSDOM(
+      `<!DOCTYPE html><html><body>
+        <div id="outside"><p>容器外文本</p></div>
+        <div id="art">容器直属文本<p id="in">容器段落</p>
+          <div id="nested"><p id="deep">嵌套文本</p></div>
+        </div>
+      </body></html>`,
+      { pretendToBeVisual: true, url: 'https://fixture.example/scope' },
+    );
+    const win = dom.window;
+    const doc = win.document;
+    const shadowHost = doc.createElement('div');
+    (doc.getElementById('art') as HTMLElement).appendChild(shadowHost);
+    shadowHost.attachShadow({ mode: 'open' }).innerHTML = '<p>容器影子文本</p>';
+    const GLOBAL_KEYS = ['document', 'window', 'Node', 'Element', 'XPathResult', 'getComputedStyle'] as const;
+    const savedScope = GLOBAL_KEYS.map((key) => ({
+      key,
+      had: Object.prototype.hasOwnProperty.call(globalThis, key),
+      value: (globalThis as Record<string, unknown>)[key],
+    }));
+    for (const key of GLOBAL_KEYS)
+      (globalThis as Record<string, unknown>)[key] = (win as unknown as Record<string, unknown>)[key];
+    try {
+      // 1) 命中：含容器自身文本、容器外剔除
+      const scoped = serializedPayload('#art', '');
+      check(!scoped.error && !scoped.containerMiss, '容器命中正常提取', scoped.error);
+      check(scoped.markdown.includes('容器直属文本'), '**包含容器自身的文本**（读语义）', scoped.markdown);
+      check(scoped.markdown.includes('容器段落'), '容器子树提取');
+      check(!scoped.markdown.includes('容器外文本'), '容器外文本剔除');
+      // 2) 多容器按文档序合并、嵌套命中不重复（visited 天然去重）
+      const multi = serializedPayload('#art, #nested', '');
+      eq(multi.markdown.split('嵌套文本').length - 1, 1, '嵌套命中不重复输出');
+      check(multi.markdown.includes('容器段落'), '多容器合并保留各自内容');
+      // 3) 容器自身的 shadow 树纳入提取
+      check(scoped.markdown.includes('容器影子文本'), '容器自身 shadow 树纳入提取');
+      // 4) 0 命中 → containerMiss（非错误，由宿主跨 frame 裁决）
+      const miss = serializedPayload('#__nope__', '');
+      eq(miss.containerMiss, true, '0 命中返回 containerMiss');
+      check(!miss.error && miss.markdown === '', 'containerMiss 不是 error 且正文为空');
+      // 5) 非法选择器 → 精确错误（分类 + 回显选择器原文）
+      const badCss = serializedPayload('div[', '');
+      check(
+        typeof badCss.error === 'string' && badCss.error.includes('CSS') && badCss.error.includes('div['),
+        '非法 CSS 精确报错并回显选择器',
+        badCss.error,
+      );
+      // 6) 双参互斥（注入层纵深防御）
+      const both = serializedPayload('#art', '//p');
+      check(typeof both.error === 'string' && both.error.includes('互斥'), 'parentSelector/parentXPath 互斥纵深防御');
+      // 7) parentXPath 同样按容器裁剪
+      const byXPath = serializedPayload('', '//div[@id="art"]');
+      check(
+        !byXPath.error && byXPath.markdown.includes('容器段落') && !byXPath.markdown.includes('容器外文本'),
+        'parentXPath 裁剪结果集',
+        byXPath.error,
+      );
+      // 8) XPath 命中非元素节点 → 精确拒绝（而不是静默当 0 命中）
+      const textNodes = serializedPayload('', '//p[@id="in"]/text()');
+      check(
+        typeof textNodes.error === 'string' && textNodes.error.includes('非元素'),
+        'XPath 命中非元素节点精确报错',
+        textNodes.error,
+      );
+      // 9) 非法 XPath → 精确错误
+      const badXp = serializedPayload('', '//[');
+      check(typeof badXp.error === 'string' && badXp.error.includes('XPath'), '非法 XPath 精确报错', badXp.error);
+      // 9b) XPath 仅命中非元素节点 → 明确拒绝（不能混成 containerMiss；jsdom 原生 evaluate）
+      const nonElement = serializedPayload('', '//text()');
+      check(
+        typeof nonElement.error === 'string' && nonElement.error.includes('非元素'),
+        '仅命中非元素节点明确拒绝而非 containerMiss',
+        nonElement.error,
+      );
+      check(!nonElement.containerMiss, '非元素命中不伪装成 containerMiss');
+      // 10) 零参回归：不传范围 = 整页提取，行为不变
+      const full = serializedPayload();
+      check(
+        !full.containerMiss && full.markdown.includes('容器外文本') && full.markdown.includes('容器段落'),
+        '零参行为回归（整页提取不受影响）',
+      );
+    } finally {
+      for (const item of savedScope) {
+        if (item.had) (globalThis as Record<string, unknown>)[item.key] = item.value;
+        else delete (globalThis as Record<string, unknown>)[item.key];
+      }
+    }
+  }
+
   // —— 12c. 工具宿主行为（桩替换 executeScript / tabs）——
   const chromeStub = (globalThis as Record<string, unknown>).chrome as Record<string, unknown>;
   const tabsStub = chromeStub.tabs as Record<string, unknown>;
@@ -2322,19 +2413,129 @@ await testTextAutomation(check, eq);
       emptyText.error,
     );
 
+    // ── 范围提取（parent*/frameId）宿主行为 ──
+    // 桩协议与 frame-read 对齐：allFrames 仅用于发现探测（行需带各 frameId），
+    // 真实注入按 frameIds 定向——桩按目标 frame 返回对应行，frame-read 再按
+    // frameId 过滤。因此「按帧供行」是正确姿势，而不是按 target 分支二选一。
+    resetTabStub();
+    let lastExecOptions: Record<string, any> | null = null;
+    let execCount = 0;
+    const rowFor = (frameId: number): Record<string, unknown> =>
+      frameId === 7
+        ? { frameId: 7, result: { markdown: '', truncated: false, shadowRoots: 0, url: 'https://embed.example/', title: '', containerMiss: true } }
+        : { frameId: 0, result: { markdown: '容器内正文', truncated: false, shadowRoots: 0, url: 'https://docs.example/guide', title: '标题' } };
+    scriptingStub.executeScript = (async (options: Record<string, any>) => {
+      execCount++;
+      const frameIds = Array.isArray(options.target?.frameIds)
+        ? (options.target.frameIds as number[])
+        : null;
+      if (frameIds) {
+        lastExecOptions = options; // 只记真实注入（探测调用 target.allFrames 且 args 为空）
+        return frameIds.map(rowFor);
+      }
+      // 发现探测（allFrames）：注册 frame0（命中）与 frame7（缺席）
+      return [rowFor(0), rowFor(7)];
+    }) as typeof scriptingStub.executeScript;
+
+    const scopedOk = await tool.execute({ parentSelector: '#main' }, { chatId });
+    check(scopedOk.success === true, '范围提取成功（缺席 frame 静默跳过）', scopedOk.error);
+    eq(String(lastExecOptions?.args?.[0]), '#main', 'parentSelector 透传进注入参数');
+    eq(String(lastExecOptions?.args?.[1] ?? ''), '', 'parentXPath 未传时为空串（纵深防御默认值）');
+    const scopedRow = csvRow(dataOf(scopedOk));
+    check(scopedRow.content.includes('容器内正文'), '正文来自命中容器的 frame', scopedRow.content.slice(0, 80));
+    check(
+      !JSON.stringify(dataOf(scopedOk)).includes('PAYLOAD_ERROR'),
+      '缺席 frame 不产生 PAYLOAD_ERROR 误报',
+    );
+
+    // 全部 frame 未命中 → PARENT_CONTAINER_NOT_FOUND（回显选择器，绝不回退整页）
+    scriptingStub.executeScript = (async (options: Record<string, any>) => {
+      execCount++;
+      const missRow = (frameId: number) => ({
+        frameId,
+        result: { markdown: '', truncated: false, shadowRoots: 0, url: '', title: '', containerMiss: true },
+      });
+      const frameIds = Array.isArray(options.target?.frameIds)
+        ? (options.target.frameIds as number[])
+        : [0, 7];
+      return frameIds.map(missRow);
+    }) as typeof scriptingStub.executeScript;
+    const allMiss = await tool.execute({ parentSelector: '#__anx_no_such__' }, { chatId });
+    check(
+      allMiss.success === false && /PARENT_CONTAINER_NOT_FOUND/.test(allMiss.error ?? ''),
+      '全 frame 未命中报 PARENT_CONTAINER_NOT_FOUND',
+      allMiss.error,
+    );
+    check(/#__anx_no_such__/.test(allMiss.error ?? ''), '错误回显容器选择器（可定位）', allMiss.error);
+    check(/省略 parent 参数/.test(allMiss.error ?? ''), '错误给出可执行的下一步', allMiss.error);
+
+    // 帧级硬错误（非法选择器）按精确原因透出，而不是笼统 EMPTY_TEXT
+    scriptingStub.executeScript = (async (options: Record<string, any>) => {
+      execCount++;
+      const errRow = (frameId: number) => ({
+        frameId,
+        result: {
+          markdown: '', truncated: false, shadowRoots: 0, url: '', title: '',
+          error: 'parentSelector 不是合法的 CSS 选择器：Unexpected end of input（选择器：div[）',
+        },
+      });
+      const frameIds = Array.isArray(options.target?.frameIds)
+        ? (options.target.frameIds as number[])
+        : [0];
+      return frameIds.map(errRow);
+    }) as typeof scriptingStub.executeScript;
+    const badScope = await tool.execute({ parentSelector: 'div[' }, { chatId });
+    check(
+      badScope.success === false && /不是合法的 CSS 选择器/.test(badScope.error ?? ''),
+      '非法选择器的精确帧级错误透出到工具错误',
+      badScope.error,
+    );
+
+    // frameId：不存在 → FRAME_NOT_FOUND；存在 → 单帧提取
+    scriptingStub.executeScript = (async (options: Record<string, any>) => {
+      execCount++;
+      lastExecOptions = options;
+      const frameIds = (options.target?.frameIds ?? []) as number[];
+      if (frameIds.includes(9)) return []; // 该 frame 无结果 → frame-read NO_RESULT
+      return frameIds.map((id) => ({ frameId: id, result: { markdown: '单帧正文', truncated: false, shadowRoots: 0, url: 'https://docs.example/guide', title: '单帧' } }));
+    }) as typeof scriptingStub.executeScript;
+    const frameMissing = await tool.execute({ frameId: 9 }, { chatId });
+    check(
+      frameMissing.success === false && /FRAME_NOT_FOUND/.test(frameMissing.error ?? '') && /frameId=9/.test(frameMissing.error ?? ''),
+      '不存在的 frameId 报 FRAME_NOT_FOUND 并回显编号',
+      frameMissing.error,
+    );
+    check(
+      /省略 frameId|browser_tabs/.test(frameMissing.error ?? ''),
+      'FRAME_NOT_FOUND 给出可执行的下一步',
+      frameMissing.error,
+    );
+    const frameOk = await tool.execute({ frameId: 0 }, { chatId });
+    check(frameOk.success === true, 'frameId=0 单帧提取成功', frameOk.error);
+    check(csvRow(dataOf(frameOk)).content.includes('单帧正文'), '单帧提取正文正确');
+    eq((lastExecOptions?.target?.frameIds as number[] | undefined)?.[0], 0, 'frameId 限定注入目标 frame');
+
     // 参数防御：错误必须在触碰页面前给出可自纠原因
     for (const [badArgs, pattern] of [
       [{ path: 'outputs/x.md' }, /续读模式已下线|未知参数/],
       [{ bogus: 1 }, /未知参数/],
       [[], /参数必须是对象/],
       [{ page: 0 }, /≥1/],
+      [{ parentSelector: '#a', parentXPath: '//b' }, /只能二选一/],
+      [{ parentSelector: 123 }, /必须是字符串/],
+      [{ parentXPath: ['//a'] }, /必须是字符串/],
+      [{ parentSelector: 'x'.repeat(2001) }, /过长/],
+      [{ frameId: -1 }, /非负整数/],
+      [{ frameId: 1.5 }, /非负整数/],
     ] as const) {
+      const beforeExec = execCount;
       const rejected = await tool.execute(badArgs as never, { chatId });
       check(
         rejected.success === false && pattern.test(rejected.error ?? ''),
-        `read_website 参数防御：${JSON.stringify(badArgs)}`,
+        `read_website 参数防御：${JSON.stringify(badArgs).slice(0, 120)}`,
         rejected.error,
       );
+      eq(execCount, beforeExec, `参数防御不触发页面注入：${JSON.stringify(badArgs).slice(0, 60)}`);
     }
   } finally {
     Object.assign(tabsStub, originalTabs);
@@ -2568,6 +2769,7 @@ await import('./script-injection.test');
 await import('./frame-read.test');
 await import('./frame-read-tools.test');
 await import('./confirmation.test');
+await import('./approval-reason.test');
 await import('./vision-assistant.test');
 await import('./skill-runtime-mode.test');
 await import('./python-run-files.test');

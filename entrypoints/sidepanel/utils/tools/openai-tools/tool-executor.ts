@@ -81,7 +81,8 @@ export async function executeTool(
   //    凡已注册工具名（browser_navigation、browser_tabs 等）都由注册表兜底
   //    自动命中，不再需要为每个工具维护单独的 case 分支或白名单。
   try {
-    const cancellableGui = !!context?.browserScope || toolName === JS_RUN_TOOL_ID || toolName === 'browser_interact' || toolName === 'screenshot' || toolName.startsWith('vision_');
+    const needsSession = toolName === JS_RUN_TOOL_ID || toolName === 'browser_download_click';
+    const cancellableGui = !!context?.browserScope || needsSession || toolName === 'browser_interact' || toolName === 'screenshot' || toolName.startsWith('vision_');
     const requestId = cancellableGui && context?.signal ? crypto.randomUUID() : undefined;
     const targetRequestId = context?.onTabTarget && typeof document !== 'undefined' ? crypto.randomUUID() : undefined;
     const onTarget = (message: { type?: string; requestId?: string; tabId?: number }, sender: chrome.runtime.MessageSender) => {
@@ -105,7 +106,7 @@ export async function executeTool(
         // Trusted envelope is written after model arguments, including undefined:
         // a model-supplied field cannot enable, disable, or replace the binding.
         __browserScope: context?.browserScope,
-        ...(toolName === JS_RUN_TOOL_ID ? { __scriptContext: { chatId: context?.chatId, toolPolicy: context?.toolPolicy, toolApproved: context?.toolApproved } } : {}),
+        ...(needsSession ? { __scriptContext: { chatId: context?.chatId, toolPolicy: context?.toolPolicy, toolApproved: context?.toolApproved } } : {}),
         ...(requestId ? { __visionRequestId: requestId } : {}),
         ...(targetRequestId ? { __pageTargetRequestId: targetRequestId } : {}),
       });

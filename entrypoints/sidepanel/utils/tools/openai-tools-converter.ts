@@ -14,7 +14,8 @@ import { startPluginClient } from '@/utils/plugins/client';
 import { BACKEND_PAGE_EXEC_TOOL_ID } from '@/tools/javascript/js-contract';
 import { toolRegistry, type ToolSchemaOptions } from '@/tools/registry';
 import { registerAllTools } from '@/tools';
-import { requiresConfirmApproval } from '@/tools/confirm-guard';
+import { requiresConfirmApproval, matchedSensitiveField } from '@/tools/confirm-guard';
+import type { ToolApprovalVerdict } from '@/tools/approval-reason';
 import { OpenAITool } from '@/common/openai-types';
 
 import {
@@ -77,38 +78,66 @@ export class OpenAIToolsConverter {
   }
 
   /**
-   * 查询工具（按本次执行参数）是否需要用户批准后才可执行（人审门）。
-   * 会话引擎经此委托查询，保持对注册表细节零感知；未注册的工具无需批准
-   * （其执行会在 tool-executor 处以「工具不存在」失败回传模型）。
+   * 判定工具（按本次执行参数）是否需要用户批准后才可执行（人审门），
+   * 并给出**命中的原因**——审批弹窗按原因分档出文案。
+   *
+   * 为什么要有原因：同一道门后面是完全不同的事（装第三方依赖 / 删记录 /
+   * 资金操作 / 插件授权），原先统一显示「破坏性或不可逆」既误导又让用户
+   * 对真正的危险提示脱敏。原因码与判定出自**同一次求值**，绝不各判各的
+   * （两处各判一份迟早漂移：文案说装依赖、门却按删除放行）。
    *
    * 三级判定（并集，任一命中即审批；实现见 tools/confirm-guard.ts）：
-   *   - ToolMetadata.requiresApproval === true：整工具审批；
+   *   - ToolMetadata.requiresApproval === true：整工具审批 → 'tool'
+   *   - ToolMetadata.requiresApprovalFor 命中：工具自定义的参数级审批
+   *     （python_run 的公开 PyPI 依赖安装 → 'dependency-install'），
+   *     原因细分由 approvalReasonFor 给出
    *   - ToolMetadata.requiresApprovalActions 命中 args.action：action 级审批
-   *     （「单工具多操作」的统一工具仅破坏性操作过人审，如 note_tool 的 delete）；
+   *     （「单工具多操作」的统一工具仅破坏性操作过人审，如 note_tool 的 delete）
+   *     → 'action'，detail 为命中的 action 名
    *   - ToolMetadata.requiresConfirm：参数语义级审批——模型显式传 confirm=true，
-   *     或可定位文本字段命中破坏性关键词（click/fill 类的兜底防线）。
+   *     或可定位文本字段命中破坏性关键词（click/fill 类的兜底防线）→ 'confirm'，
+   *     detail 为命中的字段名
    * args 缺省时只做整工具判定（兼容不带参数的调用方）。
+   *
+   * 插件工具的审批级别（install/session/call）由会话引擎在本判定之上覆盖，
+   * 原因随之改为 'plugin-session' / 'plugin-call'——见 conversation-engine。
    */
-  static requiresApproval(toolName: string, args?: unknown): boolean {
+  static classifyApproval(toolName: string, args?: unknown): ToolApprovalVerdict {
     const tool = toolRegistry.getTool(toolName);
-    if (!tool) return false;
+    if (!tool) return { required: false, reason: 'unknown' };
     const { metadata } = tool;
-    if (metadata.requiresApproval === true) return true;
-    if (tool.requiresApprovalFor?.(args)) return true;
-
     const record =
       args !== null && typeof args === 'object' && !Array.isArray(args)
         ? (args as Record<string, unknown>)
         : null;
 
+    if (metadata.requiresApproval === true) return { required: true, reason: 'tool' };
+    if (tool.requiresApprovalFor?.(args)) {
+      const info = tool.approvalReasonFor?.(args) ?? null;
+      return { required: true, reason: info?.reason ?? 'tool', detail: info?.detail };
+    }
+
     const actionList = metadata.requiresApprovalActions;
     if (actionList && actionList.length > 0 && record && typeof record.action === 'string') {
-      if (actionList.includes(record.action)) return true;
+      if (actionList.includes(record.action)) return { required: true, reason: 'action', detail: record.action };
     }
 
     const confirmApplies = !metadata.requiresConfirmActions ||
       !!record && typeof record.action === 'string' && metadata.requiresConfirmActions.includes(record.action);
-    return requiresConfirmApproval(metadata.requiresConfirm && confirmApplies, args);
+    if (requiresConfirmApproval(metadata.requiresConfirm && confirmApplies, args))
+      return { required: true, reason: 'confirm', detail: matchedSensitiveField(args) ?? undefined };
+
+    return { required: false, reason: 'unknown' };
+  }
+
+  /**
+   * 查询工具（按本次执行参数）是否需要用户批准后才可执行（人审门）。
+   * 会话引擎经此委托查询，保持对注册表细节零感知；未注册的工具无需批准
+   * （其执行会在 tool-executor 处以「工具不存在」失败回传模型）。
+   * 需要原因时用 classifyApproval（本方法是它的 `required` 投影，同一份判定）。
+   */
+  static requiresApproval(toolName: string, args?: unknown): boolean {
+    return this.classifyApproval(toolName, args).required;
   }
 
   /**

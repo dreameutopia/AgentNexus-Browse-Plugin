@@ -133,7 +133,7 @@ export async function saveWorkspaceResultText(
   if (typeof text !== "string" || text === "") {
     throw new WorkspaceOperationError(
       "INVALID_CONTENT",
-      "结果为空：没有可保存的数据（脚本应 return 非空结果后重试）",
+      "结果为空：没有可保存的数据",
     );
   }
   const normalizedLabel =

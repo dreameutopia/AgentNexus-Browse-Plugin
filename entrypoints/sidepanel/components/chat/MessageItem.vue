@@ -30,13 +30,11 @@
         />
         <!-- 上传文件元素：图片可放大查看与下载，html/pdf 可网页打开，其余仅下载 -->
         <MessageUploads v-if="uploadedFiles.length > 0" :files="uploadedFiles" />
-        <!-- 捕获元素：与文件元素同区排布；点击 chip 打开详情 / 备注弹窗，
-             悬浮 chip 可发起「校验元素」 -->
+        <!-- 捕获元素：与文件元素同区排布；点击 chip 打开详情 / 备注弹窗 -->
         <MessageCapturedElements
           v-if="capturedElements.length > 0"
           :elements="capturedElements"
           @open="handleOpenCapturedElement"
-          @validate="handleValidateCapturedElement"
         />
       </template>
 
@@ -407,8 +405,6 @@ const emit = defineEmits<{
   'guard-open-settings': [guardKind: MessagePart['guardKind']];
   /** 打开捕获元素详情：由 App 统一挂载弹窗（输入区与历史消息共用） */
   'open-captured-element': [messageId: string, element: import('@/utils/element-capture/types').CapturedElement];
-  /** 校验捕获元素：由 App 在当前操作网页内定位并高亮 */
-  'validate-captured-element': [element: import('@/utils/element-capture/types').CapturedElement];
 }>();
 
 const renderMessage = (content: string) => markdownRenderer.renderMessage(content);
@@ -428,10 +424,6 @@ function handleOpenCapturedElement(element: import('@/utils/element-capture/type
   const messageId = props.message.id;
   if (!messageId) return;
   emit('open-captured-element', messageId, element);
-}
-
-function handleValidateCapturedElement(element: import('@/utils/element-capture/types').CapturedElement): void {
-  emit('validate-captured-element', element);
 }
 
 /**

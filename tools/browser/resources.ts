@@ -57,11 +57,6 @@ const MAX_SNIFF_LIMIT = 100;
 const DEFAULT_CAPTURED_LIMIT = 50;
 const MAX_CAPTURED_LIMIT = 200;
 
-/** 默认拦截的文件类型（与旧拦截器同源） */
-const DEFAULT_INTERCEPT_EXTENSIONS = [
-  'pdf', 'doc', 'docx', 'ppt', 'pptx', 'mp4', 'mp3', 'zip', 'rar', 'md', 'xlsx', 'xls',
-];
-
 /** 嗅探到的资源 */
 interface ResourceInfo {
   id: string;
@@ -133,7 +128,7 @@ export class BrowserResourcesTool extends BaseBrowserTool {
         'list=列出已嗅探到的资源缓存；' +
         'download=把嗅探到的资源保存到当前会话工作区 outputs/（resourceIds 来自 sniff/list）；' +
         'fetch=按 URL 获取文件并保存到当前会话工作区 outputs/（无需先嗅探；filename 指定保存名）；' +
-        'intercept=下载拦截器开关（operation=start/stop/state；start 可用 extraExtensions 追加扩展名，state 查询当前是否开启与生效列表）——' +
+        'intercept=旧版全局捕获状态（仅保留 stop/state 兼容；网页下载按钮使用 browser_download_click）——' +
         '开启后浏览器里触发的文件下载会被旁路复制一份到扩展私有库，原下载不受影响；' +
         'captured=已捕获副本库（operation=list/get/clear；get 按 fileId 取元数据）；' +
         'export=把某个捕获副本保存到当前会话工作区 outputs/（fileId；返回统一文件卡片标记）；' +
@@ -147,7 +142,7 @@ export class BrowserResourcesTool extends BaseBrowserTool {
             type: 'string',
             enum: [...RESOURCES_ACTIONS],
             description:
-              'sniff=嗅探；list=列出缓存；download=下载嗅探结果；fetch=直链下载；intercept=拦截器开关；captured=捕获副本库；export=导出副本；status=总体状态',
+              'sniff=嗅探；list=列出缓存；download=下载嗅探结果；fetch=直链下载；intercept=旧版全局捕获状态；captured=历史副本库；export=导出副本；status=总体状态',
           },
           fileTypes: {
             type: 'array',
@@ -190,14 +185,9 @@ export class BrowserResourcesTool extends BaseBrowserTool {
           },
           operation: {
             type: 'string',
-            enum: [...INTERCEPT_ACTIONS, ...CAPTURED_ACTIONS],
+            enum: ['stop', 'state', ...CAPTURED_ACTIONS],
             description:
-              '仅 action="intercept"/"captured"：子动作。intercept=start/stop/state；captured=list/get/clear',
-          },
-          extraExtensions: {
-            type: 'array',
-            items: { type: 'string' },
-            description: '仅 action="intercept" operation=start：追加拦截的扩展名（如 ["jpg","png"]）',
+              '仅 action="intercept"/"captured"：子动作。intercept=stop/state；captured=list/get/clear',
           },
           fileId: {
             type: 'string',
@@ -508,23 +498,12 @@ export class BrowserResourcesTool extends BaseBrowserTool {
     }
   }
 
-  /** intercept：下载拦截器开关 */
+  /** Legacy interception commands remain readable for existing callers. */
   private async handleIntercept(args: ResourcesArgs): Promise<ToolResult> {
     const operation = args.operation!;
 
     if (operation === 'start') {
-      const extensions = [...new Set([
-        ...DEFAULT_INTERCEPT_EXTENSIONS,
-        ...(args.extraExtensions ?? []).map(ext => ext.toLowerCase().replace(/^\./, '')),
-      ])];
-      const response = await this.sendBackground({ command: 'startInterception', payload: { interceptExtensions: extensions } });
-      if (!response?.success) {
-        return this.createErrorResponse(`开启下载拦截失败：${response?.error ?? '后台未返回成功状态'}`);
-      }
-      return this.createSuccessResponse(
-        { status: 'enabled', activeExtensions: extensions },
-        `下载拦截已开启（生效扩展名：${extensions.join(', ')}）`,
-      );
+      return this.createErrorResponse('GLOBAL_DOWNLOAD_CAPTURE_DISABLED：请用 browser_download_click 点击目标下载控件。');
     }
 
     if (operation === 'stop') {

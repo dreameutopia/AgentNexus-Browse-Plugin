@@ -1,5 +1,4 @@
 import { allocateSkillIdentity, isSkillId, isBuiltinSkillId } from './skill-identity';
-import { onPluginsChange } from '@/utils/plugins/catalog';
 import { withNamedLock } from '@/utils/shared/async-lock';
 import { withAgentSkillAssociation } from '@/utils/agents/agent-skill-links';
 import { errorDetails } from '@/utils/shared/error-details';
@@ -174,6 +173,8 @@ function notifyChange(): void {
         }
     }
 }
+/** 触发技能集合变更通知（供插件目录 catalog 订阅，见 catalog 的 onPluginsChange 注册处） */
+export function notifySkillStoreChange(): void { notifyChange(); }
 /** 序列化（剥离派生字段 body） */
 function serializeSkill(skill: SkillRecord): StoredSkill {
     const { body: _body, ...rest } = skill;
@@ -628,7 +629,6 @@ export async function setSkillEnabled(id: string, enabled: boolean): Promise<boo
     });
 }
 export type { SkillRecord, StoredSkill };
-onPluginsChange(notifyChange);
 async function withSkillStoreMutation<T>(work: () => Promise<T>): Promise<T> {
     return withNamedLock('agentnexus-skill-store', async () => {
         await flushSkillStoreWrites();

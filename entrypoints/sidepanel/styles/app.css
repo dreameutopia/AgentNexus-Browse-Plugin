@@ -166,50 +166,6 @@ h1 {
   overflow-wrap: anywhere;
 }
 
-/* Python 运行时安装引导标签：欢迎语下的中性玻璃胶囊，hover 轻抬升 */
-.greeting-python-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 16px;
-  padding: 7px 16px;
-  border: 1px solid var(--line-soft, #e4e2de);
-  border-radius: 999px;
-  background: #ffffff;
-  color: #292824;
-  font-family: inherit;
-  font-size: 12.5px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  line-height: 1.5;
-  cursor: pointer;
-  box-shadow: 0 1px 2px rgba(41, 40, 36, 0.05);
-  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease,
-    background 0.18s ease;
-}
-
-.greeting-python-tag:hover {
-  transform: translateY(-1px);
-  border-color: #cfccc5;
-  background: #fbfaf8;
-  box-shadow: 0 4px 12px rgba(41, 40, 36, 0.08);
-}
-
-.greeting-python-tag:active {
-  transform: translateY(0);
-  box-shadow: 0 1px 2px rgba(41, 40, 36, 0.05);
-}
-
-.greeting-python-tag:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(41, 40, 36, 0.18);
-}
-
-.greeting-python-tag__emoji {
-  font-size: 14px;
-  line-height: 1;
-}
-
 @keyframes welcome-enter {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }

@@ -19,10 +19,19 @@ export function matchesDestructiveText(text: unknown): boolean {
   return typeof text === 'string' && RISK_PATTERNS.some(pattern => pattern.test(text));
 }
 
-export function hasDestructiveSignal(args: unknown): boolean {
-  if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
+/**
+ * 返回命中的敏感字段名（SCANNED_FIELDS 之一），无命中返回 null。
+ * 审批弹窗据此告诉用户「为什么拦」（命中了 description / text / target 中的
+ * 哪一个），而不是只给一句无从核对的「敏感操作」。
+ */
+export function matchedSensitiveField(args: unknown): string | null {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
   const record = args as Record<string, unknown>;
-  return SCANNED_FIELDS.some(field => matchesDestructiveText(record[field]));
+  return SCANNED_FIELDS.find(field => matchesDestructiveText(record[field])) ?? null;
+}
+
+export function hasDestructiveSignal(args: unknown): boolean {
+  return matchedSensitiveField(args) !== null;
 }
 
 export function requiresConfirmApproval(requiresConfirm: boolean | undefined, args: unknown): boolean {

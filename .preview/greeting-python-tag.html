@@ -2,18 +2,54 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>欢迎语 Python 安装引导标签预览</title>
-<!-- 真实侧边栏样式（global.css 提供画布变量，app.css 提供欢迎区与标签本体） -->
+<title>欢迎语 Python 安装引导标签预览（实时显隐）</title>
+<!-- 真实侧边栏样式：global.css 提供画布变量，app.css 提供欢迎区上下文；
+     标签本体样式由构建脚本从 GreetingPythonTag.vue 的 <style> 抽出 -->
 <link rel="stylesheet" href="../entrypoints/sidepanel/styles/global.css">
 <link rel="stylesheet" href="../entrypoints/sidepanel/styles/app.css">
+<link rel="stylesheet" href="../node_modules/.cache/greeting-python-tag.css">
 <style>
-  /* 预览页仅用于视觉核对：还原空会话欢迎区的全屏画布与居中布局 */
+  /* 预览页仅用于视觉核对：还原空会话欢迎区画布 + 底部状态控制条 */
   body { margin: 0; }
   .app-container { min-height: 100vh; }
+  .preview-controls {
+    position: fixed;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 8px;
+    padding: 10px 14px;
+    border: 1px solid #e4e2de;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 8px 24px rgba(41, 40, 36, 0.12);
+    font-size: 12px;
+    z-index: 10;
+  }
+  .preview-controls button {
+    padding: 6px 12px;
+    border: 1px solid #e4e2de;
+    border-radius: 8px;
+    background: #fff;
+    font: inherit;
+    cursor: pointer;
+  }
+  .preview-controls button:hover { background: #f3f1ed; }
+  #open-hint {
+    position: fixed;
+    left: 50%;
+    bottom: 64px;
+    transform: translateX(-50%);
+    margin: 0;
+    font-size: 12px;
+    color: #787671;
+    z-index: 10;
+  }
 </style>
 </head>
 <body>
-<!-- 标记与 App.vue 欢迎区保持一致（greeting 区块 + Python 安装引导标签） -->
+<!-- 标记与 App.vue 欢迎区保持一致（标签本体挂载在 #tag-root） -->
 <div class="app-container is-welcome">
   <div class="main-content">
     <div class="center-container">
@@ -24,13 +60,20 @@
         </div>
         <h1 id="greeting-title" class="greeting-title">下午好，让思路继续</h1>
         <p class="greeting-subtitle">从一个问题，或一件想完成的事开始。</p>
-        <button type="button" class="greeting-python-tag">
-          <span class="greeting-python-tag__emoji" aria-hidden="true">🐍</span>
-          <span>安装Python运行时环境，解锁更多能力</span>
-        </button>
+        <div id="tag-root"></div>
       </section>
     </div>
   </div>
 </div>
+
+<!-- 控制条：模拟管理中心侧的安装完成 / 删除环境（跨上下文 storage 推送） -->
+<div class="preview-controls">
+  <button type="button" onclick="__setPythonEnvStatus('ready')">模拟安装完成 (ready)</button>
+  <button type="button" onclick="__setPythonEnvStatus('idle')">模拟删除环境 (idle)</button>
+  <button type="button" onclick="__setPythonEnvStatus('error')">模拟安装失败 (error)</button>
+</div>
+<p id="open-hint"></p>
+
+<script src="../node_modules/.cache/greeting-python-tag.js"></script>
 </body>
 </html>

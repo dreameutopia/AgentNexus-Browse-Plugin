@@ -114,6 +114,7 @@ const NETWORK_CAPTURE_TOOL = 'browser_network_capture';
 const AUTOMATION_TOOLS = [
   'browser_observe',
   'browser_interact',
+  'browser_download_click',
   'browser_dom_explore',
   'browser_tabs',
   'browser_navigation',

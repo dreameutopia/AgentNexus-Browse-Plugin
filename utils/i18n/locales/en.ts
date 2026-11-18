@@ -275,8 +275,31 @@ const en: Schema = {
       guardContinueNoContext: 'There is no conversation to continue yet — type a message and send it',
       responseTruncated: '⚠️ The reply was truncated by the model output length limit. Send "continue" to have the model pick up where it stopped.',
       toolFailuresStopped: '⚠️ Stopped: tool calls failed in all {count} consecutive rounds without confirmation to continue. Check whether the target site/data is reachable, or adjust the instructions and retry.',
+      // Mirrors zh-CN: one copy block per approval reason (see tools/approval-reason.ts
+      // and TOOL_APPROVAL_COPY in App.vue). Placeholders must stay in lockstep with zh-CN.
       toolApprovalTitle: 'Tool execution approval',
-      toolApprovalMessage: 'The model requests a tool that requires your approval:\n\nTool: {name}\nArguments: {args}\n\nThis operation is destructive or irreversible. Allow it to run?',
+      toolApprovalMessage:
+        'The model requests a tool that requires your approval:\n\nTool: {name}\nArguments: {args}\n\nThis call needs your confirmation before it runs. Allow it?',
+      toolApprovalMessageTool:
+        'The model requests a tool that requires your approval:\n\nTool: {name}\nArguments: {args}\n\nThis tool is declared to contain destructive or irreversible operations. Allow it to run?',
+      toolApprovalTitleInstall: 'Install third-party dependency',
+      toolApprovalMessageInstall:
+        'The model requests a third-party dependency for this run:\n\nTool: {name}\nDependencies: {detail}\nArguments: {args}\n\nInstalling downloads and executes package code from the public PyPI index, outside the official catalog allowlist. Allow the install and continue?',
+      toolApprovalMessageInstallNoDeps:
+        'The model requests the public PyPI index for this run:\n\nTool: {name}\nArguments: {args}\n\nNo package names were listed. Installing from the public index executes third-party code outside the official catalog allowlist. Allow it?',
+      toolApprovalTitleAction: 'Action needs authorization',
+      toolApprovalMessageAction:
+        'The model requests an action that needs your confirmation (action={detail}):\n\nTool: {name}\nArguments: {args}\n\nThis action may be irreversible. Allow it to run?',
+      toolApprovalTitleConfirm: 'Sensitive action confirmation',
+      toolApprovalMessageConfirm:
+        'The model requests a sensitive action:\n\nTool: {name}\nArguments: {args}\n\nThe {detail} field matched payment, account, credential, or privacy content. Allow it to run?',
+      toolApprovalMessageConfirmNoDetail:
+        'The model requests a sensitive action:\n\nTool: {name}\nArguments: {args}\n\nThis call was judged to involve payment, account, credential, or privacy content. Allow it to run?',
+      toolApprovalTitlePlugin: 'Plugin authorization',
+      toolApprovalMessagePluginSession:
+        'A plugin requests a tool call; this session has not authorized it yet:\n\nPlugin: {detail}\nTool: {name}\nArguments: {args}\n\nOnce approved, the plugin will not ask again in this session. Allow it?',
+      toolApprovalMessagePluginCall:
+        'A plugin requests a tool call (this plugin requires approval on every call):\n\nPlugin: {detail}\nTool: {name}\nArguments: {args}\n\nAllow it to run?',
       toolApprovalAllow: 'Allow',
       toolApprovalDeny: 'Deny',
       persistenceDegraded:
@@ -402,6 +425,15 @@ const en: Schema = {
       uploadActionHint: 'Images, documents, code, and more',
       captureAction: 'Capture element',
       captureActionHint: 'Pick an element on the page for the model',
+      captureTitle: 'Element capture',
+      captureFailedTitle: 'Element capture failed',
+      captureNoCurrentTab: 'Could not get the current tab. Open a web page and try again.',
+      captureWindowUnavailable: 'The operation window is closed or unreachable. Pick it again in the window selector.',
+      captureNoTab: 'No capturable web page in the current operation window.',
+      captureUnsupportedPage: 'This page does not support element capture. Switch to a regular web page (http/https) and try again.',
+      captureInjectDenied: 'This page does not allow extension script injection ({reason}). Check that the extension has access to this site and try again.',
+      captureStartFailed: 'The page picker failed to start ({reason}). Refresh the page and try again.',
+      captureNoPicker: 'No picker is available on this page. Refresh the page and try again; if it still fails, check that the extension has access to this site.',
       capturingTitle: 'Capturing element',
       capturingHint: 'Switch to the target page and hover over an element. Right-click is never intercepted during capture.',
       mouseLeft: 'Click',
@@ -422,10 +454,10 @@ const en: Schema = {
       remove: 'Deselect this element',
       saveFailed: 'Failed to save the note. Please try again',
       validateAction: 'Verify element',
-      validateSuccess: 'Element verified and highlighted on the page (3s)',
+      validateSuccess: 'Element verified and highlighted on the page',
       validateFailed: 'Could not locate this element on the current page; the page may have changed',
       validateNoTab: 'No verifiable web page in the current operation window',
-      validateBindingError: 'Failed to read the operation window: {reason}',
+      bindingError: 'Failed to read the operation window: {reason}',
       validateInjectFailed: 'Cannot inject the picker into this page. Check that the extension has access to this site',
       validateNoResponse: 'The page did not respond to verification. Refresh the page and try again',
     },

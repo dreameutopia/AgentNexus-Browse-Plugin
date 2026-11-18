@@ -278,8 +278,31 @@ const zhCN = {
       guardContinueNoContext: '当前没有可继续的会话内容，请输入消息后发送',
       responseTruncated: '⚠️ 回复因达到模型输出长度上限被截断。发送「继续」可让模型从中断处接着写。',
       toolFailuresStopped: '⚠️ 已停止执行：工具调用连续 {count} 轮全部失败且未确认继续。建议检查目标站点/数据是否可达，或调整指令后重试。',
+      // 工具审批弹窗：按命中原因分档出文案（原因码 tools/approval-reason.ts，
+      // 分档映射 App.vue TOOL_APPROVAL_COPY）。通用档兜底，绝不假设原因。
       toolApprovalTitle: '工具执行审批',
-      toolApprovalMessage: '模型请求执行需要批准的工具：\n\n工具：{name}\n参数：{args}\n\n该操作具有破坏性或不可逆，是否允许执行？',
+      toolApprovalMessage:
+        '模型请求执行需要批准的工具：\n\n工具：{name}\n参数：{args}\n\n该操作需要你确认后才会执行，是否允许？',
+      toolApprovalMessageTool:
+        '模型请求执行需要批准的工具：\n\n工具：{name}\n参数：{args}\n\n该工具声明包含破坏性或不可逆操作，执行前需人工确认。是否允许执行？',
+      toolApprovalTitleInstall: '安装第三方依赖',
+      toolApprovalMessageInstall:
+        '模型请求为本次运行安装第三方依赖：\n\n工具：{name}\n依赖：{detail}\n参数：{args}\n\n安装会从公开 PyPI 下载并执行这些包的代码，不受官方目录白名单保护。是否允许安装并继续执行？',
+      toolApprovalMessageInstallNoDeps:
+        '模型请求为本次运行启用公开 PyPI 依赖源：\n\n工具：{name}\n参数：{args}\n\n本次未列出具体包名。从公网安装依赖会执行第三方代码，不受官方目录白名单保护。是否允许？',
+      toolApprovalTitleAction: '执行需授权的操作',
+      toolApprovalMessageAction:
+        '模型请求执行需要你确认的操作（action={detail}）：\n\n工具：{name}\n参数：{args}\n\n该操作可能不可逆，是否允许执行？',
+      toolApprovalTitleConfirm: '敏感操作确认',
+      toolApprovalMessageConfirm:
+        '模型请求执行敏感操作：\n\n工具：{name}\n参数：{args}\n\n意图字段 {detail} 命中资金、账号、凭据或隐私类内容。是否允许执行？',
+      toolApprovalMessageConfirmNoDetail:
+        '模型请求执行敏感操作：\n\n工具：{name}\n参数：{args}\n\n该调用被判定为涉及资金、账号、凭据或隐私类内容。是否允许执行？',
+      toolApprovalTitlePlugin: '插件授权',
+      toolApprovalMessagePluginSession:
+        '插件请求执行工具，本会话尚未授权：\n\n插件：{detail}\n工具：{name}\n参数：{args}\n\n批准后本会话内该插件不再重复询问。是否允许？',
+      toolApprovalMessagePluginCall:
+        '插件请求执行工具（该插件要求每次调用都需批准）：\n\n插件：{detail}\n工具：{name}\n参数：{args}\n\n是否允许执行？',
       toolApprovalAllow: '允许执行',
       toolApprovalDeny: '拒绝',
       persistenceDegraded:
@@ -405,6 +428,15 @@ const zhCN = {
       uploadActionHint: '图片、文档、代码等文件',
       captureAction: '元素捕获',
       captureActionHint: '在网页中选取元素发给模型',
+      captureTitle: '元素捕获',
+      captureFailedTitle: '元素捕获失败',
+      captureNoCurrentTab: '无法获取当前标签页，请打开一个网页后重试。',
+      captureWindowUnavailable: '操作窗口已关闭或无法访问，请在窗口选择器中重新选择。',
+      captureNoTab: '当前操作窗口中没有可捕获的网页。',
+      captureUnsupportedPage: '当前页面不支持元素捕获。请切换到普通网页（http/https）后重试。',
+      captureInjectDenied: '当前页面不允许扩展注入脚本（{reason}）。请确认扩展拥有该站点的访问权限后重试。',
+      captureStartFailed: '页面捕获器启动失败（{reason}）。请刷新当前网页后重试。',
+      captureNoPicker: '页面中没有可用的捕获器。请刷新当前网页后重试；若仍失败，请确认扩展拥有该站点的访问权限。',
       capturingTitle: '正在捕获元素',
       capturingHint: '请切换到目标网页，移动鼠标选择元素。捕获期间不会拦截右键菜单。',
       mouseLeft: '左键',
@@ -425,10 +457,10 @@ const zhCN = {
       remove: '取消选择该元素',
       saveFailed: '备注保存失败，请稍后重试',
       validateAction: '校验元素',
-      validateSuccess: '元素校验成功，已在页面中高亮标记（3 秒）',
+      validateSuccess: '元素校验成功，已在页面中高亮标记',
       validateFailed: '未能在当前页面定位到该元素，页面内容可能已变化',
       validateNoTab: '当前操作窗口中没有可校验的网页',
-      validateBindingError: '读取操作窗口失败：{reason}',
+      bindingError: '读取操作窗口失败：{reason}',
       validateInjectFailed: '无法在当前页面注入捕获器，请确认扩展拥有该站点的访问权限',
       validateNoResponse: '页面未响应校验请求，请刷新网页后重试',
     },

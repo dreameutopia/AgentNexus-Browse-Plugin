@@ -5,6 +5,14 @@
  * 转成保留语义结构的 Markdown：标题层级 / 表格（grid 还原 rowspan+colspan）/
  * 列表（嵌套 + 任务项）/ 代码块（语言识别）/ 链接 / 引用 / 图片 / 表单控件。
  *
+ * 范围提取（parentSelector / parentXPath，与 browser_observe 同名同义）：
+ *   - 只把命中容器的子树转为 Markdown；**包含容器自身的文本**——与 observe
+ *     的「容器自身不进结果」相反（读语义里容器的文本就是要读的内容）；
+ *   - 三态语义与 observe 一致：合法+命中 → 提取；0 命中 → containerMiss
+ *     （非错误，由宿主跨 frame 裁决）；非法选择器 → 精确 error；
+ *   - 多容器按文档序合并；嵌套命中不重复（visited 集合在外层先走时已标记后代）；
+ *   - 容器自身的 shadow 树由 convertElement 的 shadow 分支天然覆盖。
+ *
  * 遍历约定（与旧 textContentPayload 同源的边界，按现代组件框架收紧）：
  *   - 元素带可访问 shadow root（el.shadowRoot 或 chrome.dom.openOrClosedShadowRoot）
  *     时子节点取 shadow 树（这是实际渲染内容；slot 用 assignedNodes 取被分发
@@ -23,7 +31,10 @@
  * 自包含铁律：函数体内不得引用任何模块级标识符（chrome.scripting 会把源码
  * 序列化后到页面干净作用域求值），全部常量声明在函数体内。
  */
-export function structuredPagePayload(): {
+export function structuredPagePayload(
+  parentSelector = '',
+  parentXPath = '',
+): {
   markdown: string;
   truncated: boolean;
   shadowRoots: number;
@@ -31,6 +42,8 @@ export function structuredPagePayload(): {
   title: string;
   error?: string;
   truncationReason?: string;
+  /** 父容器作用域在本 frame 未命中（选择器合法、容器不在这个 frame）——非错误 */
+  containerMiss?: boolean;
 } {
   // ─── 常量（必须内联在函数体内） ───
   /** 单 frame 提取结果字符上限（超长截断并标记） */
@@ -499,11 +512,76 @@ export function structuredPagePayload(): {
 
   // ─── 主流程 ──
   try {
+    const pageUrl = (typeof document !== 'undefined' && document.URL) || '';
+    const pageTitle = (typeof document !== 'undefined' && document.title) || '';
+    // ── 父容器作用域解析（三态：命中 / containerMiss / 精确 error）──
+    const trimmedSelector = typeof parentSelector === 'string' ? parentSelector.trim() : '';
+    const trimmedXPath = typeof parentXPath === 'string' ? parentXPath.trim() : '';
+    if (trimmedSelector && trimmedXPath) {
+      // 调用方（read_website）已拦截——这里是注入层的纵深防御
+      return {
+        markdown: '', truncated: false, shadowRoots: 0, url: pageUrl, title: pageTitle,
+        error: 'INVALID_ARGUMENT：parentSelector 与 parentXPath 互斥，只能传其一。',
+      };
+    }
+    let scopeRoots: Element[] | null = null;
+    if (trimmedSelector) {
+      try {
+        scopeRoots = Array.from(document.querySelectorAll(trimmedSelector));
+      } catch (error) {
+        return {
+          markdown: '', truncated: false, shadowRoots: 0, url: pageUrl, title: pageTitle,
+          error:
+            `parentSelector 不是合法的 CSS 选择器：${error instanceof Error ? error.message : String(error)}` +
+            `（选择器：${trimmedSelector.slice(0, 200)}）`,
+        };
+      }
+    } else if (trimmedXPath) {
+      try {
+        const snapshot = document.evaluate(
+          trimmedXPath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null,
+        );
+        const found: Element[] = [];
+        for (let i = 0; i < snapshot.snapshotLength; i++) {
+          const node = snapshot.snapshotItem(i);
+          if (node && node.nodeType === Node.ELEMENT_NODE) found.push(node as Element);
+        }
+        if (found.length === 0 && snapshot.snapshotLength > 0) {
+          return {
+            markdown: '', truncated: false, shadowRoots: 0, url: pageUrl, title: pageTitle,
+            error:
+              `parentXPath 命中了 ${snapshot.snapshotLength} 个非元素节点；父容器必须是元素节点` +
+              `（表达式：${trimmedXPath.slice(0, 200)}）`,
+          };
+        }
+        scopeRoots = found;
+      } catch (error) {
+        return {
+          markdown: '', truncated: false, shadowRoots: 0, url: pageUrl, title: pageTitle,
+          error:
+            `parentXPath 不是合法的 XPath 1.0 表达式：${error instanceof Error ? error.message : String(error)}` +
+            `（表达式：${trimmedXPath.slice(0, 200)}）`,
+        };
+      }
+      // 注意：命中 0 个与「未命中」不同——合法表达式 + 0 命中走下方 containerMiss
+    }
+    if (scopeRoots && scopeRoots.length === 0) {
+      return {
+        markdown: '', truncated: false, shadowRoots: 0, url: pageUrl, title: pageTitle,
+        containerMiss: true,
+      };
+    }
+
     const body = document.body;
     if (!body) {
-      return { markdown: '', truncated: false, shadowRoots: 0, url: document.URL || '', title: document.title || '' };
+      return { markdown: '', truncated: false, shadowRoots: 0, url: pageUrl, title: pageTitle };
     }
-    let markdown = processNodes(Array.from(body.childNodes), 0);
+    // 作用域：命中容器自身**参与**提取（读语义包含容器文本），多容器按文档序；
+    // 嵌套命中由 visited 集合天然去重（外层先走即标记后代，内层返回空串）
+    const roots: Node[] = scopeRoots && scopeRoots.length > 0
+      ? scopeRoots
+      : Array.from(body.childNodes);
+    let markdown = processNodes(roots, 0);
 
     // 代码围栏之外的空白规整：围栏内保持原样，围栏外行内空格合一、连续空行 ≤1
     const lines = markdown.split('\n');

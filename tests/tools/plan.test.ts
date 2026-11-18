@@ -50,15 +50,26 @@ assert.equal(result.success, true, 'create 应成功');
 assert.equal(result.isError, false);
 assert.ok(textOf(result).includes('计划已建立（共 3 项）'), 'create 正文含建立提示');
 assert.deepEqual(
-  (result.data.items as PlanItem[]).map(item => item.id),
+  result.data.itemIds,
   ['1', '2', '3'],
   'create 分配自增 id',
+);
+assert.equal(
+  'items' in result.data,
+  false,
+  'create 不再回传全量计划（正文已渲染，避免同一份计划在上下文里出现两次）',
 );
 
 // read：计数摘要
 result = await planTool.execute({ action: 'read' }, { chatId });
 assert.equal(result.success, true);
 assert.ok(textOf(result).includes('共 3 项，已完成 0'), 'read 正文含计数');
+assert.equal(result.data.count, 3, 'read 回传计划项数');
+assert.equal(
+  'items' in result.data,
+  false,
+  'read 不再回传全量计划（正文已逐项渲染）',
+);
 
 // edit：缺 id 拒绝
 result = await planTool.execute({ action: 'edit', status: 'done' }, { chatId });
@@ -107,7 +118,7 @@ result = await planTool.execute(
   { chatId },
 );
 assert.equal(result.success, true);
-assert.equal((result.data.added as PlanItem[]).length, 1, '重复步骤被丢弃');
+assert.equal((result.data.addedIds as string[]).length, 1, '重复步骤被丢弃');
 assert.equal(getPlan(chatId).length, 4, 'add 后共 4 项');
 
 // delete：未知 id 显式回显，不静默吞掉

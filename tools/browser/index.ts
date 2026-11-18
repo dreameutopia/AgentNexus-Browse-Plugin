@@ -24,6 +24,7 @@ import { pageCleanTool } from './page-clean-tool';
 import { domExploreTool } from './dom-explore-tool';
 import { browserHistoryBookmarksTool } from './history-bookmarks';
 import { browserDownloadsTool } from './downloads';
+import { browserDownloadClickTool } from './download-click';
 import { browserResourcesTool } from './resources';
 import { browserTabsTool } from './tab-management';
 import { browserPageOpsTool } from './page-ops';
@@ -65,6 +66,7 @@ function createBrowserTools() {
 
     // 下载与资源工具（浏览器下载管理器 + 页面资源嗅探/下载/拦截捕获）
     browserDownloadsTool,
+    browserDownloadClickTool,
     browserResourcesTool,
 
     // 轻量页面操作（按屏滚动 / 等待元素出现，无需 DOM 引用）

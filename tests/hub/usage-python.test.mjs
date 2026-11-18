@@ -123,7 +123,7 @@ export const useLocale=()=>({locale:ref('zh-CN'),switchLocale:()=>{}});export co
         api.onResolve({ filter: /@\/utils\/skills\/skill-store$/ }, args => ({ path: 'skill-store-stub', namespace: 'skill-store' }));
         api.onLoad({ filter: /.*/, namespace: 'skill-store' }, () => ({
           contents: `export function getAllSkills(){ return []; }
-export function onSkillsChange(){ return () => {}; } export function getSkillById(){ return null; } export async function restoreCustomSkillsFromStorage(){} export async function setCustomSkill(){return {ok:false,reason:'invalid'};}`,
+export function onSkillsChange(){ return () => {}; } export function getSkillById(){ return null; } export async function restoreCustomSkillsFromStorage(){} export function notifySkillStoreChange(){} export async function setCustomSkill(){return {ok:false,reason:'invalid'};}`,
         }));
         // 用量统计引擎：固定快照 + 可推送
         // 注意 path 必须固定：esbuild 以「namespace + path」标识模块，

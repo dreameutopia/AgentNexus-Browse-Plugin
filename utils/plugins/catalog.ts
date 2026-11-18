@@ -1,4 +1,5 @@
 import { allocateSkillIdentity } from '@/utils/skills/skill-identity';
+import { restoreCustomSkillsFromStorage, notifySkillStoreChange } from '@/utils/skills/skill-store';
 import { toolRegistry, type ToolExecutionContext } from '@/tools/registry';
 import { createErrorResponse, type ToolResult } from '@/common/tool-handler';
 import type { AgentConfig } from '@/utils/agents/agent-types';
@@ -26,6 +27,10 @@ export function onPluginsChange(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
+// 技能库随插件快照变更广播变更（原由 skill-store 顶层反向订阅 catalog；
+// 为消除 skill-store ⇄ catalog 循环依赖改为本模块单向订阅 skill-store，
+// 注册时机等价——均先于任何快照应用调用）
+onPluginsChange(notifySkillStoreChange);
 export function pluginBindings(): Record<
   string,
   { digest: string; epoch: number }
@@ -104,7 +109,7 @@ export async function applyPluginSnapshot(next: PluginSnapshot): Promise<void> {
 export async function replacePluginSnapshot(next: PluginSnapshot): Promise<void> { return mutateCatalog(async () => { installSnapshot(next, await allocatePluginSkillIds(next)); await (await import('./managed-skills')).reconcilePluginSkills(next); }); }
 async function allocatePluginSkillIds(next: PluginSnapshot): Promise<Map<string, string>> {
   // Reserve restored local IDs before allocating any new plugin identities.
-  await (await import('@/utils/skills/skill-store')).restoreCustomSkillsFromStorage(true);
+  await restoreCustomSkillsFromStorage(true);
   const ids = new Map<string, string>();
   for (const pkg of next.packages) for (const skill of pkg.skills) ids.set(skill.ref, await allocateSkillIdentity('plugin:' + skill.ref));
   return ids;

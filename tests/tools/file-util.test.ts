@@ -252,6 +252,37 @@ const duplicate = await fileUtilTool.execute(
 assert.equal(duplicate.success, false);
 assert.match(textOf(duplicate), /错误类型: FILE_EXISTS/, '同名同后缀拒绝覆盖');
 
+// 同目录重复建脚本 → 回执点名已有脚本（近端提示，避免逐维度新建探测脚本）
+{
+  const first = await fileUtilTool.execute(
+    { action: 'create', path: 'scripts/probe.js', content: '// probe' },
+    context,
+  );
+  assert.equal(first.success, true, textOf(first));
+  assert.doesNotMatch(
+    textOf(first),
+    /已有其它脚本/,
+    '首个脚本无同目录同类，不给重复提示',
+  );
+  const second = await fileUtilTool.execute(
+    { action: 'create', path: 'scripts/probe2.js', content: '// probe 2' },
+    context,
+  );
+  assert.equal(second.success, true, textOf(second));
+  assert.match(
+    textOf(second),
+    /已有其它脚本.*probe\.js/,
+    '同目录再建脚本时点名已有脚本',
+  );
+  assert.match(
+    textOf(second),
+    /file_util\(action="edit"\)/,
+    '提示给出复用动作（edit + $args 切换）',
+  );
+  await fileUtilTool.execute({ action: 'delete', path: 'scripts/probe.js' }, context);
+  await fileUtilTool.execute({ action: 'delete', path: 'scripts/probe2.js' }, context);
+}
+
 // 类型限制：非文本文件不可写
 const binaryWrite = await fileUtilTool.execute(
   { action: 'create', path: 'inputs/book.pdf', content: 'x' },

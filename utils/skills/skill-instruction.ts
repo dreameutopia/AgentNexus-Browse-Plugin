@@ -35,11 +35,17 @@ import { isSkillToolId, skillToolCall } from './skill-tool-contract';
  * 优先级约定：技能正文随身携带，而不是挂在 system prompt 的技能分区上。
  * 原 <activated-skills> 分区已删除（改为合成 skill_tool(action="load") 轮），这条约定必须
  * 跟着技能正文走，才能在「预激活」与「模型自加载」两条路径上都成立。
+ * 歧义条款把 interaction-guidelines 的「宁问勿猜」焊进技能正文：冲突条款只裁决
+ * 两种理解相抵的情况，用户指令本身模糊时它不触发——两套声明若互不引用，
+ * 最新到达的技能正文会在 recency 竞争中压过 system prompt 里的征询准则。
  */
 const SKILL_CONFLICT_NOTICE =
   '优先级约定：用户本轮指令 > 技能的专项指令 > 当前智能体的通用工作流。' +
   '本技能是针对特定任务的深化指令，执行相关任务时以其流程为准（覆盖智能体的通用流程）；' +
-  '若技能内容与用户本轮指令冲突，以用户指令为准。';
+  '若技能内容与用户本轮指令冲突，以用户指令为准。' +
+  '执行本流程前先审视用户本轮指令：存在指代不明、范围或交付物歧义时，' +
+  '按 interaction-guidelines（全局用户交互准则）先征询用户再动手，不得自行选定一种理解带猜执行；' +
+  '澄清后仍按本技能流程推进。';
 
 /** skill_tool(action="load") 成功响应的结构化载荷（content 文本与 data 字段同源）。
  *  用 type 而非 interface：需整体作为 Record<string, unknown> 传给

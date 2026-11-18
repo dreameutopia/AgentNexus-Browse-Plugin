@@ -20,8 +20,8 @@
 export function composeUserMessageBody(
   userInput: string,
   pageQuotePrompt = '',
-  attachmentPrompt = '',
   selectedElementsPrompt = '',
+  attachmentPrompt = '',
 ): string {
   if (pageQuotePrompt || selectedElementsPrompt) {
     return [userInput, pageQuotePrompt, selectedElementsPrompt, attachmentPrompt]

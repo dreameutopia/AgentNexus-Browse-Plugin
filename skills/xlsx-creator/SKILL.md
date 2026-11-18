@@ -41,7 +41,7 @@ tags: excel 表格 导出
   "sheets": [
     {
       "name": "SKU数据",
-      "dataFiles": ["results/run-20261031-….json", "results/run-20261031-….json"],  // 结果文件路径列表（抓取工具响应里的 resultFile.path；多个按列表顺序拼接成一张表——可能重复先 data_ref_tool(action="dedupe", files=[...], by=[主键]) 一步完成拼接+去重；信封/复合数据先 action="project", file=路径)
+      "dataFiles": ["results/run-20261031-….json", "results/run-20261031-….json"],  // 结果文件路径列表（抓取工具响应里的 resultFile.path；多个按列表顺序拼接成一张表——可能重复先 data_ref_tool(action="dedupe", files=[...], by=[主键]) 一步完成拼接+去重；文件顶层是信封对象时 create_from_data 会按载荷路径契约自动定位其内部的行表，无需先 project）
       "fields": ["title", "price", "url"], // 可选：导出哪些列、什么顺序（缺省全部字段）
       "headers": ["商品名", "价格", "链接"], // 可选：表头文案（缺省用 fields）
       "zebra": true
@@ -60,7 +60,9 @@ tags: excel 表格 导出
 - 对象数组数据用 `fields` 选列/定序（字段名拼写错误会被校验拒绝并提示实际字段）；二维数组数据可用 `headers` 定表头或 `firstRowAsHeader: true`。字段值若是嵌套对象/数组，会以 JSON 文本写入单元格——需要拆列请先用 `data_ref_tool(action="project", flatten=true)` 展平。
 - `name/title/merges/columns/cells/freeze/autoFilter/zebra` 等样式选项与 `create` 完全一致；`cells` 可在数据区之外追加注释/落款。
 - `create_from_data` 至少要有一个 `dataFiles` 或 `dataRef` 数据表（否则改用 `create`）；`fields` 只对数据表有效。
-- 报错常见原因：数据文件不存在（用 file_util(action="list", path="results") 盘点）或不是数组（信封结构先 project）；dataRef 批次已过期；同一张表给了两种数据来源；行数超单表 5000 上限（分 sheet/分文件）。
+- **数据文件的顶层形状**：顶层是数组即直接作为表；顶层是信封对象（如 `{page, totalOnPage, rows:[…]}`）时工具会按载荷路径契约定位其内部的行表——成员名 `rows`/`items`/`data`/`records`/`list`/`results`/`content` 优先采用；未命中则按元素形态与层级唯一判定，判定不了会报错并列出候选路径，此时用 `data_ref_tool(action="project", path="<候选>")` 显式指定。
+- **完整性对账**：导出时工具会比对实抓行数与文件自报的总量字段（`totalOnPage`/`total`/`count` 等），结果写在 `warnings` 里——「核对通过」「可能漏抓」「完整性未验证」三种结论都会明确给出。**无基准时结论是「未验证」而不是默默通过**：批量导出务必让抓取脚本把页面宣称的总数一并返回（如信封里的 `totalOnPage`），否则无从判断是否漏抓。
+- 报错常见原因：数据文件不存在（用 file_util(action="list", path="results") 盘点）；信封内有多个同优先级数组导致无法定位行表（按报错列出的候选显式指定 path）；dataRef 批次已过期；同一张表给了两种数据来源；行数超单表 5000 上限（分 sheet/分文件）。
 
 ## create 的数据结构速查
 
@@ -111,5 +113,5 @@ tags: excel 表格 导出
 ## 边界情况
 
 - 用户只说"导出"没给内容：先从当前对话/页面数据整理出表格再生成，不要生成空文件。
-- 数据来自批量抓取（results/ 结果文件或 dataRef 批次）：一律用 `create_from_data` 直接引用导出，禁止把数据行抄进参数；多个结果文件按序合成一个——可能重复时用 `data_ref_tool(action="dedupe", files=[...])` 拼接+去重一步完成（无重复时直接 `action="merge", files=[...]`，或不预先合并把路径列表直接放进 dataFiles）；信封包装的响应或「一格两表」的复合数据先 `data_ref_tool(action="project")` 投影为关系表（path 指向对象/数组，carry 携带父键列）。
+- 数据来自批量抓取（results/ 结果文件或 dataRef 批次）：一律用 `create_from_data` 直接引用导出，禁止把数据行抄进参数；多个结果文件按序合成一个——可能重复时用 `data_ref_tool(action="dedupe", files=[...])` 拼接+去重一步完成（无重复时直接 `action="merge", files=[...]`，或不预先合并把路径列表直接放进 dataFiles）；信封包装的响应由 `create_from_data` 自动定位内部行表，只有「一格两表」这类需要把父表字段带成列的复合数据才需要 `data_ref_tool(action="project", path=…, carry=[…])` 投影。
 - 用户要求 CSV：本技能只做 xlsx。数据已在工作区时（`results/*.csv` 或脚本写出的 csv），直接说明该文件即 CSV 并给出文件卡片；需要新建时用 `js_run` 写 `outputs/*.csv`（首行表头，标准库 csv 即可），或 `browser_extract_data(saveTo="outputs/xxx.csv")` 直接导出 DOM 抓取结果。不要用 Markdown 表格冒充 CSV 文件。

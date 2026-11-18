@@ -14,6 +14,10 @@ import assert from 'node:assert/strict';
 import { chatDatabase } from '../../entrypoints/sidepanel/core/context/chat-database';
 import { readWorkspaceOutput } from '../../utils/python-workspace/store';
 import { BrowserDownloadsTool } from '../../tools/browser/downloads';
+import { browserDownloadClickTool } from '../../tools/browser/download-click';
+import { DOWNLOAD_IMPORT_LIMIT, initDownloadImport, trackDownloadImport } from '../../tools/browser/download-import';
+import { browserInteractTool } from '../../tools/browser/interact';
+import { cdpSession } from '../../tools/browser/cdp-session';
 import { BrowserResourcesTool } from '../../tools/browser/resources';
 
 const resourceChatId = 'resource-contract';
@@ -403,11 +407,8 @@ function restoreStubs(): void {
 
     // —— intercept ——
     const started = await tool.execute({ action: 'intercept', operation: 'start', extraExtensions: ['JPG', '.png'] });
-    assert.equal(started.success, true, 'intercept start 成功');
-    const startData = started.data as { activeExtensions: string[] };
-    assert.ok(startData.activeExtensions.includes('jpg'), '扩展名归一化为小写');
-    assert.ok(startData.activeExtensions.includes('png'), '扩展名归一化去点');
-    assert.ok(startData.activeExtensions.includes('pdf'), '默认扩展名保留');
+    assert.equal(started.success, false, '全局拦截不可重新启用');
+    assert.match(String(started.error), /GLOBAL_DOWNLOAD_CAPTURE_DISABLED/);
 
     const state = await tool.execute({ action: 'intercept', operation: 'state' });
     assert.equal(state.success, true, 'intercept state 成功');
@@ -472,3 +473,151 @@ function restoreStubs(): void {
 }
 
 console.log('[downloads-resources] 下载管理器与资源捕获工具契约通过');
+
+// Download task ownership and progress survive transient browser observation.
+{
+  const original = { ...chromeStub };
+  const originalFetch = globalThis.fetch;
+  const originalTimer = globalThis.setTimeout;
+  const originalInteract = browserInteractTool.execute;
+  const originalAttach = cdpSession.attach;
+  const storage: Record<string, unknown> = {};
+  const queries: chrome.downloads.DownloadQuery[] = [];
+  const observers = new Set<(...args: any[]) => void>();
+  const events = {
+    addListener: (listener: (...args: any[]) => void) => { observers.add(listener); },
+    removeListener: (listener: (...args: any[]) => void) => { observers.delete(listener); },
+  };
+  let alarmName: string | undefined;
+  let filePermission = true;
+  let item: chrome.downloads.DownloadItem = {
+    id: 401, state: 'in_progress', startTime: new Date().toISOString(),
+    filename: 'C:/Downloads/report.txt', fileSize: 3, bytesReceived: 1, totalBytes: 3, exists: true,
+    danger: 'safe', incognito: false, paused: false,
+  } as chrome.downloads.DownloadItem;
+
+  try {
+    chromeStub.runtime = { getManifest: () => ({}), onStartup: { addListener() {} } };
+    chromeStub.storage = { local: {
+      get: async (keys: string | string[]) => structuredClone(
+        Object.fromEntries((typeof keys === 'string' ? [keys] : keys).map(key => [key, storage[key]])),
+      ),
+      set: async (updates: Record<string, unknown>) => { Object.assign(storage, structuredClone(updates)); },
+    } };
+    chromeStub.alarms = {
+      onAlarm: { addListener() {} },
+      get: async () => alarmName ? { name: alarmName } : undefined,
+      create: async (name: string) => { alarmName = name; },
+      clear: async () => { alarmName = undefined; },
+    };
+    chromeStub.extension = { isAllowedFileSchemeAccess: async () => filePermission };
+    chromeStub.downloads = {
+      search: async (query: chrome.downloads.DownloadQuery) => {
+        queries.push(query);
+        return query.id === item.id ? [item] : [];
+      },
+    };
+    chromeStub.debugger = { onEvent: events, onDetach: events, sendCommand: async () => ({}) };
+    chromeStub.webNavigation = { onCreatedNavigationTarget: events };
+    cdpSession.attach = async () => {};
+
+    const tracked = await trackDownloadImport(item, resourceChatId);
+    assert.notEqual(tracked.downloadId, String(item.id));
+    assert.equal(tracked.browserDownloadId, item.id);
+    assert.equal((await trackDownloadImport(item, resourceChatId)).downloadId, tracked.downloadId);
+    await assert.rejects(trackDownloadImport(item, 'other-chat'), /另一个会话/);
+
+    const status = (waitSeconds: number, chatId = resourceChatId, id = tracked.downloadId) =>
+      browserDownloadClickTool.execute({ action: 'status', downloadId: id, waitSeconds }, { chatId });
+    assert.equal((await status(0, 'other-chat')).data.code, 'DOWNLOAD_JOB_NOT_FOUND');
+    assert.equal((await status(181)).data.code, 'INVALID_WAIT_SECONDS');
+    const progress = await status(0);
+    assert.equal(progress.data.code, 'DOWNLOAD_IN_PROGRESS');
+    assert.equal(progress.data.bytesReceived, 1);
+    assert.equal(progress.data.totalBytes, 3);
+    assert.equal(progress.data.progressPercent, 33);
+    assert.equal((await status(1)).data.waitTimedOut, true);
+    assert.ok(queries.every(query => query.id === item.id), '进度查询只查已登记的浏览器 ID');
+
+    // Recreate a missing alarm on startup and finish the job without a status call.
+    const recoveryFirstQuery = queries.length;
+    alarmName = undefined;
+    item = { ...item, state: 'complete', bytesReceived: 3 };
+    globalThis.fetch = async () => new Response('one');
+    initDownloadImport();
+    for (let i = 0; i < 60 && !await readWorkspaceOutput(resourceChatId, 'outputs/report.txt'); i++) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(await (await readWorkspaceOutput(resourceChatId, 'outputs/report.txt'))?.text(), 'one');
+    assert.ok(queries.slice(recoveryFirstQuery).every(query => query.id === item.id));
+    assert.equal((await status(2)).data.code, 'DOWNLOAD_IMPORTED');
+    assert.equal(alarmName, undefined, '队列完成后清理定时任务');
+
+    item = { ...item, id: 402, state: 'interrupted', error: 'USER_CANCELED' };
+    const interrupted = await trackDownloadImport(item, resourceChatId);
+    const cancelled = await status(0, resourceChatId, interrupted.downloadId);
+    assert.equal(cancelled.data.code, 'DOWNLOAD_INTERRUPTED');
+    assert.equal(cancelled.data.downloadError, 'USER_CANCELED');
+
+    item = { ...item, id: 403, state: 'complete', error: undefined };
+    filePermission = false;
+    const pending = await trackDownloadImport(item, resourceChatId);
+    assert.equal((await status(2, resourceChatId, pending.downloadId)).data.code, 'LOCAL_FILE_PERMISSION_REQUIRED');
+    filePermission = true;
+    globalThis.fetch = async () => new Response(null, { headers: { 'Content-Length': String(DOWNLOAD_IMPORT_LIMIT) } });
+    assert.equal((await status(2, resourceChatId, pending.downloadId)).data.code, 'WORKSPACE_FILE_TOO_LARGE');
+
+    item = { ...item, id: 404, filename: 'C:/Downloads/【报表】商品 (1).xls' };
+    let localReads = 0;
+    globalThis.fetch = async () => { localReads++; throw new TypeError('Failed to fetch'); };
+    const failedImport = await trackDownloadImport(item, resourceChatId);
+    const failed = await status(2, resourceChatId, failedImport.downloadId);
+    assert.equal(failed.data.code, 'LOCAL_READ_FAILED');
+    assert.equal(failed.data.importRetryAvailable, true);
+    assert.equal((await status(0, resourceChatId, failedImport.downloadId)).data.code, 'LOCAL_READ_FAILED');
+    assert.equal(localReads, 1, '普通查询不重复读取失败文件');
+    globalThis.fetch = async url => {
+      localReads++;
+      assert.equal(String(url), 'file:///C:/Downloads/%E3%80%90%E6%8A%A5%E8%A1%A8%E3%80%91%E5%95%86%E5%93%81%20(1).xls');
+      return new Response('xls');
+    };
+    const retried = await browserDownloadClickTool.execute({
+      action: 'status', downloadId: failedImport.downloadId, waitSeconds: 2, retryImport: true,
+    }, { chatId: resourceChatId });
+    assert.equal(retried.data.code, 'DOWNLOAD_IMPORTED');
+    assert.equal(localReads, 2);
+    assert.equal(await (await readWorkspaceOutput(resourceChatId, retried.data.file.path))?.text(), 'xls');
+
+    // Both abort and expiry remove every listener, even if dispatch is still unresolved.
+    const click = { action: 'click' as const, elementId: 'download', frameId: 0, description: '下载文件' };
+    const tab = { id: 12, incognito: false } as chrome.tabs.Tab & { id: number };
+    const abort = new AbortController();
+    browserInteractTool.execute = (async (_args, _context, arm) => {
+      await arm?.(tab);
+      assert.equal(observers.size, 3);
+      abort.abort();
+      assert.equal(observers.size, 0);
+      return new Promise(() => {});
+    }) as typeof browserInteractTool.execute;
+    assert.equal((await browserDownloadClickTool.execute(click, { chatId: resourceChatId, signal: abort.signal })).data.code,
+      'DOWNLOAD_WAIT_ABORTED');
+    globalThis.setTimeout = ((fn: () => void, ms?: number) =>
+      originalTimer(fn, ms === 30_000 ? 5 : ms)) as typeof setTimeout;
+    browserInteractTool.execute = (async (_args, _context, arm) => {
+      await arm?.(tab);
+      return { success: true };
+    }) as typeof browserInteractTool.execute;
+    const deadlineResult = await browserDownloadClickTool.execute(click, { chatId: resourceChatId });
+    assert.equal(deadlineResult.data.code, 'DOWNLOAD_NOT_OBSERVED');
+    assert.equal(observers.size, 0);
+    assert.equal(deadlineResult.data.downloadId, undefined);
+  } finally {
+    await new Promise(resolve => originalTimer(resolve, 0));
+    Object.assign(chromeStub, original);
+    for (const key of Object.keys(chromeStub)) if (!(key in original)) delete chromeStub[key];
+    browserInteractTool.execute = originalInteract;
+    cdpSession.attach = originalAttach;
+    globalThis.setTimeout = originalTimer;
+    globalThis.fetch = originalFetch;
+  }
+}

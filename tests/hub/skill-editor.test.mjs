@@ -97,7 +97,10 @@ export function snapshotCustomSkills(){ return {}; }
 // ──── 宿主 ────
 
 const dom = new JSDOM('<div id="app"></div>', { url: 'https://extension.test/hub.html' });
-for (const key of ['window', 'document', 'Element', 'HTMLElement', 'SVGElement', 'Node', 'MutationObserver', 'localStorage']) {
+// Document/ShadowRoot：Vue v-model 文本输入的 beforeUpdate 会做
+// `rootNode instanceof Document || rootNode instanceof ShadowRoot`，
+// 缺任一全局都会在值变更的 patch 上抛 ReferenceError
+for (const key of ['window', 'document', 'Document', 'ShadowRoot', 'Element', 'HTMLElement', 'SVGElement', 'Node', 'MutationObserver', 'localStorage']) {
   globalThis[key] = dom.window[key];
 }
 Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator, configurable: true });

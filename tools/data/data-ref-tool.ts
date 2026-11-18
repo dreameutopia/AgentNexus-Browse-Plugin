@@ -30,12 +30,21 @@ import { ToolResult } from "@/common/tool-handler";
 import { dataRefStore, type DataRefEntry } from "@/utils/data-ref-store";
 import {
   analyzeValue,
+  collectRecordFields,
   concatRowParts,
   dedupeRows,
   projectRows,
   validateByFields,
   type ShapeMeta,
 } from "@/utils/data-ref-rows";
+import {
+  describeCompleteness,
+  describeRelationChoice,
+  detectEnvelopeBaseline,
+  resolveDataSourceRows,
+  resolveRelationTable,
+  verifyCompleteness,
+} from "@/utils/relation-table";
 import {
   readWorkspaceDataFile,
   saveWorkspaceResultFile,
@@ -250,6 +259,10 @@ interface LoadedSources {
   fieldsSources: { fields?: string[] }[];
   /** 数据源总个数 */
   count: number;
+  /** 逐来源的解析说明（信封定位路径 + 对账元数据；纯数组数据源为空） */
+  notes?: string[];
+  /** 逐来源的对账结论（实抓行数 vs 自报总量；未通过/未验证的来源才列出） */
+  completenessNotes?: string[];
 }
 
 /**
@@ -320,7 +333,8 @@ export class DataRefTool extends BaseTool {
         "action=dedupe 可替代 merge：多源拼接+去重一步完成（滚动增量/多轮抓取出现重复行时优先 dedupe，by 指定主键字段，整行去重省略 by）；" +
         "action=project 把复合数据（信封响应、一格两表）投影为关系表：path 指向对象得单行记录、指向数组每个元素一行，" +
         "carry 把父级字段按来源路径带成列（子表与父表的关联键），flatten=true 展平嵌套对象为点号列；" +
-        'action=list 盘点暂存批次（工作区文件用 file_util action="list"）；action=delete 清理批次（结果文件用 file_util action="delete"）。',
+        "action=list 盘点暂存批次（工作区文件用 file_util action=\"list\"）；action=delete 清理批次（结果文件用 file_util action=\"delete\"）。" +
+        "数据源形状：顶层是数组即直接作为表；顶层是信封对象时按**载荷路径契约**定位其内部的行表——成员名 rows/items/data/records/list/results/content 优先采用（作者已声明），未命中则按元素形态与层级唯一判定，判定不了时报错并列出每个候选的确切 path。project 未显式给 path 时同样自动定位，避免把整个信封当成一行、单元格内嵌整个数组。",
       parameters: {
         type: "object",
         properties: {
@@ -349,7 +363,7 @@ export class DataRefTool extends BaseTool {
           files: {
             type: "array",
             description:
-              "工作区数据文件路径列表（merge、dedupe 的数据源，与 refs 二选一，按数据先后顺序排列）。接受 .json（数组）与 .csv（首行表头）——js_run 结果、browser_extract_data 的 saved.path、既往治理产物、用户放入 inputs/ 的表格文件均可；也接受单个字符串（自动包装为数组）。info/project 可用单元素数组（自动解包）",
+              "工作区数据文件路径列表（merge、dedupe 的数据源，与 refs 二选一，按数据先后顺序排列）。接受 .json（顶层为数组或信封对象）与 .csv（首行表头）——js_run 结果、browser_extract_data 的 saved.path、既往治理产物、用户放入 inputs/ 的表格文件均可；也接受单个字符串（自动包装为数组）。info/project 可用单元素数组（自动解包）",
             items: { type: "string" },
           },
           path: {
@@ -509,19 +523,42 @@ export class DataRefTool extends BaseTool {
     const paths = (args.files as string[]).map((f) => f.trim());
     const parts: unknown[][] = [];
     const fieldsSources: { fields?: string[] }[] = [];
+    /** 逐文件的解析说明（信封定位路径 + 对账元数据）——回传供模型对账 */
+    const notes: string[] = [];
+    /** 逐文件的对账结论（实抓行数 vs 文件自报总量）——漏抓在治理前就被点名 */
+    const completenessNotes: string[] = [];
     for (const raw of paths) {
       const loaded = await readWorkspaceDataFile(chatId, raw, context?.signal);
-      if (!Array.isArray(loaded.value)) {
-        return {
-          error:
-            `数据文件 ${loaded.path} 不是数组数据（形态：${analyzeValue(loaded.value).kind === "value" ? "单值/对象" : "未知"}），无法与数组数据${verb}` +
-            '——信封/复合结构请先用 action="project" 投影为关系表',
-        };
+      // 与 xlsx_tool 同一套关系表解析口径：数组即表；信封结构自动定位内部行表
+      const resolved = resolveDataSourceRows(loaded.value, loaded.path);
+      if (!resolved.ok) return { error: resolved.reason };
+      const { rows: fileRows, kind: fileKind, note, rowCount, envelopeMeta } =
+        resolved.source;
+      if (note) notes.push(`${loaded.path}：${note}`);
+      // 逐文件对账：文件名不同、基准不同，必须逐个比（不能把多个文件的
+      // 行数加总后对一个基准——那会把「多文件」误判成「少抓」）
+      const baseline = detectEnvelopeBaseline(envelopeMeta);
+      const verdict = verifyCompleteness(rowCount, baseline);
+      if (verdict !== 'matched') {
+        completenessNotes.push(
+          `${loaded.path}：${describeCompleteness(rowCount, baseline, verdict)}`,
+        );
       }
-      parts.push(loaded.value);
-      fieldsSources.push({ fields: analyzeValue(loaded.value).fields });
+      parts.push(fileRows);
+      fieldsSources.push({
+        fields:
+          fileKind === "records"
+            ? collectRecordFields(fileRows as Record<string, unknown>[])[0]
+            : undefined,
+      });
     }
-    return { parts, fieldsSources, count: paths.length };
+    return {
+      parts,
+      fieldsSources,
+      count: paths.length,
+      notes,
+      completenessNotes,
+    };
   }
 
   /** info：数据源（ref 或 file 二选一）的字段结构 + 首行预览（不含全量数据） */
@@ -576,12 +613,39 @@ export class DataRefTool extends BaseTool {
       file.trim(),
       context?.signal,
     );
-    const shape = analyzeValue(loaded.value);
-    const previewSource =
-      Array.isArray(loaded.value) && loaded.value.length > 0
+    // 形态一律按**解析后的行表**描述：信封结构的原始值是「单值」，但真正
+    // 可治理/可导出的是内部那张表——报原始形态会让模型误判「这不是表」。
+    const relation = resolveRelationTable(loaded.value);
+    const shape = relation.ok ? analyzeValue(relation.rows) : analyzeValue(loaded.value);
+    // 信封结构：额外报告内部行表位置与对账元数据——否则模型只能靠 300 字符
+    // 预览猜 key 名，或反复试 project 的 path（这正是本轮日志里的失败路径）。
+    const relationInfo =
+      relation.ok && relation.location.kind === "envelope"
+        ? {
+            relationPath: relation.location.path,
+            relationRowCount: relation.rows.length,
+            relationMatchKind: relation.matchKind,
+            relationCandidates: relation.candidates.map((item) => ({
+              path: item.path,
+              rows: item.rows,
+            })),
+            envelopeMeta: relation.envelopeMeta,
+          }
+        : undefined;
+    // 预览取**行表的首行**（信封结构下预览首行才是模型要看的表样）
+    const previewSource = relation.ok
+      ? relation.rows.length > 0
+        ? relation.rows[0]
+        : relation.rows
+      : Array.isArray(loaded.value) && loaded.value.length > 0
         ? loaded.value[0]
         : loaded.value;
     const preview = truncatePreview(previewSource);
+    // 正文只说「哪张表、怎么定的」；元数据以结构化字段（relation.envelopeMeta）
+    // 单独回传，不在正文复述——同一份事实出现两次是纯上下文浪费。
+    const relationText = relationInfo
+      ? `；已定位内部行表：路径 "${relationInfo.relationPath}"（${relationInfo.relationRowCount} 行）`
+      : "";
     return this.createSuccessResponse(
       {
         file: {
@@ -594,14 +658,31 @@ export class DataRefTool extends BaseTool {
         },
         fields: shape.fields ?? [],
         preview,
-        guide: this.infoGuide(shape.kind, `file="${loaded.path}"`),
+        ...(relationInfo ? { relation: relationInfo } : {}),
+        guide: this.infoGuide(
+          shape.kind,
+          `file="${loaded.path}"`,
+          relationInfo ? relationInfo.relationPath : undefined,
+        ),
       },
-      `数据文件 ${loaded.path}：${describeShape(shape)}（${loaded.bytes} 字节）`,
+      `数据文件 ${loaded.path}：${describeShape(shape)}（${loaded.bytes} 字节）${relationText}`,
     );
   }
 
-  /** info 的形态分支引导（ref/file 共用；sourceExpr 是回显数据源的表达式） */
-  private infoGuide(kind: string, sourceExpr: string): string {
+  /**
+   * info 的形态分支引导（ref/file 共用；sourceExpr 是回显数据源的表达式）。
+   *
+   * relationPath 非空 = 该数据源是信封结构、内部已定位到行表：引导文案改为
+   * 「直接用 create_from_data 导出该路径的表」，避免模型误以为必须先 project。
+   */
+  private infoGuide(kind: string, sourceExpr: string, relationPath?: string): string {
+    if (relationPath) {
+      return (
+        `这是信封结构数据：行表在路径 "${relationPath}"。` +
+        `xlsx_tool(action="create_from_data") 的 dataFiles 直接引用该文件即可自动定位这张表；` +
+        `需要把信封里的其它字段也带成列时，用 data_ref_tool(action="project", ${sourceExpr}, path="${relationPath}", carry=["<字段名>"]) 投影。`
+      );
+    }
     if (kind === "records") {
       return '这是对象数组数据：xlsx_tool(create_from_data) 的数据表可用 fields 指定导出列与顺序、headers 指定表头文案（fields 拼写错误会被校验拒绝）。注意：字段值若是嵌套对象/数组，导出时会以 JSON 文本写入单元格——需要拆列请用 action="project" 配合 flatten=true 展平。';
     }
@@ -633,9 +714,23 @@ export class DataRefTool extends BaseTool {
       context?.signal,
     );
     const shape = analyzeValue(concat.rows);
+    const noteText = loaded.notes?.length
+      ? `\n数据来源解析：${loaded.notes.join("；")}`
+      : "";
+    // 对账未通过 → 合并结果里逐个来源点名（合并是漏抓的最后一道闸）
+    const completenessText = loaded.completenessNotes?.length
+      ? `\n⚠️ ${loaded.completenessNotes.join("\n⚠️ ")}`
+      : "";
     return this.createSuccessResponse(
-      { file: { ...saved }, shape },
-      `✅ 合并完成：${loaded.count} 个数据源 → 结果文件 ${saved.path}（${describeShape(shape)}，${saved.bytes} 字节，随会话工作区持久保存）。\n${resultFileGuide(saved.path)}`,
+      {
+        file: { ...saved },
+        shape,
+        ...(loaded.notes?.length ? { sourceNotes: loaded.notes } : {}),
+        ...(loaded.completenessNotes?.length
+          ? { completenessNotes: loaded.completenessNotes }
+          : {}),
+      },
+      `✅ 合并完成：${loaded.count} 个数据源 → 结果文件 ${saved.path}（${describeShape(shape)}，${saved.bytes} 字节，随会话工作区持久保存）。${noteText}${completenessText}\n${resultFileGuide(saved.path)}`,
     );
   }
 
@@ -721,8 +816,33 @@ export class DataRefTool extends BaseTool {
       sourceExpr = `file="${loaded.path}"`;
     }
 
+    // 未显式给 path 时：若源是信封结构（内含可定位的行表），自动采用唯一候选
+    // 路径——否则 project 会把整个信封当「单行记录」，产出一行、其单元格内嵌
+    // 整个数组的垃圾表（导出后是一格 JSON 文本），这是典型的静默错数据。
+    // 显式给了 path 的一律按显式路径执行（模型的显式意图优先）。
+    let effectivePath = typeof path === "string" ? path : undefined;
+    let autoLocatedPath: string | undefined;
+    if (effectivePath === undefined) {
+      const relation = resolveRelationTable(sourceValue);
+      if (relation.ok && relation.location.kind === "envelope") {
+        effectivePath = relation.location.path;
+        autoLocatedPath = relation.location.path;
+      } else if (!relation.ok && relation.candidates.length > 1) {
+        return this.createErrorResponse(
+          `${sourceExpr} 是信封结构且内有多个同优先级的候选数组，无法判断要投影哪一张表：` +
+            relation.candidates
+              .map(
+                (item) =>
+                  `  · path="${item.path}"（${item.rows} 行）→ data_ref_tool(action="project", ${sourceExpr}, path="${item.path}")`,
+              )
+              .join("\n") +
+            "——请显式指定 path。",
+        );
+      }
+    }
+
     const projected = projectRows(sourceValue, {
-      ...(typeof path === "string" ? { path } : {}),
+      ...(typeof effectivePath === "string" ? { path: effectivePath } : {}),
       ...(Array.isArray(carry) ? { carry: carry as string[] } : {}),
       ...(typeof flatten === "boolean" ? { flatten } : {}),
     });
@@ -745,8 +865,9 @@ export class DataRefTool extends BaseTool {
       context?.signal,
     );
     const shape = analyzeValue(rows);
-    const pathText =
-      typeof path === "string" && path.trim()
+    const pathText = autoLocatedPath
+      ? `路径 "${autoLocatedPath}"（未显式指定 path，已按信封内唯一候选自动定位）`
+      : typeof path === "string" && path.trim()
         ? `路径 "${path.trim()}"`
         : "数据本身";
     const carryText =
@@ -849,6 +970,13 @@ export class DataRefTool extends BaseTool {
       stats.keptWithoutKey > 0
         ? `；${stats.keptWithoutKey} 行因缺少 by 字段无法判定重复，已原样保留`
         : "";
+    const sourceNoteText = loaded.notes?.length
+      ? `\n数据来源解析：${loaded.notes.join("；")}`
+      : "";
+    // 对账未通过 → 逐来源点名（去重是漏抓的最后一道闸）
+    const completenessText = loaded.completenessNotes?.length
+      ? `\n⚠️ ${loaded.completenessNotes.join("\n⚠️ ")}`
+      : "";
     return this.createSuccessResponse(
       {
         file: { ...saved },
@@ -860,8 +988,12 @@ export class DataRefTool extends BaseTool {
           keptWithoutKey: stats.keptWithoutKey,
         },
         created: true,
+        ...(loaded.notes?.length ? { sourceNotes: loaded.notes } : {}),
+        ...(loaded.completenessNotes?.length
+          ? { completenessNotes: loaded.completenessNotes }
+          : {}),
       },
-      `✅ 去重完成：${stats.originalRows} 行 → ${stats.uniqueRows} 行（去除 ${stats.removed} 条重复${keptNote}）。\n` +
+      `✅ 去重完成：${stats.originalRows} 行 → ${stats.uniqueRows} 行（去除 ${stats.removed} 条重复${keptNote}）。${sourceNoteText}${completenessText}\n` +
         `结果文件 ${saved.path}（${describeShape(shape)}），${resultFileGuide(saved.path)}`,
     );
   }

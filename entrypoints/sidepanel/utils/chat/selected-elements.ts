@@ -140,7 +140,7 @@ export function buildSelectedElementsEnvelope(elements: readonly CapturedElement
   if (normalized.length === 0) return '';
 
   const lines: string[] = [
-    `<selected_elements count="${normalized.length}" note="用户在网页中手动选取的元素；selector 为唯一选择器，frame_id 为标签页内 frame 标识">`,
+    `<selected_elements count="${normalized.length}" note="用户在网页中手动选取的元素；selector 为唯一选择器，frame_id 为标签页内 frame 标识。任务语义：用户指令中的「这个/这里面/这些」等指代无法仅凭文本唯一确定时，对照本信封理解所指对象；选取的元素也可能是用户为本轮划定的任务范围。本信封是范围信号而非范围裁决——用户指令的范围与本信封或技能流程的默认范围不一致、或范围仍不明确时，先向用户确认再执行，不得自行选定一种理解带猜执行。">`,
   ];
 
   normalized.forEach((element, index) => {

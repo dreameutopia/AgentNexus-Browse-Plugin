@@ -64,6 +64,10 @@
       "url": "http://localhost:4173/.preview/guard-confirm.html"
     },
     {
+      "name": "tool-approval-preview",
+      "url": "http://localhost:4173/.preview/tool-approval-preview.html"
+    },
+    {
       "name": "interact-preview-server",
       "runtimeExecutable": "node",
       "runtimeArgs": [".preview/server.mjs", ".", "4174"],
@@ -86,12 +90,14 @@
       "url": "http://localhost:4173/.preview/page-glow.html"
     },
     {
-      "name": "page-quote-preview",
-      "url": "http://localhost:4173/.preview/page-quote.html"
-    },
-    {
       "name": "history-drawer-preview",
       "url": "http://localhost:4173/.preview/history-drawer.html"
+    },
+    {
+      "name": "preview-static-server-4175",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [".preview/server.mjs", ".", "4175"],
+      "port": 4175
     }
   ]
 }

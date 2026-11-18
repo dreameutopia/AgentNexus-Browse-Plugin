@@ -12,6 +12,12 @@ import { spawnSync } from 'node:child_process';
 const browserWindowPicker = spawnSync(process.execPath, [path.resolve('tests/chat-ui/browser-window-picker.test.mjs')], { stdio: 'inherit' });
 assert.equal(browserWindowPicker.status, 0, 'Beta browser window picker regression');
 
+const elementCaptureWindow = spawnSync(process.execPath, [path.resolve('tests/chat-ui/element-capture-window.test.mjs')], { stdio: 'inherit' });
+assert.equal(elementCaptureWindow.status, 0, 'Element capture operation-window targeting regression');
+
+const greetingPythonTag = spawnSync(process.execPath, [path.resolve('tests/chat-ui/greeting-python-tag.test.mjs')], { stdio: 'inherit' });
+assert.equal(greetingPythonTag.status, 0, 'Welcome Python install tag regression');
+
 const file=path.resolve('entrypoints/sidepanel/components/chat/ChatMessageList.vue');
 const {descriptor}=parse(readFileSync(file,'utf8'),{filename:file});
 const script=compileScript(descriptor,{id:'chat-list-regression'});

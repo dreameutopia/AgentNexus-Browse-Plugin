@@ -5,6 +5,7 @@ import { initToolsManagerListener } from './tools/tools-manager-listener';
 import { initConversationRuntime, listBusySessionIds } from './conversation-runtime';
 import { initPythonEnvPolicy } from './python-skill-policy';
 import { initPdfRenderChannel } from '@/tools/browser/pdf-channel';
+import { initDownloadImport } from '@/tools/browser/download-import';
 import { downloadDB } from '@/utils/download-database';
 import { initLocale, t } from '@/utils/i18n/core';
 import { notesDB, broadcastNotesChanged } from '@/utils/notes-database';
@@ -13,122 +14,6 @@ import { SCREEN_SHARE_MSG, OffscreenMsgType } from './screen-share/types';
 import { SESSION_BRIDGE_MSG } from '@/utils/sessions/session-bridge';
 import { sweepExpiredArchivedSessions } from '@/utils/sessions/session-archive-sweeper';
 
-// --- 文件拦截状态管理 ---
-interface InterceptionState {
-  isEnabled: boolean;
-  extensionsToIntercept: string[];
-}
-
-const STORAGE_KEY = 'downloadInterceptionState';
-
-// 获取当前拦截状态
-async function getState(): Promise<InterceptionState> {
-  const result = await chrome.storage.local.get(STORAGE_KEY);
-  return result[STORAGE_KEY] || { isEnabled: false, extensionsToIntercept: [] };
-}
-
-// 保存拦截状态
-async function setState(state: InterceptionState) {
-  await chrome.storage.local.set({ [STORAGE_KEY]: state });
-}
-
-// --- WebRequest 拦截逻辑 ---
-
-/**
- * 注册 WebRequest 监听器
- */
-async function registerInterceptor() {
-  await removeInterceptor(); // 先移除旧的监听器确保唯一性
-
-  const state = await getState();
-  if (!state.isEnabled || state.extensionsToIntercept.length === 0) {
-    console.log('Interceptor registration skipped: disabled or no extensions specified.');
-    return;
-  }
-
-  console.log(`Registering interceptor for extensions: ${state.extensionsToIntercept.join(', ')}`);
-
-  chrome.webRequest.onHeadersReceived.addListener(
-    webRequestCallback,
-    // 捕获面覆盖 main_frame / sub_frame / xmlhttprequest：绝大多数站点的文件
-    // 下载是 fetch/XHR 触发的（<a download> 指向 API、Blob URL、POST 下载），
-    // 旧实现只监听前两类，实际抓不到大多数下载。'other' 兜底少数不归类的
-    // 请求（Chrome 会把部分流式/特殊响应归到 other）。
-    { urls: ["<all_urls>"], types: ["main_frame", "sub_frame", "xmlhttprequest", "other"] },
-    ["responseHeaders"]
-  );
-}
-
-function removeInterceptor() {
-  chrome.webRequest.onHeadersReceived.removeListener(webRequestCallback);
-  console.log('Interceptor removed.');
-}
-
-/**
- * 核心拦截回调函数 - 并行下载策略
- */
-function webRequestCallback(details: chrome.webRequest.WebResponseHeadersDetails): void {
-  const contentDispositionHeader = details.responseHeaders?.find(
-    header => header.name.toLowerCase() === 'content-disposition'
-  );
-
-  if (contentDispositionHeader?.value) {
-    const filenameMatch = contentDispositionHeader.value.match(/filename\*?=['"]?([^'";]+)['"]?/);
-    if (filenameMatch && filenameMatch[1]) {
-      const filename = decodeURIComponent(filenameMatch[1]);
-      
-      // 并行执行副本抓取，不阻塞原始下载
-      processDownloadAsync(details, filename);
-      
-      // 不返回cancel，让原始下载继续进行
-    }
-  }
-}
-
-/**
- * 异步处理下载：并行抓取副本并存库
- */
-async function processDownloadAsync(details: chrome.webRequest.WebResponseHeadersDetails, filename: string) {
-  try {
-    const state = await getState();
-    const extension = filename.split('.').pop()?.toLowerCase() || '';
-
-    // 检查文件扩展名是否在拦截列表中
-    if (!state.extensionsToIntercept.includes(extension)) {
-      console.log(`Skipping capture for ${filename}: extension not in list.`);
-      return;
-    }
-
-    console.log(`Capturing file copy: ${filename} from ${details.url}`);
-
-    // 重新请求取副本：带 Cookie 凭证（站点常要求登录态才能取到文件），
-    // 并对无响应/非 2xx 给出明确原因，不把失败伪装成成功。
-    const response = await fetch(details.url, { credentials: 'include' });
-    if (!response.ok) {
-      console.warn(`Capture skipped for ${filename}: HTTP ${response.status} ${response.statusText}`);
-      return;
-    }
-    const blobData = await response.blob();
-    if (!blobData || blobData.size === 0) {
-      console.warn(`Capture skipped for ${filename}: empty body`);
-      return;
-    }
-    const mimeType = blobData.type;
-
-    // 存入 IndexedDB
-    const fileId = await downloadDB.addFile({
-      filename,
-      sourcePageUrl: details.initiator || details.url,
-      mimeType,
-      capturedAt: Date.now(),
-      blobData,
-    });
-    console.log(`File copy ${filename} saved to DB with ID: ${fileId}`);
-
-  } catch (error) {
-    console.error(`Error capturing file copy for ${filename}:`, error);
-  }
-}
 
 /**
  * 强大的图片下载引擎 - 将图片 URL 转换为 base64
@@ -330,6 +215,7 @@ async function downloadImagesBatch(
  */
 export default defineBackground(() => {
   // Initialize core services
+  initDownloadImport();
   initToolsManagerListener();
   void initPluginHost().catch(error => console.error('[Plugins] Host startup failed', error));
   initConversationRuntime();
@@ -780,56 +666,14 @@ export default defineBackground(() => {
     // Handle file interception commands
     switch (message.command) {
       case 'startInterception':
-        (async () => {
-          try {
-            const extensions = Array.isArray(message.payload?.interceptExtensions)
-              ? message.payload.interceptExtensions
-              : [];
-            await setState({ isEnabled: true, extensionsToIntercept: extensions });
-            await registerInterceptor();
-            sendResponse({ success: true });
-          } catch (error) {
-            sendResponse({
-              success: false,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        })();
-        return true; // 表示异步响应
-
+        sendResponse({ success: false, error: 'GLOBAL_DOWNLOAD_CAPTURE_DISABLED：请用 browser_download_click 点击目标。' });
+        return;
       case 'stopInterception':
-        (async () => {
-          try {
-            const currentState = await getState();
-            await setState({ isEnabled: false, extensionsToIntercept: currentState.extensionsToIntercept || [] });
-            removeInterceptor();
-            sendResponse({ success: true });
-          } catch (error) {
-            sendResponse({ 
-              success: false, 
-              error: error instanceof Error ? error.message : String(error)
-            });
-          }
-        })();
-        return true;
-
+        sendResponse({ success: true });
+        return;
       case 'getInterceptionState':
-        (async () => {
-          try {
-            const currentState = await getState();
-            sendResponse({
-              success: true,
-              isEnabled: currentState.isEnabled,
-              extensionsToIntercept: currentState.extensionsToIntercept || [],
-            });
-          } catch (error) {
-            sendResponse({
-              success: false,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        })();
-        return true;
+        sendResponse({ success: true, isEnabled: false, extensionsToIntercept: [] });
+        return;
 
       case 'getCapturedFileList':
         downloadDB.getFileList()
@@ -886,14 +730,4 @@ export default defineBackground(() => {
     }
   });
 
-  // 启动时初始化拦截器
-  chrome.runtime.onStartup.addListener(() => {
-    console.log('Browser started. Re-registering interceptor if enabled.');
-    registerInterceptor();
-  });
-
-  // 扩展启动时也需要初始化
-  registerInterceptor().catch(error => {
-    console.error('Failed to initialize interceptor on startup:', error);
-  });
 });

@@ -35,6 +35,13 @@ import {
   projectRows,
   concatRowParts,
 } from "../../utils/data-ref-rows";
+import {
+  describeCompleteness,
+  describeRelationFailure,
+  detectEnvelopeBaseline,
+  resolveRelationTable,
+  verifyCompleteness,
+} from "../../utils/relation-table";
 import { dataRefTool } from "../../tools/data/data-ref-tool";
 import { xlsxTool as rawXlsxTool } from "../../tools/office/xlsx-tool";
 import { FileUtilTool } from "../../tools/file-util/file-util-tool";
@@ -180,7 +187,298 @@ async function writeDataFile(path: string, value: unknown): Promise<string> {
     );
 }
 
-// 1.5 projectRows：复合批次整形（对象→单行 / 子数组→多行+carry / flatten）
+// 1.5 relation-table 内核：数组即表；信封按「形态档 → 深度」定位唯一行表；
+//     多候选判歧义（绝不静默猜表）；标量元数据作为对账口径带出
+{
+  // 直接数组
+  const direct = resolveRelationTable([{ a: 1 }]);
+  assert.ok(direct.ok, "顶层数组直接作为表");
+  if (direct.ok) {
+    assert.equal(direct.location.kind, "direct", "定位为直接表");
+    assert.equal(direct.rows.length, 1, "行数正确");
+  }
+
+  // 日志实录的信封：{page,totalOnPage,returned,rows:[…]} → 唯一候选 rows
+  const logged = resolveRelationTable({
+    page: 1,
+    totalOnPage: 50,
+    returned: 50,
+    rows: [{ id: 1 }, { id: 2 }],
+  });
+  assert.ok(logged.ok, "日志实录信封被定位到行表");
+  if (logged.ok && logged.location.kind === "envelope") {
+    assert.equal(logged.location.path, "rows", "定位到 rows 路径");
+    assert.equal(logged.rows.length, 2, "行数正确");
+    assert.equal(logged.envelopeMeta.totalOnPage, 50, "标量元数据带出（对账口径）");
+    assert.equal(logged.envelopeMeta.page, 1, "页码元数据带出");
+  }
+
+  // 嵌套信封：data.items 唯一候选
+  const nested = resolveRelationTable({ data: { items: [{ a: 1 }] }, status: "ok" });
+  assert.ok(nested.ok, "嵌套信封被定位");
+  if (nested.ok && nested.location.kind === "envelope")
+    assert.equal(nested.location.path, "data.items", "定位到嵌套路径");
+
+  // 形态优先于深度：rows（对象数组，浅）胜过 meta.related（对象数组，深）
+  const shallowWins = resolveRelationTable({
+    rows: [{ a: 1 }],
+    meta: { related: [{ b: 2 }] },
+  });
+  assert.ok(shallowWins.ok, "浅层候选被采用");
+  if (shallowWins.ok && shallowWins.location.kind === "envelope")
+    assert.equal(shallowWins.location.path, "rows", "同形态取更浅的候选");
+
+  // 形态优先：对象数组胜过标量数组
+  const tierWins = resolveRelationTable({ tags: ["x", "y"], rows: [{ a: 1 }] });
+  assert.ok(tierWins.ok, "对象数组候选被采用");
+  if (tierWins.ok && tierWins.location.kind === "envelope")
+    assert.equal(tierWins.location.path, "rows", "对象数组优先于标量数组");
+
+  // 同优先级同深度多候选 → 歧义（不猜）。用非契约名，确保走到启发式分支
+  const ambiguous = resolveRelationTable({ alpha: [{ a: 1 }], beta: [{ b: 2 }] });
+  assert.equal(ambiguous.ok, false, "同优先级同深度多候选判为歧义");
+  if (!ambiguous.ok) {
+    assert.ok(ambiguous.reason.includes("alpha"), "歧义原因点名候选一", ambiguous.reason);
+    assert.ok(ambiguous.reason.includes("beta"), "歧义原因点名候选二", ambiguous.reason);
+    assert.equal(ambiguous.candidates.length, 2, "候选清单完整");
+  }
+
+  // 无数组字段 → 不是表
+  const noTable = resolveRelationTable({ total: 42, name: "x" });
+  assert.equal(noTable.ok, false, "无数组字段的对象不是表");
+
+  // 标量值 → 不是表
+  assert.equal(resolveRelationTable(42).ok, false, "标量不是表");
+
+  // 失败文案：给出可直接复制的 project 调用
+  const failure = describeRelationFailure(
+    resolveRelationTable({ alpha: [{ a: 1 }], beta: [{ b: 2 }] }) as {
+      ok: false;
+      reason: string;
+      candidates: Array<{ path: string; rows: number }>;
+    },
+    "results/run-x.json",
+  );
+  assert.ok(failure.includes("results/run-x.json"), "失败文案点名数据源", failure);
+  assert.ok(
+    failure.includes('action="project"') && failure.includes('path="alpha"'),
+    "失败文案给出确切 project 调用",
+    failure,
+  );
+  assert.ok(failure.includes('path="beta"'), "失败文案给出每个候选的调用", failure);
+}
+
+// 1.5b 载荷路径契约：命中契约成员名即采用（作者已声明），优先于结构启发式
+{
+  // rows 是契约成员名 → 优先于结构启发式，绝不因旁支数组而歧义
+  const contracted = resolveRelationTable({
+    rows: [{ a: 1 }],
+    others: [{ b: 2 }],
+  });
+  assert.ok(contracted.ok, "契约成员名命中即定位成功");
+  if (contracted.ok && contracted.location.kind === "envelope") {
+    assert.equal(contracted.location.path, "rows", "契约成员名优先于结构启发式");
+    assert.equal(contracted.matchKind, "contract", "定位方式标记为契约命中");
+  }
+
+  // 其余契约名同样生效（大小写不敏感）
+  for (const member of ["data", "items", "records", "list", "results", "content"]) {
+    const resolved = resolveRelationTable({ [member]: [{ a: 1 }] });
+    assert.ok(resolved.ok, `契约成员名 ${member} 命中`);
+    if (resolved.ok)
+      assert.equal(resolved.matchKind, "contract", `${member} 标记为契约命中`);
+  }
+  const upperCase = resolveRelationTable({ Rows: [{ a: 1 }] });
+  assert.ok(upperCase.ok, "契约成员名大小写不敏感");
+  if (upperCase.ok)
+    assert.equal(upperCase.matchKind, "contract", "大小写不敏感仍算契约命中");
+
+  // 两个契约名并存 → 歧义（无法确定哪张是行表）
+  const twoContracted = resolveRelationTable({
+    rows: [{ a: 1 }],
+    items: [{ b: 2 }],
+  });
+  assert.equal(twoContracted.ok, false, "两个契约成员名并存判为歧义");
+
+  // 契约名在不同深度 → 浅层优先（顶层成员是主表，嵌套成员多半是元数据旁支）
+  const nestedContracted = resolveRelationTable({
+    rows: [{ a: 1 }],
+    meta: { items: [{ b: 2 }] },
+  });
+  assert.ok(nestedContracted.ok, "契约名跨深度时仍能定位");
+  if (nestedContracted.ok && nestedContracted.location.kind === "envelope")
+    assert.equal(
+      nestedContracted.location.path,
+      "rows",
+      "契约名跨深度时浅层优先",
+    );
+
+  // 形态优先于契约名：标量数组（content）vs 对象数组（items）→ 取对象数组
+  const shapeWins = resolveRelationTable({
+    content: [1, 2, 3],
+    items: [{ a: 1 }],
+  });
+  assert.ok(shapeWins.ok, "形态优先时仍能定位");
+  if (shapeWins.ok && shapeWins.location.kind === "envelope")
+    assert.equal(shapeWins.location.path, "items", "对象数组优先于标量数组");
+
+  // 空数组（tier3）vs 有数据（tier1）→ 取有数据的
+  const emptyVsFull = resolveRelationTable({
+    data: [],
+    items: [{ a: 1 }],
+  });
+  assert.ok(emptyVsFull.ok, "空数组 vs 有数据时仍能定位");
+  if (emptyVsFull.ok && emptyVsFull.location.kind === "envelope")
+    assert.equal(emptyVsFull.location.path, "items", "非空对象数组优先于空数组");
+
+  // 未命中契约名时才走结构启发式，结论标记为 heuristic 供模型核对
+  const heuristic = resolveRelationTable({ primary: [{ a: 1 }] });
+  assert.ok(heuristic.ok, "未命中契约名时按结构唯一判定");
+  if (heuristic.ok)
+    assert.equal(heuristic.matchKind, "heuristic", "定位方式标记为启发式");
+}
+
+// 1.5c 完整性对账契约：基准始终显式存在；「未验证」与「已核对且一致」可区分
+{
+  // 信封自报 totalOnPage=50、实抓 50 行 → 核对通过
+  const matched = resolveRelationTable({
+    page: 1,
+    totalOnPage: 50,
+    returned: 50,
+    rows: Array.from({ length: 50 }, (_, i) => ({ id: i })),
+  });
+  assert.ok(matched.ok, "信封解析成功");
+  if (matched.ok) {
+    const baseline = detectEnvelopeBaseline(matched.envelopeMeta);
+    assert.ok(baseline, "自报总量被识别为对账基准");
+    assert.equal(baseline?.kind, "envelope", "基准来源为信封自报");
+    assert.equal(
+      verifyCompleteness(matched.rows.length, baseline),
+      "matched",
+      "实抓 50 == 自报 50 → 核对通过",
+    );
+    assert.ok(
+      describeCompleteness(matched.rows.length, baseline, "matched").includes("核对通过"),
+      "回执表述核对通过",
+    );
+  }
+
+  // 自报 50、实抓 48 → 核对不通过（这正是日志里 48 与 50 的偏差）
+  const short = resolveRelationTable({
+    page: 1,
+    totalOnPage: 50,
+    rows: Array.from({ length: 48 }, (_, i) => ({ id: i })),
+  });
+  assert.ok(short.ok, "信封解析成功");
+  if (short.ok) {
+    const baseline = detectEnvelopeBaseline(short.envelopeMeta);
+    assert.equal(
+      verifyCompleteness(short.rows.length, baseline),
+      "short",
+      "实抓 48 < 自报 50 → 判为可能漏抓",
+    );
+    assert.ok(
+      describeCompleteness(short.rows.length, baseline, "short").includes("漏抓"),
+      "回执点名可能漏抓",
+    );
+  }
+
+  // 无自报总量 → 结论是「未验证」而非默默通过
+  const noBaseline = resolveRelationTable({
+    page: 1,
+    rows: Array.from({ length: 50 }, (_, i) => ({ id: i })),
+  });
+  assert.ok(noBaseline.ok, "信封解析成功");
+  if (noBaseline.ok) {
+    const baseline = detectEnvelopeBaseline(noBaseline.envelopeMeta);
+    assert.equal(baseline, null, "无可用基准");
+    assert.equal(
+      verifyCompleteness(noBaseline.rows.length, baseline),
+      "unverified",
+      "无基准时结论为未验证",
+    );
+    const text = describeCompleteness(
+      noBaseline.rows.length,
+      { kind: "none", reason: "未提供总量字段" },
+      "unverified",
+    );
+    assert.ok(text.includes("未验证"), "回执明示未验证", text);
+    assert.ok(text.includes("不要用实抓行数自己对照自己"), "回执点破自证式对账", text);
+  }
+
+  // total* 优先于 count/matched*（前者更像「页面宣称总数」）
+  const priority = detectEnvelopeBaseline({ count: 3, total: 100 });
+  assert.equal(priority?.kind, "envelope", "识别到信封基准");
+  assert.equal(
+    priority?.kind === "envelope" ? priority.value : -1,
+    100,
+    "total 优先于 count",
+  );
+
+  // count 是「本页条数」——与实抓行数同源，优先级最低（不能拿它自证式对账）
+  const countOnly = detectEnvelopeBaseline({ count: 10 });
+  assert.equal(
+    countOnly?.kind === "envelope" ? countOnly.value : -1,
+    10,
+    "仅有 count 时仍作为基准（最低优先级）",
+  );
+
+  // 大小写不敏感（totalOnPage / TOTALONPAGE / totalonpage 都要命中）
+  for (const key of ["totalOnPage", "TOTALONPAGE", "totalonpage"]) {
+    const detected = detectEnvelopeBaseline({ [key]: 42 });
+    assert.equal(
+      detected?.kind === "envelope" ? detected.value : -1,
+      42,
+      `基准字段名大小写不敏感：${key}`,
+    );
+  }
+
+  // 非数值 / 负数 / 非有限值 → 不作为基准（宁可不核对，也不给假基准）
+  assert.equal(detectEnvelopeBaseline({ total: "50" }), null, "字符串不作基准");
+  assert.equal(detectEnvelopeBaseline({ total: -1 }), null, "负数不作基准");
+  assert.equal(
+    detectEnvelopeBaseline({ total: Number.NaN }),
+    null,
+    "NaN 不作基准",
+  );
+  assert.equal(detectEnvelopeBaseline({}), null, "无字段无基准");
+}
+
+// 1.6 project 未显式给 path 时按信封内唯一候选自动定位（不再产出一行嵌数组的垃圾表）
+{
+  const envelope = await writeDataFile("scripts/auto-locate-envelope.json", {
+    page: 1,
+    totalOnPage: 2,
+    rows: [{ id: "a" }, { id: "b" }],
+  });
+  const result = await dataTool.execute({
+    action: "project",
+    file: envelope,
+  });
+  assert.equal(result.success, true, "无 path 投影信封成功");
+  assert.equal(result.data.shape.rowCount, 2, "自动定位到 2 行表");
+  assert.ok(
+    String(result.content[0].text).includes("自动定位"),
+    "回执说明已自动定位路径",
+    String(result.content[0].text),
+  );
+
+  // 多候选 → 报错并列出每个候选的确切调用
+  const ambiguous = await writeDataFile("scripts/auto-locate-ambiguous.json", {
+    alpha: [{ id: "a" }],
+    beta: [{ id: "b" }],
+  });
+  const ambResult = await dataTool.execute({
+    action: "project",
+    file: ambiguous,
+  });
+  assert.equal(ambResult.success, false, "多候选无 path 投影被拒绝");
+  const ambError = String(ambResult.error);
+  assert.ok(ambError.includes("path=\"alpha\""), "歧义报错给出候选一的 path", ambError);
+  assert.ok(ambError.includes("path=\"beta\""), "歧义报错给出候选二的 path", ambError);
+}
+
+// 1.7 projectRows：复合批次整形（对象→单行 / 子数组→多行+carry / flatten）
 {
   const compound = {
     base: { listSku: "100406235910", title: "Mac mini M6", price: "4844.15" },
@@ -1047,7 +1345,7 @@ const resultB = await writeDataFile("scripts/sheet-b.json", [
   );
 }
 
-// 3.14 dataFiles 非数组数据文件（信封结构）引导 project
+// 3.14 dataFiles 信封结构：唯一候选自动定位行表并导出（不再需要先 project）
 {
   const envelope = await writeDataFile("scripts/envelope.json", {
     data: { items: [{ k: 1 }] },
@@ -1057,11 +1355,122 @@ const resultB = await writeDataFile("scripts/sheet-b.json", [
     filename: "信封数据测试",
     sheet: { name: "数据", dataFiles: [envelope] },
   });
-  assert.equal(result.success, false, "信封结构直接导出被拒绝");
+  assert.equal(result.success, true, "信封结构唯一候选时直接导出成功");
+  assert.equal(
+    (result.data.sheets as Array<{ rowCount: number }>)[0].rowCount,
+    2,
+    "信封内行表导出为 1 行 + 表头",
+  );
+  const warnings = (result.data.warnings as string[]) ?? [];
   assert.ok(
-    String(result.error).includes("project"),
-    "错误引导 project 投影",
-    result.error,
+    warnings.some((w) => w.includes("data.items")),
+    "回执回显行表所在路径",
+    JSON.stringify(warnings),
+  );
+}
+
+// 3.14b dataFiles 信封结构：多候选（同优先级同深度）→ 报歧义并给出逐候选的确切调用
+{
+  // 用非契约成员名，确保走到结构启发式的歧义分支
+  const ambiguous = await writeDataFile("scripts/ambiguous-envelope.json", {
+    alpha: [{ k: 1 }],
+    beta: [{ k: 2 }],
+  });
+  const result = await xlsxTool.execute({
+    action: "create_from_data",
+    filename: "歧义信封测试",
+    sheet: { name: "数据", dataFiles: [ambiguous] },
+  });
+  assert.equal(result.success, false, "多候选信封被拒绝而非乱猜");
+  const error = String(result.error);
+  assert.ok(error.includes("alpha"), "错误点名候选一", error);
+  assert.ok(error.includes("beta"), "错误点名候选二", error);
+  assert.ok(
+    error.includes('action="project"') && error.includes('path="alpha"'),
+    "错误给出可直接复制的确切 project 调用",
+    error,
+  );
+}
+
+// 3.14d dataFiles 信封结构：契约成员名命中时不被旁支数组干扰（作者已声明即采用）
+{
+  const declared = await writeDataFile("scripts/declared-envelope.json", {
+    rows: [{ k: 1 }],
+    others: [{ k: 2 }],
+  });
+  const result = await xlsxTool.execute({
+    action: "create_from_data",
+    filename: "契约信封测试",
+    sheet: { name: "数据", dataFiles: [declared] },
+  });
+  assert.equal(result.success, true, "契约成员名命中时直接导出成功");
+  assert.equal(
+    (result.data.sheets as Array<{ rowCount: number }>)[0].rowCount,
+    2,
+    "只导出契约成员名承载的表（1 行 + 表头），旁支数组不入表",
+  );
+}
+
+// 3.14c dataFiles 信封结构：唯一候选 + 标量元数据 → 导出成功且回执带对账元数据
+{
+  const withMeta = await writeDataFile("scripts/envelope-meta.json", {
+    page: 1,
+    totalOnPage: 50,
+    returned: 2,
+    rows: [{ k: 1 }, { k: 2 }],
+  });
+  const result = await xlsxTool.execute({
+    action: "create_from_data",
+    filename: "带元数据信封测试",
+    sheet: { name: "数据", dataFiles: [withMeta] },
+  });
+  assert.equal(result.success, true, "带标量元数据的信封导出成功");
+  const warnings = (result.data.warnings as string[]) ?? [];
+  assert.ok(
+    warnings.some((w) => w.includes("totalOnPage=50")),
+    "回执回显对账元数据（宣称总数）",
+    JSON.stringify(warnings),
+  );
+}
+
+// 3.14e 导出时对账：实抓行数与文件自报总量不一致 → 导出仍成功，但告警点名可能漏抓
+{
+  const shortFile = await writeDataFile("scripts/short-envelope.json", {
+    page: 1,
+    totalOnPage: 50,
+    rows: Array.from({ length: 48 }, (_, i) => ({ k: i })),
+  });
+  const result = await xlsxTool.execute({
+    action: "create_from_data",
+    filename: "漏抓对账测试",
+    sheet: { name: "数据", dataFiles: [shortFile] },
+  });
+  assert.equal(result.success, true, "行数不足不阻断导出（数据仍交付，由告警提示）");
+  const warnings = (result.data.warnings as string[]) ?? [];
+  assert.ok(
+    warnings.some((w) => w.includes("漏抓")),
+    "告警点名可能漏抓（实抓 48 < 自报 50）",
+    JSON.stringify(warnings),
+  );
+}
+
+// 3.14f 导出时对账：无基准 → 告警明示「完整性未验证」（不默默通过）
+{
+  const noBaseline = await writeDataFile("scripts/no-baseline-envelope.json", {
+    page: 1,
+    rows: [{ k: 1 }],
+  });
+  const result = await xlsxTool.execute({
+    action: "create_from_data",
+    filename: "无基准对账测试",
+    sheet: { name: "数据", dataFiles: [noBaseline] },
+  });
+  assert.equal(result.success, true, "无基准不阻断导出");
+  const warnings = (result.data.warnings as string[]) ?? [];
+  assert.ok(
+    warnings.some((w) => w.includes("未验证")),
+    "告警明示完整性未验证",
+    JSON.stringify(warnings),
   );
 }
 
@@ -1130,6 +1539,13 @@ for (const path of [
   "scripts/sheet-a.json",
   "scripts/sheet-b.json",
   "scripts/envelope.json",
+  "scripts/ambiguous-envelope.json",
+  "scripts/declared-envelope.json",
+  "scripts/short-envelope.json",
+  "scripts/no-baseline-envelope.json",
+  "scripts/envelope-meta.json",
+  "scripts/auto-locate-envelope.json",
+  "scripts/auto-locate-ambiguous.json",
   "scripts/scalars.json",
   "scripts/empty-page.json",
   "scripts/page-with-rows.json",

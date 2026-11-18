@@ -8,10 +8,16 @@
     消息以 <page_quote> 信封发给模型（装配见 utils/chat/page-quote.ts）。
     此时页面上再选别的内容不再响应（用户须先「取消引用」）。
 
-  空间口径：高度随内容 1–3 行（≈32–62px），替代此前「标签独占一行 + 正文可
-  滚动到 120px + 右侧按钮组」的卡片（约 160px）。原文最多三行多行展示，
-  超出在原文块内出现滚动条（按钮与来源不位移）。窄宽度下逐级降级：
-  来源标题 → 按钮文字 → 整条换行，任何宽度都不变形、不溢出。
+  空间口径：高度随内容（≈54–62px）——左栏「徽标+标签一行 + 操作行」固定 46px，
+  原文最多三行（54px）决定上沿；替代此前「标签独占一行 + 正文可滚动到 120px +
+  右侧按钮组」的卡片（约 160px）。原文最多三行多行展示，超出在原文块内出现
+  滚动条（按钮与来源不位移）。窄宽度下逐级降级：来源标题 → 按钮文字 →
+  整条换行，任何宽度都不变形、不溢出。
+
+  布局口径：左栏（.pq-head）= 徽标+标签一行，主行动「确认引用」在其**正下方**；
+  次行动（待引用态放弃 ✕ / 已引用态取消引用）走 .pq-aside 贴右缘、上下居中；
+  原文与来源独占中间整块高度。这样「确认引用」紧贴「待引用」标签、语义归属
+  一目了然，退出口固定在右缘不随文本行数漂移，原文也不再与深色主按钮抢同一行。
 
   样式自带（./page-quote-bar.css）：app.css 经 App.vue 的 <style scoped> 引入，
   其规则带 App.vue 的作用域属性，对子组件根元素之外的节点不生效——
@@ -24,36 +30,35 @@
     role="status"
     aria-live="polite"
   >
-    <span class="pq-mark" aria-hidden="true">
-      <TextQuote v-if="state === 'pending'" :size="12" :stroke-width="2" />
-      <BookmarkCheck v-else :size="12" :stroke-width="2" />
-    </span>
-    <span class="pq-label">{{ labelText }}</span>
+    <!-- 左栏：徽标+标签一行，主行动「确认引用」压在其正下方（贴着「待引用」） -->
+    <div class="pq-head">
+      <span class="pq-head-top">
+        <span class="pq-mark" aria-hidden="true">
+          <TextQuote v-if="state === 'pending'" :size="12" :stroke-width="2" />
+          <BookmarkCheck v-else :size="12" :stroke-width="2" />
+        </span>
+        <span class="pq-label">{{ labelText }}</span>
+      </span>
+      <div v-if="state === 'pending'" class="pq-actions">
+        <button
+          type="button"
+          class="pq-btn pq-btn-confirm"
+          :title="t('sidepanel.app.confirmQuote')"
+          @click="emit('confirm')"
+        >
+          <Check :size="12" :stroke-width="2.4" aria-hidden="true" />
+          <span class="pq-btn-text">{{ t('sidepanel.app.confirmQuote') }}</span>
+        </button>
+      </div>
+    </div>
+    <!-- 右侧：原文 + 来源，独占整块高度（不与任何按钮同行） -->
     <span class="pq-text" :title="text">{{ text }}</span>
     <span v-if="sourceTitle" class="pq-source" :title="sourceUrl || sourceTitle">
       {{ sourceTitle }}
     </span>
-    <div class="pq-actions">
-      <button
-        v-if="state === 'pending'"
-        type="button"
-        class="pq-btn pq-btn-confirm"
-        :title="t('sidepanel.app.confirmQuote')"
-        @click="emit('confirm')"
-      >
-        <Check :size="12" :stroke-width="2.4" aria-hidden="true" />
-        <span class="pq-btn-text">{{ t('sidepanel.app.confirmQuote') }}</span>
-      </button>
-      <button
-        v-else
-        type="button"
-        class="pq-btn pq-btn-cancel"
-        :title="t('sidepanel.app.cancelQuote')"
-        @click="emit('cancel')"
-      >
-        <X :size="12" :stroke-width="2.2" aria-hidden="true" />
-        <span class="pq-btn-text">{{ t('sidepanel.app.cancelQuote') }}</span>
-      </button>
+    <!-- 次行动贴右缘、上下居中：待引用态放弃(✕) / 已引用态取消引用。
+         与主行动分离——左栏只留「标签 + 确认引用」，右侧只留退出口 -->
+    <div class="pq-aside">
       <!-- 待引用态的放弃入口（与「取消引用」区分：作用对象是尚未确认的选区） -->
       <button
         v-if="state === 'pending'"
@@ -64,6 +69,16 @@
         @click="emit('discard')"
       >
         <X :size="12" :stroke-width="2.2" aria-hidden="true" />
+      </button>
+      <button
+        v-else
+        type="button"
+        class="pq-btn pq-btn-cancel"
+        :title="t('sidepanel.app.cancelQuote')"
+        @click="emit('cancel')"
+      >
+        <X :size="12" :stroke-width="2.2" aria-hidden="true" />
+        <span class="pq-btn-text">{{ t('sidepanel.app.cancelQuote') }}</span>
       </button>
     </div>
   </div>

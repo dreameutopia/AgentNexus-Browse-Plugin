@@ -90,7 +90,8 @@ export const initToolsManagerListener = () => {
       : undefined;
 
     // Script context is supplied only by an extension UI, never by page parameters.
-    const scriptContext: ToolExecutionContext = messageType === JS_RUN_TOOL_ID && sender.id === chrome.runtime.id && !sender.tab &&
+    const sessionTool = messageType === JS_RUN_TOOL_ID || messageType === 'browser_download_click';
+    const scriptContext: ToolExecutionContext = sessionTool && sender.id === chrome.runtime.id && !sender.tab &&
       typeof sender.url === 'string' && sender.url.startsWith(chrome.runtime.getURL('')) &&
       __scriptContext && typeof __scriptContext === 'object'
       ? {
@@ -110,7 +111,8 @@ export const initToolsManagerListener = () => {
         const browserScope = trustedUi ? parseBrowserScope(__browserScope) : undefined;
         const context: ToolExecutionContext = { ...scriptContext, ...(browserScope ? { browserScope } : {}) };
 
-        const scopedRequest = browserScope && typeof __visionRequestId === 'string' && __visionRequestId.length <= 128
+        const scopedRequest = (browserScope || (trustedUi && messageType === 'browser_download_click')) &&
+          typeof __visionRequestId === 'string' && __visionRequestId.length <= 128
           ? __visionRequestId : undefined;
         const execute = async (signal?: AbortSignal) => {
           if (messageType === TOOL_MESSAGE_TYPES.BROWSER_SET_ZOOM)

@@ -120,7 +120,7 @@ const enumerationProperties = {
     maxLength: 2000,
     description:
       '仅枚举：只扫描该 XPath 1.0 命中的父容器子树（可选；与 parentSelector 互斥）。命中多个容器时全部扫描；所有 frame 都未命中直接报错，不会退回整页。' +
-      '同样做**结果集裁剪**（区别于 xpath 过滤参数的"命中标记"语义），两者可 AND 组合。',
+      '仅命中非元素节点时明确拒绝（容器必须是元素）。同样做**结果集裁剪**（区别于 xpath 过滤参数的"命中标记"语义），两者可 AND 组合。',
   },
   categories: {
     type: 'array',
@@ -207,9 +207,9 @@ export class BrowserObserveTool extends BaseBrowserTool {
   metadata: ToolMetadata = {
     name: this.name,
     description:
-      '纯文本页面观察：控件、输入、表格结构和浏览器辅助功能树，稳定引用与快照分页',
+      '纯文本页面观察：控件、输入、表格结构、表单盘点与浏览器辅助功能树，稳定引用与快照分页',
     category: 'browser',
-    version: '6.0.0',
+    version: '6.1.0',
     // 纯读（DOM/AX 扫描，不写 DOM、不滚动、不改变视口）：视觉循环整批纯读
     // 时不重拍，截图身份继续有效。
     // 不变量（勿轻易改动）：本工具经 textCommand → cdpSession.attach 复用调试
@@ -245,7 +245,7 @@ export class BrowserObserveTool extends BaseBrowserTool {
         '    <item>长表单/多区块表单先用 view="form" 盘点一次（分区+字段+必填+现值一次拿全，不返回 details），再按行引用交互；不要用 controls 分页翻找字段。</item>\n' +
         '    <item>范围可选：frameId 只扫指定 frame；parentSelector / parentXPath 只扫该父容器子树（两者互斥）。parent* 是结果集裁剪（容器外不返回），xpath 过滤只是命中标记（容器外仍在候选）。所有 frame 都没有该父容器时直接报错，不会退回整页；仅部分 frame 没有时该 frame 静默缺席。</item>\n' +
         '  </usage>\n' +
-        '  <result>elements 表格给出类型/描述/上下文/ElementId/FrameId/类别/状态；details 给出识别依据、关联引用与可用动作；focus 给当前焦点；coverage 给覆盖边界（未渲染的数据不会出现）。</result>\n' +
+        '  <result>elements 表格给出类型/描述/上下文/ElementId/FrameId/类别/状态（view=form 时改为行式清单：分区/label/name/必填/现值并入每行，不返回 details）；details 给出识别依据、关联引用与可用动作；focus 给当前焦点；coverage 给覆盖边界（未渲染的数据不会出现）。</result>\n' +
         '</observe>',
       parameters: {
         type: 'object',
@@ -1045,9 +1045,28 @@ export class BrowserObserveTool extends BaseBrowserTool {
         error.message.includes('background context')
       )
         throw error;
+      const message = readableTextError(error);
+      // 限定/依赖 frameId 的路径在 frame 不存在时由 frame-read 以 NO_RESULT 收口——
+      // 必须映射为可定位的 FRAME_NOT_FOUND，而不是笼统的「页面观察失败」。
+      // 两条路径的指引不同：枚举范围可省略 frameId，节点详情必须重新枚举。
+      // 注意：catch 在 `const input` 的块外，只能读 run 的入参 args（形态防御后使用）。
+      const scopeInput: ElementGetterArgs =
+        args && typeof args === 'object' && !Array.isArray(args) ? args : {};
+      if (scopeInput.frameId !== undefined && /NO_RESULT/.test(message)) {
+        return {
+          ...this.createErrorResponse(
+            scopeInput.view === 'element'
+              ? `FRAME_NOT_FOUND：frameId=${scopeInput.frameId} 不存在或不可注入（${message}）。该引用所属 frame 可能已销毁，请重新 browser_observe 获取新的 ElementId/FrameId。`
+              : `FRAME_NOT_FOUND：frameId=${scopeInput.frameId} 不存在或不可注入（${message}）。请省略 frameId 扫描所有可访问 frame，或确认页面内嵌框架已加载。`,
+          ),
+          ...(error instanceof PageReadError
+            ? { data: { frameDiagnostics: error.frameDiagnostics } }
+            : {}),
+        };
+      }
       return { ...this.createErrorResponse(
         '页面观察失败；等待稳定后从 page=1 重采',
-        new Error(readableTextError(error)),
+        new Error(message),
       ), ...(error instanceof PageReadError ? { data: { frameDiagnostics: error.frameDiagnostics } } : {}) };
     }
   }

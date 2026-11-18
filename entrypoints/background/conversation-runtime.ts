@@ -510,7 +510,6 @@ export function initConversationRuntime(): void {
                   runtime.attachmentPrompt,
                   runtime.userImages,
                   runtime.pageQuotePrompt,
-                  runtime.selectedElementsPrompt ?? '',
                   false,
                   activePage,
                 ),

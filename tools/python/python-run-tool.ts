@@ -43,6 +43,7 @@ import { workspaceArtifact } from '@/utils/python-workspace/artifact-contract';
 import { errorDetails, toolErrorDetails } from '@/utils/shared/error-details';
 import { BaseTool } from '../base-tool';
 import { ToolExecutionContext, ToolMetadata } from '../registry';
+import type { ToolApprovalReasonInfo } from '../approval-reason';
 import { OpenAITool } from '@/common/openai-types';
 import { ToolResult } from '@/common/tool-handler';
 import {
@@ -124,6 +125,27 @@ export class PythonRunTool extends BaseTool {
     if (!args || typeof args !== 'object' || Array.isArray(args)) return false;
     const request = args as { action?: unknown; dependencyMode?: unknown; preflight?: unknown };
     return request.action === 'run' && request.dependencyMode === 'pypi' && request.preflight !== true;
+  }
+
+  /**
+   * 审批原因细分：本工具的参数级审批只有「从公开 PyPI 拉取依赖」这一种，
+   * 而它**不是破坏性操作**——弹窗必须说清「要装什么」，否则用户只能看到一句
+   * 无从核对的「破坏性或不可逆」，既误导又无法决策。
+   *
+   * detail 给数据（包名 / wheel 文件名，逗号分隔），文案由 i18n 生成。
+   * 与 requiresApprovalFor 同源取参；此处漏参只会让文案降级，不影响审批门。
+   */
+  approvalReasonFor(args: unknown): ToolApprovalReasonInfo | null {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
+    const request = args as { requirements?: unknown; wheels?: unknown };
+    const names = (value: unknown): string[] =>
+      Array.isArray(value)
+        ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map(item => item.trim())
+        : [];
+    // requirements 是要装的包，wheels 是模型自带的本地 wheel——两者都是本次
+    // 会进沙箱的第三方代码，都应点名
+    const detail = [...names(request.requirements), ...names(request.wheels)].join(', ');
+    return detail ? { reason: 'dependency-install', detail } : { reason: 'dependency-install' };
   }
 
   openaiSchema: OpenAITool = {
@@ -227,8 +249,7 @@ export class PythonRunTool extends BaseTool {
     try {
       // ── 1. 参数防御（模型/桥接参数不可信；形态错误不触碰任何存储） ──
       if (!params || typeof params !== 'object' || Array.isArray(params)) {
-        return this.buildError('PY_INVALID_ARGUMENTS',
-          `参数必须是 JSON 对象（收到 ${params === null ? 'null' : Array.isArray(params) ? 'array' : typeof params}）`);
+        return this.buildError('PY_INVALID_ARGUMENTS', '参数必须是 JSON 对象');
       }
       const args = params as Record<string, unknown>;
       const { action, path, timeoutSeconds } = args;
@@ -265,8 +286,7 @@ export class PythonRunTool extends BaseTool {
       }
       if (action === 'run' && timeoutSeconds !== undefined &&
           (typeof timeoutSeconds !== 'number' || !Number.isFinite(timeoutSeconds))) {
-        return this.buildError('PY_INVALID_ARGUMENTS',
-          `timeoutSeconds 必须是有限数字（秒），收到 ${JSON.stringify(timeoutSeconds)}`);
+        return this.buildError('PY_INVALID_ARGUMENTS', 'timeoutSeconds 必须是有限数字（秒）');
       }
 
       // ── 2. 会话工作区上下文（所有 action 的硬前提） ──

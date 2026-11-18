@@ -19,7 +19,6 @@
           @guard-continue="forwardGuardContinue"
           @guard-open-settings="forwardGuardOpenSettings"
           @open-captured-element="forwardOpenCapturedElement"
-          @validate-captured-element="emit('validate-captured-element', $event)"
           @create-skill="openSkillCapture"
         />
       </div>
@@ -451,8 +450,6 @@ const emit = defineEmits<{
   'guard-open-settings': [guardKind: MessagePart['guardKind']];
   /** 打开捕获元素详情（App 统一挂载弹窗） */
   'open-captured-element': [payload: { messageId: string; element: import('@/utils/element-capture/types').CapturedElement }];
-  /** 校验捕获元素（App 在当前操作网页内定位并高亮） */
-  'validate-captured-element': [element: import('@/utils/element-capture/types').CapturedElement];
 }>();
 
 const forwardToolToggle = (messageId: string, toolCallId: string) => {

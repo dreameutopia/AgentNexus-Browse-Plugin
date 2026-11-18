@@ -115,7 +115,7 @@ export class BrowserDownloadsTool extends BaseBrowserTool {
         'erase=清除下载历史条目（downloadIds 批量；只清浏览器的下载记录，**不删除磁盘上的文件**）；' +
         'show=在系统文件管理器中定位已下载的文件（downloadId）；' +
         'open=用系统默认程序打开已下载的文件（downloadId）。' +
-        '下载 id 来自本工具 list 的返回（id 字段）或 browser_resources 的下载结果（downloadId 字段）——' +
+        '浏览器下载 id 来自本工具 list 的 id、browser_resources 的 downloadId，或 browser_download_click 的 browserDownloadId。' +
         '两者共用同一个 chrome.downloads id 空间，可直接串联。' +
         '本工具管「浏览器下载管理器」；页面里有哪些文件可下走 browser_resources，' +
         '扩展私有的下载副本库走 browser_download_capture，三者是不同的存储域。',

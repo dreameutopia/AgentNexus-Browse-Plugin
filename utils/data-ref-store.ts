@@ -24,9 +24,7 @@
  * 同源但内存互不可见，实际写入方几乎总是 background 单点，竞态窗口可忽略）。
  */
 
-import { analyzeValue, MAX_FIELDS } from "./data-ref-rows";
-
-export { MAX_FIELDS };
+import { analyzeValue } from "./data-ref-rows";
 
 // ──── 领域类型 ────
 

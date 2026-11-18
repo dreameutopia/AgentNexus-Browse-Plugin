@@ -88,61 +88,25 @@ export interface MarkdownRenderOptions {
   renderMermaid?: (code: string) => Promise<string | null>;
 }
 
-// ==================== 依赖（懒加载，避免拖慢工具注册） ====================
+// ==================== 依赖 ====================
 
 /**
- * markdown-it 实例类型。
- * 该包用 `export =` 声明（无 ESM 类型导出），`import()` 取不到类型，
- * 因此顶层 `import type` 是唯一可行写法（与仓库 file-card.ts 同款）。
+ * markdown-it 与 KaTeX 静态引入（与 sidepanel 聊天渲染器 markdown-renderer.ts
+ * 同款）：两包在 sidepanel 入口已被聊天渲染静态打包，这里的动态引入拆不出
+ * 独立 chunk（构建报 INEFFECTIVE_DYNAMIC_IMPORT），改静态后行为与体积不变。
  */
-import type MarkdownIt from 'markdown-it';
+import MarkdownIt from 'markdown-it';
+import katexRenderer from 'katex';
 // 栅格化工具（矢量图 PNG 兜底）：自身零依赖，不会把重量级模块拖进包体
 import { svgToPngDataUrl } from './svg-raster';
 
-/** markdown-it 构造器类型 */
-type MarkdownItConstructorType = typeof import('markdown-it') extends { default: infer C } ? C : never;
-
-/** KaTeX 模块类型 */
-type KatexModule = typeof import('katex')['default'];
-/** highlight.js 实例类型（common 子集导出 HLJSApi） */
+/** KaTeX 默认导出类型（renderFormula 参数） */
+type KatexModule = typeof katexRenderer;
+/** highlight.js 实例类型（common 子集导出 HLJSApi；与聊天侧全量 highlight.js
+ *  是不同模块、可独立拆分，保持懒加载） */
 type HljsModule = typeof import('highlight.js/lib/common')['default'];
 
-let markdownItPromise: Promise<MarkdownItConstructorType> | null = null;
-let katexPromise: Promise<KatexModule> | null = null;
 let hljsPromise: Promise<HljsModule> | null = null;
-
-/**
- * 加载 markdown-it 构造器。
- * 初始化失败不缓存 rejection：下次调用自动重试（瞬时 chunk 加载失败不应永久卡死）。
- */
-async function loadMarkdownIt(): Promise<MarkdownItConstructorType> {
-  if (!markdownItPromise) {
-    const pending = (async () => {
-      const mod = await import('markdown-it');
-      return mod.default;
-    })();
-    markdownItPromise = pending;
-    pending.catch(() => {
-      if (markdownItPromise === pending) markdownItPromise = null;
-    });
-  }
-  return markdownItPromise;
-}
-
-/** 加载 KaTeX（公式渲染） */
-async function loadKatex(): Promise<KatexModule> {
-  if (!katexPromise) {
-    const pending = (async () => {
-      const mod = await import('katex');
-      return mod.default;
-    })();
-    katexPromise = pending;
-    pending.catch(() => {
-      if (katexPromise === pending) katexPromise = null;
-    });
-  }
-  return katexPromise;
-}
 
 /** 加载 highlight.js（代码高亮；只取常用语言子集，控制体积） */
 async function loadHljs(): Promise<HljsModule> {
@@ -598,8 +562,7 @@ export async function renderMarkdownToHtml(
   // （图片占位、公式、mermaid），若复用同一实例，规则会层层嵌套，
   // 导致图片占位索引错位、渲染结果不可预期。构造开销极小，不值得为它
   // 引入实例池与状态清理的复杂度。
-  const MarkdownItConstructor = await loadMarkdownIt();
-  const md: MarkdownIt = new MarkdownItConstructor({
+  const md: MarkdownIt = new MarkdownIt({
     // 原始 HTML 一律转义（防注入）；链接与图片走白名单校验
     html: false,
     linkify: true,
@@ -609,10 +572,7 @@ export async function renderMarkdownToHtml(
   const wantMath = options.math !== false;
   const wantHighlight = options.highlight !== false;
 
-  const katex = wantMath ? await loadKatex().catch(() => null) : null;
-  if (wantMath && !katex) {
-    warnings.push({ subject: '公式', reason: 'KaTeX 加载失败，公式已按纯文本保留' });
-  }
+  const katex = wantMath ? katexRenderer : null;
   const hljs = wantHighlight ? await loadHljs().catch(() => null) : null;
   if (wantHighlight && !hljs) {
     warnings.push({ subject: '代码高亮', reason: 'highlight.js 加载失败，代码块按纯文本呈现' });

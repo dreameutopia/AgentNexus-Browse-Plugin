@@ -54,6 +54,7 @@ import { composeUserMessageBody } from '../../utils/chat/llm-message-body';
 import { t } from '@/utils/i18n/core';
 import { watchOperationWindow, isClosedBrowserWindowError } from '@/utils/browser-window-lifecycle';
 import type { ToolExecutionContext } from '@/tools/registry';
+import type { ToolApprovalReason, ToolApprovalReasonInfo } from '@/tools/approval-reason';
 import type { BeginPageOperation } from './runtime-protocol';
 import { transcriptEngine } from '../context/transcript-engine';
 import { contextEngine, toModelFacingContent } from '../context/context-engine';
@@ -137,6 +138,13 @@ export interface ConversationDeps {
    * （如 note_tool 仅 delete 需要放行）。
    */
   requiresApproval: (name: string, args: unknown) => boolean;
+  /**
+   * 可选：审批**原因**细分（与 requiresApproval 同一份判定的结构化输出）。
+   *
+   * 只在 requiresApproval 返回 true 时被查询；缺省（测试注入等）时弹窗按
+   * 通用审批文案呈现——审批门本身不依赖本回调，写错只影响文案分档。
+   */
+  approvalReason?: (name: string, args: unknown) => ToolApprovalReasonInfo | null;
 }
 
 const defaultDeps: ConversationDeps = {
@@ -146,6 +154,7 @@ const defaultDeps: ConversationDeps = {
     aiChatApi.sendVisionMessage(messages, callbacks, options),
   executeTool: (name, parameters, context) => openaiToolsConverter.executeTool(name, parameters, context),
   requiresApproval: (name, args) => openaiToolsConverter.requiresApproval(name, args),
+  approvalReason: (name, args) => openaiToolsConverter.classifyApproval(name, args),
 };
 
 // ==================== 运行选项与错误 ====================
@@ -161,6 +170,13 @@ export interface ToolApprovalRequest {
   name: string;
   /** 参数预览（截断至安全长度；审批只需判断意图，无需全文） */
   argumentsPreview: string;
+  /**
+   * 命中的审批原因码（驱动弹窗标题/正文分档）。
+   * 缺省 = 未分类，UI 走通用审批文案；**不影响是否放行的判定**。
+   */
+  reason?: ToolApprovalReason;
+  /** 原因细节（纯数据）：依赖包名、action 名、命中的敏感字段、插件 key */
+  reasonDetail?: string;
 }
 
 export interface RunOptions {
@@ -347,7 +363,7 @@ export function composeLlmUserMessage(
 ): ChatMessage {
   // 正文拼装顺序：用户输入 → 引用信封 → 选中元素信封 → 附件信封（单一事实源见
   // utils/chat/llm-message-body.ts；无引用 / 无元素时与既有实现逐字一致）。
-  const body = composeUserMessageBody(userInput, pageQuotePrompt, attachmentPrompt, selectedElementsPrompt);
+  const body = composeUserMessageBody(userInput, pageQuotePrompt, selectedElementsPrompt, attachmentPrompt);
   const llmText = appendSystemContext(body, { activePage });
   if (images.length === 0) {
     return { role: 'user', content: llmText };
@@ -1751,7 +1767,10 @@ export class ConversationEngine {
     try {
       args = parseToolArguments(plan.rawArgs);
     } catch (error) {
-      return createErrorResponse(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      return createErrorResponse(toolName === 'browser_download_click'
+        ? `DOWNLOAD_ARGUMENTS_NOT_DISPATCHED：${message} 本次未点击。请重新发出一个原生工具调用并提交完整 JSON。同一标签页的 click 只传 action、elementId、frameId、简短 description；status 只传 action 和完整 downloadId。`
+        : message);
     }
 
     // ── 审批门：声明 requiresApproval 的工具先经用户放行（缺省拒绝，安全侧）──
@@ -1786,6 +1805,11 @@ export class ConversationEngine {
     const pluginMeta = toolMeta?.plugin;
     const approvalLevel = toolMeta?.approvalLevel ?? 'session';
     let needsApproval = this.deps.requiresApproval(toolName, args);
+    // 原因只在确认需要审批后才查询（省一次注册表查询，也避免「未要求审批却
+    // 带着原因」这种自相矛盾的请求）
+    let approvalReason: ToolApprovalReasonInfo | null = needsApproval
+      ? this.deps.approvalReason?.(toolName, args) ?? null
+      : null;
     if (pluginMeta) {
       if (approvalLevel === 'install') needsApproval = false;
       else if (approvalLevel === 'session') {
@@ -1796,6 +1820,11 @@ export class ConversationEngine {
           epoch: pluginMeta.epoch,
         }));
       } else needsApproval = true;
+      // 插件授权是与「工具自身是否破坏性」正交的另一件事：原因必须改写成
+      // 插件档，否则用户会看到「破坏性操作」而漏掉真正要决策的是「信不信任这个插件」
+      approvalReason = needsApproval
+        ? { reason: approvalLevel === 'call' ? 'plugin-call' : 'plugin-session', detail: pluginMeta.key }
+        : null;
     }
     if (needsApproval) {
       const approved = options.onToolApproval
@@ -1803,6 +1832,8 @@ export class ConversationEngine {
             id: plan.callId,
             name: toolName,
             argumentsPreview: this.previewArguments(args),
+            reason: approvalReason?.reason,
+            reasonDetail: approvalReason?.detail,
           }, ctx.signal)
         : false;
       if (!approved) {

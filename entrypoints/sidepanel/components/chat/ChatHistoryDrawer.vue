@@ -88,7 +88,7 @@
                         :aria-label="t('sidepanel.app.tagsEdit')"
                         @click="startTagEdit(session)"
                       >
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5.5,3H13.8L21,10.2V18.5A2.5,2.5 0 0,1 18.5,21H5.5A2.5,2.5 0 0,1 3,18.5V5.5A2.5,2.5 0 0,1 5.5,3M7,7A1.5,1.5 0 0,0 8.5,8.5A1.5,1.5 0 0,0 7,10A1.5,1.5 0 0,0 5.5,8.5A1.5,1.5 0 0,0 7,7Z" fill="currentColor"/></svg>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5.5,3H13.8L21,10.2V18.5A2.5,2.5 0 0,1 18.5,21H5.5A2.5,2.5 0 0,1 3,18.5V5.5A2.5,2.5 0 0,1 5.5,3M7,7A1.5,1.5 0 0,0 8.5,8.5A1.5,1.5 0 0,0 7,10A1.5,1.5 0 0,0 5.5,8.5A1.5,1.5 0 0,0 7,7M17.5,12.5L11,19H8V16L14.5,9.5L17.5,12.5Z" fill="currentColor"/></svg>
                       </button>
                       <button class="item-op" v-tip="t('sidepanel.app.renameSession')" @click="startRename(session)">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87L20.71,7.04M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z" fill="currentColor"/></svg>
@@ -133,6 +133,7 @@
                     </div>
                     <div class="history-tag-editor-input-row">
                       <input
+                        ref="tagInputRef"
                         v-model="tagInput"
                         class="history-tag-editor-input"
                         :placeholder="t('sidepanel.app.tagsPlaceholder')"
@@ -308,6 +309,7 @@ const tagDraft = ref<ConversationTag[]>([]);
 const tagInput = ref('');
 const tagError = ref('');
 const tagSaving = ref(false);
+const tagInputRef = ref<HTMLInputElement | null>(null);
 
 /** 标签展示文案：内置标签走 i18n，自定义标签原样展示 */
 const tagText = (tag: ConversationTag): string =>
@@ -315,7 +317,7 @@ const tagText = (tag: ConversationTag): string =>
     ? t('sidepanel.app.tagsLearn')
     : tag.label ?? '';
 
-const startTagEdit = (session: ChatSessionMeta) => {
+const startTagEdit = async (session: ChatSessionMeta) => {
   if (tagSaving.value) return;
   // 与重命名互斥：同一行只保留一个编辑态，避免输入框互相抢焦点
   renamingId.value = '';
@@ -324,19 +326,8 @@ const startTagEdit = (session: ChatSessionMeta) => {
   tagDraft.value = session.tags ? session.tags.map(tag => ({ ...tag })) : [];
   tagInput.value = '';
   tagError.value = '';
-  focusTagInput();
-};
-
-/**
- * 聚焦标签输入框。
- * 不用模板 ref：编辑器整体位于 v-for="session in sessions" 内，编译器会给
- * ref 打上 ref_for（值被 Vue 收集成数组），focus 必抛 TypeError——
- * 与重命名一致，按类名从抽屉根节点查询。
- */
-const focusTagInput = () => {
-  void nextTick(() => {
-    drawerRef.value?.querySelector<HTMLInputElement>('.history-tag-editor-input')?.focus();
-  });
+  await nextTick();
+  tagInputRef.value?.focus();
 };
 
 /** 收起编辑器并清空草稿（不处理焦点，供抽屉关闭等非交互路径使用） */
@@ -402,7 +393,7 @@ const addTagToDraft = () => {
   tagDraft.value = appendConversationTag(tagDraft.value, label);
   tagInput.value = '';
   tagError.value = '';
-  focusTagInput();
+  void nextTick(() => tagInputRef.value?.focus());
 };
 
 const removeTagFromDraft = (tagId: string) => {
@@ -411,38 +402,9 @@ const removeTagFromDraft = (tagId: string) => {
   tagError.value = '';
 };
 
-/**
- * 保存前把输入框里未点「添加」的文本并入草稿。
- *
- * 中文输入法的 Enter 常先用于确认候选词（isComposing 守卫不会把它当添加），
- * 文本会留在输入框里；若保存时不同步并入，这段文字会被静默丢弃——
- * 表现为「点了保存，再点编辑却看不到任何标签」。
- * 并入失败（超上限）时保留输入框原文，返回 false 中止保存。
- */
-const flushPendingTagInput = (): boolean => {
-  const label = normalizeConversationTagLabel(tagInput.value);
-  if (!label) {
-    tagInput.value = '';
-    return true;
-  }
-  // 同文本已在草稿中：清掉输入即可，视为已并入
-  if (tagDraft.value.some(tag => tag.label?.toLocaleLowerCase() === label.toLocaleLowerCase())) {
-    tagInput.value = '';
-    return true;
-  }
-  if (tagDraft.value.length >= MAX_CONVERSATION_TAGS) {
-    tagError.value = t('sidepanel.app.tagsLimit', { count: MAX_CONVERSATION_TAGS });
-    return false;
-  }
-  tagDraft.value = appendConversationTag(tagDraft.value, label);
-  tagInput.value = '';
-  return true;
-};
-
 const saveTags = async () => {
   const chatId = tagEditingId.value;
   if (!chatId || tagSaving.value) return;
-  if (!flushPendingTagInput()) return;
   tagSaving.value = true;
   try {
     const updated = await transcriptEngine.setSessionTags(chatId, tagDraft.value);

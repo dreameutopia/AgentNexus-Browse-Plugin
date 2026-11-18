@@ -4,15 +4,23 @@
  * 引入，其规则带 App.vue 的作用域属性，对本组件根元素之外的节点不生效——
  * 放在 app.css 里等于没放（与 plan-board.css / user-message-bubble.css 同一约定）。
  *
- * 空间口径：高度随内容 1–3 行（≈32–62px）：原文最多三行多行展示，超出在
- * 原文块内出现滚动条（滚动只在文本里发生，按钮与来源不位移）。此前是
+ * 空间口径：高度随内容（≈54–62px）：左栏「徽标+标签一行 + 操作行」固定 46px，
+ * 原文最多三行（54px）决定上沿；原文超出三行在块内出现滚动条（滚动只在文本里
+ * 发生，按钮与来源不位移）。此前是
  * 「标签独占一行 + 正文可滚动到 120px + 右侧按钮组」的卡片（约 160px），
  * 在侧边栏这种窄视口里代价过高。
+ *
+ * 布局口径：左栏 .pq-head = 徽标+标签一行，.pq-actions（主行动「确认引用」）
+ * 压在其正下方；次行动 .pq-aside（放弃 ✕ / 取消引用）贴右缘、上下居中；
+ * 原文与来源独占中间整块高度。根节点 align-items:flex-start 保证「待引用」
+ * 与原文首行顶对齐（用 center 会把标签挤到两行原文中间，正是要修的可读性问题），
+ * 右缘次行动用 align-self:center 自行居中。
  *
  * 宽度适配（逐级降级，任何宽度都不变形、不溢出）：
  *   ≤ 340px  隐藏来源页面标题（引用原文优先）
  *   ≤ 260px  按钮收为纯图标（图标本身即语义：✓ 确认 / ✕ 取消）
- *   ≤ 200px  整条换行：引用原文独占第二行，按钮靠右
+ *   ≤ 200px  整条换行：左栏转为横排（标签在左、确认引用靠右），原文独占第二行，
+ *            右缘次行动仍留在第一行末尾
  *
  * 容器查询以本条自身宽度为基准（container-type: inline-size），不依赖视口宽度
  * ——侧边栏可拖拽变窄，视口查询会滞后一档；媒体查询仅作老浏览器的兜底。
@@ -21,7 +29,8 @@
 .page-quote-bar {
   container-type: inline-size;
   display: flex;
-  align-items: center;
+  /* 顶对齐：标签与原文首行同一条基线；左栏比原文高时，空白留在原文下方 */
+  align-items: flex-start;
   gap: 8px;
   width: 100%;
   min-width: 0;
@@ -33,6 +42,27 @@
   background: var(--surface-soft, #f3f1ed);
   overflow: hidden; /* 圆角裁剪：任何子项都不得溢出条外 */
   animation: pq-slide-in 0.18s ease;
+}
+
+/* 左栏：徽标+标签一行，主行动「确认引用」压在其正下方。
+   纵向堆叠让「确认引用」紧贴「待引用」，同时原文拿到整块中间宽度
+   （旧布局里标签与按钮分居原文两侧，横向要让出 mark+label+actions 三段） */
+.pq-head {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* 徽标 + 状态标签：同一行（两态靠文案 + 徽标底色双重区分） */
+.pq-head-top {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 /* 状态徽标：待引用为中性灰底，已引用为深墨底（与发送按钮同一主色体系） */
@@ -64,8 +94,8 @@
 }
 
 /* 引用原文：最多三行多行展示（换行保留），超出在块内出现滚动条。
-   flex-basis: 0 + min-width: 0 —— 原文吃掉所有剩余空间，换行策略生效、
-   永不把按钮挤出容器；滚动只发生在这块文本里，按钮与来源不位移。
+   flex-basis: 0 + min-width: 0 —— 原文吃掉左栏之外的全部剩余空间，换行策略
+   生效、永不把左栏挤变形；滚动只发生在这块文本里，按钮与来源不位移。
    行高 1.45 → 三行 = 4.35em（按 em 计，随字号缩放精确贴合三行） */
 .pq-text {
   flex: 1 1 0;
@@ -109,8 +139,20 @@
   text-overflow: ellipsis;
 }
 
+/* 主行动行：压在标签正下方（左栏内，左对齐） */
 .pq-actions {
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 次行动（待引用态放弃 ✕ / 已引用态取消引用）：贴右缘、上下居中。
+   align-self:center 覆盖根节点的 flex-start——退出口不随原文行数上下漂移，
+   也不占左栏宽度，原文因此拿到整块中间区域 */
+.pq-aside {
+  flex: 0 0 auto;
+  align-self: center;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -200,28 +242,32 @@
   }
 }
 
-/* 宽度降级 3：整条换行——引用原文独占第二行，操作按钮靠右 */
+/* 宽度降级 3：整条换行——左栏转横排（标签在左、确认引用靠右），原文独占第二行，
+   右缘次行动留在第一行末尾（用 order 让它先于原文参与换行，否则会被挤到第三行） */
 @container (max-width: 200px) {
   .page-quote-bar {
     flex-wrap: wrap;
     row-gap: 4px;
   }
 
-  .pq-mark {
-    order: 0;
-  }
-
-  .pq-label {
-    order: 1;
+  /* 左栏由「标签在上、按钮在下」改为横排：空间不够时先保住按钮不换行 */
+  .pq-head {
+    flex: 1 1 auto;
+    flex-direction: row;
+    align-items: center;
+    column-gap: 6px;
   }
 
   .pq-actions {
-    order: 2;
     margin-left: auto;
   }
 
+  .pq-aside {
+    order: 1;
+  }
+
   .pq-text {
-    order: 3;
+    order: 2;
     flex: 1 1 100%;
   }
 }
@@ -254,21 +300,23 @@
     row-gap: 4px;
   }
 
-  .pq-mark {
-    order: 0;
-  }
-
-  .pq-label {
-    order: 1;
+  .pq-head {
+    flex: 1 1 auto;
+    flex-direction: row;
+    align-items: center;
+    column-gap: 6px;
   }
 
   .pq-actions {
-    order: 2;
     margin-left: auto;
   }
 
+  .pq-aside {
+    order: 1;
+  }
+
   .pq-text {
-    order: 3;
+    order: 2;
     flex: 1 1 100%;
   }
 }

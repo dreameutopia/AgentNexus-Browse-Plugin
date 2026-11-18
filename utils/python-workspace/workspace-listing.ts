@@ -78,13 +78,18 @@ function parentDirectory(path: string): string {
 }
 
 /**
- * list 目标目录缺失时的可执行提示：回显根目录概览与约定目录的生命周期。
+ * 目标目录缺失时的可执行提示：回显根目录概览与约定目录的生命周期。
  *
  * 不把「目录不存在」放宽成空列表——那会把拼写错误静默成「没有数据」。
  * 但错误不能只说「不存在」：模型需要知道下一步（列根目录 / 先执行一次
  * run 生成 results/），否则只能反复猜测同一路径。
+ *
+ * action 参与文案：list 与 search 共用本函数，但提示语必须点名**本次调用的
+ * 动作**——共用同一句「list 的 path=…」会让 search 的失败回显成 list，
+ * 模型据此误判自己调错了工具。
  */
 function describeMissingListPath(
+  action: 'list' | 'search',
   path: string,
   entries: readonly { path: string }[],
 ): string {
@@ -102,10 +107,11 @@ function describeMissingListPath(
   const rootText = preview
     ? `当前根目录：${preview}${roots.length > LIST_ROOT_PREVIEW_MAX ? '…' : ''}`
     : '当前工作区为空';
+  const verb = action === 'search' ? 'search' : 'list';
   return (
-    `list 的 path="${path}" 不存在。${rootText}。` +
-    'list 只盘点已存在目录，不会创建目录；写入文件时其父目录会自动创建，results/ 由首次 run/crawl 或数据治理写入时自动创建。' +
-    '可省略 path（或传 "."）列出根目录，或直接 read/search 已知路径。'
+    `${verb} 的 path="${path}" 不存在。${rootText}。` +
+    `${verb} 只在已存在目录内查找，不会创建目录；写入文件时其父目录会自动创建，results/ 由首次 run/crawl 或数据治理写入时自动创建。` +
+    '可省略 path（或传 "."）从根目录开始，或直接 read/search 已知路径。'
   );
 }
 
@@ -185,11 +191,15 @@ function paginate(
 /**
  * 校验目标目录存在且确实是目录（缺失/文件当目录都给可执行提示）。
  */
-function assertDirectory(entries: readonly WorkspaceEntry[], requested: string): void {
+function assertDirectory(
+  action: 'list' | 'search',
+  entries: readonly WorkspaceEntry[],
+  requested: string,
+): void {
   if (!requested) return;
   const entry = entries.find((item) => item.path === requested);
   if (!entry) {
-    fail('DIR_NOT_FOUND', describeMissingListPath(requested, entries));
+    fail('DIR_NOT_FOUND', describeMissingListPath(action, requested, entries));
   }
   if (entry.blob || entry.link) {
     const parent = parentDirectory(requested);
@@ -220,7 +230,7 @@ export async function listWorkspaceChildren(
       : parseWorkspaceFilePath(path);
   const prefix = requested ? requested + '/' : '';
   const snapshotEntries = await readWorkspaceSnapshot(chatId, signal);
-  assertDirectory(snapshotEntries, requested);
+  assertDirectory('list', snapshotEntries, requested);
   const entries = sortEntries(
     snapshotEntries.filter((item) => {
       if (!item.path.startsWith(prefix) || item.path === requested) return false;
@@ -267,15 +277,12 @@ export async function searchWorkspacePaths(
       : parseWorkspaceFilePath(path);
   const prefix = requested ? requested + '/' : '';
   const snapshotEntries = await readWorkspaceSnapshot(chatId, signal);
-  assertDirectory(snapshotEntries, requested);
-  const entries = sortEntries(
-    snapshotEntries.filter(
-      (item) =>
-        item.path !== requested &&
-        item.path.startsWith(prefix) &&
-        matcher.test(item.path),
-    ),
-  );
+  assertDirectory('search', snapshotEntries, requested);
+  const entries = sortEntries(snapshotEntries.filter((item) =>
+    item.path !== requested &&
+    item.path.startsWith(prefix) &&
+    matcher.test(item.path),
+  ));
   return paginate(entries, offset, limit);
 }
 

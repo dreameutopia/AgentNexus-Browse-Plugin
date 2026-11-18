@@ -239,6 +239,13 @@ class SkillEngine {
    *   2. 多阶段任务且当前阶段不匹配 → 允许推迟到对应阶段再加载；
    *   3. 清单中的标识即工具入参，原样传递。
    *
+   * 清单条目形如 `- <id>: <description>｜命中即先 load｜适用工具: a, b`：
+   *   - 「命中即先 load」把**动作**与条目放在同一行（模型识别出相关性后不必
+   *     再回想该调什么工具——真实日志里出现过「认出技能相关却始终没加载」
+   *     的情况，根因是「相关」与「下一步动作」被拆散在两处）；
+   *   - 「适用工具」给出**技能↔工具**的显式绑定，模型据此知道「要用这个
+   *     工具 ⇒ 该先读这份规程」，而不是只凭技能描述猜测相关性。
+   *
    * @param available 可用技能列表（runtime-builder 按智能体上下文解析）
    * @param activatedRefs 已激活的技能引用（从清单中排除，避免重复引导）
    */
@@ -253,20 +260,27 @@ class SkillEngine {
     );
     const listing = available
       .filter(skill => !activatedIds.has(skill.id))
-      .map(
-        skill =>
-          // 描述与激活正文同源（均为用户可编辑文本）：单行化防伪造清单条目，
-          // 分区标签清洗防止描述中的闭合标签破坏 XML 分区结构
-          `- ${toSingleLine(skill.id)}: ${sanitizeSectionBreakingTags(toSingleLine(skill.description))}`,
-      );
+      .map(skill => {
+        // 描述与激活正文同源（均为用户可编辑文本）：单行化防伪造清单条目，
+        // 分区标签清洗防止描述中的闭合标签破坏 XML 分区结构
+        const description = sanitizeSectionBreakingTags(
+          toSingleLine(skill.description),
+        );
+        // 工具绑定：技能声明的 allowed-tools（去掉技能自身的加载工具）
+        const governedTools = skill.allowedTools
+          .filter(toolId => !isSkillToolId(toolId))
+          .join(", ");
+        const binding = governedTools ? `｜适用工具: ${governedTools}` : "";
+        return `- ${toSingleLine(skill.id)}: ${description}｜命中即先 load：skill_tool(action="load", skill_id="${toSingleLine(skill.id)}")${binding}`;
+      });
 
     if (listing.length === 0) return null;
     return (
       `\n\n<available-skills>\n` +
       `以下是针对特定任务的深化指令（技能）。使用规则：\n` +
-      `1. 开始执行任务前，对照清单判断哪些技能与任务相关。用 skill_tool 的 load 操作逐个加载所需技能，读完相关指令再按其流程执行。\n` +
-      `2. 若任务分多个阶段而当前阶段与技能不相关，可在推进到对应阶段时再加载该技能。\n` +
-      `3. 每次调用传入清单中对应的唯一 skill_id。多个技能的文件按各自的技能相对路径读取，避免混用。\n` +
+      `1. 开始执行任务前，对照清单判断哪些技能与任务相关。**判定为相关就必须先执行该条目给出的 load 调用**——技能正文是该类任务的执行规程（步骤、口径、交付格式），跳过它做出来的结果大概率要返工。清单条目已附上 load 调用与适用工具，直接照抄即可。\n` +
+      `2. 技能正文按「任务场景」匹配，不要求网站完全相同：跨站点的同类任务（如换一家电商站做同类列表采集）同样适用既有技能的方法论，站点差异由你在选择器与参数上自行适配。\n` +
+      `3. 若任务分多个阶段而当前阶段与技能不相关，可在推进到对应阶段时再加载该技能。\n` +
       `4. 多个技能共同完成任务时，按各自适用的步骤组合使用。若规程冲突且会改变用户要求的结果，先让用户明确选择。\n` +
       `${listing.join('\n')}\n` +
       `</available-skills>`

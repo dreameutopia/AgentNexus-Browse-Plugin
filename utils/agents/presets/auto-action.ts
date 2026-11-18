@@ -30,8 +30,8 @@ export const autoActionConfig: PresetAgentConfig = {
 <workflow>
 1. 明确用户目标、目标文档/记录、完成标准。用户说当前页时先 browser_observe / browser_extract_data 确认页面形态；确需正文阅读时用 read_website（结果落盘 content/，后续页用 file_util(action="read", path=该文件, index=页码) 续读）；正文不足不能判定页面空，继续 browser_observe。
 2. 观察对应控件与上下文：**表单/多区块字段页先 browser_observe(view="form") 盘点**（分区+字段+必填+现值+填写顺序一次拿全），再按区块推进、必填优先；普通页面用 controls/inputs/buttons；表格、树和编辑器用 structure，必要时 accessibility。返回 coverage 表示实际覆盖边界。同一字段连续两次失败即止损（换机制或跳过待汇总），不要单点耗尽轮次；工具结果 budget 字段里的轮次预算剩余不足三分之一时优先保必填与提交路径。
-3. 定位后用 browser_interact 执行一个动作，再读取当前焦点、选区或页面反馈。导航后等待加载，重新观察；任何动作完成前均不宣称任务成功。
-4. 控件交互一律走 browser_interact（含复选框 set_checked、下拉 select、展开 set_expanded）——它带幂等状态校验、遮挡检测与回读。js_run 是**数据提取通道**，不是交互通道的替代品：只有在 browser_interact 在同一目标上连续失败两次以上（说明引用体系在该页不可靠）时才用脚本，且脚本必须设计成**一次覆盖全部待查假设**的单个诊断脚本，辅助函数写在脚本顶部、用 $args 切换目标，不要为每个诊断点新建一个脚本。写操作（提交表单、点击提交按钮）**不得**用脚本代替 browser_interact：脚本派发成功不等于业务成功，且脚本无法等待业务回执，容易造成重复提交。
+3. 定位后用 browser_interact 执行一个动作，再读取当前焦点、选区或页面反馈。下载或导出按钮用 browser_download_click；已拿到 downloadId 后用 status 查看并等待导入，避免重复点击。导航后等待加载，重新观察；任何动作完成前均不宣称任务成功。
+4. 常规控件交互走 browser_interact（含复选框 set_checked、下拉 select、展开 set_expanded）——它带幂等状态校验、遮挡检测与回读。js_run 是**数据提取通道**，不是交互通道的替代品：只有在 browser_interact 在同一目标上连续失败两次以上（说明引用体系在该页不可靠）时才用脚本，且脚本必须设计成**一次覆盖全部待查假设**的单个诊断脚本，辅助函数写在脚本顶部、用 $args 切换目标，不要为每个诊断点新建一个脚本。写操作（提交表单、点击提交按钮）**不得**用脚本代替 browser_interact：脚本派发成功不等于业务成功，且脚本无法等待业务回执，容易造成重复提交。
 5. 批量数据使用已确认的数据源。先小范围验证，再通过 js_run（抓取结果自动保存为工作区结果文件，不进对话）处理，避免在对话中转录大表。当前工具不能直接生成 Excel 时明确说明所需的数据/导出工具，不虚构工具。
 6. 结束前验证计划内业务结果：目标值/公式、正确记录、保存提示或成功导航。超时/异常先读取现状，避免重复提交。
 7. 提交类动作走「操作 → browser_wait 等条件 → 读回执」闭环：等地址跳转（url_contains）、等成功文案出现（text_present）、等控件消失（element_hidden）、等网络静默（network_idle）。**回读到旧状态不等于操作失败**：页面可能还在跳转，先等条件再判定；同理，**操作返回成功也不等于业务成功**，必须读回执确认。两者都不确定时先观察现状，绝不重放提交。

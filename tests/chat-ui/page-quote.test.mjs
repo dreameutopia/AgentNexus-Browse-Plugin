@@ -6,6 +6,9 @@
  *      - 待引用态：标签「待引用:」+ 确认引用主行动 + 放弃图标按钮
  *      - 已引用态：标签「已引用:」+ 取消引用次行动（无确认 / 无放弃）
  *      - 来源标题存在时渲染；点击分别 emit confirm / discard / cancel
+ *      - 布局：主行动（确认引用）与标签同在左栏 .pq-head（按钮压在标签正下方）；
+ *        次行动（放弃 ✕ / 取消引用）走 .pq-aside 贴右缘、上下居中；
+ *        原文 .pq-text 不在两者之内、独占中间整块高度
  *   2. 引用信封（纯函数）：<page_quote> 结构、XML 转义、超长截断、空正文
  *   3. 正文拼装顺序（纯函数）：用户输入 → 引用信封 → 附件信封；
  *      无引用信封时与既有实现逐字一致（缓存前缀稳定）
@@ -222,6 +225,31 @@ async function mountBar(props) {
   assert.ok(!el.querySelector('.pq-btn-cancel'), '待引用态没有取消引用按钮');
   assert.equal(confirmBtn.textContent.trim(), '确认引用', '主行动按钮文案');
 
+  // 布局契约：确认引用挂在「待引用」标签正下方的左栏；放弃(✕) 走右缘、上下居中
+  const head = el.querySelector('.pq-head');
+  assert.ok(head, '存在左栏容器 .pq-head');
+  const label = head.querySelector('.pq-label');
+  const actions = head.querySelector('.pq-actions');
+  assert.ok(label, '标签在左栏内');
+  assert.ok(actions, '主行动区在左栏内');
+  assert.ok(head.querySelector('.pq-head-top .pq-mark'), '徽标与标签同一行（.pq-head-top）');
+  assert.equal(el.querySelector('.pq-head .pq-text'), null, '原文不在左栏内（独占中间整块高度）');
+  assert.ok(head.contains(confirmBtn), '确认按钮位于标签下方的左栏');
+  assert.ok(
+    label.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING,
+    '主行动在标签之后（DOM 顺序 = 视觉上的上下关系）',
+  );
+
+  const aside = el.querySelector('.pq-aside');
+  assert.ok(aside, '存在右缘次行动容器 .pq-aside');
+  assert.equal(aside.parentElement, el, '.pq-aside 是引用条直接子节点（贴右缘）');
+  assert.ok(aside.contains(ghostBtn), '放弃按钮走右缘次行动区，不在左栏');
+  assert.equal(el.querySelector('.pq-head .pq-btn-ghost'), null, '左栏只留主行动，没有放弃按钮');
+  assert.ok(
+    el.querySelector('.pq-text').compareDocumentPosition(aside) & Node.DOCUMENT_POSITION_FOLLOWING,
+    '次行动排在原文之后（视觉右侧）',
+  );
+
   confirmBtn.click();
   ghostBtn.click();
   assert.deepEqual(events, ['confirm', 'discard'], '点击分别 emit confirm / discard');
@@ -250,6 +278,9 @@ async function mountBar(props) {
   assert.ok(!el.querySelector('.pq-btn-confirm'), '已引用态没有确认按钮');
   assert.ok(!el.querySelector('.pq-btn-ghost'), '已引用态没有放弃按钮');
   assert.equal(cancelBtn.textContent.trim(), '取消引用', '次行动按钮文案');
+  const aside = el.querySelector('.pq-aside');
+  assert.ok(aside && aside.contains(cancelBtn), '已引用态：取消引用走右缘次行动区（贴右缘、上下居中）');
+  assert.equal(el.querySelector('.pq-actions'), null, '已引用态没有主行动行（左栏只剩徽标+标签）');
 
   cancelBtn.click();
   assert.deepEqual(events, ['cancel'], '点击 emit cancel');
@@ -266,6 +297,30 @@ async function mountBar(props) {
   for (const bp of ['340px', '260px', '200px']) {
     assert.ok(css.includes(`@container (max-width: ${bp})`), `容器查询断点 ${bp} 存在`);
   }
+  // 左栏结构：标签在上、操作按钮在其正下方；原文与左栏顶对齐
+  assert.match(
+    css,
+    /\.page-quote-bar\s*\{[^}]*align-items:\s*flex-start/,
+    '根节点顶对齐：标签与原文首行同一条基线',
+  );
+  assert.match(
+    css,
+    /\.pq-head\s*\{[^}]*flex-direction:\s*column/,
+    '左栏纵向堆叠：标签在上、操作按钮在下',
+  );
+  assert.match(css, /\.pq-head\s*\{[^}]*gap:\s*4px/, '标签行与按钮行间距 4px');
+  assert.match(
+    css,
+    /\.pq-aside\s*\{[^}]*align-self:\s*center/,
+    '右缘次行动（放弃/取消引用）上下居中',
+  );
+  assert.match(css, /\.pq-aside\s*\{[^}]*flex:\s*0 0 auto/, '右缘次行动不被压缩');
+  // 极窄宽度：左栏转横排，保住「标签+按钮」不换行
+  assert.match(
+    css,
+    /\.pq-head\s*\{[^}]*flex-direction:\s*row/,
+    '≤200px 时左栏转为横排（标签在左、按钮靠右）',
+  );
   // 溢出防线：原文三行封顶 + 块内滚动 + 操作区不被压缩 + 容器自身裁剪
   assert.match(css, /\.pq-text\s*\{[^}]*max-height:\s*calc\(3 \* 1\.45em\)/, '原文最多三行（行高 1.45 × 3）');
   assert.match(css, /\.pq-text\s*\{[^}]*overflow-y:\s*auto/, '超出三行出现滚动条（块内滚动）');

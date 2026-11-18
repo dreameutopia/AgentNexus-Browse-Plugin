@@ -237,11 +237,9 @@ export async function testElementInteraction(
     }>;
     check(
       !enumeration.properties.elementId &&
-        enumeration.properties.frameId?.type === 'integer' &&
-        enumeration.properties.parentSelector?.type === 'string' &&
-        enumeration.properties.parentXPath?.type === 'string' &&
+        !enumeration.properties.frameId &&
         enumeration.additionalProperties === false,
-      '枚举 schema 分支禁止节点引用，并暴露可选 frame/父容器范围参数',
+      '枚举 schema 分支禁止节点与 frame 参数',
     );
     eq(
       element.required,
@@ -273,9 +271,12 @@ export async function testElementInteraction(
       ...enumeration.properties.view.enum,
     ] as const) {
       for (const reference of [
+        { frameId: 0 },
+        { frameId: 7 },
+        { frameId: null },
         { elementId: '' },
         { elementId: 'anx:11:document:1' },
-        { elementId: null },
+        { elementId: null, frameId: null },
       ]) {
         const before = browserAccessCount;
         const invalid = await getter.execute({
@@ -292,93 +293,6 @@ export async function testElementInteraction(
         eq(browserAccessCount, before, '错误组合在访问浏览器前被拦截');
       }
     }
-    // 枚举范围参数：frameId 可选（限定单 frame），parentSelector / parentXPath 可选且互斥
-    const frameScoped = await getter.execute({ view: 'buttons', frameId: 7 });
-    check(frameScoped.success, '枚举支持限定 frameId 扫描', frameScoped.error);
-    for (const bad of [-1, 1.5, '7', null]) {
-      const before = browserAccessCount;
-      const invalid = await getter.execute({ view: 'buttons', frameId: bad } as any);
-      check(
-        !invalid.success && invalid.error?.includes('INVALID_ARGUMENT') === true,
-        `枚举拒绝非法 frameId=${JSON.stringify(bad)}`,
-      );
-      eq(browserAccessCount, before, '非法 frameId 在访问浏览器前被拦截');
-    }
-    const beforeParent = browserAccessCount;
-    const bothParents = await getter.execute({
-      view: 'buttons',
-      parentSelector: '#app',
-      parentXPath: '//*[@id="app"]',
-    } as any);
-    check(
-      !bothParents.success && bothParents.error?.includes('parentSelector') === true,
-      'parentSelector 与 parentXPath 互斥',
-    );
-    eq(browserAccessCount, beforeParent, '互斥父容器参数在访问浏览器前被拦截');
-    const missingParent = await getter.execute({
-      view: 'buttons',
-      parentSelector: '#__anx_missing_container__',
-    });
-    check(
-      !missingParent.success && missingParent.error?.includes('PARENT_CONTAINER_NOT_FOUND') === true,
-      '父容器未命中时显式报错而不退回整页',
-      missingParent.error,
-    );
-
-    // 多 frame：容器只在部分 frame 存在 → 命中即成功；缺席 frame 静默
-    // （containerMiss 入册，不产生 PAYLOAD_ERROR / NEW_FRAME 误报）；
-    // 容器外元素与其它 frame 的内容一律不进结果。
-    const savedParentFrames = [...frames.entries()];
-    frames.clear();
-    frames.set(
-      0,
-      create('<div id="mainOnly"><button id="scopedBtn">范围内</button></div><button id="outsideBtn">范围外</button>'),
-    );
-    frames.set(7, create('<button id="otherFrameBtn">另一帧</button>'));
-    try {
-      const scopedPartial = await getter.execute({
-        view: 'buttons',
-        parentSelector: '#mainOnly',
-      });
-      check(scopedPartial.success, '容器在部分 frame 命中即成功', scopedPartial.error);
-      const scopedText = String((data(scopedPartial).elements as string) ?? '');
-      check(scopedText.includes('范围内'), '容器内元素进结果', scopedText);
-      check(
-        !scopedText.includes('范围外') && !scopedText.includes('另一帧'),
-        '容器外与其它 frame 的内容被裁剪',
-        scopedText,
-      );
-      const issuesJson = JSON.stringify(data(scopedPartial).frameDiagnostics ?? []);
-      check(
-        !issuesJson.includes('PARENT_CONTAINER_NOT_FOUND') &&
-          !issuesJson.includes('NEW_FRAME_NOT_IN_SNAPSHOT') &&
-          !issuesJson.includes('PAYLOAD_ERROR'),
-        '缺席 frame 不产生误报 issue（containerMiss 静默入册）',
-        issuesJson,
-      );
-    } finally {
-      frames.clear();
-      for (const [key, value] of savedParentFrames) frames.set(key, value);
-    }
-
-    // 快照绑定：parent 属于扫描范围——续读改范围触发 QUERY_MISMATCH，省略则继承
-    const scopedBody = await getter.execute({ view: 'buttons', parentSelector: 'body' });
-    check(scopedBody.success, 'body 容器扫描成功', scopedBody.error);
-    const parentSnapshotId = String(data(scopedBody).snapshotId ?? '');
-    check(!!parentSnapshotId, '范围扫描返回 snapshotId');
-    const switchedScope = await getter.execute({
-      view: 'buttons',
-      parentXPath: '//body',
-      snapshotId: parentSnapshotId,
-    });
-    check(
-      !switchedScope.success && String(switchedScope.error).includes('QUERY_MISMATCH'),
-      '续读改变 parent 触发 QUERY_MISMATCH',
-      switchedScope.error,
-    );
-    const inheritedScope = await getter.execute({ view: 'buttons', snapshotId: parentSnapshotId });
-    check(inheritedScope.success, '续读省略 parent 继承快照范围', inheritedScope.error);
-
     const first = await getter.execute();
     check(first.success, '真实全帧采集通过交付前二次核验', first.error);
     const frameNode = (await scan('buttons', 7))[0];

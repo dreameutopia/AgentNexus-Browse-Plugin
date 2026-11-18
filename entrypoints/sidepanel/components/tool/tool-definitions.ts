@@ -1,6 +1,7 @@
 import { PageExecTool } from '@/tools/browser/page-exec-tool';
 import { BrowserObserveTool } from '@/tools/browser/observe';
 import { BrowserInteractTool } from '@/tools/browser/interact';
+import { browserDownloadClickTool } from '@/tools/browser/download-click';
 import { NetworkObserverTool } from '@/tools/browser/network-observer';
 import { VisionGuiTool } from '@/tools/vision/gui-tool';
 // 只读观察（vision_read*）已并入 vision_gui 的 action 面，不再单独成卡
@@ -1006,7 +1007,7 @@ export const categories: ToolCategory[] = [
           action: {
             type: 'string',
             description:
-              'sniff=嗅探 / list=列出缓存 / download=下载嗅探结果 / fetch=直链下载 / intercept=拦截器开关 / captured=捕获副本库 / export=导出副本 / status=总体状态',
+              'sniff=嗅探 / list=列出缓存 / download=下载嗅探结果 / fetch=直链下载 / intercept=旧版全局捕获状态 / captured=历史副本库 / export=导出副本 / status=总体状态',
             enum: ['sniff', 'list', 'download', 'fetch', 'intercept', 'captured', 'export', 'status']
           },
           fileTypes: {
@@ -1047,13 +1048,8 @@ export const categories: ToolCategory[] = [
           operation: {
             type: 'string',
             description:
-              '仅 action=intercept/captured：子动作。intercept=start/stop/state；captured=list/get/clear',
-            enum: ['start', 'stop', 'state', 'list', 'get', 'clear']
-          },
-          extraExtensions: {
-            type: 'array',
-            items: { type: 'string' },
-            description: '仅 action=intercept operation=start：追加拦截的扩展名'
+              '仅 action=intercept/captured：子动作。intercept=stop/state；captured=list/get/clear',
+            enum: ['stop', 'state', 'list', 'get', 'clear']
           },
           fileId: {
             type: 'string',
@@ -1247,6 +1243,6 @@ export const testUrls = [
 ];
 
 // Unified text tools share the exact execution schemas with this panel.
-categories.find(c=>c.id==='browser')!.tools.push(...[new BrowserObserveTool(),new BrowserInteractTool(),new NetworkObserverTool(),new PageExecTool()].map(tool=>({
+categories.find(c=>c.id==='browser')!.tools.push(...[new BrowserObserveTool(),new BrowserInteractTool(),new NetworkObserverTool(),new PageExecTool(),browserDownloadClickTool].map(tool=>({
  name:tool.name,description:tool.metadata.description,category:tool.metadata.category,version:tool.metadata.version,parameters:tool.openaiSchema.function.parameters.properties as any,required:tool.openaiSchema.function.parameters.required || []
 })));

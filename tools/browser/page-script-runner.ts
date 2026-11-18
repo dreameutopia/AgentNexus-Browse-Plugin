@@ -1,5 +1,6 @@
 import type { ToolExecutionContext } from '@/tools/registry';
 import { executeScriptBounded } from '../common/frame-read';
+import { cdpSession } from './cdp-session';
 /**
  * 页面脚本执行内核（共享实现）
  *
@@ -506,9 +507,9 @@ async function runCdp(params: {
         '指定子 frame 不支持顶层 CDP 求值；请用 world=ISOLATED、strategy=scripting，或使用纯文本辅助功能工具。',
     };
   }
-  // CDP 会话由 cdp-session 统一复用（延迟脱离）——按需延迟引入，避免
-  // 单页执行路径平白背上一个调试器依赖。
-  const { cdpSession } = await import('./cdp-session');
+  // CDP 会话由 cdp-session 统一复用（延迟脱离）。静态引入：本模块的调用方
+  // （page-exec / crawl-runner / index 重导出）均已静态引入 cdp-session，
+  // 动态引入拆不出独立 chunk（构建报 INEFFECTIVE_DYNAMIC_IMPORT）。
   if (!cdpSession.isSupported(context)) {
     const note = 'chrome.debugger 不可用（当前环境不支持）';
     attempts.push({ engine: 'cdp', world: 'MAIN', ok: false, note });

@@ -25,6 +25,12 @@ import {
 } from "@/utils/python-workspace/workspace-files";
 import { saveWorkspaceResultFile } from "@/utils/python-workspace/data-files";
 import { analyzeValue } from "@/utils/data-ref-rows";
+import {
+  describeCompleteness,
+  detectEnvelopeBaseline,
+  resolveRelationTable,
+  verifyCompleteness,
+} from "@/utils/relation-table";
 import { requireWorkspaceChatId } from "@/utils/python-workspace/artifact-contract";
 import { JS_RUN_TOOL_ID } from "./js-contract";
 import { toolErrorDetails } from "@/utils/shared/error-details";
@@ -129,6 +135,7 @@ export class JsRunTool extends BaseBrowserTool {
           '    <action name="crawl">把同一个脚本按 targets 列表跑遍多个页面：工具内部完成导航、等待就绪与逐页执行，页面间随机停顿防风控，每页独立失败并给出逐目标账本。</action>\n' +
           '  </actions>\n' +
           '  <result>每次执行的完整结果自动保存为 results/ 下的独立 JSON 文件（≤10MB，跨浏览器重启持久；results/ 由首次写入自动创建）。响应只回传前 2000 字符，超出部分用 file_util(action="read", path=结果文件路径, index=1) 按页续读（每页 3000 字符）。</result>\n' +
+          '  <return-contract>脚本返回值就是产出的数据：直接 return 对象数组（每行一条记录）最省事；return 信封对象（如 {page,totalOnPage,rows:[…]}）同样可用——下游工具会按载荷路径契约定位行表（成员名 rows/items/data/records/list/results/content 优先），回执会告诉你行表路径与信封里的标量元数据。信封里的总量字段（totalOnPage/total/count 等）是核对「实抓行数 vs 页面宣称总数」的独立口径，请随结果一起返回：实抓行数与它不一致时工具会当场告警。**禁止只返回实抓行数而丢掉基准**——那样就只剩自证式对账，漏抓无从发现。</return-contract>\n' +
           '  <downstream>结果文件可直接交给 data_ref_tool(action="info", file=…) 查看字段结构、data_ref_tool(files=[…]) 合并/去重/投影、xlsx_tool(action="create_from_data", sheets:[{name, dataFiles:[结果文件路径]}]) 导出，无需再读内容。</downstream>\n' +
           '  <script-contract>脚本是目标页面内的 async 函数体：允许 await，必须 return 所需结果。通过 $args 使用 args 数组动态传参（crawl 时 $args[0] 是本次目标信息）。页面执行策略、世界、frame、Promise 与超时完整保留。</script-contract>\n' +
           '  <access-discipline>站点访问纪律「慢、少、撞墙即停」——适用于脚本内网络请求（fetch/XHR 循环翻页取数）、逐页连续 run（翻页按钮/页码 URL 场景）、多页抓取；无网络往返的本地只读探测不需要等待：\n' +
@@ -384,13 +391,37 @@ export class JsRunTool extends BaseBrowserTool {
     context?: ToolExecutionContext,
   ): Promise<ToolResult> {
     const warnings: string[] = [];
-    const shape = analyzeValue(outcome.value);
-    const shapeText =
-      shape.kind === "records"
-        ? `${shape.rowCount ?? 0} 行对象数组`
-        : shape.kind === "matrix"
-          ? `${shape.rowCount ?? 0} 行二维数组`
-          : "单值";
+    // 形态一律按**解析后的行表**描述，而不是原始返回值：脚本返回信封结构时，
+    // 原始值是「单值」，但真正的产出是那 50 行——按原始值描述会让模型以为
+    // 脚本没抓到东西（上一版正是如此：信封返回被回执报成「单值」）。
+    const relation = resolveRelationTable(outcome.value);
+    const tableShape = relation.ok
+      ? analyzeValue(relation.rows)
+      : analyzeValue(outcome.value);
+    const shapeText = relation.ok
+      ? relation.location.kind === 'envelope'
+        ? `信封结构（行表在路径 "${relation.location.path}"）`
+        : tableShape.kind === 'records'
+          ? `${tableShape.rowCount ?? 0} 行对象数组`
+          : tableShape.kind === 'matrix'
+            ? `${tableShape.rowCount ?? 0} 行二维数组`
+            : '单值'
+      : tableShape.kind === 'records'
+        ? `${tableShape.rowCount ?? 0} 行对象数组`
+        : tableShape.kind === 'matrix'
+          ? `${tableShape.rowCount ?? 0} 行二维数组`
+          : '单值';
+    // 完整性对账（生产端）：脚本自报的总量与实抓行数不符时立刻点破——
+    // 「漏抓」要在采集当场被看见，而不是等到导出时才发现。
+    const completeness = relation.ok
+      ? (() => {
+          const baseline = detectEnvelopeBaseline(relation.envelopeMeta);
+          const verdict = verifyCompleteness(relation.rows.length, baseline);
+          return verdict === 'matched' || verdict === 'unverified'
+            ? null
+            : describeCompleteness(relation.rows.length, baseline, verdict);
+        })()
+      : null;
 
     let resultFile: { path: string; bytes: number } | undefined;
     let saveError: string | undefined;
@@ -422,9 +453,25 @@ export class JsRunTool extends BaseBrowserTool {
     // outcome/attempts/script）对模型下一步决策没有增量价值，已移除；
     // 数据治理与导出的固定导航文案移到工具描述，避免每次调用重复数百字符。
     const payload: Record<string, unknown> = {
-      ...(shape?.rowCount !== undefined ? { rows: shape.rowCount } : {}),
+      ...(tableShape?.rowCount !== undefined ? { rows: tableShape.rowCount } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
     };
+    // 信封结构：把行表路径与对账元数据一并回传（模型据此知道导出会取哪张表，
+    // 以及有哪些独立的对照口径可用于「实抓 vs 宣称总数」核对）
+    if (relation.ok && relation.location.kind === "envelope") {
+      payload.relation = {
+        path: relation.location.path,
+        rows: relation.rows.length,
+        matchKind: relation.matchKind,
+        envelopeMeta: relation.envelopeMeta,
+      };
+    }
+    // 对账未通过 → 计入 warnings（与其它告警同通道，模型不会漏看）
+    if (completeness) {
+      const existing = Array.isArray(warnings) ? warnings : [];
+      existing.push(completeness);
+      payload.warnings = existing;
+    }
 
     if (outcome.fullJson !== undefined) {
       const totalChars = outcome.fullJson.length;
@@ -466,6 +513,12 @@ export class JsRunTool extends BaseBrowserTool {
         : "");
     if (resultFile && truncated) {
       message += `\n本响应仅含前 ${WORKSPACE_READ_PAGE_CHARS} 字符预览——其余用 file_util(action="read", path="${resultFile.path}", index=1) 起按页续读（每页 3000 字符）。`;
+    }
+    // 信封结构：对账口径已在 payload.relation.envelopeMeta 里（结构化、可编程
+    // 消费），正文不再复述一遍——同一份事实出现两次是纯上下文浪费。
+    // 正文只补「结论」：对账通过与否（漏抓必须在这里就被看见）。
+    if (completeness) {
+      message += `\n⚠️ ${completeness}`;
     }
     if (saveError) {
       return {

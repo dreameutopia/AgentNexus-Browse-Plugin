@@ -14,6 +14,9 @@
 import { computed, onBeforeUnmount, ref } from 'vue';
 import { imageStore } from '../core/images/image-store';
 import { showAlert } from './use-app-dialog';
+import { t } from '@/utils/i18n';
+import { queryOperationTabs } from '@/utils/browser-window-binding';
+import type { BrowserScope } from '@/tools/browser/browser-scope';
 import {
   CAPTURED_ELEMENT_LIMIT,
   CAPTURED_ELEMENT_NOTE_MAX_CHARS,
@@ -114,6 +117,8 @@ export function useElementCapture() {
   const isCapturing = ref(false);
   const captureTabId = ref<number | null>(null);
   const lastError = ref('');
+  /** 捕获所在窗口：捕获可能运行在绑定的操作窗口（≠ 侧边栏窗口），按窗口过滤标签页切换事件 */
+  let captureWindowId: number | null = null;
 
   const count = computed(() => elements.value.length);
   const isFull = computed(() => elements.value.length >= CAPTURED_ELEMENT_LIMIT);
@@ -190,6 +195,7 @@ export function useElementCapture() {
     const wasCapturing = isCapturing.value;
     isCapturing.value = false;
     captureTabId.value = null;
+    captureWindowId = null;
     settleReady(false);
     readySeenAt = 0;
     limitNoticeShown = false;
@@ -204,34 +210,69 @@ export function useElementCapture() {
     }
   }
 
-  async function start(): Promise<void> {
+  /**
+   * 启动元素捕获（再次调用 = 结束捕获）。
+   *
+   * 目标标签页与「校验元素」共用同一口径（queryOperationTabs）：
+   *   - 已绑定操作窗口 → 只在该窗口内取活动标签页，绝不回退到其它窗口；
+   *   - 未绑定（跟随模式）→ 跟随侧边栏所在窗口的当前标签页。
+   * 绑定到别的窗口时先把它带到前台：侧边栏不在那个窗口，不聚焦的话用户点完
+   * 「元素捕获」看不到任何反应，会以为按钮坏了。
+   */
+  async function start(options: { scope?: BrowserScope } = {}): Promise<void> {
     if (isCapturing.value) {
       stop();
       return;
     }
     lastError.value = '';
 
-    let tab: chrome.tabs.Tab | undefined;
-    try {
-      [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    } catch {
-      tab = undefined;
-    }
-
-    if (!tab?.id) {
-      await showAlert('无法获取当前标签页，请打开一个网页后重试。', '元素捕获');
+    const scope = options.scope;
+    const tabs = await queryOperationTabs(scope);
+    if (tabs === null) {
+      // 查询失败 = 操作窗口已关闭 / 不可访问：绝不回退到「当前窗口」，
+      // 否则捕获会落到用户没指定的页面上。
+      await showAlert(
+        scope
+          ? t('sidepanel.elementCapture.captureWindowUnavailable')
+          : t('sidepanel.elementCapture.captureNoCurrentTab'),
+        t('sidepanel.elementCapture.captureTitle'),
+      );
       return;
     }
+
+    const tab = tabs.find((item) => item.active) ?? tabs[0];
+    if (!tab?.id) {
+      await showAlert(
+        scope
+          ? t('sidepanel.elementCapture.captureNoTab')
+          : t('sidepanel.elementCapture.captureNoCurrentTab'),
+        t('sidepanel.elementCapture.captureTitle'),
+      );
+      return;
+    }
+
+    // 先把操作窗口带到前台，再做页面校验：侧边栏不在那个窗口，不聚焦的话
+    // 用户点完「元素捕获」看不到任何反应；而「页面不支持」的提示也必须让用户
+    // 正看着那个页面才说得通。聚焦失败（窗口刚被关闭）由下面的 READY 超时兜底。
+    if (scope) {
+      try {
+        await chrome.windows.update(scope.windowId, { focused: true });
+      } catch {
+        // 忽略：继续尝试启动，失败提示会给出可执行的下一步
+      }
+    }
+
     if (!isSupportedTabUrl(tab.url)) {
       await showAlert(
-        '当前页面不支持元素捕获。请切换到普通网页（http/https）后重试。',
-        '元素捕获',
+        t('sidepanel.elementCapture.captureUnsupportedPage'),
+        t('sidepanel.elementCapture.captureTitle'),
       );
       return;
     }
 
     isCapturing.value = true;
     captureTabId.value = tab.id;
+    captureWindowId = Number.isSafeInteger(tab.windowId) && tab.windowId >= 0 ? tab.windowId : null;
     limitNoticeShown = false;
     readySeenAt = 0;
     lastFrameError = '';
@@ -258,15 +299,15 @@ export function useElementCapture() {
     if (!ok && isCapturing.value) {
       isCapturing.value = false;
       captureTabId.value = null;
+      captureWindowId = null;
       const reason = lastFrameError || injectionError;
-      const detail = reason ? `（${reason}）` : '';
       await showAlert(
         injectionError
-          ? `当前页面不允许扩展注入脚本${detail}。请确认扩展拥有该站点的访问权限后重试。`
-          : lastFrameError && !injectionError
-            ? `页面捕获器启动失败${detail}。请刷新当前网页后重试。`
-            : '页面中没有可用的捕获器。请刷新当前网页后重试；若仍失败，请确认扩展拥有该站点的访问权限。',
-        '元素捕获失败',
+          ? t('sidepanel.elementCapture.captureInjectDenied', { reason })
+          : lastFrameError
+            ? t('sidepanel.elementCapture.captureStartFailed', { reason })
+            : t('sidepanel.elementCapture.captureNoPicker'),
+        t('sidepanel.elementCapture.captureFailedTitle'),
       );
     }
   }
@@ -488,11 +529,13 @@ export function useElementCapture() {
   }
 
   function onTabActivated(activeInfo: chrome.tabs.TabActiveInfo): void {
-    if (!isCapturing.value) return;
-    if (captureTabId.value !== null && activeInfo.tabId !== captureTabId.value) {
-      stop({ silent: true });
-      lastError.value = '已切换标签页，元素捕获结束';
-    }
+    if (!isCapturing.value || captureTabId.value === null) return;
+    // 只在「捕获所在窗口」内切走标签页才退出。捕获可能运行在绑定的操作窗口，
+    // 此时侧边栏窗口的标签页切换与捕获无关；把聚焦操作窗口本身触发的
+    // onActivated 也算成「切走」会让捕获刚启动就被自己关掉。
+    if (activeInfo.windowId !== captureWindowId || activeInfo.tabId === captureTabId.value) return;
+    stop({ silent: true });
+    lastError.value = '已切换标签页，元素捕获结束';
   }
 
   function onTabUpdated(

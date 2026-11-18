@@ -310,12 +310,12 @@ export async function writeToolWorkspaceFile(
     );
   }
   if (typeof content !== "string") {
-    fail("INVALID_ARGUMENT", "content 必须是字符串");
+    fail("INVALID_ARGUMENTS", "content 必须是字符串");
   }
   const bytes = new Blob([content]).size;
   if (bytes > WORKSPACE_EDIT_MAX_FILE_BYTES) {
     fail(
-      "INVALID_ARGUMENT",
+      "INVALID_ARGUMENTS",
       `文件 ${bytes} 字节，超过单文件上限 ${WORKSPACE_EDIT_MAX_FILE_BYTES} 字节`,
     );
   }

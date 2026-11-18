@@ -49,7 +49,7 @@ export default defineConfig({
       'scripting',
       'webNavigation',
       'downloads',
-      'webRequest',
+      'alarms',
       'debugger',
       'history',
       'bookmarks',
@@ -110,7 +110,8 @@ export default defineConfig({
     content_security_policy: {
     // wasm-unsafe-eval：允许扩展页编译 WebAssembly（MV3 明确允许的关键字，不放开 eval），
     // 支撑按需下载的 Pyodide（Python/WASM）运行时；所有可执行 JS 仍须来自扩展包自身
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval' http://localhost:8086 http://localhost:3000 http://localhost:3001; style-src 'self' 'unsafe-inline' http://localhost:3000 http://localhost:3001; connect-src *; object-src 'self';",
+    // 扩展后台从 Chrome 已关联的下载条目读取本机原件，仍需用户开启文件网址访问。
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval' http://localhost:8086 http://localhost:3000 http://localhost:3001; style-src 'self' 'unsafe-inline' http://localhost:3000 http://localhost:3001; connect-src * file:; object-src 'self';",
     "sandbox": "script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:8086 http://localhost:3000 http://localhost:3001; style-src 'self' 'unsafe-inline' http://localhost:3000 http://localhost:3001; connect-src *; sandbox allow-scripts allow-forms allow-popups allow-modals; child-src 'self';"
     },
   },
@@ -171,11 +172,17 @@ export default defineConfig({
         // 仅静音两类已确认无害的构建警告，其余（含我们自己的）照常透传：
         //   1. pyodide 的 npm 包为兼容 Node 引用了 node:* 内置模块，
         //      Vite 在浏览器构建中已将其替换为空 stub（仅生产构建打印此提示）；
-        //   2. pyodide.asm.mjs 为 Emscripten 生成物，内部 eval 受扩展 CSP 约束。
+        //   2. pyodide.asm.mjs 为 Emscripten 生成物，内部 eval / CommonJS
+        //      module 变量是生成物固有写法，扩展 CSP 已约束脚本来源。
+        //      按 warning.code + 模块路径判定——message 文案随 rolldown 版本
+        //      变化（如 "Use of direct `eval`"），旧的纯字符串匹配已失效。
         onwarn(warning, warn) {
           const message = typeof warning === 'string' ? warning : String(warning?.message ?? '');
           if (message.includes('has been externalized for browser compatibility')) return;
-          if (message.includes('Use of eval') && message.includes('pyodide')) return;
+          const code = typeof warning === 'object' && warning ? String(warning.code ?? '') : '';
+          const id = typeof warning === 'object' && warning ? String(warning.id ?? '') : '';
+          const fromPyodide = (id + ' ' + message).includes('pyodide');
+          if (fromPyodide && (code === 'EVAL' || code === 'COMMONJS_VARIABLE_IN_ESM' || /eval|CommonJS/i.test(message))) return;
           warn(warning);
         },
       },

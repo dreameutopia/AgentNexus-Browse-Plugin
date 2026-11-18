@@ -127,8 +127,8 @@ its location instead of asserting an unverified root cause.
 
 Latest review verification (2026-11-15): TypeScript checking passed; the full tool
 runner passed 2,445 checks with zero failures; both real-browser probes passed;
-the Chrome MV3 production build completed. The build still emits unrelated
-duplicate `MAX_FIELDS` auto-import and static/dynamic chunk warnings. These checks
+the Chrome MV3 production build completed. (The duplicate `MAX_FIELDS` auto-import
+and static/dynamic chunk warnings noted then were fixed on 2026-11-18.) These checks
 do not replace testing the original authenticated SSO session after extension reload.
 
 Browser timeouts end the extension's wait; they cannot terminate a synchronous

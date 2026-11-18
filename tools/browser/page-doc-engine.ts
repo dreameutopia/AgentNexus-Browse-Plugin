@@ -270,44 +270,114 @@ async function waitForUrlTab(tabId: number, signal?: AbortSignal, context?: Tool
  * 提取整篇正文（allFrames + shadow root 感知），并完成组装/上限/验证页判定。
  *
  * 调用方只负责：ref 缓存（page_text）或文件落盘（read_website）。
+ *
+ * 范围提取（与 browser_observe 的 parent* 参数族、frameId 同名同义）：
+ *   - parentSelector / parentXPath：只把命中容器的子树转为 Markdown（含容器
+ *     自身文本）；容器在部分 frame 缺席时该 frame 静默跳过（containerMiss，
+ *     不产生 PAYLOAD_ERROR/NEW_FRAME 误报），**所有**已扫描 frame 均未命中时
+ *     返回 PARENT_CONTAINER_NOT_FOUND，绝不静默回退整页；
+ *   - frameId：只提取该 frame（不存在/不可注入 → FRAME_NOT_FOUND）；
+ *   - 两者与 url/tabId 目标解析正交：先解析标签页，再限定提取面。
  */
 export async function extractPageDoc(
   tabId: number,
-  options: { requestedUrl?: string; loadNote?: string; signal?: AbortSignal } = {}, context?: ToolExecutionContext
+  options: {
+    requestedUrl?: string;
+    loadNote?: string;
+    signal?: AbortSignal;
+    parentSelector?: string;
+    parentXPath?: string;
+    frameId?: number;
+  } = {}, context?: ToolExecutionContext
 ): Promise<PageDocResult> {
+  const parentSelector = (options.parentSelector ?? '').trim();
+  const parentXPath = (options.parentXPath ?? '').trim();
+  const scopeRequested = !!(parentSelector || parentXPath);
+  const frameScoped = options.frameId !== undefined;
   let results: FrameResults<ReturnType<typeof structuredPagePayload>>;
   try {
     results = await readPageFrames({
-      target: { tabId, allFrames: true },
+      target: frameScoped
+        ? { tabId, frameIds: [options.frameId!] }
+        : { tabId, allFrames: true },
       world: 'ISOLATED',
       func: structuredPagePayload,
+      args: [parentSelector, parentXPath],
     }, { operation: 'page-text', signal: options.signal, maxResultChars: MAX_DOC_CHARS,
       measureResult: payload => typeof payload?.markdown === 'string' ? payload.markdown.length : 0 }, context);
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // 限定 frame 且该 frame 不存在/不可注入：frame-read 以 NO_RESULT 收口——
+    // 映射为与 browser_observe 同码的 FRAME_NOT_FOUND，而不是笼统的 INJECTION_FAILED
+    if (frameScoped && /NO_RESULT/.test(message)) {
+      return {
+        ok: false,
+        ...(error instanceof PageReadError ? { frameDiagnostics: error.frameDiagnostics } : {}),
+        error: `FRAME_NOT_FOUND：frameId=${options.frameId} 不存在或不可注入（${message}）。请省略 frameId 提取全部可注入 frame，或用 browser_tabs 确认该 frame 仍在。`,
+      };
+    }
     return {
       ok: false,
       ...(error instanceof PageReadError ? { frameDiagnostics: error.frameDiagnostics } : {}),
-      error: `INJECTION_FAILED：页面注入失败（标签页可能已关闭/正在导航，或页面受限）：${
-        error instanceof Error ? error.message : String(error)
-      }。请确认页面可读后用 browser_tabs 重试。`,
+      error: `INJECTION_FAILED：页面注入失败（标签页可能已关闭/正在导航，或页面受限${frameScoped ? `；frameId=${options.frameId}` : ''}）：${message}。请确认页面可读后用 browser_tabs 重试。`,
+    };
+  }
+  // 限定 frame 且无任何返回：frame 不存在/不可注入——与 browser_observe 同码同指引
+  if (frameScoped && results.length === 0) {
+    return {
+      ok: false,
+      frameDiagnostics: results.frameDiagnostics,
+      error: `FRAME_NOT_FOUND：frameId=${options.frameId} 不存在或不可注入。请省略 frameId 提取全部可注入 frame，或用 browser_tabs 确认该 frame 仍在。`,
     };
   }
 
   const frameDiagnostics = results.frameDiagnostics;
   const warnings: string[] = [];
   const frames: Array<ReturnType<typeof structuredPagePayload> & { frameId: number; documentId?: string }> = [];
+  // 作用域三态计数：miss 静默跳过；有效提取计数决定「全 frame 未命中」的升级判定
+  let containerMissCount = 0;
+  let scopedResolvedCount = 0;
   for (const row of results) {
     const payload = row.result;
+    if (payload && payload.containerMiss) {
+      containerMissCount++;
+      continue; // 静默缺席：多 frame 页面子 frame 没有容器是常态，不制造误报 issue
+    }
     if (payload?.error) addFrameIssue(frameDiagnostics, { frameId: row.frameId, stage: 'read', scope: typeof payload.markdown === 'string' && payload.markdown.length ? 'coverage' : 'frame', code: 'PAYLOAD_ERROR', message: injectionErrorText(payload.error) });
     if (!payload || typeof payload.markdown !== 'string') {
       addFrameIssue(frameDiagnostics, { frameId: row.frameId, stage: 'read', code: 'INVALID_RESULT', message: 'Frame did not return a Markdown string' });
       continue;
     }
+    if (!payload.error) scopedResolvedCount++;
     if (payload.truncated) addFrameIssue(frameDiagnostics, { frameId: row.frameId, stage: 'read', scope: 'coverage', code: 'CONTENT_TRUNCATED', message: typeof payload.truncationReason === 'string' ? payload.truncationReason : 'Frame content reached traversal, time, depth, or character budget; returned content is partial' });
     frames.push({ ...payload, frameId: row.frameId, documentId: row.documentId,
       url: typeof payload.url === 'string' ? payload.url : '',
       title: typeof payload.title === 'string' ? payload.title : '',
     });
+  }
+  // 请求了范围但没有任何 frame 真正完成范围提取：精确归因后报错，绝不回退整页
+  if (scopeRequested && scopedResolvedCount === 0) {
+    const firstPayloadIssue = frameDiagnostics.issues.find(
+      (issue) => issue.code === 'PAYLOAD_ERROR',
+    );
+    const parts: string[] = [];
+    if (containerMissCount > 0)
+      parts.push(
+        `PARENT_CONTAINER_NOT_FOUND：父容器（${parentSelector || parentXPath}）在全部 ${containerMissCount} 个已扫描 frame 中均未命中。` +
+          '请确认选择器或 frameId，或省略 parent 参数改为整页提取。',
+      );
+    // 帧级硬错误（非法选择器/注入异常）比「未命中」更具体，一并透出
+    if (firstPayloadIssue) parts.push(firstPayloadIssue.message);
+    if (parts.length)
+      return { ok: false, frameDiagnostics, error: parts.join('；') };
+    // 无 PAYLOAD_ERROR 也无 containerMiss（如全部 INVALID_RESULT）：
+    // 把诊断里的原始原因拼出来，绝不以笼统 EMPTY_EXTRACTION 收口
+    const joinedIssues = frameDiagnostics.issues
+      .map((issue) => issue.message)
+      .filter(Boolean)
+      .join('；');
+    if (joinedIssues)
+      return { ok: false, frameDiagnostics, error: joinedIssues };
   }
   const missingResults = new Set(frameDiagnostics.issues.filter(i => i.frameId !== undefined && !i.code.includes('TRUNCATED')).map(i => i.frameId)).size;
   if (missingResults > 0) warnings.push(`${missingResults} 个 frame 未完整获取，原因见 frameDiagnostics`);

@@ -182,9 +182,10 @@ export { MyCustomSearchTool };
 - **browser_resources**（八 action）：页面资源与下载捕获
   - `sniff` / `list` / `download`：嗅探当前页可下载资源、按 id 获取并保存到当前会话 outputs/
   - `fetch`：按 URL 获取文件到当前会话 outputs/（无需先嗅探；受网络访问权限与工作区配额限制）
-  - `intercept` / `captured` / `export`：下载拦截开关、扩展私有副本库、副本复制到当前会话 outputs/
+  - `intercept` / `captured` / `export`：旧版全局捕获状态、历史副本库、副本复制到当前会话 outputs/
   - `status`：拦截器与副本库总体状态
 - 默认由用户点击文件卡片下载。`xlsx_tool(autoDownload=true)` 和 `browser_resources(openAfterDownload=true)` 可额外发起浏览器下载；额外下载失败保留工作区产物并返回警告。历史 `[file:ID|文件名]` 仅保留读取兼容，不迁移无会话归属的旧文件。
+- **browser_download_click**（`click` / `status`）点击一次，最多观察 30 秒。关联后持久化插件 `downloadId`，并返回浏览器 `browserDownloadId`。取消、超时或返回时结束捕获。后台只按已登记的下载 ID 对账。用 `status(downloadId, waitSeconds)` 查询进度，默认 10 秒，最多 180 秒，0 为立即查询。小于 100 MB 的原件导入本会话 `outputs/`。自动保存需关闭浏览器的逐文件询问，导入需开启扩展的文件网址访问权限。网站自己的文件选择器可能没有浏览器下载记录。
 - **browser_downloads**（七 action）：浏览器下载管理器（chrome.downloads）
   - `list` 查询历史与进行中任务；`cancel` / `pause` / `resume` 控制下载
   - `erase` 清除历史记录（不动磁盘文件）；`show` 定位文件；`open` 打开文件

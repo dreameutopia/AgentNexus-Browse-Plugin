@@ -130,9 +130,10 @@ export class BrowserInteractTool extends BaseBrowserTool {
   name = 'browser_interact';
   metadata: ToolMetadata = {
     name: this.name,
-    description: '纯文本节点交互：点击、填充、原生按键与输入、聚焦、容器滚动',
+    description:
+      '纯文本节点交互：点击、填充、状态设置、原生按键与输入、聚焦、容器滚动、工作区文件上传（set_files）',
     category: 'browser',
-    version: '6.0.0',
+    version: '6.1.0',
     requiresConfirm: true,
   };
   openaiSchema: OpenAITool = {
@@ -204,7 +205,7 @@ export class BrowserInteractTool extends BaseBrowserTool {
           frameId: {
             type: 'number',
             description:
-              'DOM 引用同一行的 FrameId；无 elementId 的文档 scroll 也必填，从当前观察确定；AX 引用省略',
+              'DOM 引用同一行的 FrameId；无 elementId 的文档 scroll 与省略 elementId 的 keys 都不需要它，从当前观察确定；AX 引用省略',
           },
           value: {
             type: 'string',
@@ -289,7 +290,11 @@ export class BrowserInteractTool extends BaseBrowserTool {
     },
   };
 
-  async execute(input: Params, context?: ToolExecutionContext) {
+  async execute(
+    input: Params,
+    context?: ToolExecutionContext,
+    beforeTrustedClick?: (tab: chrome.tabs.Tab & { id: number }, signal?: AbortSignal) => Promise<void>,
+  ) {
     this.ensureBackgroundContext();
     let validated = false;
     let dispatched = false;
@@ -537,6 +542,10 @@ export class BrowserInteractTool extends BaseBrowserTool {
                   `OBSCURED：目标的可点位置被其它元素遮挡（命中 ${geometry.hitDescription}）。` +
                     '请先关闭遮挡物，或改用合成点击。',
                 );
+              if (beforeTrustedClick) {
+                await beforeTrustedClick(tab, signal);
+                await check();
+              }
               dispatched = true;
               await this.dispatchTrustedClick(
                 tab.id,

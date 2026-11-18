@@ -99,6 +99,7 @@ registerAllTools()                      (tools/index.ts)
   `clear_captured_files` / `get_downloads_status` →
   **`browser_resources`**（action: sniff / list / download / fetch / intercept / captured / export / status）
   + **`browser_downloads`**（action: list / cancel / pause / resume / erase / show / open）。
+  + **`browser_download_click`**（action: click / status）。限时关联下载并返回持久化插件 ID，后台按已登记的 ID 对账及导入。旧版全局请求捕获已停用。
   download/fetch/export 的交付文件统一保存到当前会话工作区 outputs/，返回 workspace-file 卡片标记。
   捕获副本库保留原始来源；browser_downloads 继续管理独立的浏览器下载队列。
   工作区保存与下载到电脑是两件事，默认通过文件卡片交付。
@@ -117,13 +118,13 @@ registerAllTools()                      (tools/index.ts)
   与磁盘目录不必一一对应（如 `browser_interact` 属 `browser`、`python_run` 属 `code`）；
   文档表格按运行期分类记录，由测试强制对齐。
 
-## 三、分类清单（截至本次核对，共 54 个；`generic_wait` 已删除，由 `browser_wait` 取代）
+## 三、分类清单（截至本次核对，共 55 个；`generic_wait` 已删除，由 `browser_wait` 取代）
 
 | 分类 | 数量 | 工具名 |
 | --- | --- | --- |
 | automation | 8 | `ai_action`、`ai_locate`、`check_restricted_url`、`extract_data`、`file_upload_getter`、`file_uploader`、`formFiller`、`xiaozhi_config` |
 | base | 2 | `task-result`、`task-submit` |
-| browser | 24 | `browser_clean_page`、`browser_console`、`browser_dom_explore`、`browser_downloads`、`browser_extract_data`、`browser_get_page_html`、`browser_get_page_info`、`browser_get_page_text`、`browser_history_bookmarks`、`browser_interact`、`browser_media_control`、`browser_navigation`、`browser_network_capture`、`browser_network_request`、`browser_observe`、`browser_page_exec`、`browser_page_http`、`browser_page_ops`、`browser_resources`、`browser_send_command_to_inject_script`、`browser_tabs`、`browser_vector_search`、`browser_wait`、`read_website` |
+| browser | 25 | `browser_clean_page`、`browser_console`、`browser_dom_explore`、`browser_download_click`、`browser_downloads`、`browser_extract_data`、`browser_get_page_html`、`browser_get_page_info`、`browser_get_page_text`、`browser_history_bookmarks`、`browser_interact`、`browser_media_control`、`browser_navigation`、`browser_network_capture`、`browser_network_request`、`browser_observe`、`browser_page_exec`、`browser_page_http`、`browser_page_ops`、`browser_resources`、`browser_send_command_to_inject_script`、`browser_tabs`、`browser_vector_search`、`browser_wait`、`read_website` |
 | code | 3 | `js_run`、`mermaid_renderer`、`python_run` |
 | data | 1 | `data_ref_tool` |
 | excalidraw | 3 | `draw_on_canvas`、`excalidraw_tool`、`setup_excalidraw_canvas` |

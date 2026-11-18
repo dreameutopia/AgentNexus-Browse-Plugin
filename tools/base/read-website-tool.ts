@@ -66,9 +66,9 @@ export class ReadWebsiteTool extends BaseBrowserTool {
     name: 'read_website',
     description:
       '读取网页正文为结构化 Markdown 并落盘 content/*.md：多 frame + shadow root 覆盖，' +
-      '单页 3000 字符，CSV（content,page,totalPages,path）返回；续读用 file_util(action="read")',
+      'parent*/frameId 容器范围提取，单页 3000 字符，CSV（content,page,totalPages,path）返回；续读用 file_util(action="read")',
     category: 'browser',
-    version: '2.0.0',
+    version: '2.1.0',
     author: 'AgentNexus',
     tags: ['browser', 'content', 'text', 'markdown', 'workspace', 'artifact'],
     // 纯读（不带 url/tabId 时不改变用户可见页面）；带 url 的前台打开或
@@ -86,6 +86,9 @@ export class ReadWebsiteTool extends BaseBrowserTool {
         '提取口径与内置文本通道完全一致：结构化 Markdown（标题层级/表格含合并单元格/列表/代码块及语言/链接/引用/图片/表单控件），' +
         '覆盖全部可注入 frame（iframe）与可访问 shadow root，剔除隐藏内容与脚本/样式/SVG/Canvas。\n' +
         '目标：默认读当前活动标签页；url=单个网址 时前台打开并等待加载完成（标签页保留在用户眼前，便于手动过验证）；tabId 可指定标签页（会先切换到该页）。\n' +
+        '范围提取（parentSelector/parentXPath/frameId，与 browser_observe 同名同义）：只输出命中容器子树的 Markdown，**包含容器自身的文本**' +
+        '（与 observe 的「容器自身不进结果」相反——读语义里容器文本正是要读的内容）；容器在部分 frame 缺席时该 frame 静默跳过，所有 frame 均未命中报 PARENT_CONTAINER_NOT_FOUND，绝不回退整页。' +
+        '作用域模式下人机验证页判定为弱信号（只依据标题与容器内文案）。字段化批量抽取用 browser_extract_data；本工具的强项是结构保真正文与落盘。\n' +
         '返回 CSV 多列单行：content,page,totalPages,path（path 为工作区相对路径，如 content/example-com-list-1-a1b2.md）。' +
         '单页最多 3000 字符，完整正文永远在 path 文件里；需要后续页或全文时用 file_util(action="read", path=该 path, index=页码) 按页读取（page < totalPages 表示还有下一页）。\n' +
         '正文为空或不足 100 字符时不落盘，直接把内容放在 CSV 的 content 列（path 为空）。\n' +
@@ -111,6 +114,27 @@ export class ReadWebsiteTool extends BaseBrowserTool {
             minimum: 1,
             description: '页码（可选，默认 1，每页 3000 字符）。page < totalPages 表示还有下一页',
           },
+          parentSelector: {
+            type: 'string',
+            maxLength: 2000,
+            description:
+              '仅提取：只把该 CSS 选择器命中的容器子树转为 Markdown（可选，与 parentXPath 互斥；与 browser_observe 的 parent* 同名同义）。' +
+              '**包含容器自身的文本**；多容器按文档序合并、嵌套不重复；所有 frame 均未命中报 PARENT_CONTAINER_NOT_FOUND，不回退整页。' +
+              '与 url/tabId 任意组合（如 url + selector = 只读单篇文章正文）。容器应短而稳（#main / .article-body）。',
+          },
+          parentXPath: {
+            type: 'string',
+            maxLength: 2000,
+            description:
+              '仅提取：只把该 XPath 1.0 命中的容器子树转为 Markdown（可选，与 parentSelector 互斥）。语义同 parentSelector：含容器自身文本、' +
+              '未命中报错不回退；**仅**命中非元素节点时明确拒绝（容器必须是元素）。',
+          },
+          frameId: {
+            type: 'integer',
+            minimum: 0,
+            description:
+              '仅提取：限定在该 frame 内提取（可选，省略 = 全部可注入 frame）。frameId 不存在或不可注入报 FRAME_NOT_FOUND；运行时也接受纯数字字符串。',
+          },
         },
         required: [],
       },
@@ -118,7 +142,14 @@ export class ReadWebsiteTool extends BaseBrowserTool {
   };
 
   async execute(
-    rawArgs: { url?: unknown; tabId?: unknown; page?: unknown } = {},
+    rawArgs: {
+      url?: unknown;
+      tabId?: unknown;
+      page?: unknown;
+      parentSelector?: unknown;
+      parentXPath?: unknown;
+      frameId?: unknown;
+    } = {},
     context?: ToolExecutionContext,
   ): Promise<ToolResult> {
     this.ensureBackgroundContext();
@@ -126,15 +157,15 @@ export class ReadWebsiteTool extends BaseBrowserTool {
 
     if (rawArgs === null || typeof rawArgs !== 'object' || Array.isArray(rawArgs)) {
       return this.createErrorResponse(
-        `参数必须是对象 { url?, tabId?, page? }，实际收到 ${Array.isArray(rawArgs) ? 'array' : typeof rawArgs}`,
+        `参数必须是对象 { url?, tabId?, page?, parentSelector?, parentXPath?, frameId? }，实际收到 ${Array.isArray(rawArgs) ? 'array' : typeof rawArgs}`,
       );
     }
     const args = rawArgs as Record<string, unknown>;
-    const allowedKeys = ['url', 'tabId', 'page'];
+    const allowedKeys = ['url', 'tabId', 'page', 'parentSelector', 'parentXPath', 'frameId'];
     const unknownKeys = Object.keys(args).filter((key) => !allowedKeys.includes(key));
     if (unknownKeys.length > 0)
       return this.createErrorResponse(
-        `存在未知参数：${unknownKeys.join('、')}。允许的参数：${allowedKeys.join('/')}（打开新页用 url；指定标签页用 tabId）。` +
+        `存在未知参数：${unknownKeys.join('、')}。允许的参数：${allowedKeys.join('/')}（打开新页用 url；指定标签页用 tabId；容器范围用 parentSelector/parentXPath；限定 frame 用 frameId）。` +
           (unknownKeys.includes('path')
             ? 'path 续读模式已下线：请用 file_util(action="read", path=上次返回的 path, index=页码) 读取已落盘正文。'
             : ''),
@@ -155,6 +186,41 @@ export class ReadWebsiteTool extends BaseBrowserTool {
       );
     const tabId =
       args.tabId === undefined || args.tabId === null ? undefined : args.tabId;
+
+    // ── 容器范围与 frame 范围（与 browser_observe 同名同义；先于一切页面访问拦截）──
+    for (const key of ['parentSelector', 'parentXPath'] as const) {
+      if (args[key] !== undefined && args[key] !== null && typeof args[key] !== 'string')
+        return this.createErrorResponse(
+          `${key} 必须是字符串（CSS 选择器 / XPath），实际收到 ${Array.isArray(args[key]) ? 'array' : typeof args[key]}`,
+        );
+    }
+    const parentSelector = (typeof args.parentSelector === 'string' ? args.parentSelector : '').trim();
+    const parentXPath = (typeof args.parentXPath === 'string' ? args.parentXPath : '').trim();
+    if (parentSelector && parentXPath)
+      return this.createErrorResponse(
+        'INVALID_ARGUMENT：parentSelector 与 parentXPath 只能二选一。请删除其中一个后重试。',
+      );
+    for (const key of ['parentSelector', 'parentXPath'] as const) {
+      const value = key === 'parentSelector' ? parentSelector : parentXPath;
+      if (value.length > 2000)
+        return this.createErrorResponse(
+          `INVALID_ARGUMENT：${key} 过长（${value.length} 字符，上限 2000）。父容器应是短而稳的选择器（如 #main / .article-body）；需要复杂定位请先 browser_observe 确认容器。`,
+        );
+    }
+    let frameId: number | undefined;
+    if (args.frameId !== undefined && args.frameId !== null) {
+      const parsed =
+        typeof args.frameId === 'number'
+          ? args.frameId
+          : typeof args.frameId === 'string' && args.frameId.trim() !== ''
+            ? Number(args.frameId)
+            : NaN;
+      if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 0)
+        return this.createErrorResponse(
+          `INVALID_ARGUMENT：frameId 必须是非负整数（省略 = 全部可注入 frame），实际收到 ${JSON.stringify(args.frameId)}`,
+        );
+      frameId = parsed;
+    }
 
     let page = 1;
     if (args.page !== undefined && args.page !== null) {
@@ -212,6 +278,9 @@ export class ReadWebsiteTool extends BaseBrowserTool {
         requestedUrl: target.url,
         loadNote: target.loadNote,
         signal: context?.signal,
+        parentSelector,
+        parentXPath,
+        frameId,
       }, context);
       if (!doc.ok) return { ...this.createErrorResponse(doc.error), data: { frameDiagnostics: doc.frameDiagnostics } };
       extracted = doc;

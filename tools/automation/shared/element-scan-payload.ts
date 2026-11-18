@@ -1101,7 +1101,7 @@ export function elementScanPayload(
         return {
           elements: [],
           fingerprint: frameFingerprint,
-          error: `parentSelector 不是合法的 CSS 选择器：${(e as Error).message}`,
+          error: `parentSelector 不是合法的 CSS 选择器：${(e as Error).message}（选择器：${parentSelector.slice(0, 200)}）`,
         };
       }
     } else {
@@ -1118,12 +1118,21 @@ export function elementScanPayload(
           const node = snapshot.snapshotItem(i);
           if (node && node.nodeType === Node.ELEMENT_NODE) found.push(node as Element);
         }
+        // 全部命中都是非元素节点：语义错误（容器必须是元素），不能混入
+        // containerMiss（那会误导成「未找到」）——与 read_website 同码同文案
+        if (found.length === 0 && snapshot.snapshotLength > 0) {
+          return {
+            elements: [],
+            fingerprint: frameFingerprint,
+            error: `parentXPath 命中了 ${snapshot.snapshotLength} 个非元素节点；父容器必须是元素节点（表达式：${parentXPath.slice(0, 200)}）`,
+          };
+        }
         scopedContainers = found;
       } catch (e) {
         return {
           elements: [],
           fingerprint: frameFingerprint,
-          error: `parentXPath 不是合法的 XPath 1.0 表达式：${(e as Error).message}`,
+          error: `parentXPath 不是合法的 XPath 1.0 表达式：${(e as Error).message}（表达式：${parentXPath.slice(0, 200)}）`,
         };
       }
     }

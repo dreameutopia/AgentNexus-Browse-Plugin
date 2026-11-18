@@ -395,70 +395,28 @@
   outline-offset: 1px;
 }
 
-/* ──── 行内重命名：输入框 + 确认/取消（与标签编辑器同一视觉语言） ──── */
-
 .history-rename {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .history-rename input {
   flex: 1;
   min-width: 0;
-  border: 1px solid var(--line-soft, #e4e2de);
+  border: 1px solid var(--ink-secondary, #787671);
   border-radius: 6px;
-  padding: 5px 8px;
+  padding: 4px 8px;
   font-size: 12px;
-  font-family: inherit;
-  color: var(--ink-primary, #292824);
-  background: #ffffff;
   outline: none;
-}
-
-.history-rename input:focus {
-  border-color: var(--ink-secondary, #787671);
-  box-shadow: 0 0 0 2px rgba(41, 40, 36, 0.06);
-}
-
-/* 图标按钮：去掉 UA 默认按钮底色/边框，改为与抽屉一致的描边圆角胶囊 */
-.rename-confirm,
-.rename-cancel {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  flex-shrink: 0;
-  padding: 0;
-  border: 1px solid var(--line-soft, #e4e2de);
-  border-radius: 6px;
-  background: #ffffff;
-  cursor: pointer;
 }
 
 .rename-confirm {
   color: #10b981;
 }
 
-.rename-confirm:hover {
-  background: rgba(16, 185, 129, 0.1);
-  border-color: rgba(16, 185, 129, 0.45);
-}
-
 .rename-cancel {
   color: #ef4444;
-}
-
-.rename-cancel:hover {
-  background: rgba(239, 68, 68, 0.08);
-  border-color: rgba(239, 68, 68, 0.4);
-}
-
-.rename-confirm:focus-visible,
-.rename-cancel:focus-visible {
-  outline: 2px solid var(--ink-secondary, #787671);
-  outline-offset: 1px;
 }
 
 /* 抽屉过渡 */

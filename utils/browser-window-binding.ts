@@ -70,6 +70,24 @@ export async function readBrowserBinding(chatId: string): Promise<BrowserScope |
   return parseBrowserScope(data[key]);
 }
 
+/**
+ * 「操作窗口」内的标签页 —— 侧边栏一切「对页面动手」的入口共用的目标解析口径
+ * （元素捕获、捕获元素校验都走这里，避免两处各自 query 出不同窗口）：
+ *
+ *   - 已绑定操作窗口 → 只查该窗口，绝不回退到其它窗口；
+ *   - 未绑定（跟随模式）→ 跟随侧边栏所在窗口。
+ *
+ * 查询失败（绑定窗口刚被关闭 / 浏览器拒绝）返回 null：调用方必须按失败处理，
+ * 不得把 null 当成「没有标签页」后回退到当前窗口 —— 那会把操作落到错误的页面上。
+ */
+export async function queryOperationTabs(scope?: BrowserScope): Promise<chrome.tabs.Tab[] | null> {
+  try {
+    return await chrome.tabs.query(scope ? { windowId: scope.windowId } : { currentWindow: true });
+  } catch {
+    return null;
+  }
+}
+
 export async function writeBrowserBinding(chatId: string, scope?: BrowserScope): Promise<void> {
   const key = browserBindingKey(chatId);
   const binding = parseBrowserScope(scope);

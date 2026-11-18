@@ -170,12 +170,13 @@ export class PlanTool extends BaseTool {
       name: TOOL_NAME,
       description:
         '管理当前会话的任务计划（步骤清单 + 执行状态），用于长难任务的方向保持与进度外显。通过 action 指定操作：\n' +
-        '- create：建立计划（steps 为步骤文本数组）→ 返回全部计划项及各自 id。每会话一份；已有计划时为覆写式重建——一次调用原子替换整份计划（不要先 delete 清空再 create），原条目、状态与标注立即永久丢失、不可恢复，旧 id 全部失效且不会与新 id 冲突（id 只增不复用），已完成的工作本身不受影响。仅当计划前提整体失效（目标变更 / 路径整体坍塌）时选用，判定标准见系统提示词「计划重建」小节；计划大体仍对时一律 add/edit/delete 局部演进\n' +
-        '- add：追加步骤（steps 数组）→ 返回新增项及 id\n' +
+        '- create：建立计划（steps 为步骤文本数组）→ 正文逐项列出新计划（含每项 id、步骤文本与状态），data 回传 itemIds。每会话一份；已有计划时为覆写式重建——一次调用原子替换整份计划（不要先 delete 清空再 create），原条目、状态与标注立即永久丢失、不可恢复，旧 id 全部失效且不会与新 id 冲突（id 只增不复用），已完成的工作本身不受影响。仅当计划前提整体失效（目标变更 / 路径整体坍塌）时选用，判定标准见系统提示词「计划重建」小节；计划大体仍对时一律 add/edit/delete 局部演进\n' +
+        '- add：追加步骤（steps 数组）→ 正文列出更新后的完整计划，data 回传新增项的 id（addedIds）\n' +
         '- edit：标注单项状态（id + status: pending/in_progress/done/failed；message 可选）。failed 时 message 必填，写清失败原因；done 时 message 简要写明成果\n' +
-        '- delete：删除条目（ids 为 id 数组）\n' +
-        '- read：读取全量计划（每项含 id、状态与标注信息）\n' +
-        '更新纪律（硬性）：开始一项先标 in_progress；一项有结果（成功或失败皆算）后，下一步动作前必须先 edit 标注——done 附简要成果、failed 必附失败原因；失败也要立即标注，严禁攒到最后批量补标或提前标记未执行项；跨轮沿用既有计划（先 read 再按 id edit；create 是覆写式重建，仅限计划前提整体失效时）；id 只用工具返回值或错误信息回显值，edit 报「目标不存在」时按回显清单修正重试；3 步以上的多步任务才建计划。执行中若收到 <plan-status-reminder> 状态回显，先核对补标再继续。',
+        '- delete：删除条目（ids 为 id 数组）→ 正文列出删除后的完整计划，data 回传 deleted（实际删除数）、unknown（不存在而被跳过的 id）与剩余项的 id\n' +
+        '- read：读取全量计划（正文逐项给出 id、步骤、状态与标注信息；data 回传 count/done/failed 与 itemIds）\n' +
+        '更新纪律（硬性）：开始一项先标 in_progress；一项有结果（成功或失败皆算）后，下一步动作前必须先 edit 标注——done 附简要成果、failed 必附失败原因；失败也要立即标注，严禁攒到最后批量补标或提前标记未执行项；跨轮沿用既有计划（先 read 再按 id edit；create 是覆写式重建，仅限计划前提整体失效时）；id 只用工具返回值或错误信息回显值，edit 报「目标不存在」时按回显清单修正重试；3 步以上的多步任务才建计划。执行中若收到 <plan-status-reminder> 状态回显，先核对补标再继续。\n' +
+        '轮次效率：一次回复可同时发出多个工具调用并按书写顺序依次执行——「上一步的 done 标注」与「下一步的 in_progress 标注」应放在同一条回复里一起发出，不要为状态标注各占一轮。',
       parameters: {
         type: 'object',
         properties: {
@@ -287,12 +288,14 @@ export class PlanTool extends BaseTool {
       : `计划已建立（共 ${items.length} 项）。`;
     const droppedNote =
       droppedCount > 0 ? `\n注意：${droppedCount} 条步骤因重复、为空或超出上限被丢弃。` : '';
+    // 正文已渲染全量清单（含每项 id）；data 只回传**程序消费**的摘要字段，
+    // 不重复整份计划——同一次计划调用在上下文里只出现一份清单。
     return planSuccess(`${header}${droppedNote}\n\n${renderItems(items)}`, {
       action: 'create',
       chatId,
       replaced,
       droppedCount,
-      items,
+      itemIds: items.map((item) => item.id),
     });
   }
 
@@ -320,8 +323,7 @@ export class PlanTool extends BaseTool {
       chatId,
       created,
       droppedCount,
-      added: items,
-      items: fullPlan,
+      addedIds: items.map((item) => item.id),
     });
   }
 
@@ -429,7 +431,7 @@ export class PlanTool extends BaseTool {
     const remainingPlan = getPlan(chatId);
     return planSuccess(
       `已删除 ${deleted} 项。${unknownNote}\n\n${renderItems(remainingPlan)}`,
-      { action: 'delete', chatId, deleted, unknown, items: remainingPlan },
+      { action: 'delete', chatId, deleted, unknown, itemIds: remainingPlan.map((item) => item.id) },
     );
   }
 
@@ -440,14 +442,23 @@ export class PlanTool extends BaseTool {
     if (items.length === 0) {
       return planSuccess(
         '当前会话没有计划。多步任务请先用 action=create 建立。',
-        { action: 'read', chatId, items },
+        { action: 'read', chatId, itemIds: [] },
       );
     }
     const done = items.filter(item => item.status === 'done').length;
     const failed = items.filter(item => item.status === 'failed').length;
+    // 正文渲染全量清单（含每项 id / 状态 / 标注）；data 只回传摘要，
+    // 避免同一份计划在上下文里出现两次。
     return planSuccess(
       `当前会话计划（共 ${items.length} 项，已完成 ${done}${failed > 0 ? `，失败 ${failed}` : ''}）：\n\n${renderItems(items)}`,
-      { action: 'read', chatId, items },
+      {
+        action: 'read',
+        chatId,
+        count: items.length,
+        done,
+        failed,
+        itemIds: items.map((item) => item.id),
+      },
     );
   }
 }

@@ -56,6 +56,11 @@ const SNAPSHOT_TTL_MS = 120_000;
 const MAX_SNAPSHOTS = 8;
 /** 跨 frame 种子查找时单 frame 返回的候选上限 */
 const SEED_LOOKUP_LIMIT = 20;
+/**
+ * 超过此匹配数即视为「范围过宽」：候选表（每 frame 上限 20）不足以让模型
+ * 定位目标，此时给出的是「收窄选择器」而非「从候选里挑一个」。
+ */
+const CANDIDATE_ACTION_MAX = 200;
 /** selector/xpath 长度上限（超长必为误用） */
 const MAX_SEED_CHARS = 2_000;
 
@@ -183,7 +188,7 @@ export class DomExploreTool extends BaseBrowserTool {
         '    <action name="siblings">同父兄弟全列。</action>\n' +
         '    <action name="similar">相似元素发现：自动识别重复容器组并逐容器等位匹配，附可直接用于 js_run 抓取脚本的生成选择器与实测匹配数。</action>\n' +
         '  </actions>\n' +
-        '  <matching>selector/xpath 匹配到多个元素时：未给 frameId 且未给 matchIndex 会返回跨 frame 候选列表（含每个候选的 ElementId，可直接选用）；给 matchIndex 则取第 N 个继续探索；显式给了 frameId 时不跨 frame 枚举，默认取该 frame 内第 1 个并在 note 中回显实际匹配数。</matching>\n' +
+        '  <matching>selector/xpath 匹配到多个元素时：未给 frameId 且未给 matchIndex 会返回跨 frame 候选列表（含每个候选的 ElementId，可直接选用）；给 matchIndex 则取第 N 个继续探索；显式给了 frameId 时不跨 frame 枚举，默认取该 frame 内第 1 个并在 note 中回显实际匹配数。候选表每个 frame 最多展开 20 个——匹配数很大（上百以上）时表不足以定位目标，此时应**收窄选择器**到重复项本身（用 action="parent" 从已知元素上溯找到「同构兄弟 ≥ 2」的祖先层，那层即重复容器），而不是从候选表里挑。</matching>\n' +
         '  <result>nextActions 是可直接复制的下一步调用（tool + args），不必再从文本提示里拼参数。children/siblings/similar 分页：首次 page=1 生成 snapshotId，续读只传 snapshotId + page（可省略种子参数）；改变条件或页面变化后重新采集。</result>\n' +
         '  <usage>没有任何引用时无需先 observe——selector/xpath 会按需建立引用注册表。tabId 可选：省略=当前活动页；显式传入会先切换到该标签页再执行。</usage>\n' +
         '  <chain>典型链路：similar 拿到重复容器与选择器 → children 确认字段 → js_run 用选择器批量抓取（结果自动落 results/）→ xlsx_tool(dataFiles) 导出。selector 种子也可直接定位元素并把返回的 ElementId 交给 browser_interact 操作。</chain>\n' +
@@ -509,6 +514,12 @@ export class DomExploreTool extends BaseBrowserTool {
           ), data: { frameDiagnostics } };
         }
         if (looked.total > 1 && input.matchIndex === undefined) {
+          // 多匹配且未指定 matchIndex：给出候选表 + **按匹配规模分级**的下一步。
+          //
+          // 分级的原因：匹配上千个时「请用 matchIndex 指定第几个」是坏指引——
+          // 候选表只展开前 20 个，模型无从在 2082 个里挑。此时真正该做的是
+          // **收窄选择器**（把选择器指向重复项本身而非它的后代/祖先）。
+          const broad = looked.total > CANDIDATE_ACTION_MAX;
           return this.createSuccessResponse(
             {
               action,
@@ -527,9 +538,15 @@ export class DomExploreTool extends BaseBrowserTool {
                 : {}),
               tabId,
               url,
-              nextActions: this.candidateActions(action, seedValue, looked.candidates, tabId),
+              nextActions: broad
+                ? []
+                : this.candidateActions(action, seedValue, looked.candidates, tabId),
             },
-            `匹配到 ${looked.total} 个元素（${looked.frameCount} 个 frame）：请用 matchIndex 指定第几个继续 ${action}，或直接使用候选的 ElementId。`
+            broad
+              ? `选择器 "${seedValue}" 匹配到 ${looked.total} 个元素（${looked.frameCount} 个 frame）——范围过宽，无法从中定位单个种子。请收窄选择器到**重复项本身**（例如卡片容器的类名，而不是它的所有后代）：` +
+                '① 已知重复项类名时直接用该类名作 selector；② 不知道类名时先用 action="parent" 从一个已知元素上溯，定位「同构兄弟 ≥ 2」的祖先层（那层就是重复容器），再用其子项作种子；' +
+                '③ 也可用 action="children" 看容器内的字段布局。'
+              : `匹配到 ${looked.total} 个元素（${looked.frameCount} 个 frame）：请用 matchIndex 指定第几个继续 ${action}，或直接使用候选的 ElementId。`,
           );
         }
         if (looked.total === 1) {

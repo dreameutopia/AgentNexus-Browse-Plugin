@@ -33,16 +33,8 @@
           </div>
           <h1 id="greeting-title" class="greeting-title">{{ greetingText }}</h1>
           <p class="greeting-subtitle">{{ t('sidepanel.app.greetingSubtitle') }}</p>
-          <!-- Python 运行时安装引导：点击直达管理中心「Python 环境」分区 -->
-          <button
-            v-if="showPythonInstallTag"
-            type="button"
-            class="greeting-python-tag"
-            @click="openPythonEnvironmentPage"
-          >
-            <span class="greeting-python-tag__emoji" aria-hidden="true">🐍</span>
-            <span>{{ t('sidepanel.app.greetingPythonTag') }}</span>
-          </button>
+          <!-- Python 运行时安装引导：未安装时展示，安装完成实时消失；点击直达管理中心 Python 分区 -->
+          <GreetingPythonTag @open="openPythonEnvironmentPage" />
         </section>
       </div>
     </div>
@@ -808,6 +800,8 @@ import CapturedElementList from '../components/chat/CapturedElementList.vue';
 import CapturedElementDialog from '../components/chat/CapturedElementDialog.vue';
 import ElementCaptureOverlay from '../components/chat/ElementCaptureOverlay.vue';
 import BrowserWindowPicker from '../components/chat/BrowserWindowPicker.vue';
+// 欢迎语下的 Python 安装引导标签（按环境状态实时显隐）
+import GreetingPythonTag from '../components/greeting/GreetingPythonTag.vue';
 import { backgroundConversation as conversationEngine } from '../core/conversation/runtime-client';
 import { readActiveChat, rememberActiveChat } from '../core/conversation/active-session';
 // 用户气泡底部图片区展示口径（只含用户上传；vision 截图走助手内联「查看屏幕」）
@@ -897,6 +891,11 @@ import {
 // 元素捕获：网页选取元素（侧边栏状态 + 待发送 chip + 详情备注）
 import { useElementCapture } from '../composables/use-element-capture';
 import type { CapturedElement } from '@/utils/element-capture/types';
+// 操作窗口：捕获与校验的目标标签页共用同一查询口径（绑定窗口优先，绝不回退）
+import { queryOperationTabs } from '@/utils/browser-window-binding';
+import type { BrowserScope } from '@/tools/browser/browser-scope';
+// 工具审批弹窗文案分档：按命中原因选标题/正文 key（与 .preview 预览页共用）
+import { selectToolApprovalCopy } from '../utils/tools/approval-copy';
 // 会话跨上下文桥：管理中心「会话管理」分区请求本面板切换 / 复位会话
 import { SESSION_BRIDGE_MSG } from '@/utils/sessions/session-bridge';
 // 上传文件清单（模型侧 <upload_file> 表格：路径 + 大小；正文由 file_util 按需读取）
@@ -1201,6 +1200,9 @@ let pendingToolApproval: { dialogId: number; finish: (approved: boolean) => void
  * 弹窗排队由 use-app-dialog 的单例队列保证（与附件守卫等弹窗互不叠层）。
  * 句柄化注册：弹窗可被 stopAiResponse 经 settleDialogById 定向关闭并
  * 按拒绝收敛（排队中同样支持），停止后不留悬挂弹窗。
+ *
+ * 标题/正文按命中原因分档（选 key 与插值参数在 approval-copy.ts，
+ * 与 .preview 预览页共用同一份，避免预览稿漂移）。
  */
 const requestToolApproval = (request: ToolApprovalRequest): Promise<boolean> =>
   new Promise<boolean>(resolve => {
@@ -1222,12 +1224,10 @@ const requestToolApproval = (request: ToolApprovalRequest): Promise<boolean> =>
         finish(false);
       }
     }, TOOL_APPROVAL_TIMEOUT_SECONDS * 1000);
+    const copy = selectToolApprovalCopy(request);
     const handle = openDialogWithHandle({
-      message: t('sidepanel.chat.toolApprovalMessage', {
-        name: request.name,
-        args: request.argumentsPreview,
-      }),
-      title: t('sidepanel.chat.toolApprovalTitle'),
+      message: t(copy.messageKey, copy.params),
+      title: t(copy.titleKey),
       tone: 'warn',
       mode: 'confirm',
       confirmText: t('sidepanel.chat.toolApprovalAllow'),
@@ -1944,14 +1944,7 @@ const openHubWithHash = async (hash: string): Promise<boolean> => {
   }
 };
 
-/**
- * 欢迎语下的 Python 安装引导标签。
- * 设计口径是「未安装时」才提示；当前恒显（true）以便先看渲染效果，
- * 接入环境状态后改回 `env.status !== 'ready'`（watchPyodideEnv 订阅）即可。
- */
-const showPythonInstallTag = true;
-
-/** 点击标签：打开管理中心并定位到「Python 环境」分区 */
+/** 点击欢迎语下的安装引导标签：打开管理中心并定位到「Python 环境」分区 */
 const openPythonEnvironmentPage = async (): Promise<void> => {
   const opened = await openHubWithHash('#python');
   if (!opened) toast.error(t('sidepanel.app.openHubFailed'));
@@ -2353,9 +2346,32 @@ function handleComposerUpload(event: MouseEvent): void {
   handleFileUpload(event);
 }
 
+/**
+ * 读取当前会话的「操作窗口」绑定（元素捕获与校验共用）。
+ *
+ * 返回 null 表示读取失败：调用方必须中止，绝不当成「未绑定」回退到当前窗口 ——
+ * 那会把操作落到用户没有指定的页面上。
+ */
+async function readOperationScope(): Promise<BrowserScope | undefined | null> {
+  try {
+    return await browserWindowPicker.value?.captureBinding();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    toast.error(t('sidepanel.elementCapture.bindingError', { reason }), 5000);
+    return null;
+  }
+}
+
 async function handleComposerCaptureElement(): Promise<void> {
   closeComposerAddMenu();
-  await elementCapture.start();
+  // 再次点击 = 结束捕获：必须先于操作窗口读取处理，否则读取失败会让「结束」失效
+  if (isElementCapturing.value) {
+    elementCapture.stop();
+    return;
+  }
+  const scope = await readOperationScope();
+  if (scope === null) return;
+  await elementCapture.start({ scope });
 }
 
 function openPendingCapturedElement(element: CapturedElement): void {
@@ -2385,7 +2401,7 @@ function comparableUrl(url: string | undefined): string {
 /**
  * 校验捕获元素：在「操作窗口」的当前网页内重新定位，并让页面框选闪烁 3 秒。
  *
- * 目标页面口径（与工具的操作窗口设定一致）：
+ * 目标页面口径（与元素捕获、工具的操作窗口设定一致，共用 queryOperationTabs）：
  *   - 已绑定操作窗口 → 只在该窗口内查找标签页，绝不回退到其它窗口；
  *   - 未绑定 → 跟随侧边栏所在窗口的当前标签页；
  *   - 同一窗口内优先选与元素来源 URL 相同的标签页，其次活动标签页，
@@ -2398,21 +2414,11 @@ async function validateCapturedElement(element: CapturedElement): Promise<void> 
   };
 
   try {
-    let scope: import('@/tools/browser/browser-scope').BrowserScope | undefined;
-    try {
-      scope = await browserWindowPicker.value?.captureBinding();
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      notifyFailure(t('sidepanel.elementCapture.validateBindingError', { reason }));
-      return;
-    }
+    const scope = await readOperationScope();
+    if (scope === null) return;
 
-    let tabs: chrome.tabs.Tab[];
-    try {
-      tabs = await chrome.tabs.query(
-        scope ? { windowId: scope.windowId } : { currentWindow: true },
-      );
-    } catch {
+    const tabs = await queryOperationTabs(scope);
+    if (tabs === null) {
       notifyFailure(t('sidepanel.elementCapture.validateFailed'));
       return;
     }
@@ -4225,7 +4231,7 @@ const sendMessageInner = async (
   retry?: ApiErrorRetryRequest,
   guardContinue?: GuardContinueRequest,
   capture?: { text: string; chatId: string },
-  browserScopeSnapshot?: Promise<import('@/tools/browser/browser-scope').BrowserScope | undefined>,
+  browserScopeSnapshot?: Promise<BrowserScope | undefined>,
   launchTags?: readonly ConversationTag[],
 ) => {
     // 恢复类入口（API 错误重试 / 守卫停止继续）共用同一套「不触碰草稿」语义：
@@ -4424,7 +4430,7 @@ const sendMessageInner = async (
     let effective: EffectiveContext;
     if (capture && capture.chatId !== activeChatId.value) return;
     const preparingChatId = activeChatId.value;
-    let browserScopeForRun: import('@/tools/browser/browser-scope').BrowserScope | undefined;
+    let browserScopeForRun: BrowserScope | undefined;
     const preparingDraft = {
       text: isResume ? '' : submittedText,
       attachments: isResume || capture ? [] : [...pendingAttachments.value],
@@ -4789,8 +4795,9 @@ const sendMessageInner = async (
                 resolve,
               );
             }),
-          // 工具审批：破坏性/不可逆工具（如 delete_note）执行前的用户放行。
-          // 弹窗 + 60s 超时自动拒绝（安全侧：无人值守不执行破坏性操作）；
+          // 工具审批：需要人审的调用（delete 类破坏性操作、PyPI 依赖安装、
+          // 敏感意图、插件授权）执行前的用户放行；文案按命中原因分档
+          // 弹窗 + 60s 超时自动拒绝（安全侧：无人值守不执行需授权的操作）；
           // 拒绝结果以可控失败回传模型，模型可说明意图或换路径
           onToolApproval: request =>
             requestToolApproval(request),

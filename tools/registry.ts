@@ -6,6 +6,7 @@
 import { ToolExecutor, ToolResult } from '@/common/tool-handler';
 import { executeWithBrowserScope } from './browser/browser-scope';
 import { OpenAITool } from '@/common/openai-types';
+import type { ToolApprovalReasonInfo } from './approval-reason';
 
 // 工具元数据接口
 export type PluginApprovalLevel = 'install' | 'session' | 'call';
@@ -140,6 +141,15 @@ export interface ExtendedTool extends ToolExecutor {
   getSchema?(options: ToolSchemaOptions): OpenAITool;
   /** Tool-specific approval condition when the generic action and confirmation rules do not apply. */
   requiresApprovalFor?(args: unknown): boolean;
+  /**
+   * requiresApprovalFor 命中后的**原因细分**，只供审批弹窗分档文案使用。
+   *
+   * 只在 requiresApprovalFor 返回 true 时被查询；缺省或返回 null 时按
+   * 「整工具审批」的通用文案呈现。审批判定本身完全由 requiresApprovalFor
+   * 决定——本钩子只影响用户看到的说明，**绝不放宽或收紧审批门**（写错
+   * 最多是文案降级，不会导致未授权执行）。
+   */
+  approvalReasonFor?(args: unknown): ToolApprovalReasonInfo | null;
   openaiSchema: OpenAITool;
   execute(args: any, context?: ToolExecutionContext): Promise<ToolResult>;
   /**

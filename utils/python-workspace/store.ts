@@ -118,6 +118,7 @@ export async function saveWorkspaceOutput(
   requestedPath: string,
   blob: Blob,
   signal?: AbortSignal,
+  importId?: string,
 ): Promise<WorkspaceArtifact> {
   requireWorkspaceChatId(chatId);
   if (!isWorkspaceRelativePath(requestedPath) || !isWorkspaceOutput(requestedPath) || !(blob instanceof Blob)) {
@@ -127,6 +128,12 @@ export async function saveWorkspaceOutput(
   return withWorkspaceLock(chatId, () => chatDatabase.updateWorkspace(chatId, current => {
     const root = workspaceRoot(chatId);
     const entries = indexWorkspaceEntries(root, current?.entries ?? []);
+    if (importId) {
+      const existing = [...entries.values()].find(entry =>
+        isWorkspaceOutput(entry.path) && entry.importId === importId && entry.blob,
+      );
+      if (existing?.blob) return { result: workspaceArtifact(existing.path, existing.blob) };
+    }
     const slash = requestedPath.lastIndexOf('/');
     const directory = requestedPath.slice(0, slash);
     const name = requestedPath.slice(slash + 1);
@@ -146,7 +153,7 @@ export async function saveWorkspaceOutput(
       if (existing?.blob || existing?.link) throw new Error('Workspace parent is not a directory: ' + parent);
       if (!existing) entries.set(parent, { path: parent, blob: null });
     }
-    entries.set(path, { path, blob, mtime: Date.now() });
+    entries.set(path, { path, blob, mtime: Date.now(), ...(importId ? { importId } : {}) });
     const combined = [...entries.values()];
     indexWorkspaceEntries(root, combined);
     return {
