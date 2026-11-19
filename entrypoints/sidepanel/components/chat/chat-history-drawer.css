@@ -390,7 +390,9 @@
 .item-op:focus-visible,
 .history-tag-remove:focus-visible,
 .history-tag-editor-add:focus-visible,
-.history-tag-editor-btn:focus-visible {
+.history-tag-editor-btn:focus-visible,
+.rename-confirm:focus-visible,
+.rename-cancel:focus-visible {
   outline: 2px solid var(--ink-secondary, #787671);
   outline-offset: 1px;
 }
@@ -409,6 +411,25 @@
   padding: 4px 8px;
   font-size: 12px;
   outline: none;
+}
+
+/* 输入框聚焦必须有可见焦点环（outline:none 已去掉 UA 默认环） */
+.history-rename input:focus {
+  border-color: var(--ink-primary, #292824);
+  box-shadow: 0 0 0 2px rgba(41, 40, 36, 0.08);
+}
+
+/* 确认/取消：纯语义色图标（不再用描边胶囊），但保留点击光标与命中区 */
+.rename-confirm,
+.rename-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  padding: 0;
+  cursor: pointer;
 }
 
 .rename-confirm {

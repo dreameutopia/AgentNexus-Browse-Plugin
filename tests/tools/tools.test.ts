@@ -1308,11 +1308,13 @@ await testTextAutomation(check, eq);
         }
         (globalThis as Record<string, unknown>).DataTransfer = FakeDataTransfer;
         const input = envS.doc.getElementById('up') as HTMLInputElement;
-        let captured: File[] | null = null;
+        // 可变盒子承接 setter 赋值：局部 let 会被 CFA 收窄成 null，
+        // 闭包内的赋值不参与收窄还原，读回时类型退化成 never。
+        const captured: { current: File[] | null } = { current: null };
         Object.defineProperty(input, 'files', {
           configurable: true,
-          get: () => captured,
-          set: (value: File[]) => { captured = value; },
+          get: () => captured.current,
+          set: (value: File[]) => { captured.current = value; },
         });
         const id = (envS.doc as any).__agentNexusReferences.register(input);
         const payloadBytes = new TextEncoder().encode('resume-bytes');
@@ -1326,9 +1328,9 @@ await testTextAutomation(check, eq);
         ]);
         eq(r.success, true, 'commit 装载成功并回读一致', r);
         eq(r.outcome, 'files_set', 'outcome 标记 files_set');
-        eq(captured?.length, 1, 'input.files 收到 1 个文件');
-        eq(captured?.[0]?.name, 'resume.pdf', '文件名透传');
-        eq(captured?.[0]?.size, payloadBytes.length, '文件字节数一致');
+        eq(captured.current?.length, 1, 'input.files 收到 1 个文件');
+        eq(captured.current?.[0]?.name, 'resume.pdf', '文件名透传');
+        eq(captured.current?.[0]?.size, payloadBytes.length, '文件字节数一致');
         const buffers = (envS.doc.defaultView as any).__anxUploadBuffers;
         check(!buffers || !Object.keys(buffers).length, 'commit 后页面侧缓冲已清理');
 
@@ -2418,7 +2420,8 @@ await testTextAutomation(check, eq);
     // 真实注入按 frameIds 定向——桩按目标 frame 返回对应行，frame-read 再按
     // frameId 过滤。因此「按帧供行」是正确姿势，而不是按 target 分支二选一。
     resetTabStub();
-    let lastExecOptions: Record<string, any> | null = null;
+    // 可变盒子：局部 let 会被 CFA 收窄成 null（闭包内赋值不还原），读回时退化成 never
+    const lastExecOptions: { current: Record<string, any> | null } = { current: null };
     let execCount = 0;
     const rowFor = (frameId: number): Record<string, unknown> =>
       frameId === 7
@@ -2430,7 +2433,7 @@ await testTextAutomation(check, eq);
         ? (options.target.frameIds as number[])
         : null;
       if (frameIds) {
-        lastExecOptions = options; // 只记真实注入（探测调用 target.allFrames 且 args 为空）
+        lastExecOptions.current = options; // 只记真实注入（探测调用 target.allFrames 且 args 为空）
         return frameIds.map(rowFor);
       }
       // 发现探测（allFrames）：注册 frame0（命中）与 frame7（缺席）
@@ -2439,8 +2442,8 @@ await testTextAutomation(check, eq);
 
     const scopedOk = await tool.execute({ parentSelector: '#main' }, { chatId });
     check(scopedOk.success === true, '范围提取成功（缺席 frame 静默跳过）', scopedOk.error);
-    eq(String(lastExecOptions?.args?.[0]), '#main', 'parentSelector 透传进注入参数');
-    eq(String(lastExecOptions?.args?.[1] ?? ''), '', 'parentXPath 未传时为空串（纵深防御默认值）');
+    eq(String(lastExecOptions.current?.args?.[0]), '#main', 'parentSelector 透传进注入参数');
+    eq(String(lastExecOptions.current?.args?.[1] ?? ''), '', 'parentXPath 未传时为空串（纵深防御默认值）');
     const scopedRow = csvRow(dataOf(scopedOk));
     check(scopedRow.content.includes('容器内正文'), '正文来自命中容器的 frame', scopedRow.content.slice(0, 80));
     check(
@@ -2494,7 +2497,7 @@ await testTextAutomation(check, eq);
     // frameId：不存在 → FRAME_NOT_FOUND；存在 → 单帧提取
     scriptingStub.executeScript = (async (options: Record<string, any>) => {
       execCount++;
-      lastExecOptions = options;
+      lastExecOptions.current = options;
       const frameIds = (options.target?.frameIds ?? []) as number[];
       if (frameIds.includes(9)) return []; // 该 frame 无结果 → frame-read NO_RESULT
       return frameIds.map((id) => ({ frameId: id, result: { markdown: '单帧正文', truncated: false, shadowRoots: 0, url: 'https://docs.example/guide', title: '单帧' } }));
@@ -2513,7 +2516,7 @@ await testTextAutomation(check, eq);
     const frameOk = await tool.execute({ frameId: 0 }, { chatId });
     check(frameOk.success === true, 'frameId=0 单帧提取成功', frameOk.error);
     check(csvRow(dataOf(frameOk)).content.includes('单帧正文'), '单帧提取正文正确');
-    eq((lastExecOptions?.target?.frameIds as number[] | undefined)?.[0], 0, 'frameId 限定注入目标 frame');
+    eq((lastExecOptions.current?.target?.frameIds as number[] | undefined)?.[0], 0, 'frameId 限定注入目标 frame');
 
     // 参数防御：错误必须在触碰页面前给出可自纠原因
     for (const [badArgs, pattern] of [
@@ -2753,11 +2756,11 @@ await testTextAutomation(check, eq);
   check('paths' in interactProps, 'browser_interact 声明 set_files 的 paths 参数');
   const branches = (interactParams.anyOf ?? []) as Array<{ properties?: Record<string, { enum?: string[] }>; required?: string[] }>;
   const keysBranch = branches.find(b => b.properties?.action?.enum?.[0] === 'keys');
-  check(!!keysBranch && !keysBranch.required?.includes('elementId'), 'keys 允许省略 elementId（焦点/文档级派发）');
+  check(!!keysBranch && keysBranch.required?.includes('elementId') !== true, 'keys 允许省略 elementId（焦点/文档级派发）');
   const filesBranch = branches.find(b => b.properties?.action?.enum?.[0] === 'set_files');
-  check(!!filesBranch && filesBranch.required?.includes('paths'), 'set_files 必填 paths');
+  check(!!filesBranch && filesBranch.required?.includes('paths') === true, 'set_files 必填 paths');
   const fillBranch = branches.find(b => b.properties?.action?.enum?.[0] === 'fill');
-  check(!!fillBranch && fillBranch.required?.includes('elementId'), 'fill 仍必填 elementId（无引用仅限 keys/scroll）');
+  check(!!fillBranch && fillBranch.required?.includes('elementId') === true, 'fill 仍必填 elementId（无引用仅限 keys/scroll）');
 }
 
 // ==================== 汇总 ====================

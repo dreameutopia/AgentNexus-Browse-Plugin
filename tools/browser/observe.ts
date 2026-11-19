@@ -44,8 +44,6 @@ interface Snapshot {
   parentSelector: string;
   /** 扫描范围：父容器 XPath（可选，与 parentSelector 互斥） */
   parentXPath: string;
-  /** 扫描范围：限定 frameId（可选；undefined = 所有可访问 frame） */
-  frameId?: number;
   frameDiagnostics: FrameReadReport;
 }
 export interface ElementGetterArgs {
@@ -101,12 +99,6 @@ const enumerationProperties = {
     minimum: 0,
     description:
       '目标标签页 ID（可选；省略=当前活动标签页）。显式传入会先核对存在性与可注入性，再切换到该标签页采集。',
-  },
-  frameId: {
-    type: 'integer',
-    minimum: 0,
-    description:
-      '仅枚举：限定在指定 frame 内扫描（可选；省略=所有可访问 frame）。与回执表格中的 FrameId 同源。',
   },
   parentSelector: {
     type: 'string',
@@ -243,7 +235,7 @@ export class BrowserObserveTool extends BaseBrowserTool {
         '    <item>表格里的 # 是展示行号，不是 ElementId；ElementId 是 anx: 开头的整串。</item>\n' +
         '    <item>载荷太大时：pageSize 调小每页条数、hitsOnly=true 只看命中项、includeDetails=false 省略明细（表格仍含 ElementId/FrameId，交互照常引用）。</item>\n' +
         '    <item>长表单/多区块表单先用 view="form" 盘点一次（分区+字段+必填+现值一次拿全，不返回 details），再按行引用交互；不要用 controls 分页翻找字段。</item>\n' +
-        '    <item>范围可选：frameId 只扫指定 frame；parentSelector / parentXPath 只扫该父容器子树（两者互斥）。parent* 是结果集裁剪（容器外不返回），xpath 过滤只是命中标记（容器外仍在候选）。所有 frame 都没有该父容器时直接报错，不会退回整页；仅部分 frame 没有时该 frame 静默缺席。</item>\n' +
+        '    <item>范围可选：parentSelector / parentXPath 只扫该父容器子树（两者互斥）。parent* 是结果集裁剪（容器外不返回），xpath 过滤只是命中标记（容器外仍在候选）。所有 frame 都没有该父容器时直接报错，不会退回整页；仅部分 frame 没有时该 frame 静默缺席。枚举不接受 frameId 定位——frame 随元素引用（view=element）一并给出。</item>\n' +
         '  </usage>\n' +
         '  <result>elements 表格给出类型/描述/上下文/ElementId/FrameId/类别/状态（view=form 时改为行式清单：分区/label/name/必填/现值并入每行，不返回 details）；details 给出识别依据、关联引用与可用动作；focus 给当前焦点；coverage 给覆盖边界（未渲染的数据不会出现）。</result>\n' +
         '</observe>',
@@ -259,12 +251,12 @@ export class BrowserObserveTool extends BaseBrowserTool {
             description:
               '枚举与节点详情二选一；新查询默认 controls，续读省略则继承快照视图。只有 element 接受且必须提供 elementId/frameId。',
           },
-          // 合并后 frameId 同时服务两条分支：枚举为可选范围，element 为必填定位
+          // 合并后 frameId 只服务 element 分支：枚举不接受 frame 定位
           frameId: {
             type: 'integer',
             minimum: 0,
             description:
-              '枚举：可选，限定扫描的 frameId；view=element：必填，必须与 ElementId 同一行（0 也要显式传）。',
+              '仅 view=element：必填，必须与 ElementId 同一行（0 也要显式传）；枚举不接受该字段。',
           },
         },
         required: [],
@@ -289,9 +281,7 @@ export class BrowserObserveTool extends BaseBrowserTool {
   private async validate(snapshot: Snapshot, signal?: AbortSignal, context?: ToolExecutionContext): Promise<{ valid: Set<number>; report: FrameReadReport }> {
     // Probe every accessible frame, including new/removed/navigated frames.
     const results = await readPageFrames({
-      target: snapshot.frameId !== undefined
-        ? { tabId: snapshot.tabId, frameIds: [snapshot.frameId] }
-        : { tabId: snapshot.tabId, allFrames: true },
+      target: { tabId: snapshot.tabId, allFrames: true },
       world: 'ISOLATED',
       func: validateElementReferences,
       args: [[]],
@@ -416,20 +406,12 @@ export class BrowserObserveTool extends BaseBrowserTool {
           tabId: target.tabId,
         });
       }
-      const referenceFields = ['elementId'].filter(
+      const referenceFields = ['elementId', 'frameId'].filter(
         (key) => key in input,
       );
       if (referenceFields.length)
         return this.createErrorResponse(
           `INVALID_ARGUMENT：枚举不接受 ${referenceFields.join('/')}。删除这些字段，保留原枚举条件后重试；节点详情才使用 view=element + elementId + frameId。`,
-        );
-      const requestedFrameId = input.frameId;
-      if (
-        requestedFrameId !== undefined &&
-        (!Number.isSafeInteger(requestedFrameId) || requestedFrameId < 0)
-      )
-        return this.createErrorResponse(
-          'INVALID_ARGUMENT：枚举的 frameId 必须是非负整数（省略 = 扫描所有可访问 frame）。',
         );
       for (const key of ['parentSelector', 'parentXPath'] as const) {
         if (input[key] !== undefined && typeof input[key] !== 'string')
@@ -479,12 +461,11 @@ export class BrowserObserveTool extends BaseBrowserTool {
             'QUERY_MISMATCH：快照属于 accessibility',
           );
         if (
-          input.frameId !== undefined ||
           (input.parentSelector && input.parentSelector.trim()) ||
           (input.parentXPath && input.parentXPath.trim())
         )
           return this.createErrorResponse(
-            'INVALID_ARGUMENT：accessibility 视图不支持 frameId / parentSelector / parentXPath 范围参数。删除这些字段后重试，或改用 DOM 枚举视图。',
+            'INVALID_ARGUMENT：accessibility 视图不支持 parentSelector / parentXPath 范围参数。删除这些字段后重试，或改用 DOM 枚举视图。',
           );
         const target = await resolveTabTarget({
           tabId: input.tabId,
@@ -553,13 +534,12 @@ export class BrowserObserveTool extends BaseBrowserTool {
           (input.xpath !== undefined && input.xpath.trim() !== stored.xpath) ||
           (input.parentSelector !== undefined && input.parentSelector.trim() !== stored.parentSelector) ||
           (input.parentXPath !== undefined && input.parentXPath.trim() !== stored.parentXPath) ||
-          (input.frameId !== undefined && input.frameId !== stored.frameId) ||
           (input.categories !== undefined &&
             JSON.stringify([...input.categories].sort()) !==
               JSON.stringify(stored.categories))
         ) {
           return this.createErrorResponse(
-            'QUERY_MISMATCH：快照绑定原过滤条件与扫描范围（regex/xpath/categories/parentSelector/parentXPath/frameId）。改变或清除条件时省略 snapshotId，并从 page=1 开始。',
+            'QUERY_MISMATCH：快照绑定原过滤条件与扫描范围（regex/xpath/categories/parentSelector/parentXPath）。改变或清除条件时省略 snapshotId，并从 page=1 开始。',
           );
         }
         if (input.view !== undefined && input.view !== stored.view)
@@ -591,12 +571,10 @@ export class BrowserObserveTool extends BaseBrowserTool {
         }
         const hitsOnly = !!input.hitsOnly;
         const pageSize = input.pageSize ?? PAGE_SIZE;
-        // 扫描范围：frameId 可选（限定单 frame），父容器可选（限定子树）
-        const envScope = input.frameId;
+        // 扫描范围：父容器可选（限定子树）；枚举不再接受 frameId 定位——
+        // frame 随元素引用（view=element）给出，枚举始终扫描所有可访问 frame。
         const results = await readPageFrames({
-          target: envScope !== undefined
-            ? { tabId, frameIds: [envScope] }
-            : { tabId, allFrames: true },
+          target: { tabId, allFrames: true },
           world: 'ISOLATED',
           func: elementScanPayload,
           args: [
@@ -608,11 +586,6 @@ export class BrowserObserveTool extends BaseBrowserTool {
             trimmedParentXPath,
           ],
         }, { operation: 'observe-scan', signal }, context);
-        if (envScope !== undefined && results.length === 0) {
-          return { ...this.createErrorResponse(
-            `FRAME_NOT_FOUND：frameId=${envScope} 不存在或不可注入。请省略 frameId 扫描所有可访问 frame，或确认页面内嵌框架已加载。`,
-          ), data: { frameDiagnostics: results.frameDiagnostics } };
-        }
         const elements: ScannedElement[] = [];
         const fingerprints = new Map<number, string>();
         // 父容器作用域的全 frame 判定：containerMiss（合法但本 frame 无容器）
@@ -723,7 +696,6 @@ export class BrowserObserveTool extends BaseBrowserTool {
           includeDetails: input.includeDetails !== false,
           parentSelector: trimmedParentSelector,
           parentXPath: trimmedParentXPath,
-          ...(envScope !== undefined ? { frameId: envScope } : {}),
           frameDiagnostics: results.frameDiagnostics,
         };
         snapshotId = crypto.randomUUID();
@@ -765,9 +737,7 @@ export class BrowserObserveTool extends BaseBrowserTool {
       let focus: Array<Record<string, unknown>> = [];
       try {
         const focused = await readPageFrames({
-          target: snapshot.frameId !== undefined
-            ? { tabId, frameIds: [snapshot.frameId] }
-            : { tabId, allFrames: true },
+          target: { tabId, allFrames: true },
           world: 'ISOLATED',
           func: focusedTextPayload,
           args: [],

@@ -157,7 +157,13 @@ with Image.open('outputs/picture.png') as image:
   assert.equal(await readWorkspaceOutput('chat_a', 'outputs/incomplete.txt'), null);
   const beforeRace = await chatDatabase.readWorkspace('chat_a');
   await importWorkspaceFiles('chat_a', [{ id: 'third', file: new File(['new'], 'new.txt') }]);
-  await assert.rejects(saveWorkspace('chat_a', beforeRace.revision, beforeRace.entries), /changed during/);
+  // 并发冲突：按结构化 code + 可执行下一步断言（文案已本地化，不再匹配英文短语）
+  await assert.rejects(
+    saveWorkspace('chat_a', beforeRace.revision, beforeRace.entries),
+    (error) =>
+      error?.code === 'CONFLICT' &&
+      /file_util\(action="read"\)/.test(String(error?.message ?? '')),
+  );
   const cancelled = new AbortController();
   cancelled.abort();
   await assert.rejects(saveWorkspace('chat_a', undefined, [], cancelled.signal), { name: 'AbortError' });

@@ -133,7 +133,6 @@
                     </div>
                     <div class="history-tag-editor-input-row">
                       <input
-                        ref="tagInputRef"
                         v-model="tagInput"
                         class="history-tag-editor-input"
                         :placeholder="t('sidepanel.app.tagsPlaceholder')"
@@ -309,7 +308,13 @@ const tagDraft = ref<ConversationTag[]>([]);
 const tagInput = ref('');
 const tagError = ref('');
 const tagSaving = ref(false);
-const tagInputRef = ref<HTMLInputElement | null>(null);
+/** 聚焦标签输入框：输入框位于 sessions 的 v-for 内，字符串或函数式模板 ref 都会
+ *  被编译成 ref_for（运行时把值收成数组）——改走抽屉根节点内查询，与 focusTagEditButton 同源。 */
+const focusTagInput = () => {
+  drawerRef.value
+    ?.querySelector<HTMLInputElement>('.history-tag-editor-input')
+    ?.focus();
+};
 
 /** 标签展示文案：内置标签走 i18n，自定义标签原样展示 */
 const tagText = (tag: ConversationTag): string =>
@@ -327,7 +332,7 @@ const startTagEdit = async (session: ChatSessionMeta) => {
   tagInput.value = '';
   tagError.value = '';
   await nextTick();
-  tagInputRef.value?.focus();
+  focusTagInput();
 };
 
 /** 收起编辑器并清空草稿（不处理焦点，供抽屉关闭等非交互路径使用） */
@@ -393,7 +398,7 @@ const addTagToDraft = () => {
   tagDraft.value = appendConversationTag(tagDraft.value, label);
   tagInput.value = '';
   tagError.value = '';
-  void nextTick(() => tagInputRef.value?.focus());
+  void nextTick(focusTagInput);
 };
 
 const removeTagFromDraft = (tagId: string) => {
@@ -402,9 +407,38 @@ const removeTagFromDraft = (tagId: string) => {
   tagError.value = '';
 };
 
+/**
+ * 保存前并入输入框里的残留文本。
+ *
+ * 中文输入法的 Enter 常先用于确认候选词（isComposing 守卫不会把它当添加），
+ * 文本会留在输入框里；若保存时不同步并入，这段文字会被静默丢弃——
+ * 表现为「点了保存，再点编辑却看不到任何标签」。
+ * 并入失败（超上限）时保留输入框原文，返回 false 中止保存。
+ */
+const flushPendingTagInput = (): boolean => {
+  const label = normalizeConversationTagLabel(tagInput.value);
+  if (!label) {
+    tagInput.value = '';
+    return true;
+  }
+  // 同文本已在草稿中：清掉输入即可，视为已并入
+  if (tagDraft.value.some(tag => tag.label?.toLocaleLowerCase() === label.toLocaleLowerCase())) {
+    tagInput.value = '';
+    return true;
+  }
+  if (tagDraft.value.length >= MAX_CONVERSATION_TAGS) {
+    tagError.value = t('sidepanel.app.tagsLimit', { count: MAX_CONVERSATION_TAGS });
+    return false;
+  }
+  tagDraft.value = appendConversationTag(tagDraft.value, label);
+  tagInput.value = '';
+  return true;
+};
+
 const saveTags = async () => {
   const chatId = tagEditingId.value;
   if (!chatId || tagSaving.value) return;
+  if (!flushPendingTagInput()) return;
   tagSaving.value = true;
   try {
     const updated = await transcriptEngine.setSessionTags(chatId, tagDraft.value);

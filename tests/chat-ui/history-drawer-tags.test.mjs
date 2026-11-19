@@ -40,7 +40,7 @@ const css = readFileSync(
 );
 assert.match(
   css,
-  /\.history-rename input\s*\{[^}]*border:\s*1px solid var\(--line-soft/,
+  /\.history-rename input\s*\{[^}]*border:\s*1px solid var\(--ink-secondary/,
   '重命名输入框使用抽屉描边令牌而非硬编码强调色',
 );
 assert.match(
@@ -50,18 +50,23 @@ assert.match(
 );
 assert.match(
   css,
-  /\.rename-confirm,\s*\.rename-cancel\s*\{[^}]*border:\s*1px solid/,
-  '确认/取消按钮为描边胶囊（不再是 UA 默认按钮底）',
+  /\.rename-confirm,\s*\.rename-cancel\s*\{[^}]*cursor:\s*pointer/,
+  '确认/取消按钮保留可点击光标与命中区（纯语义色，不再是描边胶囊）',
 );
 assert.match(
   css,
-  /\.rename-confirm:hover\s*\{[^}]*background:\s*rgba\(16, 185, 129/,
-  '确认按钮有悬停反馈',
+  /\.rename-confirm\s*\{[^}]*color:\s*#10b981/,
+  '确认按钮使用语义色',
 );
 assert.match(
   css,
-  /\.rename-cancel:hover\s*\{[^}]*background:\s*rgba\(239, 68, 68/,
-  '取消按钮有悬停反馈',
+  /\.rename-cancel\s*\{[^}]*color:\s*#ef4444/,
+  '取消按钮使用语义色',
+);
+assert.match(
+  css,
+  /\.rename-confirm:focus-visible,\s*\.rename-cancel:focus-visible\s*\{[^}]*outline:/,
+  '确认/取消按钮有可见焦点环',
 );
 
 // 图标契约：标签编辑按钮的 path 不再包含铅笔叠层（M17.5,12.5L11,19…）
@@ -71,8 +76,8 @@ const tagEditButtonSource = source.slice(
 );
 assert.ok(tagEditButtonSource.includes('M5.5,3H13.8L21,10.2'), '标签按钮保留标签外形路径');
 assert.ok(
-  !tagEditButtonSource.includes('M17.5,12.5L11,19'),
-  '标签按钮已移除铅笔叠层，改为纯标签样式',
+  tagEditButtonSource.includes('M17.5,12.5L11,19'),
+  '标签按钮带铅笔叠层，与重命名按钮区分（编辑标签语义）',
 );
 
 // In-memory session store standing in for transcriptEngine（引擎读写链路由

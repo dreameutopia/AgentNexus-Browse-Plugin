@@ -137,7 +137,7 @@ jobs:
 
   build:
     name: 构建 ${{ matrix.browser }}
-    needs: [prepare, check]
+    needs: prepare
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -181,8 +181,10 @@ jobs:
 
   release:
     name: 创建 GitHub Release
-    needs: [prepare, build]
-    if: needs.prepare.outputs.publish == 'true'
+    needs: [prepare, check, build]
+    # 发布闸门：类型检查与测试必须全绿才产出 Release；
+    # build 不依赖 check，闸门失败时构件仍会作为 artifact 产出，便于排查。
+    if: needs.prepare.outputs.publish == 'true' && needs.check.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write

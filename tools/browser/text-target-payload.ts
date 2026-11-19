@@ -216,14 +216,18 @@ export function focusedTextPayload(invalidate = false) {
 
 /** 宿主侧：多 frame 的 state 级焦点条目（body/window-unfocused）去重——
  *  每个 frame 都会回一条同义记录，全留给模型只是噪声；带 elementId 的
- *  真实焦点条目始终保留。 */
-export function dedupeFocusEntries<
-  T extends { elementId?: string; state?: string },
->(entries: T[]): T[] {
+ *  真实焦点条目始终保留。
+ *
+ *  泛型约束放宽到 object：入参是页面载荷函数推断出的联合类型（各分支形状
+ *  差异很大，甚至只有 frameId 而无 elementId/state），若约束写成全可选属性
+ *  的弱类型，联合里"与目标无公共属性"的分支会被 TS 判为不兼容而无法通过。
+ *  运行时只读取 elementId / state 两个键，行为不变。 */
+export function dedupeFocusEntries<T extends object>(entries: T[]): T[] {
   const seenStates = new Set<string>();
   return entries.filter((entry) => {
-    if (entry.elementId) return true;
-    const key = entry.state ?? '';
+    const candidate = entry as { elementId?: string; state?: string };
+    if (candidate.elementId) return true;
+    const key = candidate.state ?? '';
     if (seenStates.has(key)) return false;
     seenStates.add(key);
     return true;

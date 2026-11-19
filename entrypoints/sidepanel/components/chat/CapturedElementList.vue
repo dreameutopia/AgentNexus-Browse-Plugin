@@ -117,7 +117,10 @@ const validateAnchor = ref<ValidateAnchor | null>(null);
 const validateButton = ref<HTMLButtonElement | null>(null);
 let validateTarget: CapturedElement | null = null;
 let anchorElement: HTMLElement | null = null;
-let hideTimer: ReturnType<typeof window.setTimeout> | null = null;
+// 浏览器定时器句柄是 number；不用 ReturnType<typeof window.setTimeout>——
+// 该函数在 DOM + Node 类型并存时是重载，ReturnType 取到的是 Node 的 Timeout，
+// 与实际调用返回的 number 不匹配。
+let hideTimer: number | null = null;
 
 function locatorLabel(element: CapturedElement): string {
   // 展示口径：id 选择器 > XPath > CSS 路径（完整值见 tooltip / 详情弹窗）

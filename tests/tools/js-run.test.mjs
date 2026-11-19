@@ -103,7 +103,9 @@ assert.equal(JSON.parse(run.data.result).page, 2);
 assert.equal(run.data.dataRef, undefined, 'run 不再产生 dataRef 暂存批次');
 assert.ok(run.data.resultFile, 'run 携带结果文件');
 assert.match(run.data.resultFile.path, /^results\/run-[\w-]+-batch\.json$/);
-assert.equal(run.data.rows, undefined, '单值结果不虚构 rows 字段');
+// 回执按**解析后的行表**描述（信封结构不再被报成「单值」）：
+// 这里的 values 数组被识别为 1 列行表，行数即该数组长度。
+assert.equal(run.data.rows, 2, '信封内行表按解析结果给出行数');
 assert.doesNotMatch(text(run), /index=2/, '不足 2000 字符的结果不出现续读提醒');
 assert.deepEqual(injections.at(-1).target, { tabId: 12, frameIds: [3] });
 assert.equal(injections.at(-1).world, 'ISOLATED');
@@ -123,6 +125,7 @@ await create('scripts/large.js', 'return "x".repeat($args[0]);');
 const large = await call({ action: 'run', path: 'scripts/large.js', args: [3000] });
 assert.equal(large.success, true, text(large));
 assert.equal(large.data.result.length, 2000);
+assert.equal(large.data.rows, undefined, '真正的单值结果不虚构 rows 字段');
 assert.equal(large.data.resultTruncated, true);
 assert.equal(large.data.totalChars, 3002);
 assert.ok(large.data.resultFile, '超限结果也落盘为结果文件');

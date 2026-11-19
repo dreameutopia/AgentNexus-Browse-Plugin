@@ -42,6 +42,7 @@ import {
   resolveRelationTable,
   verifyCompleteness,
 } from "../../utils/relation-table";
+import type { RelationResolution } from "../../utils/relation-table";
 import { dataRefTool } from "../../tools/data/data-ref-tool";
 import { xlsxTool as rawXlsxTool } from "../../tools/office/xlsx-tool";
 import { FileUtilTool } from "../../tools/file-util/file-util-tool";
@@ -252,11 +253,10 @@ async function writeDataFile(path: string, value: unknown): Promise<string> {
 
   // 失败文案：给出可直接复制的 project 调用
   const failure = describeRelationFailure(
-    resolveRelationTable({ alpha: [{ a: 1 }], beta: [{ b: 2 }] }) as {
-      ok: false;
-      reason: string;
-      candidates: Array<{ path: string; rows: number }>;
-    },
+    resolveRelationTable({ alpha: [{ a: 1 }], beta: [{ b: 2 }] }) as Extract<
+      RelationResolution,
+      { ok: false }
+    >,
     "results/run-x.json",
   );
   assert.ok(failure.includes("results/run-x.json"), "失败文案点名数据源", failure);
@@ -457,10 +457,14 @@ async function writeDataFile(path: string, value: unknown): Promise<string> {
   });
   assert.equal(result.success, true, "无 path 投影信封成功");
   assert.equal(result.data.shape.rowCount, 2, "自动定位到 2 行表");
+  // 回执首段：content 是 text/image 联合，按 type 收窄后再取文本
+  const firstContent = result.content?.[0];
+  const firstText =
+    firstContent && firstContent.type === "text" ? firstContent.text : "";
   assert.ok(
-    String(result.content[0].text).includes("自动定位"),
+    firstText.includes("自动定位"),
     "回执说明已自动定位路径",
-    String(result.content[0].text),
+    firstText,
   );
 
   // 多候选 → 报错并列出每个候选的确切调用
