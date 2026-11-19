@@ -26,12 +26,6 @@ jobs:
   check:
     name: 类型检查与测试
     runs-on: ubuntu-latest
-    env:
-      # 契约断言的是中文产品文案（参数拒绝指引、错误提示等）。这些文案随界面
-      # 语言切换：i18n core 按 navigator.language 判定 zh* → zh-CN，其余 → en。
-      # runner 的界面语言是 en-US，于是云端拿到英文文案而失败——把测试进程的
-      # 界面语言钉到 zh-CN，与作者本机口径一致（见 tests/locale-pin.mjs）。
-      NODE_OPTIONS: --import=./tests/locale-pin.mjs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -48,6 +42,13 @@ jobs:
         run: npm run compile
       - name: Test
         run: npm run test:all
+        env:
+          # 契约断言的是中文产品文案（参数拒绝指引、错误提示等）。这些文案随界面
+          # 语言切换：i18n core 按 navigator.language 判定 zh* → zh-CN，其余 → en。
+          # runner 的界面语言是 en-US，于是云端拿到英文文案而失败——把测试进程的
+          # 界面语言钉到 zh-CN，与作者本机口径一致（见 tests/locale-pin.mjs）。
+          # 只挂在这一步：checkout 之前仓库还没落盘，--import 的相对路径不存在。
+          NODE_OPTIONS: --import=./tests/locale-pin.mjs
 
   build:
     name: 构建 ${{ matrix.browser }}
