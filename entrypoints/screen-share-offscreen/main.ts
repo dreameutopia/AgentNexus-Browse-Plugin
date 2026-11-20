@@ -1,6 +1,8 @@
 import { OffscreenMsgType } from '../background/screen-share/types';
 import './mermaid-host';
 import './python-host';
+import { handleClipboardMessage } from './clipboard-host';
+import { CLIPBOARD_MSG, isClipboardRequest } from '@/tools/browser/clipboard-protocol';
 
 type ErrorDetails = Record<string, unknown>;
 type DisplayMediaConstraints = {
@@ -87,6 +89,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     case OffscreenMsgType.CAPTURE_FRAME:
       handleCaptureFrame(msg.dataUrl as string);
       break;
+
+    // 扩展侧剪贴板（协议见 tools/browser/clipboard-protocol.ts）：
+    // 与屏幕共享共处同一个 offscreen 文档——Chrome 每 profile 只允许一个
+    // offscreen 文档，剪贴板能力必须复用它而不是另建。
+    default:
+      if (isClipboardRequest(msg)) {
+        handleClipboardMessage(msg)
+          .then((response) => sendResponse(response))
+          .catch((e: Error) =>
+            sendResponse({ ok: false, error: 'CLIPBOARD_HOST_FAILED：' + e.message }),
+          );
+        return true;
+      }
   }
 });
 

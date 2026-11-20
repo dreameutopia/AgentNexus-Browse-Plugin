@@ -110,7 +110,21 @@ registerAllTools()                      (tools/index.ts)
 - **轻量页面操作已合并（项目未发布，无兼容别名）**：`browser_scroll`（按屏滚动）+
   `browser_wait_for_element`（等待 CSS 选择器出现）→ **`browser_page_ops`**
   （action: scroll / wait_element）。二者都是不需要 DOM 引用体系的页面操作，
-  与 browser_interact 的引用式交互（必须带 elementId + frameId）是两套定位方式。
+  与 browser_interact 的引用式交互（必须带 elementId）是两套定位方式。
+- **快捷键与剪贴板独立为 `browser_input`（默认注入的核心工具）**：
+  action = keys / type / clipboard_write / clipboard_read / clipboard_paste。
+  与 `browser_interact` 的分工：前者负责「快捷键 + 系统剪贴板 + 整表粘贴」，
+  后者负责「定位到具体 DOM/AX 引用后的交互」。两者的按键派发共用
+  `tools/browser/key-dispatch.ts`（按下顺序、反序释放、失败成对释放只有一处定义）。
+  **剪贴板走扩展侧通道**（manifest 剪贴板权限 + 离屏文档的 `execCommand('copy')`），
+  不经过页面 origin——页面上下文的异步剪贴板 API 会挂在**浏览器级权限气泡**上
+  （气泡在浏览器 UI 层、不在页面 DOM，任何 DOM 观察工具都看不到，脚本因此永不 settle）。
+  读取在离屏文档不可靠（无焦点），由持有焦点的扩展页面上下文承担。
+  `browser_input` 不在插件公开宿主工具表内（属页面操作，非插件可申请的能力）。
+- **DOM 引用不再强制要求 frameId**：ElementId 的随机文档标识段**每 frame 独立生成**，
+  唯一确定归属 → 省略 frameId 时按 ElementId 自动定位（宿主侧索引命中即用，
+  未命中则全 frame 只读探测）。显式传入则直接采信。`browser_interact` 与
+  `browser_input` 共用 `tools/browser/frame-resolution.ts` 这一套推导。
 - **消息类型别名已删除**：`browser_go_back` / `browser_go_forward` / `browser_refresh` 不再是可发送的消息类型——
   统一走 `browser_navigation` 的 back / forward / refresh action。会话脚本求值统一为全局 `js_run`；backend 保留原内联入口。
 - `browser_set_zoom` **没有注册工具**，只在 `tools-manager-listener.ts` 内联处理——仅当调用方直接发 `{ type: 'browser_set_zoom' }` 消息时可用。
@@ -118,13 +132,13 @@ registerAllTools()                      (tools/index.ts)
   与磁盘目录不必一一对应（如 `browser_interact` 属 `browser`、`python_run` 属 `code`）；
   文档表格按运行期分类记录，由测试强制对齐。
 
-## 三、分类清单（截至本次核对，共 55 个；`generic_wait` 已删除，由 `browser_wait` 取代）
+## 三、分类清单（截至本次核对，共 56 个；`generic_wait` 已删除，由 `browser_wait` 取代）
 
 | 分类 | 数量 | 工具名 |
 | --- | --- | --- |
 | automation | 8 | `ai_action`、`ai_locate`、`check_restricted_url`、`extract_data`、`file_upload_getter`、`file_uploader`、`formFiller`、`xiaozhi_config` |
 | base | 2 | `task-result`、`task-submit` |
-| browser | 25 | `browser_clean_page`、`browser_console`、`browser_dom_explore`、`browser_download_click`、`browser_downloads`、`browser_extract_data`、`browser_get_page_html`、`browser_get_page_info`、`browser_get_page_text`、`browser_history_bookmarks`、`browser_interact`、`browser_media_control`、`browser_navigation`、`browser_network_capture`、`browser_network_request`、`browser_observe`、`browser_page_exec`、`browser_page_http`、`browser_page_ops`、`browser_resources`、`browser_send_command_to_inject_script`、`browser_tabs`、`browser_vector_search`、`browser_wait`、`read_website` |
+| browser | 26 | `browser_clean_page`、`browser_console`、`browser_dom_explore`、`browser_download_click`、`browser_downloads`、`browser_extract_data`、`browser_get_page_html`、`browser_get_page_info`、`browser_get_page_text`、`browser_history_bookmarks`、`browser_input`、`browser_interact`、`browser_media_control`、`browser_navigation`、`browser_network_capture`、`browser_network_request`、`browser_observe`、`browser_page_exec`、`browser_page_http`、`browser_page_ops`、`browser_resources`、`browser_send_command_to_inject_script`、`browser_tabs`、`browser_vector_search`、`browser_wait`、`read_website` |
 | code | 3 | `js_run`、`mermaid_renderer`、`python_run` |
 | data | 1 | `data_ref_tool` |
 | excalidraw | 3 | `draw_on_canvas`、`excalidraw_tool`、`setup_excalidraw_canvas` |

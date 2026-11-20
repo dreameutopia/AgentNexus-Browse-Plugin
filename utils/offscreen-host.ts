@@ -29,8 +29,13 @@ export async function ensureOffscreenHost(): Promise<void> {
             chrome.offscreen.Reason.DISPLAY_MEDIA,
             chrome.offscreen.Reason.USER_MEDIA,
             chrome.offscreen.Reason.WEB_RTC,
+            // 扩展侧剪贴板：service worker 无 DOM 且 Chrome 157 前不能用
+            // navigator.clipboard，需要一个带 DOM 的扩展上下文代为写入系统
+            // 剪贴板（协议见 tools/browser/clipboard-protocol.ts）。
+            chrome.offscreen.Reason.CLIPBOARD,
           ],
-          justification: 'Run the Python worker, render downloadable diagrams, and handle active screen sharing',
+          justification:
+            'Run the Python worker, render downloadable diagrams, handle active screen sharing, and write to the system clipboard from the extension side',
         });
       } catch (error) {
         // Another extension context may have created the same host during startup.

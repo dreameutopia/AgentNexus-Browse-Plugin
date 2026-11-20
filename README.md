@@ -39,6 +39,11 @@ This plugin intentionally **does not chase complicated design**. There is no att
 
 Complexity lives where it belongs: in the **AgentNexus application**, which is about to be released. This plugin is designed to serve as **the primary channel through which that application drives the browser** — it exposes a stable, well-defined tool surface that the application schedules over the WebSocket automation channel. Keeping the extension thin and predictable is what makes it a dependable dependency for that app.
 
+### Complete duties on the smallest runtime
+Our design philosophy is to **take on the full set of an in-browser AI assistant's responsibilities on the smallest possible runtime, at the lowest possible cost**. The plugin ships a complete code execution environment, reusable operating experience, and dual-track text-and-vision operation — serving AI agent automation on one side, and the user's everyday browsing on the other. You will see more of this over time: it is both a robust, well-rounded foundation, and one that always welcomes third-party developers to build their own frameworks on the support already in place.
+
+This plugin is also **the first release of the AgentNexus series** — feedback and ideas from every user and developer are warmly welcomed.
+
 ### Built for the repetitive, time-consuming parts of real work
 The direction of travel for this project is **not** "more tools for their own sake". It is to complete the tasks that are genuinely **repetitive and time-consuming in production**, so that human operators stop spending their working hours on them.
 

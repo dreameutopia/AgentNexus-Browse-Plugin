@@ -21,6 +21,11 @@ import {
 import { resolveAX, invalidateAXPages } from './text-accessibility';
 import { resolveKeys } from '../vision/key-definitions';
 import { needsPrimaryModifier, resolveTextKeys } from './text-keys';
+import { dispatchKeyChord } from './key-dispatch';
+import {
+  resolveElementFrame,
+  describeFrameResolutionFailure,
+} from './frame-resolution';
 import { cdpSession } from './cdp-session';
 import { trustedClickGeometryPayload } from './trusted-click-geometry';
 import {
@@ -154,9 +159,9 @@ export class BrowserInteractTool extends BaseBrowserTool {
         '    <action name="focus">聚焦。</action>\n' +
         '    <action name="keys">一个浏览器原生组合键（如 ["Mod","a"] 全选、["F2"] 编辑、["Escape"] 取消）。**省略 elementId 时派发给当前焦点**（焦点在 body/浮层关闭这类场景用它，不需要先找到焦点元素）。Mod 在 Windows/Linux 映射 Control、在 macOS 映射 Meta。大写字母不隐含 Shift，需要时显式传 Shift；标点按 US 键位，Unicode 用 type。后台窗口（窗口不在前台）同样可派发。</action>\n' +
         '    <action name="type">向已聚焦编辑器插入文本；仅限已聚焦编辑器，不自动进入表格编辑模式。clear=true 先全选退格清空当前编辑器，不能假定它能把 TSV 粘贴为二维单元格。</action>\n' +
-        '    <action name="scroll">按 CSS 像素滚动指定容器；省略 elementId 时滚动指定 frame 的文档，仍必须提供从当前观察确定的 frameId，不能猜为 0。</action>\n' +
+        '    <action name="scroll">按 CSS 像素滚动指定容器；省略 elementId 时滚动指定 frame 的文档（frameId 省略=主 frame），不要猜为 0。</action>\n' +
         '  </actions>\n' +
-        '  <references>DOM 引用必须提供 FrameId（同一行的）；keys 省略 elementId 时也省略 frameId；AX 引用自带路由，只支持 focus/keys/type。展开、搜索、滚动、选择后重新观察，虚拟列表不保证全量。本工具没有 hover，不可用 click 冒充悬停。每次必须提供 description 说明目标与意图。</references>\n' +
+        '  <references>DOM 引用的 frameId 可省略——按 ElementId 自动定位所属 frame（ElementId 的 nonce 段每 frame 独立生成，唯一确定归属），无需重新观察；显式传入则直接采信。AX 引用自带路由，只支持 focus/keys/type，不要传 frameId。展开、搜索、滚动、选择后重新观察，虚拟列表不保证全量。本工具没有 hover，不可用 click 冒充悬停。每次必须提供 description 说明目标与意图。</references>\n' +
         '  <trusted>默认派发**合成** DOM 事件（isTrusted=false）。React/Vue 等受控组件会据此回滚状态——表现为「点击/勾选没反应」。这类控件把 click 改为 trusted=true，用 CDP 派发真实鼠标事件（isTrusted=true）。trusted=true 要求目标可见、在视口内且未被遮挡；被遮挡时报 OBSCURED。</trusted>\n' +
         '  <result>outcome 标明实际发生了什么（state_verified / dispatched / not_dispatched / unknown）。成功只表示派发或回读，需检查业务结果。</result>\n' +
         '  <errors>outcome=not_dispatched 表示交互未派发，按错误修正前置条件；unknown 表示可能部分生效，先核对现状，不重放发送/提交。STALE_ELEMENT 表示引用已失效，重新 browser_observe 获取新引用与 FrameId，不要猜测 CSS 或尝试其他 frame；UNOBSERVABLE_STATE 表示控件未暴露目标状态，附 stateCandidates 供判断；FOCUS_CHANGED 的错误文本会直接给出当前焦点在哪个元素（含可用 elementId）——按它给的引用操作，不要盲目重观察；VALUE_MISMATCH 会给出期望值与页面实际值，按差异判断格式约束后再改。</errors>\n' +
@@ -205,7 +210,7 @@ export class BrowserInteractTool extends BaseBrowserTool {
           frameId: {
             type: 'number',
             description:
-              'DOM 引用同一行的 FrameId；无 elementId 的文档 scroll 与省略 elementId 的 keys 都不需要它，从当前观察确定；AX 引用省略',
+              'DOM 引用所在 frame（与 ElementId 同行的 FrameId）。**可省略**：省略时按 ElementId 自动定位所属 frame（ElementId 的 nonce 段每 frame 独立生成，唯一确定归属），无需重新观察。显式传入则直接采信。AX 引用自带路由，不要传。无 elementId 的文档 scroll 省略即主 frame；省略 elementId 的 keys 不需要它。',
           },
           value: {
             type: 'string',
@@ -397,14 +402,24 @@ export class BrowserInteractTool extends BaseBrowserTool {
       /** 无引用 keys：派发给当前焦点/文档级（Escape 关闭浮层等）——不需要 frameId 与 elementId */
       const focusScopedKeys =
         input.action === 'keys' && input.elementId === undefined;
-      if (
+      /**
+       * frameId 缺失不再直接报错：它可由 elementId 唯一确定（nonce 段每 frame
+       * 独立生成），因此省略即自动推导。实测模型两次漏填 frameId 都被挡回，
+       * 白烧两轮——这类"抄写负担"不该由模型承担。
+       *
+       * 只有**无法从 elementId 推导**的场景（AX 引用、文档级 scroll、无引用
+       * keys）才不需要 frameId；AX 引用自带路由，显式传 frameId 反而是错的。
+       */
+      const needsFrameId =
         !ax &&
         !focusScopedKeys &&
+        !(input.action === 'scroll' && input.elementId === undefined);
+      if (
+        needsFrameId &&
+        input.frameId !== undefined &&
         (!Number.isSafeInteger(input.frameId) || input.frameId! < 0)
       )
-        throw new Error(
-          'DOM 操作必须提供观察结果的 FrameId（文档 scroll 与省略 elementId 的 keys 除外）',
-        );
+        throw new Error('INVALID_ARGUMENT：frameId 必须是非负整数');
       if (
         !ax &&
         !(input.action === 'scroll' && input.elementId === undefined) &&
@@ -460,6 +475,43 @@ export class BrowserInteractTool extends BaseBrowserTool {
                   `传 tabId=${Number(match[1])} 重试（会自动切换到该页），或重新观察后使用新引用。`
               );
             invalidateAXPages(tab.id);
+            /**
+             * frameId 推导：省略时按 elementId 定位所属 frame（元素引用的 nonce
+             * 段每 frame 独立生成，详见 tools/browser/frame-resolution.ts）。
+             *
+             * 显式传入 frameId 时**直接采信**——它是模型与观察结果同一行的
+             * 字面量，交叉核对要付一次全 frame 广播注入的代价，而模型抄错行
+             * 的真正后果（打错 frame）由注入侧的引用校验兜住：注入目标 frame
+             * 认不出这个引用时报 STALE_ELEMENT，指向的是"引用不属于该 frame"，
+             * 与"目标不是 A1"这类业务错误可区分。
+             */
+            if (needsFrameId && match && input.frameId === undefined) {
+              const resolution = await resolveElementFrame(
+                tab.id,
+                input.elementId!,
+                { context },
+              );
+              if (resolution.status === 'resolved') {
+                p.frameId = resolution.frameId;
+              } else {
+                throw new Error(
+                  describeFrameResolutionFailure(resolution, input.elementId!),
+                );
+              }
+            }
+            /**
+             * 文档级 scroll（无 elementId）没有引用可推导 frame——它作用于
+             * 「指定 frame 的文档」。省略 frameId 时按主 frame（0）执行：
+             * 这是「滚当前页面」的唯一合理默认，也避免把 undefined 传进注入
+             * 目标（那会报成 PRECONDITION_FAILED，掩盖真正的参数问题）。
+             */
+            if (
+              p.frameId === undefined &&
+              p.action === 'scroll' &&
+              p.elementId === undefined
+            ) {
+              p.frameId = 0;
+            }
             await this.focus(tab.id, true, context);
             const deadline = Date.now() + 20_000;
             const check = async () => {
@@ -713,73 +765,30 @@ export class BrowserInteractTool extends BaseBrowserTool {
               }
             };
             const chord = async (keys: ReturnType<typeof resolveKeys>) => {
-              const held: typeof keys = [];
-              let modifiers = 0;
-              let failedGesture = false;
-              let gestureError: unknown;
-              const failed: string[] = [];
-              try {
-                for (const k of keys) {
+              /**
+               * 派发委托给共享实现（tools/browser/key-dispatch.ts）——
+               * 修饰键按下顺序 / 反序释放 / 失败成对释放等细节只有一处定义，
+               * 两个工具各写一份必然漂移。
+               *
+               * 焦点核验挂在 beforeEach：每个键按下前确认目标仍是当前可编辑
+               * 焦点——按键打进别的控件是最难察觉的一类错误。
+               */
+              await dispatchKeyChord(tab.id, keys, {
+                context,
+                beforeEach: async () => {
                   await guard(p.action === 'type');
                   if (cdpSession.getEpoch(tab.id) !== epoch)
-                    throw new Error('STALE_SESSION');
-                  modifiers |= k.modifier;
-                  const text =
-                    !k.modifier && !(modifiers & ~8)
-                      ? k.key.length === 1
-                        ? modifiers & 8
-                          ? k.shifted || k.key
-                          : k.key
-                        : k.key === 'Enter'
-                          ? '\r'
-                          : undefined
-                      : undefined;
-                  const dispatchedKey =
-                    k.key.length === 1 && modifiers & 8
-                      ? k.shifted || k.key
-                      : k.key;
-                  held.push({ ...k, key: dispatchedKey });
-                  await textCommand(tab.id, 'Input.dispatchKeyEvent', {
-                    type: 'keyDown',
-                    key: dispatchedKey,
-                    code: k.code,
-                    windowsVirtualKeyCode: k.windowsVirtualKeyCode,
-                    modifiers,
-                    ...(text !== undefined
-                      ? {
-                          text,
-                          unmodifiedText: text,
-                        }
-                      : {}),
-                  }, undefined, context);
+                    throw new Error('STALE_SESSION：调试会话变化');
+                },
+                onKeyDown: async () => {
                   inputDispatched = true;
-                }
-              } catch (error) {
-                failedGesture = true;
-                gestureError = error;
-              } finally {
-                for (const k of held.reverse()) {
-                  modifiers &= ~k.modifier;
-                  try {
-                    await textCommand(tab.id, 'Input.dispatchKeyEvent', {
-                      type: 'keyUp',
-                      key: k.key,
-                      code: k.code,
-                      windowsVirtualKeyCode: k.windowsVirtualKeyCode,
-                      modifiers,
-                    }, undefined, context);
-                  } catch {
-                    failed.push(k.key);
-                  }
-                }
-                if (failedGesture || failed.length)
+                },
+                onUncertain: async () => {
+                  // 按键状态不可知时脱离调试会话：修饰键可能仍处于按下状态，
+                  // 复用同一会话会让后续按键叠加在未知状态上。
                   await cdpSession.detach(tab.id, context).catch(() => undefined);
-              }
-              if (failed.length)
-                throw new Error(
-                  'CLEANUP_FAILED：未确认释放按键，已请求脱离会话；请观察现状',
-                );
-              if (failedGesture) throw gestureError;
+                },
+              });
             };
             if (p.action === 'keys') await chord(parsedKeys);
             else {

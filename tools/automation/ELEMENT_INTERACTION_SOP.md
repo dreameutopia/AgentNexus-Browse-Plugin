@@ -34,7 +34,7 @@
 
 DOM ElementId 包含来源 tab、随机文档标识和递增编号，绑定实际节点（WeakRef）。不使用网站 HTML id 或位置 CSS 路径；不向网页添加定位属性。签名核对标签、关键属性、文字、关联标签、上下文；输入值不是节点身份。节点替换、导航或过期会失败，不猜测其他节点。HTTP 页面使用 getRandomValues 生成标识，不依赖 secure-context-only 的 randomUUID。
 
-调用 browser_observe(view="element") 或 browser_interact 操作 DOM 引用时，同时提交返回行的 FrameId；枚举不使用节点引用。AX 引用自带 frame/文档/调试会话路由，省略 FrameId；目前只用于 focus/keys/type。AX 操作前重新核对后端节点身份和焦点，失效就重采，禁止拿 AX 行号构造 DOM 引用。browser_observe / browser_interact / browser_dom_explore 都接受可选 tabId：省略=当前活动页；显式传入会先校验存在性与可注入性，再切换到该页（跨标签页复用引用时始终带同一 tabId）。
+调用 browser_observe(view="element") 或 browser_interact 操作 DOM 引用时，可提交返回行的 FrameId；**省略时工具按 ElementId 自动定位所属 frame**（ElementId 的随机文档标识每 frame 独立生成，唯一确定归属），无需重新观察；枚举不使用节点引用。AX 引用自带 frame/文档/调试会话路由，省略 FrameId；目前只用于 focus/keys/type。AX 操作前重新核对后端节点身份和焦点，失效就重采，禁止拿 AX 行号构造 DOM 引用。browser_observe / browser_interact / browser_dom_explore 都接受可选 tabId：省略=当前活动页；显式传入会先校验存在性与可注入性，再切换到该页（跨标签页复用引用时始终带同一 tabId）。
 
 DOM 扫描及命中测试使用开放或扩展可访问的封闭 ShadowRoot。浏览器权限仍可能阻止注入。AX 对跨进程 frame 可能仅部分覆盖，响应 warnings/coverage 会明确显示；不能以空结果证明页面无内容。
 
@@ -57,7 +57,7 @@ keys/type 后读取返回的 focus。Tab、Enter、F2 可能切换到新编辑�
 
 ## 通用快捷键
 
-已有 `browser_interact(action="keys")` 承担按键能力，不增加独立快捷键工具。调用必须包含目标引用与 description；DOM 引用同时提供 frameId，AX 引用省略。每次一个主键和至多四个修饰键，自动先按修饰键、最后反序释放；取消与异常沿用输入防护。连续按键需要分次调用、检查返回的焦点。
+快捷键与剪贴板走 `browser_input`（默认注入的工具，与 `browser_interact` 分工：前者面向「快捷键 + 系统剪贴板 + 整表粘贴」，后者面向「定位到具体 DOM/AX 引用后的交互」）。`browser_input(action="keys")` 派发组合键；`action="clipboard_write"/"clipboard_read"/"clipboard_paste"` 读写系统剪贴板并可把工作区文件直接粘贴进页面。调用必须包含目标引用与 description；DOM 引用同时提供 frameId（可省略，工具按 ElementId 自动定位），AX 引用省略。每次一个主键和至多四个修饰键，自动先按修饰键、最后反序释放；取消与异常沿用输入防护。连续按键需要分次调用、检查返回的焦点。
 
 `Mod`/`ControlOrMeta`：Windows/Linux 为 Control，macOS 为 Meta；Ctrl、Cmd、Command、Option、Esc、Return、Del、PgUp、PgDn 等别名会标准化。重复修饰键（包括别名重复）拒绝执行。支持 ASCII 字母数字标点、F1–F24、导航编辑键、ContextMenu 与常见锁定键。字面大写在含 Control/Alt/Meta 的组合中不隐式添加 Shift；需要 Shift 时显式指定。标点按 US 键位解释，Unicode 文本用 type。
 
@@ -73,7 +73,7 @@ keys/type 后读取返回的 focus。Tab、Enter、F2 可能切换到新编辑�
 | 上下文菜单 | `["ContextMenu"]` / `["Shift","F10"]` | 是否实际出现菜单 |
 | 应用组合键 | `["Control","Alt","Shift","s"]` | 不把示例解释为任何站点都支持 |
 
-按键是发给页面的浏览器输入事件，不是操作系统自动化。浏览器菜单、地址栏、系统全局热键及硬件功能不保证响应；导航和切标签使用专用工具。剪贴板复制/粘贴仍受权限限制；不得宣称 Ctrl+C/V 已成功搬运数据。映射完整不代表每个应用实现了同样的快捷键。
+按键是发给页面的**可信**浏览器输入事件（CDP 派发，isTrusted=true），不是操作系统自动化。它**会触发浏览器与页面自身的原生行为**——含 Ctrl+V 粘贴、Ctrl+C 复制、Ctrl+Home 回到文档开头；这是把整批数据写进 canvas 表格与富文本编辑器的标准路径（页面合成事件会被这些应用按 isTrusted 拒绝）。浏览器菜单、地址栏、系统全局热键及硬件功能不保证响应；导航和切标签使用专用工具。剪贴板读写走 `browser_input` 的扩展侧通道，不经过页面 origin，因此**不会触发浏览器权限气泡、不会挂起**；浏览器 UI 层的权限气泡（如「查看复制到剪贴板的文本和图像」）不在页面 DOM 里，任何观察工具都看不到它——写操作长时间无响应时优先改走剪贴板工具，而不是在页面脚本里重试 `navigator.clipboard`。映射完整不代表每个应用实现了同样的快捷键。
 
 ## 在线表格流程
 

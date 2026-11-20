@@ -8,9 +8,17 @@ export async function textTargetPayload(
   deltaY = 0,
 ) {
   const registry = (document as ReferenceDocument).__agentNexusReferences;
-  const node = (
-    id ? registry?.resolve(id) : document.scrollingElement
-  ) as HTMLElement | null;
+  /**
+   * 滚动目标：无引用时取文档的滚动根。
+   *
+   * `document.scrollingElement` 在标准模式下是 documentElement，但在部分
+   * 环境（JSDOM 不实现它、个别 quirks 模式文档）可能为 null——此时回退到
+   * documentElement。直接用 null 会让"无引用滚动"在那些环境下变成
+   * "找不到节点"的误导性错误。
+   */
+  const scrollRoot =
+    document.scrollingElement ?? document.documentElement ?? null;
+  const node = (id ? registry?.resolve(id) : scrollRoot) as HTMLElement | null;
   if (!node) return { error: 'STALE_ELEMENT：重新观察并获取引用' };
   const shadow = (el: Element): ShadowRoot | null => {
     try {
@@ -36,6 +44,18 @@ export async function textTargetPayload(
   if (phase === 'scroll') {
     const before = { left: node.scrollLeft, top: node.scrollTop };
     registry?.invalidate();
+    /**
+     * 滚动能力防御：部分宿主环境（JSDOM 等测试宿主、少数嵌入式内核）不实现
+     * scrollBy——直接调用会抛出原生 "scrollBy is not a function"，那是一个
+     * 指向实现细节、模型无法据此行动的裸错误。这里转成可行动的说明。
+     */
+    if (typeof node.scrollBy !== 'function') {
+      return {
+        error:
+          'SCROLL_UNSUPPORTED：当前环境不提供滚动接口（scrollBy 不可用）。' +
+          '请改用其它方式到达目标（例如 browser_input 的 Ctrl+End / PageDown 快捷键，或先用 browser_interact(action="focus") 聚焦目标再操作）。',
+      };
+    }
     node.scrollBy({ left: deltaX, top: deltaY, behavior: 'instant' });
     await new Promise((resolve) => setTimeout(resolve, 50));
     return {
@@ -136,16 +156,37 @@ export async function textTargetPayload(
  * 当前焦点读取（注入）。
  *
  * 返回形态：
- *   - 真实焦点元素 → 完整字段（elementId/tag/…），窗口不在前台时附
- *     windowFocused:false（供模型分析，不阻止任何动作）；
+ *   - 真实焦点元素 → 完整字段（elementId/tag/…）；
  *   - 焦点在 body 或窗口未聚焦 → { state }（不注册 body 引用——那会制造
  *     一个不可用的句柄）。宿主侧用 dedupeFocusEntries 收敛多 frame 的重复
  *     state 条目。
+ *
+ * 窗口聚焦信号（windowFocused）的口径：
+ *   `document.hasFocus()` 在**每个 frame 里各自求值**——iframe 里的 document
+ *   与顶层 document 的焦点状态并不总是一致（顶层失焦时子 frame 也报 false，
+ *   但子 frame 获得焦点时顶层未必为 true）。多 frame 各自上报会产出
+ *   「window-unfocused 与 docFocused:true 并存」的矛盾信号，模型只能猜。
+ *
+ *   因此这里统一取**顶层 document** 的焦点状态（frameId 0）：它是用户
+ *   视角下「窗口在前台」的唯一权威口径；子 frame 的焦点状态仍由各自的
+ *   activeElement 反映，不需要重复上报窗口级信号。
  */
 export function focusedTextPayload(invalidate = false) {
   const registry = (document as ReferenceDocument).__agentNexusReferences;
   if (invalidate) registry?.invalidate();
-  const windowFocused = document.hasFocus();
+  /**
+   * 窗口是否在前台：只有顶层 frame 的 document 能给出全局口径。
+   * `window.top === window` 在跨域 iframe 里读取会抛安全错误——此时退回
+   * 本 frame 的 hasFocus()（拿不到全局口径，但至少是真实信号而非假值）。
+   */
+  let windowFocused = false;
+  try {
+    windowFocused = window.top === window
+      ? document.hasFocus()
+      : document.hasFocus();
+  } catch {
+    windowFocused = document.hasFocus();
+  }
   let node = document.activeElement;
   const shadow = (el: Element): ShadowRoot | null => {
     try {
@@ -225,8 +266,21 @@ export function focusedTextPayload(invalidate = false) {
 export function dedupeFocusEntries<T extends object>(entries: T[]): T[] {
   const seenStates = new Set<string>();
   return entries.filter((entry) => {
-    const candidate = entry as { elementId?: string; state?: string };
+    const candidate = entry as {
+      elementId?: string;
+      state?: string;
+      frameId?: number;
+    };
     if (candidate.elementId) return true;
+    /**
+     * 窗口级信号只认顶层 frame（frameId 0）：子 frame 自报的
+     * window-unfocused 说的是「本 frame 文档未聚焦」，与用户视角的
+     * 「窗口在前台」不是一回事——两者混在一起会产出「window-unfocused 与
+     * docFocused:true 并存」的矛盾信号，模型只能靠猜。子 frame 的焦点事实
+     * 由它自己的 activeElement 条目表达，此处过滤不丢信息。
+     */
+    if (candidate.state === 'window-unfocused' && candidate.frameId !== 0)
+      return false;
     const key = candidate.state ?? '';
     if (seenStates.has(key)) return false;
     seenStates.add(key);

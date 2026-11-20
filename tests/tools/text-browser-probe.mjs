@@ -400,6 +400,27 @@ try {
         description: '填写子页面',
       }),
     );
+    /**
+     * frameId 省略 → 按 ElementId 自动定位所属 frame。
+     *
+     * 子页面元素位于 frame 1（不是主 frame），因此这一条真正验证的是
+     * 「推导必须落到正确的 frame」——若推导恒定返回 0，注入会在主 frame
+     * 找不到该引用而失败（STALE_ELEMENT），断言随即失败。
+     */
+    const childAuto = await refByName('子页面输入');
+    ok(
+      await interact.execute({
+        action: 'fill',
+        elementId: childAuto.elementId,
+        value: 'auto frame data',
+        description: '省略 frameId 时按 ElementId 自动定位所属 frame',
+      }),
+    );
+    assert.equal(
+      await evaluate("document.querySelector('iframe').contentDocument.querySelector('input').value"),
+      'auto frame data',
+      '省略 frameId 时操作落在元素真正所属的 frame',
+    );
     const shadow = await refByName('影子输入');
     ok(
       await interact.execute({

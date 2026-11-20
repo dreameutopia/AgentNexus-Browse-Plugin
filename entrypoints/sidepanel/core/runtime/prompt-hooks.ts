@@ -26,6 +26,10 @@ import {
   PYTHON_RUN_TOOL_ID,
   PYTHON_SYSTEM_PROMPT_SECTION,
 } from '@/tools/python/python-prompt';
+import {
+  BROWSER_INPUT_TOOL_ID,
+  BROWSER_INPUT_SYSTEM_PROMPT_SECTION,
+} from '@/tools/browser/input-contract';
 import { toolRegistry } from '@/tools/registry';
 
 export interface PromptHookContext {
@@ -94,8 +98,34 @@ const pythonScriptingHook: SystemPromptHook = {
   },
 };
 
+/**
+ * 快捷键与剪贴板规程钩子：工具面包含 browser_input 即注入 <browser-input> 分区。
+ *
+ * 为什么必须走钩子而不是无条件注入：这条规程的核心是「浏览器级权限气泡不在
+ * 页面 DOM 里，任何观察工具都看不到它」——只有确实持有剪贴板通道的会话才需要
+ * 知道这件事。没有 browser_input 的会话注入它，只会让模型去找一个不存在的工具。
+ *
+ * 同时它承载一条**事实**（浏览器 UI 层的弹窗不可观察），这条事实对所有会话
+ * 都成立，但它只在「有替代通路」时才有行动价值——因此分区整体随工具面注入。
+ */
+const browserInputHook: SystemPromptHook = {
+  id: 'browser-input',
+  placement: 'before-agent-instructions',
+  sectionTag: 'browser-input',
+  select(context) {
+    if (!context.toolIds.includes(BROWSER_INPUT_TOOL_ID)) return null;
+    if (!toolRegistry.get(BROWSER_INPUT_TOOL_ID)) return null;
+    if (hasSelfContainedSection(context.agentSystem, this.sectionTag)) return null;
+    return BROWSER_INPUT_SYSTEM_PROMPT_SECTION;
+  },
+};
+
 /** 钩子注册表：新增条件注入按此模式追加即可（保持分区自治语义）。 */
-export const SYSTEM_PROMPT_HOOKS: readonly SystemPromptHook[] = [visionGuiHook, pythonScriptingHook];
+export const SYSTEM_PROMPT_HOOKS: readonly SystemPromptHook[] = [
+  visionGuiHook,
+  pythonScriptingHook,
+  browserInputHook,
+];
 
 export interface PromptInjection {
   hookId: string;

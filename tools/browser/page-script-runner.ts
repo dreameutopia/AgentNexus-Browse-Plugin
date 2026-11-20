@@ -201,7 +201,14 @@ export async function pageConsoleEvaluate(
               () =>
                 reject(
                   new Error(
-                    '执行超时；代码可能仍在运行，先检查现状，不自动重试'
+                    '执行超时；代码可能仍在运行，先检查现状，不自动重试。' +
+                    '常见根因：脚本在等待一个**不会自己结束**的 Promise——' +
+                    '最典型的是页面上下文的异步剪贴板 API（navigator.clipboard.*）：' +
+                    '未授权时 Chrome 会弹出浏览器级权限气泡（「查看复制到剪贴板的文本和图像」），' +
+                    '该气泡在浏览器 UI 层、**不在页面 DOM**，任何观察工具都看不到，' +
+                    '脚本的 promise 因此永远不 settle。' +
+                    '遇到这种情况不要在页面脚本里重试剪贴板调用，改用 browser_input ' +
+                    '的剪贴板 action（扩展侧通道，不经过页面 origin，不触发气泡）。'
                   )
                 ),
               timeoutMs

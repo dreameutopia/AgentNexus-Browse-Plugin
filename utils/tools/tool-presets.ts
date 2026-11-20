@@ -16,6 +16,7 @@ import { PLAN_TOOL_ID } from '@/tools/plan/plan-prompt';
 import { NOTE_TOOL_ID } from '@/tools/note/note-prompt';
 import { FILE_UTIL_TOOL_ID } from '@/tools/file-util/file-util-prompt';
 import { VISION_GUI_TOOL_ID } from '@/tools/vision/gui-contract';
+import { BROWSER_INPUT_TOOL_ID } from '@/tools/browser/input-contract';
 
 /** 场景类型 */
 export type ToolScenario =
@@ -68,6 +69,10 @@ export const CORE_SESSION_TOOL_IDS: readonly string[] = [
   FILE_UTIL_TOOL_ID,
   JS_RUN_TOOL_ID,
   SKILL_TOOL_ID,
+  // 快捷键与剪贴板：与核心交互工具同级——「把数据写进目标页面」是每个
+  // 浏览器任务的终局动作，工具面缺了它，模型只能拿页面脚本硬造（实测
+  // 会挂在不可观察的浏览器权限气泡上，见 tools/browser/clipboard-protocol.ts）。
+  BROWSER_INPUT_TOOL_ID,
 ];
 
 /**

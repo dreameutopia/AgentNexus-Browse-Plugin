@@ -429,6 +429,46 @@ export const categories: ToolCategory[] = [
         required: ['action']
       },
       {
+        name: 'browser_input',
+        description: '快捷键与系统剪贴板：派发原生组合键 / 读写剪贴板 / 把工作区文件整表粘贴进页面（action 驱动）',
+        category: 'browser',
+        version: '1.0.0',
+        parameters: {
+          action: {
+            type: 'string',
+            description: 'keys=派发快捷键 / type=向当前焦点插入文本 / clipboard_write=写剪贴板 / clipboard_read=读剪贴板 / clipboard_paste=写剪贴板并粘贴',
+            enum: ['keys', 'type', 'clipboard_write', 'clipboard_read', 'clipboard_paste']
+          },
+          keys: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '仅 keys：一个主键 + 至多四个修饰键（如 ["Mod","v"]）',
+            placeholder: '["Mod","v"]'
+          },
+          text: {
+            type: 'string',
+            description: 'type 的插入文本；clipboard_write/clipboard_paste 的内联内容',
+            placeholder: '要插入或写入的文本'
+          },
+          path: {
+            type: 'string',
+            description: '仅 clipboard_write/clipboard_paste：工作区相对路径（如 outputs/榜单.csv）',
+            placeholder: 'outputs/榜单.csv'
+          },
+          asTsv: {
+            type: 'boolean',
+            description: '仅 clipboard_write/clipboard_paste：CSV 转制表符分隔（粘贴进表格按列展开）',
+            default: false
+          },
+          clear: {
+            type: 'boolean',
+            description: '仅 type：插入前先全选退格清空当前编辑器',
+            default: false
+          }
+        },
+        required: ['action']
+      },
+      {
         name: 'browser_page_ops',
         description: '轻量页面操作：按屏滚动整页 / 等待指定元素出现（action 驱动，无需 DOM 引用）',
         category: 'browser',

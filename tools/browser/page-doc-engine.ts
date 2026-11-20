@@ -271,8 +271,7 @@ async function waitForUrlTab(tabId: number, signal?: AbortSignal, context?: Tool
  *
  * 调用方只负责：ref 缓存（page_text）或文件落盘（read_website）。
  *
- * 范围提取（parent* 参数族与 frameId 限定扫描范围；browser_observe 的枚举
- * 不接受 frameId，frame 只随元素引用给出）：
+ * 范围提取（与 browser_observe 的 parent* 参数族、frameId 同名同义）：
  *   - parentSelector / parentXPath：只把命中容器的子树转为 Markdown（含容器
  *     自身文本）；容器在部分 frame 缺席时该 frame 静默跳过（containerMiss，
  *     不产生 PAYLOAD_ERROR/NEW_FRAME 误报），**所有**已扫描 frame 均未命中时

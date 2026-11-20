@@ -30,7 +30,7 @@
         <a
           v-if="!isConnected && !isConnecting"
           class="help-icon"
-          href="https://ccn7xx2ie259.feishu.cn/wiki/FpGUw91EgibWsHkVkBIccyh0n1d"
+          href="https://ccn7xx2ie259.feishu.cn/wiki/YNaswYeDHin03KkFy4fcurvgn5d"
           target="_blank"
           :title="t('sidepanel.ws.helpTitle')"
           @click.stop

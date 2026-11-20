@@ -296,7 +296,7 @@ assert.equal(groupRows().length, 7, '工具组固定为 7 组');
 // 组清单契约：顺序 / 名称 / 组内工具集（与 AgentManager 的 toolGroups 一一对应）
 const expectedGroups = [
   ['Python 运行', ['python_run']],
-  ['基础网页操作', ['browser_observe', 'browser_interact', 'browser_navigation']],
+  ['基础网页操作', ['browser_observe', 'browser_interact', 'browser_input', 'browser_navigation']],
   ['标签页与书签', ['browser_tabs', 'browser_get_page_info', 'browser_history_bookmarks']],
   ['搜索', ['web_search']],
   ['界面感知', ['browser_dom_explore']],
@@ -350,7 +350,7 @@ basicHead.click();
 await flush();
 assert.equal(basicHead.checked, true, '点组复选框 → 整组选中');
 assert.ok(basicCard.classList.contains('checked'), '卡片呈全选态');
-assert.equal(basicCard.querySelectorAll('.hub-group-tool.is-checked').length, 3, '组内芯片全部高亮');
+assert.equal(basicCard.querySelectorAll('.hub-group-tool.is-checked').length, 4, '组内芯片全部高亮');
 const countBadge = q('.hub-section--groups .hub-groups-count');
 assert.ok(countBadge, '工具组区展示已选计数');
 assert.match(countBadge.textContent, /已选 \d+\/30/, '计数徽标格式为「已选 N/30」');

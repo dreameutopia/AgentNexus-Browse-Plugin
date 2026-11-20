@@ -1,6 +1,7 @@
 import { NetworkObserverTool } from './network-observer';
 import { BrowserObserveTool } from './observe';
 import { browserInteractTool } from './interact';
+import { browserInputTool } from './input-tool';
 /**
  * 浏览器工具集合
  * 提供 Chrome 浏览器的底层操作能力
@@ -42,6 +43,8 @@ function createBrowserTools() {
     // Interaction tools
     new BrowserObserveTool(),
     browserInteractTool,
+    // 快捷键与剪贴板（默认注入的核心工具：可信按键 + 扩展侧剪贴板通道）
+    browserInputTool,
 
     // Capture tools
     consoleTool,
@@ -99,6 +102,9 @@ export function registerBrowserTools() {
 export * from './navigation';
 export * from './observe';
 export * from './interact';
+export * from './input-tool';
+export * from './input-contract';
+export * from './clipboard-protocol';
 export * from './network-observer';
 export * from './capture';
 export * from './network';

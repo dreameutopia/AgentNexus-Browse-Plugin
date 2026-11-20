@@ -65,6 +65,14 @@ export default defineConfig({
       'sidePanel',
       'contextMenus',
       'notifications',
+      // 扩展侧剪贴板通道（协议见 tools/browser/clipboard-protocol.ts）：
+      // 扩展页面在持有 clipboardWrite 时写入系统剪贴板无需用户手势，也不触发
+      // 页面 origin 的浏览器权限气泡——后者会挂在异步 API 上永不 settle，
+      // 且气泡在浏览器 UI 层、DOM 工具观察不到（见 clipboard-protocol.ts 头注）。
+      'clipboardWrite',
+      // 读取系统剪贴板：可能取到用户复制的凭据/隐私内容，属敏感读取，
+      // 由 browser_input 的读路径按工具级审批规则把关。
+      'clipboardRead',
     ],
     host_permissions: ['<all_urls>'],
     side_panel: {

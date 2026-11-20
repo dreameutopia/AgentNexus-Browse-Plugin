@@ -34,6 +34,8 @@ export async function testElementInteraction(
   let injectionError = false;
   let actionInjectionError = false;
   let incomplete = false;
+  /** 限定 frameId 的 read 阶段失败（发现阶段照常）：验证 FRAME_NOT_FOUND 收口 */
+  let scopedReadBlocked = false;
   let beforeValidation: (() => void) | undefined;
   const create = (
     html: string,
@@ -148,6 +150,13 @@ export async function testElementInteraction(
             throw new Error('action response timed out');
           if (incomplete) return [{ frameId: 0, result: undefined }];
           if (options.func.name === 'elementScanPayload') scanCount++;
+          // 限定 frameId 时该 frame「没有产出」（不可注入 / 注入后无返回）：
+          // 桩里直接不写入该帧的结果——与真实 chrome.scripting 在不可注入 frame 上
+          // 的行为一致，且不改变控制流（不 throw、不改 frame 注册表）。
+          if (scopedReadBlocked && options.func.name === 'elementScanPayload') {
+            scopedReadBlocked = false;
+            return [];
+          }
           if (
             options.func.name === 'validateElementReferences' &&
             beforeValidation
@@ -188,13 +197,24 @@ export async function testElementInteraction(
       create('<button>iframe 按钮</button>', 'https://frame.example/'),
     );
     const getter = new BrowserObserveTool('buttons');
+    /**
+     * 参数拒绝面（不碰浏览器）。
+     *
+     * 注意：DOM 引用**不再**强制要求 frameId——它可由 ElementId 自动定位
+     * （nonce 段每 frame 独立生成，唯一确定归属）。因此这一组只放**真正
+     * 无法定位目标**的形态错误：非法 ElementId 与非法 frameId 数值。
+     */
     for (const args of [
-      { action: 'scroll', deltaY: 800, description: '滚动文档' },
-      { action: 'click', elementId: 'anx:11:test:1', description: '点目标' },
       {
         action: 'click',
         elementId: 'not-a-reference',
         frameId: 0,
+        description: '点目标',
+      },
+      {
+        action: 'click',
+        elementId: 'anx:11:test:1',
+        frameId: -1,
         description: '点目标',
       },
     ]) {
@@ -210,6 +230,25 @@ export async function testElementInteraction(
       check(
         !rejected.error?.includes('可能部分生效'),
         '未派发错误不误导模型重复观察',
+      );
+    }
+    /**
+     * 文档级 scroll（无 elementId）省略 frameId 时按主 frame 执行——
+     * 它没有引用可推导，「当前页面」就是唯一合理默认。
+     *
+     * 断言口径是「不再因缺 frameId 被参数拒绝」：测试宿主（JSDOM）不实现
+     * scrollBy，真实滚动效果无法在此断言；缺参拒绝与滚动是否真的发生是
+     * 两件事，前者才是本条要守的不变量。
+     */
+    {
+      const rejected = await interact.execute({
+        action: 'scroll',
+        deltaY: 800,
+        description: '滚动文档',
+      } as any);
+      check(
+        rejected.data?.errorKind !== 'INVALID_ARGUMENT',
+        '文档级 scroll 省略 frameId 时按主 frame 执行，不因缺参被拒',
       );
     }
     const actionRef = (await scan('buttons'))[0].elementId;
@@ -237,9 +276,9 @@ export async function testElementInteraction(
     }>;
     check(
       !enumeration.properties.elementId &&
-        !enumeration.properties.frameId &&
+        enumeration.properties.frameId?.type === 'integer' &&
         enumeration.additionalProperties === false,
-      '枚举 schema 分支禁止节点与 frame 参数',
+      '枚举 schema 分支禁止节点引用，并暴露可选 frame 扫描范围',
     );
     eq(
       element.required,
@@ -271,11 +310,9 @@ export async function testElementInteraction(
       ...enumeration.properties.view.enum,
     ] as const) {
       for (const reference of [
-        { frameId: 0 },
-        { frameId: 7 },
-        { frameId: null },
         { elementId: '' },
         { elementId: 'anx:11:document:1' },
+        { elementId: null, frameId: 7 },
         { elementId: null, frameId: null },
       ]) {
         const before = browserAccessCount;
@@ -292,7 +329,52 @@ export async function testElementInteraction(
         );
         eq(browserAccessCount, before, '错误组合在访问浏览器前被拦截');
       }
+      // 非法 frameId（负数 / 小数）必须在触碰页面前拒绝，而不是把脏参数送进注入
+      for (const badFrame of [-1, 1.5]) {
+        const before = browserAccessCount;
+        const invalid = await getter.execute({
+          ...(view ? { view } : {}),
+          regex: '编辑',
+          frameId: badFrame,
+        } as any);
+        check(
+          !invalid.success &&
+            invalid.error?.includes('INVALID_ARGUMENT') === true,
+          `${view ?? '默认'} 枚举拒绝非法 frameId=${badFrame}`,
+          invalid.error,
+        );
+        eq(browserAccessCount, before, '非法 frameId 在访问浏览器前被拦截');
+      }
     }
+    // frameId 是枚举的合法扫描范围（元素捕获与跨帧引用按帧路由的依据）：
+    // 限定单 frame 扫描时只回该 frame，缺席的 frame 报 FRAME_NOT_FOUND
+    const frameScoped = await getter.execute({ view: 'buttons', frameId: 7 });
+    check(frameScoped.success, '枚举支持限定 frameId 扫描', frameScoped.error);
+    const scopedElements = String(data(frameScoped).elements);
+    check(
+      scopedElements.includes('anx:') && scopedElements.includes('| 7 |'),
+      '限定扫描回执只含该 frame 的元素（回执帧号为 7）',
+      scopedElements.slice(0, 400),
+    );
+    const frameMissing = await getter.execute({ view: 'buttons', frameId: 99 });
+    check(
+      !frameMissing.success && /FRAME_NOT_FOUND/.test(frameMissing.error ?? ''),
+      '不存在的 frameId 报 FRAME_NOT_FOUND',
+      frameMissing.error,
+    );
+    // 限定 frame 时 frame 存在但不可注入（内容访问受限 / 注入失败）也必须收敛为
+    // FRAME_NOT_FOUND——只收「frame 缺席」会漏掉这类，模型会拿到笼统的
+    // 「页面观察失败」，而它该知道的是「这个 frame 拿不到内容，换 frame 或省略」。
+    // 只影响这一次调用的 read 阶段（发现阶段仍要成功，否则桩后续状态被污染）
+    scopedReadBlocked = true;
+    const frameUnreadable = await getter.execute({ view: 'buttons', frameId: 7 });
+    scopedReadBlocked = false;
+    check(
+      !frameUnreadable.success &&
+        /FRAME_NOT_FOUND/.test(frameUnreadable.error ?? ''),
+      '限定 frame 注入失败也收敛为 FRAME_NOT_FOUND',
+      frameUnreadable.error,
+    );
     const first = await getter.execute();
     check(first.success, '真实全帧采集通过交付前二次核验', first.error);
     const frameNode = (await scan('buttons', 7))[0];
@@ -307,6 +389,18 @@ export async function testElementInteraction(
       detail.error,
     );
     const mainNode = (await scan('buttons', 0))[0];
+    // view=element 的 frameId 是必填定位参数：缺了必须拒绝，
+    // 不能退回「当前活动 frame」的猜测行为
+    const detailWithoutFrame = await getter.execute({
+      view: 'element',
+      elementId: mainNode.elementId,
+    } as any);
+    check(
+      !detailWithoutFrame.success &&
+        /INVALID_ARGUMENT/.test(detailWithoutFrame.error ?? ''),
+      '节点详情缺 frameId 被拒绝（不猜测 frame）',
+      detailWithoutFrame.error,
+    );
     check(
       (
         await getter.execute({
@@ -444,6 +538,32 @@ export async function testElementInteraction(
       compactOn.success && Array.isArray(data(compactOn).details),
       '续读显式 includeDetails=true 可临时打开详情',
     );
+    // frameId 是快照的绑定条件：续读时改 frameId 等于换了扫描范围，
+    // 必须报 QUERY_MISMATCH 而不是静默沿用旧快照
+    const scopedSnap = await getter.execute({ view: 'buttons', frameId: 7 });
+    const scopedSnapId = data(scopedSnap).snapshotId;
+    if (scopedSnapId) {
+      const swapped = await getter.execute({
+        snapshotId: scopedSnapId,
+        page: 1,
+        frameId: 0,
+      });
+      check(
+        !swapped.success && /QUERY_MISMATCH/.test(swapped.error ?? ''),
+        '续读时改 frameId 报 QUERY_MISMATCH',
+        swapped.error,
+      );
+      const keptScope = await getter.execute({
+        snapshotId: scopedSnapId,
+        page: 1,
+        frameId: 7,
+      });
+      check(
+        keptScope.success,
+        '续读时 frameId 与快照一致可正常续读',
+        keptScope.error,
+      );
+    }
     check(
       data(first).hint === undefined,
       '无过滤的默认枚举不重复泛化用法提示',

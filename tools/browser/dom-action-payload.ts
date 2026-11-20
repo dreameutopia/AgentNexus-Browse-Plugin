@@ -1007,6 +1007,24 @@ export async function domActionPayload(
         error:
           'UNVERIFIED_FILL：输入后节点被替换，请重新采集并核对页面值，勿盲目重试提交。',
       };
+    /**
+     * 回读时机：受控组件（React/Vue）的回滚发生在**失焦后的渲染周期**里。
+     * 只等一个 microtask 就回读会读到「还没回滚的中间值」——于是报出
+     * value_verified 的假成功，模型据此认为填好了，接着按 Enter 却毫无反应
+     * （实测名称框即此症状：fill 报成功 → 值被回滚 → 后续按键落空 →
+     * 模型反复重填，每一轮都「成功」）。
+     *
+     * 等一帧动画让回滚有机会发生，再回读真实值。
+     */
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 0);
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      }
+    });
     const finalValue = element.isContentEditable
       ? element.textContent
       : String((element as HTMLInputElement).value ?? '');
@@ -1019,8 +1037,20 @@ export async function domActionPayload(
         finalValue === ''
           ? '页面把输入清空了（失焦回滚 / 该段未激活 / 受控组件拒绝）——先点击目标控件或对应分段激活，再重填或改用 focus 后 type 逐段输入。'
           : '页面把值改写成了部分或格式化结果（掩码 / 分段输入 / 受控格式化）——按实际值反推格式约束；分段控件逐段输入，不要整串覆盖。';
+      /**
+       * 非空但与期望不同的失败，多半是**受控组件回滚**：页面接受了输入，
+       * 随后按自身状态重渲染把它改了回去。此时再 fill 一次不会改变结果
+       * （同样的值、同样的路径），模型却会一直重试——必须明确指向另一条通道。
+       */
+      const revertedHint =
+        finalValue === ''
+          ? ''
+          : '该控件可能是受控组件（输入被接受后又被页面状态回滚）——再 fill 一次不会改变结果，请改用 browser_input(action="type") 走真实输入通道，或先 click 激活该控件再输入。';
       return {
-        error: `VALUE_MISMATCH：页面未接受完整输入。期望=${brief(expectedValue)} 实际=${brief(finalValue)}。${diagnosis}`,
+        error:
+          `VALUE_MISMATCH：页面未接受完整输入。期望=${brief(expectedValue)} 实际=${brief(finalValue)}。` +
+          diagnosis +
+          revertedHint,
         errorCode: 'VALUE_MISMATCH',
         phase,
         outcome: 'unknown',

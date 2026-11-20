@@ -588,7 +588,7 @@ interface ToolGroupMeta {
 const toolGroups: ReadonlyArray<ToolGroupMeta> = [
   // Python 运行：环境未就绪时整组锁定（见 isGroupLocked），就绪后可勾选
   { id: 'python', nameKey: 'hub.groupPython', descKey: 'hub.groupPythonDesc', tools: ['python_run'] },
-  { id: 'basicWeb', nameKey: 'hub.groupBasicWeb', descKey: 'hub.groupBasicWebDesc', tools: ['browser_observe', 'browser_interact', 'browser_navigation'] },
+  { id: 'basicWeb', nameKey: 'hub.groupBasicWeb', descKey: 'hub.groupBasicWebDesc', tools: ['browser_observe', 'browser_interact', 'browser_input', 'browser_navigation'] },
   { id: 'tabsBookmarks', nameKey: 'hub.groupTabsBookmarks', descKey: 'hub.groupTabsBookmarksDesc', tools: ['browser_tabs', 'browser_get_page_info', 'browser_history_bookmarks'] },
   { id: 'webSearch', nameKey: 'hub.groupWebSearch', descKey: 'hub.groupWebSearchDesc', tools: ['web_search'] },
   { id: 'perception', nameKey: 'hub.groupPerception', descKey: 'hub.groupPerceptionDesc', tools: ['browser_dom_explore'] },

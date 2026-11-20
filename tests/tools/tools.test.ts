@@ -319,7 +319,10 @@ await import('../../tools/document').then(({ registerDocumentTools }) => registe
   //（list/windows/wait）一律保守，工具 metadata 绝不可标 true。
   for (const id of ['web_search', 'platform_search', 'browser_interact', 'browser_navigation',
     'browser_tabs', 'browser_page_exec', 'screenshot',
-    'vision_gui', 'ocr', 'extract_data', 'ai_locate', 'browser_console', 'file_uploader', 'browser_get_page_html']) {
+    'vision_gui', 'ocr', 'extract_data', 'ai_locate', 'browser_console', 'file_uploader', 'browser_get_page_html',
+    // browser_input 会派发可信按键并改写剪贴板/页面内容（粘贴真实发生），
+    // 截图身份与页面像素都可能随之变化 → 必须保守重拍。
+    'browser_input']) {
     check(toolRegistry.getTool(id)?.metadata.noVisionRecapture !== true, `工具 ${id} 保持保守重拍（未豁免）`);
   }
   // 合并迁移防回潮：被并入 browser_navigation / browser_tabs / browser_history_bookmarks
@@ -999,6 +1002,8 @@ const { testDomExplore } = await import('./dom-explore.test');
 await testDomExplore(check, eq);
 const { testTextAutomation } = await import('./text-automation.test');
 await testTextAutomation(check, eq);
+const { testBrowserInput } = await import('./browser-input.test');
+await testBrowserInput(check, eq);
 
 // ==================== 8. 注入荷载：序列化自包含 + 真实 DOM 行为 ====================
 

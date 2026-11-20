@@ -11,6 +11,11 @@ import { initConfigEngine } from './utils/config';
 import { restoreCustomAgentsFromStorage } from '@/utils/agents/agent-store';
 import { ensurePersistentStorage } from '@/utils/shared/storage-sync';
 import { vTip } from './utils/ui/v-tip';
+import { registerClipboardReadHost } from './utils/clipboard-read-host';
+
+// 剪贴板读取应答（sidepanel 是唯一有焦点、可靠执行 readText 的扩展上下文：
+// service worker 与离屏文档都无焦点）。详见 utils/clipboard-read-host.ts。
+registerClipboardReadHost();
 
 const app = createApp(App);
 app.use(i18n);

@@ -352,8 +352,9 @@ export class WebSocketClient {
       
       try {
         if (this.config.relay) {
-          // 前端中转模式：以 PLUGIN_HELLO 保活（前端幂等刷新插件视图），
-          // 不发 HEARTBEAT（前端 Server 不处理，会被当未知上行转发造成噪音）
+          // 前端中转模式：以 PLUGIN_HELLO 保活（同连接重复 HELLO 只维持连接语义，
+          // 前端不重新接入、不刷新插件视图），不发 HEARTBEAT（前端 Server 不处理，
+          // 会被当未知上行转发造成噪音）
           this.sendPluginHello();
         } else {
           // 发送一个轻量级的心跳消息（无业务载荷）

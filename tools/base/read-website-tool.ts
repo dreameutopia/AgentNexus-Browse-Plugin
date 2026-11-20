@@ -86,7 +86,7 @@ export class ReadWebsiteTool extends BaseBrowserTool {
         '提取口径与内置文本通道完全一致：结构化 Markdown（标题层级/表格含合并单元格/列表/代码块及语言/链接/引用/图片/表单控件），' +
         '覆盖全部可注入 frame（iframe）与可访问 shadow root，剔除隐藏内容与脚本/样式/SVG/Canvas。\n' +
         '目标：默认读当前活动标签页；url=单个网址 时前台打开并等待加载完成（标签页保留在用户眼前，便于手动过验证）；tabId 可指定标签页（会先切换到该页）。\n' +
-        '范围提取（parentSelector/parentXPath/frameId 限定扫描范围）：只输出命中容器子树的 Markdown，**包含容器自身的文本**' +
+        '范围提取（parentSelector/parentXPath/frameId，与 browser_observe 同名同义）：只输出命中容器子树的 Markdown，**包含容器自身的文本**' +
         '（与 observe 的「容器自身不进结果」相反——读语义里容器文本正是要读的内容）；容器在部分 frame 缺席时该 frame 静默跳过，所有 frame 均未命中报 PARENT_CONTAINER_NOT_FOUND，绝不回退整页。' +
         '作用域模式下人机验证页判定为弱信号（只依据标题与容器内文案）。字段化批量抽取用 browser_extract_data；本工具的强项是结构保真正文与落盘。\n' +
         '返回 CSV 多列单行：content,page,totalPages,path（path 为工作区相对路径，如 content/example-com-list-1-a1b2.md）。' +
